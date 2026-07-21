@@ -37,6 +37,10 @@ jobs:
         run: |
           bash -n scripts/install.sh
           bash -n scripts/package-release.sh
+          bash -n scripts/verify-release-package.sh
+
+      - name: Validate plugin contracts
+        run: python3 scripts/verify-plugin-contracts.py
 
   package:
     name: Package ${{ matrix.target }}
@@ -103,6 +107,7 @@ jobs:
           done
 
           "${install_root}/caushell" --help >/dev/null
+          bash scripts/verify-release-package.sh "${{ matrix.target }}" "${install_root}"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -145,6 +150,25 @@ jobs:
           install -m 0755 scripts/install.sh dist/install.sh
           cd dist
           sha256sum install.sh > install.sh.sha256
+
+      - name: Verify release asset names
+        shell: bash
+        run: |
+          cd dist
+          sort > "${RUNNER_TEMP}/expected-assets.txt" <<'EOF'
+          caushell-aarch64-apple-darwin.tar.gz
+          caushell-aarch64-apple-darwin.tar.gz.sha256
+          caushell-x86_64-apple-darwin.tar.gz
+          caushell-x86_64-apple-darwin.tar.gz.sha256
+          caushell-x86_64-unknown-linux-musl.tar.gz
+          caushell-x86_64-unknown-linux-musl.tar.gz.sha256
+          install.sh
+          install.sh.sha256
+          EOF
+          find . -maxdepth 1 -type f \
+            -printf '%f\n' \
+            | sort > "${RUNNER_TEMP}/actual-assets.txt"
+          diff -u "${RUNNER_TEMP}/expected-assets.txt" "${RUNNER_TEMP}/actual-assets.txt"
 
       - name: Attest release assets
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
