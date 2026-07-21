@@ -2,7 +2,7 @@
   "name": "caushell-vscode",
   "displayName": "Caushell Audit",
   "description": "Inspect Caushell sessions, command streams, and execution details from VS Code.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "license": "Apache-2.0",
   "publisher": "caushell",
   "engines": {

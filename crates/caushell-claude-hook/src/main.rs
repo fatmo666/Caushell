@@ -345,7 +345,7 @@ fn preferred_runtime_root() -> PathBuf {
 }
 
 fn runtime_root_for(xdg_runtime_dir: Option<&Path>) -> PathBuf {
-    let fallback = PathBuf::from(format!("/tmp/caushell-{}", effective_uid()));
+    let fallback = fallback_runtime_root();
     match xdg_runtime_dir {
         Some(path) if runtime_dir_usable(path) => path.join("caushell"),
         _ => fallback,
@@ -354,6 +354,12 @@ fn runtime_root_for(xdg_runtime_dir: Option<&Path>) -> PathBuf {
 
 fn runtime_dir_usable(path: &Path) -> bool {
     private_directory_is_usable(path)
+}
+
+fn fallback_runtime_root() -> PathBuf {
+    let temp_dir = env::temp_dir();
+    let temp_dir = fs::canonicalize(&temp_dir).unwrap_or(temp_dir);
+    temp_dir.join(format!("caushell-{}", effective_uid()))
 }
 
 impl RuntimePaths {

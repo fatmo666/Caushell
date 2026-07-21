@@ -27,11 +27,16 @@ done
 
 export PATH="${install_root}:${PATH}"
 
-"${install_root}/caushell" --version >/dev/null
-"${install_root}/caushell-codex-hook" Status >/dev/null
-"${install_root}/caushell-claude-hook" Status >/dev/null
-"${install_root}/caushell" doctor codex >/dev/null
-"${install_root}/caushell" doctor claude >/dev/null
+run_check() {
+  echo "verify-release-package: running $*" >&2
+  "$@"
+}
+
+run_check "${install_root}/caushell" --version
+run_check "${install_root}/caushell-codex-hook" Status
+run_check "${install_root}/caushell-claude-hook" Status
+run_check "${install_root}/caushell" doctor codex
+run_check "${install_root}/caushell" doctor claude
 
 case "${target}" in
   x86_64-unknown-linux-musl)
