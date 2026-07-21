@@ -1,6 +1,6 @@
 {
   "name": "caushell-codex",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Session-aware shell guardrails for Codex backed by the Caushell runtime.",
   "author": {
     "name": "Caushell"
@@ -9,6 +9,7 @@
   "repository": "https://github.com/fatmo666/Caushell",
   "license": "Apache-2.0",
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Caushell Codex",
     "shortDescription": "Session-aware shell guardrails for Codex Bash tool use.",

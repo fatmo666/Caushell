@@ -675,6 +675,20 @@ mod tests {
     }
 
     #[test]
+    fn codex_plugin_declares_lifecycle_hooks() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../integrations/codex/.codex-plugin/plugin.json"
+        ))
+        .expect("Codex plugin manifest must be valid JSON");
+
+        assert_eq!(
+            manifest.get("hooks").and_then(serde_json::Value::as_str),
+            Some("./hooks/hooks.json"),
+            "Codex plugin must explicitly declare its bundled hooks"
+        );
+    }
+
+    #[test]
     fn claude_plugin_exposes_only_live_integration_options() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
             "../../../integrations/claude-code/.claude-plugin/plugin.json"
