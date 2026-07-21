@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: nproc
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: print_processor_count
+    selector:
+      kind: all
+      items: []
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

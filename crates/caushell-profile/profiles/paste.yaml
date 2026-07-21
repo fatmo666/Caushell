@@ -1,0 +1,70 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: paste
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: merge_lines
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: delimiter
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--delimiters"
+    parameters:
+      - name: delimiters
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv

@@ -1,0 +1,64 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: nano
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: interactive_editor
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: editor
+          requires_tty: true
+          capabilities:
+            - write_buffer_to_path
+
+modifiers:
+  - id: backup
+    matcher:
+      kind: any_flag
+      flags:
+        - "-B"
+        - "--backup"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

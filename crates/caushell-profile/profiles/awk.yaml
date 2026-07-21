@@ -1,0 +1,173 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: awk
+  aliases:
+    - gawk
+    - nawk
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: explicit_program_transform
+    selector:
+      kind: any
+      items:
+        - kind: has_modifier
+          modifier: inline_program
+        - kind: has_modifier
+          modifier: program_file
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: positional_program_transform
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: inline_program
+              - kind: has_modifier
+                modifier: program_file
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: program
+        semantic:
+          kind: structured_value
+          context: awk_program
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+modifiers:
+  - id: inline_program
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--source"
+    parameters:
+      - name: programs
+        semantic:
+          kind: structured_value
+          context: awk_program
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: program_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: program_files
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: program_files
+
+  - id: assign_variable
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+    parameters:
+      - name: assignments
+        semantic:
+          kind: structured_value
+          context: env_assignment
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: field_separator
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--field-separator"
+    parameters:
+      - name: field_separator
+        semantic:
+          kind: structured_value
+          context: regex
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Awk programs are structured values, not recursively parsed shell payloads.
+    - Output redirection inside awk source is not modeled without awk-language parsing.

@@ -1,0 +1,75 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: aider-chat
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: coding_agent_session
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: path_targets
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: read_path
+        target:
+          kind: slot
+          name: path_targets
+      - kind: write_path
+        target:
+          kind: mutation_scope
+          scope_kind: repository_worktree
+          path_set: tracked
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: false
+          capabilities:
+            - run_command
+            - write_buffer_to_path
+
+modifiers:
+  - id: model
+    matcher:
+      kind: any_flag
+      flags:
+        - "--model"
+    parameters:
+      - name: model_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv

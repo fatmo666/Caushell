@@ -1,0 +1,427 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: grep
+  aliases:
+    - egrep
+    - fgrep
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: explicit_pattern_search
+    selector:
+      kind: any
+      items:
+        - kind: has_modifier
+          modifier: inline_pattern
+        - kind: has_modifier
+          modifier: pattern_file
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: positional_pattern_search
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: inline_pattern
+              - kind: has_modifier
+                modifier: pattern_file
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: pattern
+        semantic:
+          kind: structured_value
+          context: regex
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+modifiers:
+  - id: inline_pattern
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--regexp"
+    parameters:
+      - name: patterns
+        semantic:
+          kind: structured_value
+          context: regex
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: pattern_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: pattern_files
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: pattern_files
+
+  - id: regexp_dialect
+    matcher:
+      kind: any_flag
+      flags:
+        - "-E"
+        - "--extended-regexp"
+        - "-F"
+        - "--fixed-strings"
+        - "-G"
+        - "--basic-regexp"
+        - "-P"
+        - "--perl-regexp"
+
+  - id: match_selection
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--ignore-case"
+        - "--no-ignore-case"
+        - "-w"
+        - "--word-regexp"
+        - "-x"
+        - "--line-regexp"
+        - "-z"
+        - "--null-data"
+        - "-s"
+        - "--no-messages"
+        - "-v"
+        - "--invert-match"
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+        - "--silent"
+
+  - id: max_count
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "--max-count"
+    parameters:
+      - name: max_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: output_control
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--byte-offset"
+        - "-n"
+        - "--line-number"
+        - "--line-buffered"
+        - "-H"
+        - "--with-filename"
+        - "-h"
+        - "--no-filename"
+        - "-o"
+        - "--only-matching"
+        - "-L"
+        - "--files-without-match"
+        - "-l"
+        - "--files-with-matches"
+        - "-c"
+        - "--count"
+        - "-T"
+        - "--initial-tab"
+        - "-Z"
+        - "--null"
+
+  - id: label
+    matcher:
+      kind: any_flag
+      flags:
+        - "--label"
+    parameters:
+      - name: label
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: binary_files
+    matcher:
+      kind: any_flag
+      flags:
+        - "--binary-files"
+    parameters:
+      - name: binary_file_policy
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: binary_text_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--text"
+        - "-I"
+        - "-U"
+        - "--binary"
+
+  - id: directory_action
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--directories"
+    parameters:
+      - name: directory_action
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: device_action
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+        - "--devices"
+    parameters:
+      - name: device_action
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: recursive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--recursive"
+        - "-R"
+        - "--dereference-recursive"
+    extensions:
+      caushell.profile/implicit_cwd_read_when_no_input_paths: true
+
+  - id: include_glob
+    matcher:
+      kind: any_flag
+      flags:
+        - "--include"
+    parameters:
+      - name: include_globs
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: exclude_glob
+    matcher:
+      kind: any_flag
+      flags:
+        - "--exclude"
+        - "--exclude-dir"
+    parameters:
+      - name: exclude_globs
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: exclude_from
+    matcher:
+      kind: any_flag
+      flags:
+        - "--exclude-from"
+    parameters:
+      - name: exclude_pattern_files
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: exclude_pattern_files
+
+  - id: context_before
+    matcher:
+      kind: any_flag
+      flags:
+        - "-B"
+        - "--before-context"
+    parameters:
+      - name: before_context_lines
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: context_after
+    matcher:
+      kind: any_flag
+      flags:
+        - "-A"
+        - "--after-context"
+    parameters:
+      - name: after_context_lines
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: context_around
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--context"
+    parameters:
+      - name: context_lines
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: group_separator
+    matcher:
+      kind: any_flag
+      flags:
+        - "--group-separator"
+    parameters:
+      - name: group_separator
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: no_group_separator
+    matcher:
+      kind: any_flag
+      flags:
+        - "--no-group-separator"
+
+  - id: color
+    matcher:
+      kind: any_flag
+      flags:
+        - "--color"
+        - "--colour"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/TODO_COVERAGE_CHECKLIST.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Short option clusters with operands, such as -m5, are not split by the current projection layer.
+    - grep -r PATTERN without explicit FILE reads the current directory; the current path fact layer does not yet materialize implicit cwd reads.
+    - FILE value "-" and -f - are treated as non-path stdin sentinels, but the profile does not yet materialize mixed stdin-plus-file input as an explicit implicit input fact.

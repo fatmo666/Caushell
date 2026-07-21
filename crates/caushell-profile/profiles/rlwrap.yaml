@@ -1,0 +1,205 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: rlwrap
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+modifiers:
+  - id: ansi_colour_aware
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--ansi-colour-aware"
+
+  - id: complete_filenames
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--complete-filenames"
+
+  - id: remember
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--remember"
+
+  - id: prompt_colour
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--prompt-colour"
+    parameters:
+      - name: colour
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: completions
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: completion_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: history_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-H"
+        - "--history-filename"
+    parameters:
+      - name: history_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: command_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--command-name"
+    parameters:
+      - name: command_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: prompt_substitute
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+        - "--substitute-prompt"
+        - "-P"
+        - "--pre-given"
+    parameters:
+      - name: prompt_text
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: simple_value
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--break-chars"
+        - "-q"
+        - "--quote-characters"
+        - "-s"
+        - "--histsize"
+        - "-t"
+        - "--set-term-name"
+        - "-w"
+        - "--wait-before-prompt"
+        - "-z"
+        - "--filter"
+    parameters:
+      - name: option_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--version"
+
+subcommands: null
+extensions: {}

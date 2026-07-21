@@ -1,0 +1,74 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: gdisk
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: list_partition_table
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: list
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: interactive_partition_editor
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_session_target
+
+modifiers:
+  - id: list
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"

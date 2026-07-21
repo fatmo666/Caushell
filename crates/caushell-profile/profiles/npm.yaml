@@ -1,0 +1,350 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: npm
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms: []
+
+modifiers: []
+subcommands:
+  roots:
+    - name: install
+      aliases:
+        - i
+        - add
+      forms:
+        - id: install_packages
+          selector:
+            kind: has_positional_at
+            index: 0
+          parameters:
+            - name: package_specs
+              semantic:
+                kind: package_locator
+                manager: npm
+                locator_kinds:
+                  - registry_ref
+                  - local_path
+                  - direct_url
+                  - vcs_url
+                  - unknown_dynamic
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: package.json
+                convention: npm.package_json
+                purpose: task_config
+            - kind: import_package
+              target:
+                kind: slot
+                name: package_specs
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: package_specs
+      modifiers:
+        - id: install_flag
+          matcher:
+            kind: any_flag
+            flags:
+              - "-D"
+              - "--save-dev"
+              - "--dev"
+              - "-P"
+              - "--save-prod"
+              - "--save-optional"
+              - "--save-peer"
+              - "--save-exact"
+              - "--no-save"
+              - "-g"
+              - "--global"
+              - "--force"
+              - "--legacy-peer-deps"
+              - "--ignore-scripts"
+              - "--package-lock-only"
+              - "--dry-run"
+              - "--workspaces"
+        - id: install_value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--registry"
+              - "--cache"
+              - "--prefix"
+              - "--tag"
+              - "-w"
+              - "--workspace"
+              - "--omit"
+              - "--include"
+              - "--userconfig"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_many
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: ci
+      aliases: []
+      forms:
+        - id: install_from_lockfile
+          selector:
+            kind: all
+            items: []
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: package.json
+                convention: npm.package_json
+                purpose: task_config
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: package-lock.json
+                convention: npm.package_lock
+                purpose: task_config
+            - kind: execute_imported_package_logic
+              target:
+                kind: none
+      modifiers:
+        - id: ci_flag
+          matcher:
+            kind: any_flag
+            flags:
+              - "--ignore-scripts"
+              - "--dry-run"
+              - "--force"
+              - "--legacy-peer-deps"
+              - "--workspaces"
+        - id: ci_value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--registry"
+              - "--cache"
+              - "--prefix"
+              - "-w"
+              - "--workspace"
+              - "--omit"
+              - "--include"
+              - "--userconfig"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_many
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: exec
+      aliases:
+        - x
+      forms:
+        - id: exec_package_from_modifier
+          selector:
+            kind: has_modifier
+            modifier: package
+          parameters:
+            - name: exec_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+
+        - id: exec_package
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: package
+          parameters:
+            - name: package_specs
+              semantic:
+                kind: package_locator
+                manager: npm
+                locator_kinds:
+                  - registry_ref
+                  - local_path
+                  - direct_url
+                  - vcs_url
+                  - unknown_dynamic
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: exec_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: package_specs
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: package_specs
+      modifiers:
+        - id: package
+          matcher:
+            kind: any_flag
+            flags:
+              - "--package"
+              - "-p"
+          parameters:
+            - name: package_specs
+              semantic:
+                kind: package_locator
+                manager: npm
+                locator_kinds:
+                  - registry_ref
+                  - local_path
+                  - direct_url
+                  - vcs_url
+                  - unknown_dynamic
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_many
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: package_specs
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: package_specs
+        - id: exec_flag
+          matcher:
+            kind: any_flag
+            flags:
+              - "-y"
+              - "--yes"
+              - "--no"
+              - "--ignore-existing"
+              - "--workspaces"
+        - id: exec_value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--registry"
+              - "--cache"
+              - "--prefix"
+              - "-w"
+              - "--workspace"
+              - "--userconfig"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_many
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: run
+      aliases: []
+      forms:
+        - id: run_script
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: script_name
+              semantic:
+                kind: plain_value
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: script_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: package.json
+                convention: npm.package_json
+                purpose: task_config
+            - kind: execute_config_defined_task
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: test
+      aliases: []
+      forms:
+        - id: test_script
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: test_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: package.json
+                convention: npm.package_json
+                purpose: task_config
+            - kind: execute_config_defined_task
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/known_limitations:
+    - npm install/add/i and exec/x are modeled for package execution coverage; lifecycle script details are not expanded.
+    - npm ci records lockfile-backed imported package execution semantics, but lockfile dependency contents are not expanded into individual package locators.
+    - Package.json content is not parsed here; the profile only captures the convention-backed config load and task execution surface.

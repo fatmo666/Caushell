@@ -1,0 +1,217 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: xargs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: dispatch_from_stdin
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+      - kind: read_path
+        target:
+          kind: slot
+          name: arg_file
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+
+  - id: echo_from_stdin
+    selector:
+      kind: no_positional_args
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+      - kind: read_path
+        target:
+          kind: slot
+          name: arg_file
+
+modifiers:
+  - id: null_delimited
+    matcher:
+      kind: any_flag
+      flags:
+        - "-0"
+        - "--null"
+
+  - id: replace_token
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "--replace"
+    parameters:
+      - name: replace_token
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: max_args
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--max-args"
+    parameters:
+      - name: max_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: max_lines
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+        - "-l"
+        - "--max-lines"
+    parameters:
+      - name: max_lines
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: delimiter
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--delimiter"
+    parameters:
+      - name: delimiter
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: eof_marker_required
+    matcher:
+      kind: any_flag
+      flags:
+        - "-E"
+    parameters:
+      - name: eof_marker
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: eof_marker_inline
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--eof"
+    parameters:
+      - name: eof_marker
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_one
+
+  - id: arg_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--arg-file"
+    parameters:
+      - name: arg_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: interactive_prompt
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--interactive"
+
+  - id: no_run_if_empty
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--no-run-if-empty"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Runtime-only stdin items are modeled as stdin data consumed by xargs unless the payload can be statically traced.
+    - Static expansion covers common delimiter, replacement, batching, no-run-if-empty, and arg-file modes; runtime-generated item streams remain opaque.

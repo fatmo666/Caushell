@@ -1,0 +1,63 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: bzip2
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: compress_files
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: input_paths
+          rule:
+            kind: append_suffix
+            suffix: ".bz2"
+          purpose: generic_operand
+
+modifiers:
+  - id: keep
+    matcher:
+      kind: any_flag
+      flags:
+        - "-k"
+        - "--keep"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Success-conditioned deletion of the original input file is not modeled in this slice.

@@ -1,0 +1,75 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: watch
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: repeat_command
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: command_name
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: false
+          capabilities:
+            - run_command
+
+modifiers:
+  - id: interval
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--interval"
+    parameters:
+      - name: interval
+        semantic:
+          kind: structured_value
+          context: numeric_quantity
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

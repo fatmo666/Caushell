@@ -1,0 +1,115 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: tee
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: has_flag
+      flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+  - id: duplicate_stream
+    selector:
+      kind: not
+      item:
+        kind: any
+        items:
+          - kind: has_flag
+            flag: "--help"
+          - kind: has_flag
+            flag: "--version"
+    parameters:
+      - name: output_paths
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_paths
+        catastrophic:
+          semantic_class: raw_write_target
+
+modifiers:
+  - id: append
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--append"
+
+  - id: ignore_interrupts
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--ignore-interrupts"
+
+  - id: pipe_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+
+  - id: output_error
+    matcher:
+      kind: any_flag
+      flags:
+        - "--output-error"
+    parameters:
+      - name: output_error_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+subcommands: null
+extensions: {}

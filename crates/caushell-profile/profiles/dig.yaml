@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: dig
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: dns_query
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: query_targets
+        semantic:
+          kind: endpoint
+          endpoint_kind: host_port
+          usage: generic_endpoint
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: query_targets
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

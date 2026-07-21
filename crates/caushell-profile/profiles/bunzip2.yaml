@@ -1,0 +1,109 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: bunzip2
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: decompress_to_stdout
+    selector:
+      kind: has_modifier
+      modifier: stdout
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: decompress_files
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: stdout
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: input_paths
+          rule:
+            kind: strip_suffix
+            suffix: ".bz2"
+          purpose: generic_operand
+
+modifiers:
+  - id: stdout
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--stdout"
+        - "--to-stdout"
+
+  - id: keep
+    matcher:
+      kind: any_flag
+      flags:
+        - "-k"
+        - "--keep"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Success-conditioned deletion of the compressed input file is not modeled in this slice.

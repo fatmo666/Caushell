@@ -1,0 +1,94 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: scrapy
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: project_command
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: scrapy.cfg
+          convention: scrapy.project_config
+          purpose: project_config
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+
+modifiers:
+  - id: output_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "-O"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: settings_module
+    matcher:
+      kind: any_flag
+      flags:
+        - "--settings"
+    parameters:
+      - name: settings_module
+        semantic:
+          kind: in_process_code_load
+          load_kind: module_name
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: settings_module
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Scrapy spider names and project commands are left as plain arguments; the profile still captures project config loading, network crawling, plugin execution, and feed output writes.

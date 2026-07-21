@@ -1,0 +1,200 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkfs.bfs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: all
+          items:
+            - kind: has_modifier
+              modifier: volume_name
+            - kind: not
+              item:
+                kind: has_modifier_parameter_matching
+                modifier: volume_name
+                parameter: volume_name_value
+                matcher:
+                  kind: regex_pattern
+                  pattern: ".+"
+            - kind: not
+              item:
+                kind: has_positional_at
+                index: 0
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: inodes
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: filesystem_name
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: verbose
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: compatibility_c
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: compatibility_l
+
+  - id: create_filesystem
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: block_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+modifiers:
+  - id: inodes
+    matcher:
+      kind: any_flag
+      flags:
+        - "-N"
+        - "--inodes"
+    parameters:
+      - name: inode_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: required_one
+
+  - id: volume_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--vname"
+    parameters:
+      - name: volume_name_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_one
+
+  - id: filesystem_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--fname"
+    parameters:
+      - name: filesystem_name_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: required_one
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
+  - id: compatibility_c
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+
+  - id: compatibility_l
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+
+  - id: lock
+    matcher:
+      kind: any_flag
+      flags:
+        - "--lock"
+    parameters:
+      - name: lock_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"

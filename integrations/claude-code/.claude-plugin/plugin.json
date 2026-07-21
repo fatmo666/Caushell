@@ -1,0 +1,33 @@
+{
+  "name": "caushell-claude",
+  "version": "0.0.1",
+  "description": "Session-aware shell guardrails for Claude Code backed by the Caushell runtime.",
+  "author": {
+    "name": "Caushell"
+  },
+  "homepage": "https://github.com/fatmo666/Caushell",
+  "repository": "https://github.com/fatmo666/Caushell",
+  "license": "Apache-2.0",
+  "userConfig": {
+    "hook_path": {
+      "type": "file",
+      "title": "caushell-claude-hook path",
+      "description": "Optional explicit path to the native caushell-claude-hook executable. If unset, caushell-claude uses CAUSHELL_CLAUDE_HOOK_PATH, caushell-claude-hook on PATH, CAUSHELL_REPO_ROOT, or a source checkout target/debug path."
+    },
+    "runtime_path": {
+      "type": "file",
+      "title": "caushell path",
+      "description": "Optional explicit path to caushell. If unset, caushell-claude resolves caushell from PATH."
+    },
+    "store_root": {
+      "type": "directory",
+      "title": "Session store root",
+      "description": "Directory where Caushell persists Claude session events and snapshots"
+    },
+    "socket_root": {
+      "type": "directory",
+      "title": "Socket root",
+      "description": "Directory for per-workspace Caushell daemon sockets and logs"
+    }
+  }
+}

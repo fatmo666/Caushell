@@ -1,0 +1,385 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: install
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: has_flag
+      flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+  - id: create_directories
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_modifier
+          modifier: directory
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: directory_paths
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: directory_paths
+
+  - id: target_directory
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: directory
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+
+  - id: default_install
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: target_directory
+              - kind: has_modifier
+                modifier: directory
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+modifiers:
+  - id: directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--directory"
+
+  - id: backup_default
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--backup"
+
+  - id: backup_none
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=none"
+        - "--backup=off"
+
+  - id: backup_numbered
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=numbered"
+        - "--backup=t"
+
+  - id: backup_existing
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=existing"
+        - "--backup=nil"
+
+  - id: backup_simple
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=simple"
+        - "--backup=never"
+
+  - id: create_leading_components
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+
+  - id: ignored_copy_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+
+  - id: compare
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--compare"
+
+  - id: debug
+    matcher:
+      kind: any_flag
+      flags:
+        - "--debug"
+
+  - id: group
+    matcher:
+      kind: any_flag
+      flags:
+        - "-g"
+        - "--group"
+    parameters:
+      - name: group_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "--mode"
+    parameters:
+      - name: mode_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: owner
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--owner"
+    parameters:
+      - name: owner_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: preserve_timestamps
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--preserve-timestamps"
+
+  - id: strip
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--strip"
+
+  - id: suffix
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+        - "--suffix"
+    parameters:
+      - name: backup_suffix
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: strip_program
+    matcher:
+      kind: any_flag
+      flags:
+        - "--strip-program"
+    parameters:
+      - name: strip_program_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--target-directory"
+    parameters:
+      - name: destination_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_directory
+
+  - id: no_target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-T"
+        - "--no-target-directory"
+
+  - id: preserve_security_context
+    matcher:
+      kind: any_flag
+      flags:
+        - "--preserve-context"
+
+  - id: set_default_security_context
+    matcher:
+      kind: any_flag
+      flags:
+        - "-Z"
+
+  - id: set_security_context
+    matcher:
+      kind: any_flag
+      flags:
+        - "--context"
+    parameters:
+      - name: security_context
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+
+subcommands: null
+extensions: {}

@@ -1,0 +1,398 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: curl
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: fetch_explicit_url_to_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: output
+        - kind: has_modifier
+          modifier: explicit_url
+    remaining_selector:
+      kind: no_positional_args
+
+  - id: fetch_explicit_url_to_remote_name
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: remote_name
+        - kind: has_modifier
+          modifier: explicit_url
+    remaining_selector:
+      kind: no_positional_args
+    effects:
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: endpoint
+          rule:
+            kind: url_basename
+          purpose: generic_operand
+
+  - id: fetch_explicit_url_to_stdout
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: explicit_url
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: output
+              - kind: has_modifier
+                modifier: remote_name
+    remaining_selector:
+      kind: no_positional_args
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+
+  - id: fetch_to_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: output
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: explicit_url
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: endpoint
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoint
+
+  - id: fetch_to_remote_name
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: remote_name
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: explicit_url
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: endpoint
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoint
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: endpoint
+          rule:
+            kind: url_basename
+          purpose: generic_operand
+
+  - id: fetch_to_stdout
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: output
+              - kind: has_modifier
+                modifier: remote_name
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: endpoint
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoint
+
+modifiers:
+  - id: output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: explicit_url
+    matcher:
+      kind: any_flag
+      flags:
+        - "--url"
+    parameters:
+      - name: endpoint
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoint
+
+  - id: remote_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+        - "--remote-name"
+
+  - id: common_value_option
+    matcher:
+      kind: any_flag
+      flags:
+        - "--abstract-unix-socket"
+        - "--alt-svc"
+        - "--aws-sigv4"
+        - "--cacert"
+        - "--capath"
+        - "-E"
+        - "--cert"
+        - "--cert-type"
+        - "--ciphers"
+        - "-K"
+        - "--config"
+        - "--connect-timeout"
+        - "--connect-to"
+        - "-C"
+        - "--continue-at"
+        - "-b"
+        - "--cookie"
+        - "-c"
+        - "--cookie-jar"
+        - "--create-file-mode"
+        - "--crlfile"
+        - "--curves"
+        - "-d"
+        - "--data"
+        - "--data-ascii"
+        - "--data-binary"
+        - "--data-raw"
+        - "--data-urlencode"
+        - "--delegation"
+        - "--dns-interface"
+        - "--dns-ipv4-addr"
+        - "--dns-ipv6-addr"
+        - "--dns-servers"
+        - "--doh-url"
+        - "-D"
+        - "--dump-header"
+        - "--egd-file"
+        - "--engine"
+        - "--etag-compare"
+        - "--etag-save"
+        - "--expect100-timeout"
+        - "-F"
+        - "--form"
+        - "--form-string"
+        - "--ftp-account"
+        - "--ftp-alternative-to-user"
+        - "--ftp-method"
+        - "-P"
+        - "--ftp-port"
+        - "--ftp-ssl-ccc-mode"
+        - "--happy-eyeballs-timeout-ms"
+        - "--haproxy-clientip"
+        - "-H"
+        - "--header"
+        - "-h"
+        - "--help"
+        - "--hostpubmd5"
+        - "--hostpubsha256"
+        - "--hsts"
+        - "--interface"
+        - "--ipfs-gateway"
+        - "--json"
+        - "--keepalive-time"
+        - "--key"
+        - "--key-type"
+        - "--krb"
+        - "--libcurl"
+        - "--limit-rate"
+        - "--local-port"
+        - "--login-options"
+        - "--mail-auth"
+        - "--mail-from"
+        - "--mail-rcpt"
+        - "--max-filesize"
+        - "--max-redirs"
+        - "-m"
+        - "--max-time"
+        - "--netrc-file"
+        - "--noproxy"
+        - "--oauth2-bearer"
+        - "--output-dir"
+        - "--parallel-max"
+        - "--pass"
+        - "--pinnedpubkey"
+        - "--preproxy"
+        - "--proto"
+        - "--proto-default"
+        - "--proto-redir"
+        - "-x"
+        - "--proxy"
+        - "--proxy-cacert"
+        - "--proxy-capath"
+        - "--proxy-cert"
+        - "--proxy-cert-type"
+        - "--proxy-ciphers"
+        - "--proxy-crlfile"
+        - "--proxy-header"
+        - "--proxy-key"
+        - "--proxy-key-type"
+        - "--proxy-pass"
+        - "--proxy-pinnedpubkey"
+        - "--proxy-service-name"
+        - "--proxy-tls13-ciphers"
+        - "--proxy-tlsauthtype"
+        - "--proxy-tlspassword"
+        - "--proxy-tlsuser"
+        - "-U"
+        - "--proxy-user"
+        - "--proxy1.0"
+        - "--pubkey"
+        - "-Q"
+        - "--quote"
+        - "--random-file"
+        - "-r"
+        - "--range"
+        - "--rate"
+        - "-e"
+        - "--referer"
+        - "-X"
+        - "--request"
+        - "--request-target"
+        - "--resolve"
+        - "--retry"
+        - "--retry-delay"
+        - "--retry-max-time"
+        - "--sasl-authzid"
+        - "--service-name"
+        - "--socks4"
+        - "--socks4a"
+        - "--socks5"
+        - "--socks5-gssapi-service"
+        - "--socks5-hostname"
+        - "-Y"
+        - "--speed-limit"
+        - "-y"
+        - "--speed-time"
+        - "--stderr"
+        - "-t"
+        - "--telnet-option"
+        - "--tftp-blksize"
+        - "-z"
+        - "--time-cond"
+        - "--tls-max"
+        - "--tls13-ciphers"
+        - "--tlsauthtype"
+        - "--tlspassword"
+        - "--tlsuser"
+        - "--trace"
+        - "--trace-ascii"
+        - "--trace-config"
+        - "--unix-socket"
+        - "-T"
+        - "--upload-file"
+        - "--url-query"
+        - "-u"
+        - "--user"
+        - "-A"
+        - "--user-agent"
+        - "--variable"
+        - "-w"
+        - "--write-out"
+    parameters:
+      - name: option_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+subcommands: null
+extensions: {}

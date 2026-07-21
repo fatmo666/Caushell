@@ -1,0 +1,102 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: stty
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: display_terminal_settings
+    selector:
+      kind: any
+      items:
+        - kind: has_modifier
+          modifier: all
+        - kind: has_modifier
+          modifier: save
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: configure_terminal_settings
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: all
+              - kind: has_modifier
+                modifier: save
+    parameters:
+      - name: settings
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+modifiers:
+  - id: all
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all"
+
+  - id: save
+    matcher:
+      kind: any_flag
+      flags:
+        - "-g"
+        - "--save"
+
+  - id: file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--file"
+    parameters:
+      - name: device_path
+        semantic:
+          kind: path
+          role: metadata_mutation
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: slot
+          name: device_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

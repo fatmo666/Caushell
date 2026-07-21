@@ -1,0 +1,110 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mktemp
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: create_temporary_path
+    selector:
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: dry_run
+    parameters:
+      - name: template_paths
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: template_paths
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: /tmp/tmp.*
+          convention: mktemp.default_template
+          purpose: generic_operand
+
+  - id: dry_run_name
+    selector:
+      kind: has_modifier
+      modifier: dry_run
+    parameters:
+      - name: template_paths
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+
+modifiers:
+  - id: directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--directory"
+
+  - id: dry_run
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+        - "--dry-run"
+
+  - id: target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--tmpdir"
+    parameters:
+      - name: target_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target_directory
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

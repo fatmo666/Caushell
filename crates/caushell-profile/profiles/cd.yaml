@@ -1,0 +1,64 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: cd
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: change_directory
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: target_dir
+        semantic:
+          kind: path
+          role: target
+          purpose: working_directory
+        binding:
+          kind: next_positional
+        cardinality: required_one
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: target_dir
+      - kind: set_current_working_directory
+        target:
+          kind: slot
+          name: target_dir
+
+  - id: change_directory_home
+    selector:
+      kind: no_positional_args
+    effects:
+      - kind: set_current_working_directory
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - "`cd -` is intentionally excluded from the path-backed form because it targets OLDPWD rather than a literal filesystem operand."
+    - "CDPATH search, logical-vs-physical resolution, and shell-option-dependent cwd behavior are not expanded yet."

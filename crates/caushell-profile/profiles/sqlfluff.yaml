@@ -1,0 +1,139 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: sqlfluff
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: fix_sql
+    selector:
+      kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: fix
+    parameters:
+      - name: input_target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: positional_at
+          index: 1
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .sqlfluff
+          convention: sqlfluff.project_config
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: slot
+          name: input_target
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+
+  - id: lint_sql
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: literal
+              value: fix
+    parameters:
+      - name: input_targets
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_targets
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .sqlfluff
+          convention: sqlfluff.project_config
+          purpose: tool_config
+      - kind: transform_data
+        target:
+          kind: none
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+
+modifiers:
+  - id: config_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "--config"
+    parameters:
+      - name: config_path
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_path
+
+  - id: output_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "--write-output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - SQLFluff dialect plugins and templaters are represented as imported package logic.

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="340" viewBox="0 0 1040 340" role="img" aria-labelledby="title desc">
+  <title id="title">Caushell pipeline placeholder</title>
+  <desc id="desc">AI agent shell input is parsed to shell AST, lowered to an execution graph, analyzed by passes, and converted into a decision.</desc>
+  <rect width="1040" height="340" rx="18" fill="#0f172a"/>
+  <rect x="28" y="28" width="984" height="284" rx="14" fill="#111827" stroke="#334155"/>
+  <text x="52" y="72" fill="#e5e7eb" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Caushell pipeline</text>
+  <text x="52" y="101" fill="#94a3b8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14">AST -&gt; Graph -&gt; Passes -&gt; Decision</text>
+
+  <g font-family="Inter, Segoe UI, Arial, sans-serif">
+    <rect x="52" y="148" width="170" height="88" rx="12" fill="#1e293b" stroke="#475569"/>
+    <text x="78" y="181" fill="#f8fafc" font-size="17" font-weight="700">Shell Input</text>
+    <text x="78" y="207" fill="#94a3b8" font-size="13">agent command</text>
+
+    <path d="M232 192H294" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+    <path d="M294 192l-10-7v14z" fill="#38bdf8"/>
+
+    <rect x="304" y="148" width="150" height="88" rx="12" fill="#172554" stroke="#2563eb"/>
+    <text x="345" y="181" fill="#f8fafc" font-size="17" font-weight="700">AST</text>
+    <text x="331" y="207" fill="#93c5fd" font-size="13">shell structure</text>
+
+    <path d="M464 192H526" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+    <path d="M526 192l-10-7v14z" fill="#38bdf8"/>
+
+    <rect x="536" y="148" width="170" height="88" rx="12" fill="#164e63" stroke="#0891b2"/>
+    <text x="590" y="181" fill="#f8fafc" font-size="17" font-weight="700">Graph</text>
+    <text x="573" y="207" fill="#a5f3fc" font-size="13">sources &amp; sinks</text>
+
+    <path d="M716 192H778" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+    <path d="M778 192l-10-7v14z" fill="#38bdf8"/>
+
+    <rect x="788" y="148" width="170" height="88" rx="12" fill="#312e81" stroke="#6366f1"/>
+    <text x="842" y="181" fill="#f8fafc" font-size="17" font-weight="700">Passes</text>
+    <text x="823" y="207" fill="#c7d2fe" font-size="13">path / git / runtime</text>
+  </g>
+
+  <rect x="372" y="260" width="296" height="34" rx="17" fill="#020617" stroke="#334155"/>
+  <text x="520" y="282" text-anchor="middle" fill="#e2e8f0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14">allow / need_approval / deny</text>
+</svg>

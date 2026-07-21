@@ -1,0 +1,196 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: bash
+  aliases:
+    - sh-compatible
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+  requires_features: []
+
+forms:
+  - id: command_string
+    selector:
+      kind: has_flag
+      flag: "-c"
+    parameters:
+      - name: payload
+        semantic:
+          kind: payload
+          language: bash
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "-c"
+          operand_mode: next_positional_after_dashdash
+        cardinality: required_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: payload
+
+  - id: script_file
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-s"
+    parameters:
+      - name: script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: script_path
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: script_path
+
+  - id: stdin_script_explicit
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "-s"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+    implicit_inputs:
+      - source: stdin_payload
+        semantic:
+          kind: payload
+          language: bash
+          source: stdin
+          recursive: true
+    stream_contract:
+      stdin_mode: payload_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_payload
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: stdin_payload
+
+  - id: stdin_script_implicit
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-s"
+        - kind: no_positional_args
+        - kind: stdin_payload_available
+    implicit_inputs:
+      - source: stdin_payload
+        semantic:
+          kind: payload
+          language: bash
+          source: stdin
+          recursive: true
+    stream_contract:
+      stdin_mode: payload_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_payload
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: stdin_payload
+
+  - id: interactive
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-s"
+        - kind: no_positional_args
+        - kind: interactive_session
+    implicit_inputs:
+      - source: interactive_session
+        semantic:
+          kind: payload
+          language: bash
+          source: interactive
+          recursive: true
+    effects:
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: interactive_session
+
+modifiers:
+  - id: rcfile
+    matcher:
+      kind: any_flag
+      flags:
+        - "--rcfile"
+        - "--init-file"
+    parameters:
+      - name: startup_config
+        semantic:
+          kind: path
+          role: config
+          purpose: startup_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: startup_config
+
+subcommands: null
+extensions: {}

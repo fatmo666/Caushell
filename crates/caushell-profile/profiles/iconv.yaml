@@ -1,0 +1,139 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: iconv
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: convert_to_stdout
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: convert_to_file
+    selector:
+      kind: has_modifier
+      modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: from_encoding
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--from-code"
+    parameters:
+      - name: from_encoding
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: to_encoding
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--to-code"
+    parameters:
+      - name: to_encoding
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: output_path
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Character-set conversion is modeled as a generic data transform; encoding-specific safety properties are not inferred.

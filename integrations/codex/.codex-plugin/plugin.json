@@ -1,0 +1,35 @@
+{
+  "name": "caushell-codex",
+  "version": "0.0.1",
+  "description": "Session-aware shell guardrails for Codex backed by the Caushell runtime.",
+  "author": {
+    "name": "Caushell"
+  },
+  "homepage": "https://github.com/fatmo666/Caushell",
+  "repository": "https://github.com/fatmo666/Caushell",
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Caushell Codex",
+    "shortDescription": "Session-aware shell guardrails for Codex Bash tool use.",
+    "longDescription": "Caushell Codex adds session-aware shell guardrails to Codex through official Codex hooks. It keeps parsing, provenance, taint analysis, and policy reasoning inside the Caushell Rust runtime.",
+    "developerName": "Caushell",
+    "category": "Engineering",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/fatmo666/Caushell",
+    "privacyPolicyURL": "https://github.com/fatmo666/Caushell",
+    "termsOfServiceURL": "https://github.com/fatmo666/Caushell",
+    "defaultPrompt": [
+      "Use Caushell Codex to guard Bash commands during this session"
+    ],
+    "screenshots": []
+  },
+  "keywords": [
+    "codex",
+    "shell-security",
+    "guardrails"
+  ]
+}

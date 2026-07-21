@@ -1,0 +1,123 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: busybox
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: applet_dispatch
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--install"
+              - kind: has_flag
+                flag: "--list"
+              - kind: has_flag
+                flag: "--list-full"
+              - kind: has_flag
+                flag: "--show"
+              - kind: has_flag
+                flag: "--usage"
+    parameters:
+      - name: applet_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: applet_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: applet_command
+          argv:
+            - applet_args
+          environment: []
+
+modifiers:
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: install
+    matcher:
+      kind: any_flag
+      flags:
+        - "--install"
+    parameters:
+      - name: install_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: list
+    matcher:
+      kind: any_flag
+      flags:
+        - "--list"
+
+  - id: list_full
+    matcher:
+      kind: any_flag
+      flags:
+        - "--list-full"
+
+  - id: show
+    matcher:
+      kind: any_flag
+      flags:
+        - "--show"
+    parameters:
+      - name: show_script
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: usage
+    matcher:
+      kind: any_flag
+      flags:
+        - "--usage"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - BusyBox applet option grammars are handled by the dispatched applet profiles; BusyBox global introspection and install modes are intentionally not dispatched.

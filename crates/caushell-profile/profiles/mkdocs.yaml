@@ -1,0 +1,151 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkdocs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: serve_site
+    selector:
+      kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: serve
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: mkdocs.yml
+          convention: mkdocs.project_config
+          purpose: task_config
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: docs
+          convention: mkdocs.docs_dir
+          purpose: generic_operand
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: generic
+          requires_tty: false
+          capabilities:
+            - run_command
+
+  - id: build_site
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: literal
+              value: serve
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: mkdocs.yml
+          convention: mkdocs.project_config
+          purpose: task_config
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: docs
+          convention: mkdocs.docs_dir
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: site
+          convention: mkdocs.site_dir
+          purpose: generic_operand
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+
+modifiers:
+  - id: config_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--config-file"
+    parameters:
+      - name: config_path
+        semantic:
+          kind: path
+          role: config
+          purpose: project_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_path
+
+  - id: site_dir
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--site-dir"
+    parameters:
+      - name: site_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: site_dir
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - MkDocs plugin imports are represented as imported package logic; plugin-specific filesystem and network behavior is not expanded yet.

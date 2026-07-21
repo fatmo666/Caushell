@@ -1,0 +1,249 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: firejail
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+              - kind: has_flag
+                flag: "--list"
+              - kind: has_flag
+                flag: "--join"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+modifiers:
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: private
+    matcher:
+      kind: any_flag
+      flags:
+        - "--private"
+    parameters:
+      - name: private_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: profile
+    matcher:
+      kind: any_flag
+      flags:
+        - "--profile"
+    parameters:
+      - name: profile_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: profile_path
+
+  - id: name
+    matcher:
+      kind: any_flag
+      flags:
+        - "--name"
+    parameters:
+      - name: sandbox_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: output
+    matcher:
+      kind: any_flag
+      flags:
+        - "--output"
+        - "--output-stderr"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: path_list_option
+    matcher:
+      kind: any_flag
+      flags:
+        - "--blacklist"
+        - "--noblacklist"
+        - "--whitelist"
+        - "--read-only"
+        - "--read-write"
+        - "--tmpfs"
+        - "--private-bin"
+        - "--private-home"
+        - "--private-dev"
+        - "--private-etc"
+        - "--hosts-file"
+    parameters:
+      - name: path_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: bind
+    matcher:
+      kind: any_flag
+      flags:
+        - "--bind"
+    parameters:
+      - name: bind_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: network
+    matcher:
+      kind: any_flag
+      flags:
+        - "--net"
+        - "--dns"
+        - "--ip"
+        - "--defaultgw"
+        - "--mac"
+    parameters:
+      - name: network_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: environment
+    matcher:
+      kind: any_flag
+      flags:
+        - "--env"
+        - "--rmenv"
+    parameters:
+      - name: environment_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: capability
+    matcher:
+      kind: any_flag
+      flags:
+        - "--caps"
+        - "--seccomp"
+        - "--protocol"
+    parameters:
+      - name: capability_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: no_arg_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "--noprofile"
+        - "--nonewprivs"
+        - "--noroot"
+        - "--nosound"
+        - "--x11"
+        - "--x11=none"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Firejail has a very large option surface; this profile focuses on command dispatch and common options that otherwise shift the child command position.

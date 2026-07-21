@@ -1,0 +1,164 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: tar
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: extract_archive
+    selector:
+      kind: has_modifier
+      modifier: extract
+    parameters:
+      - name: archive_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "-f"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: member_filters
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: archive_file
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: archive_file
+          rule:
+            kind: archive_members
+          purpose: generic_operand
+
+  - id: create_archive
+    selector:
+      kind: has_modifier
+      modifier: create
+    parameters:
+      - name: archive_file
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "-f"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: archive_file
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: list_archive
+    selector:
+      kind: has_modifier
+      modifier: list
+    parameters:
+      - name: archive_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "-f"
+          operand_mode: next_arg
+        cardinality: required_one
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: archive_file
+
+modifiers:
+  - id: extract
+    matcher:
+      kind: any_flag
+      flags:
+        - "-x"
+        - "--extract"
+        - "--get"
+
+  - id: create
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--create"
+
+  - id: list
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--list"
+
+  - id: directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--directory"
+    parameters:
+      - name: working_directory
+        semantic:
+          kind: path
+          role: cwd_anchor
+          purpose: working_directory
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: working_directory
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Combined short option clusters such as -xf and -cf require shell projection support for short-option cluster splitting; use separated flags in the current profile.
+    - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.

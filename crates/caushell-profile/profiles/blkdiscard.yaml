@@ -1,0 +1,178 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: blkdiscard
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: discard_device
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+modifiers:
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--force"
+
+  - id: length
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "--length"
+    parameters:
+      - name: length_bytes
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: offset
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--offset"
+    parameters:
+      - name: offset_bytes
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: step
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--step"
+    parameters:
+      - name: step_bytes
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: secure
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--secure"
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
+  - id: zeroout
+    matcher:
+      kind: any_flag
+      flags:
+        - "-z"
+        - "--zeroout"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions: {}

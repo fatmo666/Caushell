@@ -1,0 +1,75 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: gh
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: github_control
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .git/config
+          convention: git.repository_config
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: .git
+          convention: git.metadata_dir
+          purpose: tool_config
+
+modifiers:
+  - id: repo
+    matcher:
+      kind: any_flag
+      flags:
+        - "-R"
+        - "--repo"
+    parameters:
+      - name: repository
+        semantic:
+          kind: endpoint
+          endpoint_kind: remote_spec
+          usage: control_plane
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: repository
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv

@@ -1,0 +1,11 @@
+[package]
+name = "caushell-runner"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+caushell-graph = { path = "../caushell-graph" }
+caushell-parse = { path = "../caushell-parse" }
+caushell-profile = { path = "../caushell-profile" }
+caushell-types = { path = "../caushell-types" }

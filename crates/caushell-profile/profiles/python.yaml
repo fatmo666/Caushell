@@ -1,0 +1,211 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: python
+  aliases:
+    - python3
+    - python3.12
+    - python2
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: pip_module_dispatch
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "-m"
+        - kind: has_positional_at_matching
+          index: 0
+          matcher:
+            kind: literal
+            value: pip
+    parameters:
+      - name: module_name
+        semantic:
+          kind: command_ref
+          dispatch: interpreter_module
+        binding:
+          kind: following_flag
+          flag: "-m"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: module_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: module_name
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: module_name
+          argv:
+            - module_args
+
+  - id: command_string
+    selector:
+      kind: has_flag
+      flag: "-c"
+    parameters:
+      - name: payload
+        semantic:
+          kind: payload
+          language: python
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "-c"
+          operand_mode: next_positional_after_dashdash
+        cardinality: required_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: payload
+
+  - id: script_file
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-m"
+    parameters:
+      - name: script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: script_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: script_path
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: script_path
+
+  - id: stdin_script
+    selector:
+      kind: all
+      items:
+        - kind: no_positional_args
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-m"
+        - kind: stdin_payload_available
+    implicit_inputs:
+      - source: stdin_payload
+        semantic:
+          kind: payload
+          language: python
+          source: stdin
+          recursive: true
+    stream_contract:
+      stdin_mode: payload_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_payload
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: stdin_payload
+
+  - id: module
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "-m"
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: literal
+              value: pip
+    parameters:
+      - name: module_name
+        semantic:
+          kind: in_process_code_load
+          load_kind: module_name
+        binding:
+          kind: following_flag
+          flag: "-m"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: module_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: module_name
+
+modifiers:
+  - id: isolated
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "-E"
+        - "-s"
+        - "-S"
+        - "-B"
+        - "-q"
+        - "-u"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Python inline and stdin payloads are recorded as nested payloads, but they are not recursively parsed by the current Bash-oriented parser.
+    - Module execution is modeled as a control surface without resolving module-to-file provenance.

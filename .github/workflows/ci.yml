@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test workspace and integrations
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            bash -n "${file}"
+          done < <(git grep -l '^#!/usr/bin/env bash')
+
+      - name: Validate JSON files
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            python3 -m json.tool "${file}" >/dev/null
+          done < <(git ls-files '*.json')
+
+      - name: Run VS Code extension smoke test
+        run: node integrations/vscode/smoke-test.js
+
+  platform-runtime-security:
+    name: Runtime security on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - macos-15
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Test daemon process identity enforcement
+        run: cargo test --locked -p caushell-runtime-security --lib process_
+
+      - name: Test private runtime directory and file migration
+        run: cargo test --locked -p caushell-runtime-security --lib tests::harden_private_tree_migrates_directory_and_file_modes -- --exact
+
+      - name: Test private runtime socket migration
+        run: cargo test --locked -p caushell-runtime-security --lib tests::harden_private_tree_secures_socket_access -- --exact
+
+      - name: Test private runtime file link enforcement
+        run: cargo test --locked -p caushell-runtime-security --lib tests::private_file_helpers_reject_symlinks_and_hard_links -- --exact
+
+      - name: Test private runtime directory link enforcement
+        run: cargo test --locked -p caushell-runtime-security --lib tests::private_directory_rejects_symlink_targets -- --exact
+
+      - name: Test runtime peer credential enforcement
+        run: cargo test --locked -p caushell-runtime-security --lib same_user_

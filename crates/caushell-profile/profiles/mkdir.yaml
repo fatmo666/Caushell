@@ -1,0 +1,42 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkdir
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: create_directories
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: directory_paths
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: directory_paths
+
+modifiers: []
+subcommands: null
+extensions: {}

@@ -1,0 +1,17 @@
+[package]
+name = "caushell-passes"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+serde_json = "1"
+caushell-graph = { path = "../caushell-graph" }
+caushell-parse = { path = "../caushell-parse" }
+caushell-profile = { path = "../caushell-profile" }
+caushell-query = { path = "../caushell-query" }
+caushell-runner = { path = "../caushell-runner" }
+caushell-types = { path = "../caushell-types" }
+
+[dev-dependencies]
+serde_json = "1"

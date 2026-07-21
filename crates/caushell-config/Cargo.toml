@@ -1,0 +1,12 @@
+[package]
+name = "caushell-config"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+caushell-profile = { path = "../caushell-profile" }
+caushell-runtime-security = { path = "../caushell-runtime-security" }
+caushell-types = { path = "../caushell-types" }

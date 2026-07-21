@@ -1,0 +1,325 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: jq
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: filter_program
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: filter_file
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: null_input
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: filter_program
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: filter_program_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: filter_file
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: null_input
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: null_input_filter_program
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: null_input
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: filter_file
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: filter_program
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: null_input_filter_program_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: null_input
+        - kind: has_modifier
+          modifier: filter_file
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: filter_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--from-file"
+    parameters:
+      - name: filter_files
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: filter_files
+
+  - id: rawfile
+    matcher:
+      kind: any_flag
+      flags:
+        - "--rawfile"
+    parameters:
+      - name: rawfile_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: second_arg
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: rawfile_paths
+
+  - id: slurpfile
+    matcher:
+      kind: any_flag
+      flags:
+        - "--slurpfile"
+    parameters:
+      - name: slurpfile_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: second_arg
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: slurpfile_paths
+
+  - id: argfile
+    matcher:
+      kind: any_flag
+      flags:
+        - "--argfile"
+    parameters:
+      - name: argfile_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: second_arg
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: argfile_paths
+
+  - id: arg
+    matcher:
+      kind: any_flag
+      flags:
+        - "--arg"
+    parameters:
+      - name: arg_values
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: second_arg
+        cardinality: optional_many
+
+  - id: argjson
+    matcher:
+      kind: any_flag
+      flags:
+        - "--argjson"
+    parameters:
+      - name: argjson_values
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: second_arg
+        cardinality: optional_many
+
+  - id: null_input
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--null-input"
+
+  - id: raw_input
+    matcher:
+      kind: any_flag
+      flags:
+        - "-R"
+        - "--raw-input"
+
+  - id: raw_output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--raw-output"
+
+  - id: slurp
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--slurp"
+
+  - id: compact_output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--compact-output"
+
+  - id: monochrome_output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-M"
+        - "--monochrome-output"
+
+  - id: color_output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--color-output"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - jq filters are modeled as opaque values rather than a second language-specific AST.
+    - jq program files loaded with -f are tracked as generic read paths, not as shell script sources.

@@ -1,0 +1,86 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: dpkg-query
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: query_package_database
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: package_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: /var/lib/dpkg/status
+          convention: dpkg.status_database
+          purpose: generic_operand
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: admindir
+    matcher:
+      kind: any_flag
+      flags:
+        - "--admindir"
+    parameters:
+      - name: admin_dir
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: admin_dir
+
+  - id: showformat
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--showformat"
+    parameters:
+      - name: format_string
+        semantic:
+          kind: structured_value
+          context: format_string
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

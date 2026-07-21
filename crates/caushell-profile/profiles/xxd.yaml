@@ -1,0 +1,246 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: xxd
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: reverse_stream
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: reverse
+        - kind: no_positional_args
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: decode
+
+  - id: reverse_file_to_stdout
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: reverse
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+    parameters:
+      - name: input_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_path
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: decode
+
+  - id: reverse_file_to_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: reverse
+        - kind: has_positional_at
+          index: 1
+    parameters:
+      - name: input_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_path
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: decode
+
+  - id: hexdump_stream
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: reverse
+        - kind: no_positional_args
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: encode
+
+  - id: hexdump_file_to_stdout
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: reverse
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+    parameters:
+      - name: input_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_path
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: encode
+
+  - id: hexdump_file_to_file
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: reverse
+        - kind: has_positional_at
+          index: 1
+    parameters:
+      - name: input_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_path
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: encode
+
+modifiers:
+  - id: reverse
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - The profile models xxd as a stream/file transform and does not distinguish plain hexdump formatting flags such as -p beyond allowing them as inert modifiers.
+    - The positional contract is modeled as infile [outfile]; stdin sentinel patterns such as xxd -r -p - outfile are left unresolved rather than guessed.

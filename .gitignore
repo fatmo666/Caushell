@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+/tmp/lab-logs/
+/docs/
+/docker/
+/scripts/container-hard-deny-check.py
+/scripts/container-hard-deny-graph-check.py
+/scripts/container-profile-smoke.py
+/scripts/run-hard-deny-container-csv.py
+/scripts/run-hard-deny-graph-container-csv.py
+
+.DS_Store
+*.swp
+*.swo

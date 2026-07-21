@@ -1,0 +1,15 @@
+[package]
+name = "caushell-core"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+caushell-config = { path = "../caushell-config" }
+caushell-graph = { path = "../caushell-graph" }
+caushell-parse = { path = "../caushell-parse" }
+caushell-passes = { path = "../caushell-passes" }
+caushell-profile = { path = "../caushell-profile" }
+caushell-query = { path = "../caushell-query" }
+caushell-runner = { path = "../caushell-runner" }
+caushell-types = { path = "../caushell-types" }

@@ -1,0 +1,739 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: cp
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: has_flag
+      flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+  - id: target_directory
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: hard_link
+              - kind: has_modifier
+                modifier: symbolic_link
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+
+  - id: target_directory_attributes_only
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: has_modifier
+          modifier: attributes_only
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: hard_link
+              - kind: has_modifier
+                modifier: symbolic_link
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+
+  - id: target_directory_hard_link
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: has_modifier
+          modifier: hard_link
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: symbolic_link
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: source_paths
+
+  - id: target_directory_symbolic_link
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: has_modifier
+          modifier: symbolic_link
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: hard_link
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: source_paths
+
+  - id: default_attributes_only
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_positional_at
+          index: 1
+        - kind: has_modifier
+          modifier: attributes_only
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: target_directory
+              - kind: has_modifier
+                modifier: hard_link
+              - kind: has_modifier
+                modifier: symbolic_link
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+  - id: default_hard_link
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_positional_at
+          index: 1
+        - kind: has_modifier
+          modifier: hard_link
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: target_directory
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: symbolic_link
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+  - id: default_symbolic_link
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: has_positional_at
+          index: 1
+        - kind: has_modifier
+          modifier: symbolic_link
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: target_directory
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: hard_link
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+  - id: default_copy
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: hard_link
+              - kind: has_modifier
+                modifier: symbolic_link
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+        catastrophic:
+          semantic_class: raw_write_target
+
+modifiers:
+  - id: archive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--archive"
+
+  - id: backup_default
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--backup"
+
+  - id: backup_none
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=none"
+        - "--backup=off"
+
+  - id: backup_numbered
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=numbered"
+        - "--backup=t"
+
+  - id: backup_existing
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=existing"
+        - "--backup=nil"
+
+  - id: backup_simple
+    matcher:
+      kind: any_flag
+      flags:
+        - "--backup=simple"
+        - "--backup=never"
+
+  - id: attributes_only
+    matcher:
+      kind: any_flag
+      flags:
+        - "--attributes-only"
+
+  - id: copy_contents
+    matcher:
+      kind: any_flag
+      flags:
+        - "--copy-contents"
+
+  - id: debug
+    matcher:
+      kind: any_flag
+      flags:
+        - "--debug"
+
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--force"
+
+  - id: command_line_dereference
+    matcher:
+      kind: any_flag
+      flags:
+        - "-H"
+
+  - id: interactive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--interactive"
+
+  - id: hard_link
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "--link"
+
+  - id: dereference
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+        - "--dereference"
+
+  - id: no_clobber
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--no-clobber"
+
+  - id: no_dereference
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--no-dereference"
+
+  - id: preserve_default
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--preserve"
+    parameters:
+      - name: preserve_attr_list
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: preserve_all
+    matcher:
+      kind: any_flag
+      flags:
+        - "--preserve=all"
+
+  - id: no_preserve
+    matcher:
+      kind: any_flag
+      flags:
+        - "--no-preserve"
+    parameters:
+      - name: excluded_preserve_attr_list
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: required_one
+
+  - id: preserve_links_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+
+  - id: parents
+    matcher:
+      kind: any_flag
+      flags:
+        - "--parents"
+
+  - id: reflink
+    matcher:
+      kind: any_flag
+      flags:
+        - "--reflink"
+    parameters:
+      - name: reflink_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: recursive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "-R"
+        - "--recursive"
+
+  - id: remove_destination
+    matcher:
+      kind: any_flag
+      flags:
+        - "--remove-destination"
+
+  - id: sparse
+    matcher:
+      kind: any_flag
+      flags:
+        - "--sparse"
+    parameters:
+      - name: sparse_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: strip_trailing_slashes
+    matcher:
+      kind: any_flag
+      flags:
+        - "--strip-trailing-slashes"
+
+  - id: symbolic_link
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--symbolic-link"
+
+  - id: suffix
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+        - "--suffix"
+    parameters:
+      - name: backup_suffix
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--target-directory"
+    parameters:
+      - name: destination_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_directory
+
+  - id: no_target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-T"
+        - "--no-target-directory"
+
+  - id: update_older
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+        - "--update"
+        - "--update=older"
+
+  - id: update_all
+    matcher:
+      kind: any_flag
+      flags:
+        - "--update=all"
+
+  - id: update_none
+    matcher:
+      kind: any_flag
+      flags:
+        - "--update=none"
+
+  - id: one_file_system
+    matcher:
+      kind: any_flag
+      flags:
+        - "-x"
+        - "--one-file-system"
+
+  - id: set_default_security_context
+    matcher:
+      kind: any_flag
+      flags:
+        - "-Z"
+
+  - id: set_security_context
+    matcher:
+      kind: any_flag
+      flags:
+        - "--context"
+    parameters:
+      - name: security_context
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+
+subcommands: null
+extensions: {}

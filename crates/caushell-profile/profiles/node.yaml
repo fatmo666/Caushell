@@ -1,0 +1,177 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: node
+  aliases:
+    - nodejs
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: command_string
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-e"
+        - kind: has_flag
+          flag: "--eval"
+    parameters:
+      - name: short_payload
+        semantic:
+          kind: payload
+          language: javascript
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "-e"
+          operand_mode: next_positional_after_dashdash
+        cardinality: optional_one
+      - name: long_payload
+        semantic:
+          kind: payload
+          language: javascript
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--eval"
+          operand_mode: next_positional_after_dashdash
+        cardinality: optional_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: short_payload
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: long_payload
+
+  - id: script_file
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-e"
+              - kind: has_flag
+                flag: "--eval"
+    parameters:
+      - name: script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: script_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: script_path
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: script_path
+
+  - id: stdin_script
+    selector:
+      kind: all
+      items:
+        - kind: no_positional_args
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-e"
+              - kind: has_flag
+                flag: "--eval"
+        - kind: stdin_payload_available
+    implicit_inputs:
+      - source: stdin_payload
+        semantic:
+          kind: payload
+          language: javascript
+          source: stdin
+          recursive: true
+    stream_contract:
+      stdin_mode: payload_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_payload
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: stdin_payload
+
+modifiers:
+  - id: preload
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--require"
+    parameters:
+      - name: preload_targets
+        semantic:
+          kind: in_process_code_load
+          load_kind: unknown
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: preload_targets
+
+  - id: input_type
+    matcher:
+      kind: any_flag
+      flags:
+        - "--input-type"
+    parameters:
+      - name: input_type
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - JavaScript inline and stdin payloads are recorded as nested payloads, but they are not recursively parsed by the current Bash-oriented parser.
+    - package.json script indirection belongs to npm profile coverage, not node itself.

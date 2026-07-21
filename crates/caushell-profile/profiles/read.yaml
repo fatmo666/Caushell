@@ -1,0 +1,56 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: read
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: bind_from_stdin
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: variable_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+      - kind: bind_variable_from_runtime_input
+        target:
+          kind: slot
+          name: variable_name
+
+modifiers: []
+subcommands: null
+extensions: {}

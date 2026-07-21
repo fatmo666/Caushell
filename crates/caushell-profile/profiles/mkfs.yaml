@@ -1,0 +1,314 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkfs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: all
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: not
+              item:
+                kind: has_flag_at_least
+                flag: "-V"
+                count: 2
+            - kind: not
+              item:
+                kind: has_flag
+                flag: "--verbose"
+            - kind: not
+              item:
+                kind: has_positional_at
+                index: 0
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: filesystem_type
+
+  - id: dry_run_filesystem_target
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_flag_at_least
+              flag: "-V"
+              count: 2
+            - kind: has_flag_at_least
+              flag: "--verbose"
+              count: 2
+            - kind: all
+              items:
+                - kind: has_flag
+                  flag: "-V"
+                - kind: has_flag
+                  flag: "--verbose"
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 1
+              - kind: last_positional_matches
+                matcher:
+                  kind: structured_value_context
+                  context: numeric_quantity
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: dry_run_filesystem_target_with_trailing_size
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: any
+          items:
+            - kind: has_flag_at_least
+              flag: "-V"
+              count: 2
+            - kind: has_flag_at_least
+              flag: "--verbose"
+              count: 2
+            - kind: all
+              items:
+                - kind: has_flag
+                  flag: "-V"
+                - kind: has_flag
+                  flag: "--verbose"
+        - kind: last_positional_matches
+          matcher:
+            kind: structured_value_context
+            context: numeric_quantity
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional_before_last
+        cardinality: required_one
+      - name: size_blocks
+        semantic:
+          kind: plain_value
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: filesystem_target
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 1
+              - kind: last_positional_matches
+                matcher:
+                  kind: structured_value_context
+                  context: numeric_quantity
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+              - kind: has_flag_at_least
+                flag: "-V"
+                count: 2
+              - kind: has_flag_at_least
+                flag: "--verbose"
+                count: 2
+              - kind: all
+                items:
+                  - kind: has_flag
+                    flag: "-V"
+                  - kind: has_flag
+                    flag: "--verbose"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+  - id: filesystem_target_with_trailing_size
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: last_positional_matches
+          matcher:
+            kind: structured_value_context
+            context: numeric_quantity
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+              - kind: has_flag_at_least
+                flag: "-V"
+                count: 2
+              - kind: has_flag_at_least
+                flag: "--verbose"
+                count: 2
+              - kind: all
+                items:
+                  - kind: has_flag
+                    flag: "-V"
+                  - kind: has_flag
+                    flag: "--verbose"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional_before_last
+        cardinality: required_one
+      - name: size_blocks
+        semantic:
+          kind: plain_value
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+modifiers:
+  - id: filesystem_type
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--type"
+    parameters:
+      - name: filesystem_type_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--verbose"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+subcommands: null
+extensions: {}

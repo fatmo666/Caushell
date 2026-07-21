@@ -1,0 +1,86 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: md5sum
+  aliases:
+    - md5sum.textutils
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: hash_inputs
+    selector:
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: check_file
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: check_hash_file
+    selector:
+      kind: has_modifier
+      modifier: check_file
+    parameters:
+      - name: checksum_files
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: checksum_files
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: check_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--check"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

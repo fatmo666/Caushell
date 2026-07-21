@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: eval
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: joined_payload
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: no_positional_args
+    parameters:
+      - name: payload
+        semantic:
+          kind: payload
+          language: bash
+          source: inline_string
+          recursive: true
+        binding:
+          kind: remaining_args
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "--"
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: payload
+
+modifiers: []
+subcommands: null
+extensions: {}

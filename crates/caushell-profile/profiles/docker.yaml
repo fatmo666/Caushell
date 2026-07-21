@@ -1,0 +1,96 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: docker
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: daemon_control
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: tool_convention_path
+          path: /var/run/docker.sock
+          convention: docker.daemon_socket
+          purpose: generic_operand
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+modifiers:
+  - id: host
+    matcher:
+      kind: any_flag
+      flags:
+        - "-H"
+        - "--host"
+    parameters:
+      - name: daemon_endpoint
+        semantic:
+          kind: endpoint
+          endpoint_kind: socket_path
+          usage: control_plane
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: daemon_endpoint
+
+  - id: file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: config_path
+        semantic:
+          kind: path
+          role: config
+          purpose: task_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv
+  caushell.profile/known_limitations:
+    - Docker subcommands are modeled as daemon/container control; image-specific filesystem effects are not expanded in this first slice.

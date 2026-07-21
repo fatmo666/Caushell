@@ -1,0 +1,130 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: unzip
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: list_archive
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: list_only
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: archive_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: member_filters
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: archive_file
+
+  - id: extract_archive
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_only
+    parameters:
+      - name: archive_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: member_filters
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: archive_file
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: archive_file
+          rule:
+            kind: archive_members
+          purpose: generic_operand
+
+modifiers:
+  - id: output_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+    parameters:
+      - name: output_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_directory
+
+  - id: list_only
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "-v"
+        - "-Z"
+
+  - id: overwrite_policy
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "-o"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.

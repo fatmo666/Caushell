@@ -1,0 +1,49 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: which
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: locate_commands
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: command_names
+        semantic:
+          kind: command_ref
+          dispatch: command_name
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+
+modifiers:
+  - id: mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

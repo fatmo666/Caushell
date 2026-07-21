@@ -1,0 +1,145 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: zsh
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+  requires_features: []
+
+forms:
+  - id: command_string
+    selector:
+      kind: has_flag
+      flag: "-c"
+    parameters:
+      - name: payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "-c"
+          operand_mode: next_positional_after_dashdash
+        cardinality: required_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: payload
+
+  - id: script_file
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-s"
+    parameters:
+      - name: script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: script_path
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: script_path
+
+  - id: stdin_script_explicit
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "-s"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+    implicit_inputs:
+      - source: stdin_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: stdin
+          recursive: true
+    stream_contract:
+      stdin_mode: payload_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_payload
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: stdin_payload
+
+  - id: interactive
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-c"
+        - kind: no_positional_args
+        - kind: interactive_session
+    implicit_inputs:
+      - source: interactive_session
+        semantic:
+          kind: payload
+          language: sh
+          source: interactive
+          recursive: true
+    effects:
+      - kind: execute_payload
+        target:
+          kind: implicit_input
+          source: interactive_session
+
+modifiers:
+  - id: rcfile_disabled
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--no-rcs"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Zsh payloads are marked as sh-compatible recursive payloads until the semantic schema grows a zsh payload language.

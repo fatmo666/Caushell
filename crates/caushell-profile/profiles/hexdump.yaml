@@ -1,0 +1,116 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: hexdump
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: dump_stream
+    selector:
+      kind: no_positional_args
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: encode
+
+  - id: dump_files
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+        extensions:
+          transform.kind: encode
+
+modifiers:
+  - id: format
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "-c"
+        - "-C"
+        - "-d"
+        - "-o"
+        - "-x"
+
+  - id: custom_format
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "-f"
+    parameters:
+      - name: format_value
+        semantic:
+          kind: structured_value
+          context: format_string
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: skip_or_length
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "-s"
+    parameters:
+      - name: byte_count
+        semantic:
+          kind: structured_value
+          context: numeric_quantity
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - This profile models hexdump as read-only data encoding; shell redirection remains responsible for stdout writes.

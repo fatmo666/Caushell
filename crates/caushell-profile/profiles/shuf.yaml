@@ -1,0 +1,151 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: shuf
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: shuffle_to_stdout
+    selector:
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: shuffle_to_file
+    selector:
+      kind: has_modifier
+      modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: output_path
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: echo_args
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--echo"
+
+  - id: input_range
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--input-range"
+    parameters:
+      - name: input_range
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: random_source
+    matcher:
+      kind: any_flag
+      flags:
+        - "--random-source"
+    parameters:
+      - name: random_source
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: random_source
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv

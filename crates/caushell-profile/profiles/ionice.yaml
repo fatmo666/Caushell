@@ -1,0 +1,126 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ionice
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: process_id
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+modifiers:
+  - id: class
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--class"
+    parameters:
+      - name: class_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: classdata
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--classdata"
+    parameters:
+      - name: classdata_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: process_id
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--pid"
+    parameters:
+      - name: pid
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: ignore_failure
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--ignore"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions: {}

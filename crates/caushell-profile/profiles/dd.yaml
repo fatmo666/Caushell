@@ -1,0 +1,182 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: dd
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: has_flag
+      flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+  - id: raw_copy
+    selector:
+      kind: not
+      item:
+        kind: any
+        items:
+          - kind: has_flag
+            flag: "--help"
+          - kind: has_flag
+            flag: "--version"
+    parameters:
+      - name: input_target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: args_with_prefix
+          prefix: "if="
+        cardinality: optional_one
+      - name: output_target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: args_with_prefix
+          prefix: "of="
+        cardinality: optional_one
+      - name: block_size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "bs="
+        cardinality: optional_one
+      - name: convert_block_size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "cbs="
+        cardinality: optional_one
+      - name: conversions
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "conv="
+        cardinality: optional_one
+      - name: count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "count="
+        cardinality: optional_one
+      - name: input_block_size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "ibs="
+        cardinality: optional_one
+      - name: input_flags
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "iflag="
+        cardinality: optional_one
+      - name: output_block_size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "obs="
+        cardinality: optional_one
+      - name: output_flags
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "oflag="
+        cardinality: optional_one
+      - name: output_seek
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "seek="
+        cardinality: optional_one
+      - name: output_seek_alias
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "oseek="
+        cardinality: optional_one
+      - name: input_skip
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "skip="
+        cardinality: optional_one
+      - name: input_seek_alias
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "iseek="
+        cardinality: optional_one
+      - name: status_level
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "status="
+        cardinality: optional_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_target
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_target
+        catastrophic:
+          semantic_class: raw_write_target
+
+modifiers:
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+subcommands: null
+extensions: {}

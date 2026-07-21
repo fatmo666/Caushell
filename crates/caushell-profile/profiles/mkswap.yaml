@@ -1,0 +1,222 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkswap
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: initialize_swap_area
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+modifiers:
+  - id: check
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--check"
+
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--force"
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: page_size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--pagesize"
+    parameters:
+      - name: page_size_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: label
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+        - "--label"
+    parameters:
+      - name: label_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: swap_version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--swapversion"
+    parameters:
+      - name: swap_version_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: uuid
+    matcher:
+      kind: any_flag
+      flags:
+        - "-U"
+        - "--uuid"
+    parameters:
+      - name: uuid_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: endianness
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--endianness"
+    parameters:
+      - name: endianness_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "--verbose"
+
+  - id: lock
+    matcher:
+      kind: any_flag
+      flags:
+        - "--lock"
+    parameters:
+      - name: lock_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions: {}

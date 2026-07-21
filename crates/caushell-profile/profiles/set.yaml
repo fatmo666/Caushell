@@ -1,0 +1,47 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: set
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: mutate_shell_options
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Bare `set` can print shell variables; this profile conservatively models shell option and positional-parameter mutation.

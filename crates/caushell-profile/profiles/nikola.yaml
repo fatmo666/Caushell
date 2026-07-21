@@ -1,0 +1,86 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: nikola
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: site_command
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: conf.py
+          convention: nikola.site_config
+          purpose: task_config
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: posts
+          convention: nikola.content_dir
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: output
+          convention: nikola.output_dir
+          purpose: generic_operand
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+
+modifiers:
+  - id: output_dir
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output-dir"
+    parameters:
+      - name: output_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_dir
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Nikola commands share a Python config execution and plugin surface; subcommand-specific outputs are not expanded yet.

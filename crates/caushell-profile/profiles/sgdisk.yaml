@@ -1,0 +1,1064 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: sgdisk
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-?"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_usage
+    selector:
+      kind: has_flag
+      flag: "--usage"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-?"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--usage"
+
+  - id: list_partition_types
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: list_types
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+
+  - id: inspect_device
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_modifier
+          modifier: inspect_device
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: destructive_partition_table
+              - kind: has_modifier
+                modifier: change_partition_attributes
+              - kind: has_modifier
+                modifier: byte_swap_partition_name
+              - kind: has_modifier
+                modifier: change_partition_name
+              - kind: has_modifier
+                modifier: recompute_chs
+              - kind: has_modifier
+                modifier: delete_partition
+              - kind: has_modifier
+                modifier: move_second_header
+              - kind: has_modifier
+                modifier: hybrid_mbr
+              - kind: has_modifier
+                modifier: align_end
+              - kind: has_modifier
+                modifier: move_main_table
+              - kind: has_modifier
+                modifier: move_backup_table
+              - kind: has_modifier
+                modifier: load_partition_table_backup
+              - kind: has_modifier
+                modifier: convert_mbr_to_gpt
+              - kind: has_modifier
+                modifier: gpt_to_mbr
+              - kind: has_modifier
+                modifier: new_partition
+              - kind: has_modifier
+                modifier: largest_new_partition
+              - kind: has_modifier
+                modifier: transpose_partitions
+              - kind: has_modifier
+                modifier: replicate_partition_table
+              - kind: has_modifier
+                modifier: resize_table
+              - kind: has_modifier
+                modifier: change_partition_type
+              - kind: has_modifier
+                modifier: transform_bsd
+              - kind: has_modifier
+                modifier: change_partition_guid
+              - kind: has_modifier
+                modifier: change_disk_guid
+              - kind: has_modifier
+                modifier: randomize_guids
+              - kind: has_modifier
+                modifier: sort_partition_table
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: inspect_partition_info
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_modifier
+          modifier: inspect_partition_info
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: destructive_partition_table
+              - kind: has_modifier
+                modifier: change_partition_attributes
+              - kind: has_modifier
+                modifier: byte_swap_partition_name
+              - kind: has_modifier
+                modifier: change_partition_name
+              - kind: has_modifier
+                modifier: recompute_chs
+              - kind: has_modifier
+                modifier: delete_partition
+              - kind: has_modifier
+                modifier: move_second_header
+              - kind: has_modifier
+                modifier: hybrid_mbr
+              - kind: has_modifier
+                modifier: align_end
+              - kind: has_modifier
+                modifier: move_main_table
+              - kind: has_modifier
+                modifier: move_backup_table
+              - kind: has_modifier
+                modifier: load_partition_table_backup
+              - kind: has_modifier
+                modifier: convert_mbr_to_gpt
+              - kind: has_modifier
+                modifier: gpt_to_mbr
+              - kind: has_modifier
+                modifier: new_partition
+              - kind: has_modifier
+                modifier: largest_new_partition
+              - kind: has_modifier
+                modifier: transpose_partitions
+              - kind: has_modifier
+                modifier: replicate_partition_table
+              - kind: has_modifier
+                modifier: resize_table
+              - kind: has_modifier
+                modifier: change_partition_type
+              - kind: has_modifier
+                modifier: transform_bsd
+              - kind: has_modifier
+                modifier: change_partition_guid
+              - kind: has_modifier
+                modifier: change_disk_guid
+              - kind: has_modifier
+                modifier: randomize_guids
+              - kind: has_modifier
+                modifier: sort_partition_table
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: backup_partition_table
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_modifier
+          modifier: backup_partition_table
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: destructive_partition_table
+              - kind: has_modifier
+                modifier: change_partition_attributes
+              - kind: has_modifier
+                modifier: byte_swap_partition_name
+              - kind: has_modifier
+                modifier: change_partition_name
+              - kind: has_modifier
+                modifier: recompute_chs
+              - kind: has_modifier
+                modifier: delete_partition
+              - kind: has_modifier
+                modifier: move_second_header
+              - kind: has_modifier
+                modifier: hybrid_mbr
+              - kind: has_modifier
+                modifier: align_end
+              - kind: has_modifier
+                modifier: move_main_table
+              - kind: has_modifier
+                modifier: move_backup_table
+              - kind: has_modifier
+                modifier: load_partition_table_backup
+              - kind: has_modifier
+                modifier: convert_mbr_to_gpt
+              - kind: has_modifier
+                modifier: gpt_to_mbr
+              - kind: has_modifier
+                modifier: new_partition
+              - kind: has_modifier
+                modifier: largest_new_partition
+              - kind: has_modifier
+                modifier: transpose_partitions
+              - kind: has_modifier
+                modifier: replicate_partition_table
+              - kind: has_modifier
+                modifier: resize_table
+              - kind: has_modifier
+                modifier: change_partition_type
+              - kind: has_modifier
+                modifier: transform_bsd
+              - kind: has_modifier
+                modifier: change_partition_guid
+              - kind: has_modifier
+                modifier: change_disk_guid
+              - kind: has_modifier
+                modifier: randomize_guids
+              - kind: has_modifier
+                modifier: sort_partition_table
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: simulate_partition_table_mutation
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: destructive_partition_table
+            - kind: has_modifier
+              modifier: byte_swap_partition_name
+            - kind: has_modifier
+              modifier: change_partition_name
+            - kind: has_modifier
+              modifier: recompute_chs
+            - kind: has_modifier
+              modifier: delete_partition
+            - kind: has_modifier
+              modifier: move_second_header
+            - kind: has_modifier
+              modifier: hybrid_mbr
+            - kind: has_modifier
+              modifier: align_end
+            - kind: has_modifier
+              modifier: move_main_table
+            - kind: has_modifier
+              modifier: move_backup_table
+            - kind: has_modifier
+              modifier: load_partition_table_backup
+            - kind: has_modifier
+              modifier: convert_mbr_to_gpt
+            - kind: has_modifier
+              modifier: gpt_to_mbr
+            - kind: has_modifier
+              modifier: new_partition
+            - kind: has_modifier
+              modifier: largest_new_partition
+            - kind: has_modifier
+              modifier: transpose_partitions
+            - kind: has_modifier
+              modifier: replicate_partition_table
+            - kind: has_modifier
+              modifier: resize_table
+            - kind: has_modifier
+              modifier: change_partition_type
+            - kind: has_modifier
+              modifier: transform_bsd
+            - kind: has_modifier
+              modifier: change_partition_guid
+            - kind: has_modifier
+              modifier: change_disk_guid
+            - kind: has_modifier
+              modifier: randomize_guids
+            - kind: has_modifier
+              modifier: sort_partition_table
+            - kind: has_modifier
+              modifier: change_partition_attributes
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+        - kind: has_modifier
+          modifier: pretend
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: mutate_partition_table_state
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: byte_swap_partition_name
+            - kind: has_modifier
+              modifier: change_partition_name
+            - kind: has_modifier
+              modifier: change_partition_type
+            - kind: has_modifier
+              modifier: change_partition_guid
+            - kind: has_modifier
+              modifier: change_disk_guid
+            - kind: has_modifier
+              modifier: randomize_guids
+            - kind: has_modifier
+              modifier: sort_partition_table
+            - kind: all
+              items:
+                - kind: has_modifier
+                  modifier: change_partition_attributes
+                - kind: not
+                  item:
+                    kind: has_modifier_parameter_matching
+                    modifier: change_partition_attributes
+                    parameter: attribute_spec
+                    matcher:
+                      kind: regex_pattern
+                      pattern: '^\d+:(show|get)(:((0x)?[[:xdigit:]]+))?$'
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: pretend
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: destructive_partition_table
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: mutate_partition_layout
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: recompute_chs
+            - kind: has_modifier
+              modifier: delete_partition
+            - kind: has_modifier
+              modifier: move_second_header
+            - kind: has_modifier
+              modifier: hybrid_mbr
+            - kind: has_modifier
+              modifier: align_end
+            - kind: has_modifier
+              modifier: move_main_table
+            - kind: has_modifier
+              modifier: move_backup_table
+            - kind: has_modifier
+              modifier: load_partition_table_backup
+            - kind: has_modifier
+              modifier: convert_mbr_to_gpt
+            - kind: has_modifier
+              modifier: gpt_to_mbr
+            - kind: has_modifier
+              modifier: new_partition
+            - kind: has_modifier
+              modifier: largest_new_partition
+            - kind: has_modifier
+              modifier: transpose_partitions
+            - kind: has_modifier
+              modifier: replicate_partition_table
+            - kind: has_modifier
+              modifier: resize_table
+            - kind: has_modifier
+              modifier: transform_bsd
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: pretend
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: mutate_partition_table
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: destructive_partition_table
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: pretend
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: partition_table_mutation_target
+
+  - id: inspect_partition_attributes
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_modifier
+          modifier: change_partition_attributes
+        - kind: has_modifier_parameter_matching
+          modifier: change_partition_attributes
+          parameter: attribute_spec
+          matcher:
+            kind: regex_pattern
+            pattern: '^\d+:(show|get)(:((0x)?[[:xdigit:]]+))?$'
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: help
+              - kind: has_modifier
+                modifier: usage
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: pretend
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+modifiers:
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-?"
+        - "--help"
+
+  - id: usage
+    matcher:
+      kind: any_flag
+      flags:
+        - "--usage"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+  - id: set_alignment
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--set-alignment"
+    parameters:
+      - name: alignment_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: list_types
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+        - "--list-types"
+
+  - id: inspect_device
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+        - "--display-alignment"
+        - "-E"
+        - "--end-of-largest"
+        - "-f"
+        - "--first-in-largest"
+        - "-F"
+        - "--first-aligned-in-largest"
+        - "-O"
+        - "--print-mbr"
+        - "-p"
+        - "--print"
+        - "-v"
+        - "--verify"
+
+  - id: inspect_partition_info
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--info"
+    parameters:
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: backup_partition_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--backup"
+    parameters:
+      - name: backup_file
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: backup_file
+
+  - id: pretend
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--pretend"
+
+  - id: convert_mbr_to_gpt
+    matcher:
+      kind: any_flag
+      flags:
+        - "-g"
+        - "--mbrtogpt"
+
+  - id: randomize_guids
+    matcher:
+      kind: any_flag
+      flags:
+        - "-G"
+        - "--randomize-guids"
+
+  - id: sort_partition_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--sort"
+
+  - id: change_partition_attributes
+    matcher:
+      kind: any_flag
+      flags:
+        - "-A"
+        - "--attributes"
+    parameters:
+      - name: attribute_spec
+        semantic:
+          kind: structured_value
+          context: regex
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: byte_swap_partition_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-B"
+        - "--byte-swap-name"
+    parameters:
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: change_partition_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--change-name"
+    parameters:
+      - name: partition_name_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: recompute_chs
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--recompute-chs"
+
+  - id: delete_partition
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--delete"
+    parameters:
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: move_second_header
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--move-second-header"
+
+  - id: hybrid_mbr
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--hybrid"
+    parameters:
+      - name: hybrid_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: align_end
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "--align-end"
+
+  - id: move_main_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "-j"
+        - "--move-main-table"
+    parameters:
+      - name: main_table_sector
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: move_backup_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "-k"
+        - "--move-backup-table"
+    parameters:
+      - name: backup_table_sector
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: load_partition_table_backup
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "--load-backup"
+    parameters:
+      - name: backup_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: backup_file
+
+  - id: gpt_to_mbr
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "--gpttombr"
+    parameters:
+      - name: gpt_to_mbr_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: new_partition
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--new"
+    parameters:
+      - name: partition_layout_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: largest_new_partition
+    matcher:
+      kind: any_flag
+      flags:
+        - "-N"
+        - "--largest-new"
+    parameters:
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: transpose_partitions
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--transpose"
+    parameters:
+      - name: transpose_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: replicate_partition_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "-R"
+        - "--replicate"
+    parameters:
+      - name: source_device
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_device
+
+  - id: resize_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+        - "--resize-table"
+    parameters:
+      - name: partition_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: change_partition_type
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--typecode"
+    parameters:
+      - name: partition_type_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: transform_bsd
+    matcher:
+      kind: any_flag
+      flags:
+        - "-T"
+        - "--transform-bsd"
+    parameters:
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: change_partition_guid
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+        - "--partition-guid"
+    parameters:
+      - name: partition_guid_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: change_disk_guid
+    matcher:
+      kind: any_flag
+      flags:
+        - "-U"
+        - "--disk-guid"
+    parameters:
+      - name: disk_guid
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: destructive_partition_table
+    matcher:
+      kind: any_flag
+      flags:
+        - "--clear"
+        - "-o"
+        - "--zap"
+        - "-z"
+        - "--zap-all"
+        - "-Z"
+
+subcommands: null
+extensions: {}
