@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "caushell"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-config",
  "caushell-core",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-adapter-claude"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell",
  "caushell-types",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-adapter-codex"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell",
  "caushell-types",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-claude-hook"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell",
  "caushell-config",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-codex-hook"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell",
  "caushell-config",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-config"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-profile",
  "caushell-runtime-security",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-config",
  "caushell-graph",
@@ -132,14 +132,14 @@ dependencies = [
 
 [[package]]
 name = "caushell-graph"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-types",
 ]
 
 [[package]]
 name = "caushell-parse"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-types",
  "tree-sitter",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-passes"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-graph",
  "caushell-parse",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-profile"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-parse",
  "caushell-types",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-query"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-graph",
  "caushell-types",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-runner"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-graph",
  "caushell-parse",
@@ -191,14 +191,14 @@ dependencies = [
 
 [[package]]
 name = "caushell-runtime-security"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "caushell-store"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "caushell-types",
  "rusqlite",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "caushell-types"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "serde",
  "serde_json",

@@ -137,7 +137,7 @@ fs.writeFileSync(
       heartbeat_at: new Date().toISOString(),
       heartbeat_at_ms: Date.now(),
       last_event_name: "PreToolUse",
-      plugin_version: "0.0.3"
+      plugin_version: "0.0.4"
     },
     null,
     2

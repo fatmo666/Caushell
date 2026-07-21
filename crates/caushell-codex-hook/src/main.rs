@@ -264,11 +264,13 @@ impl HookConfig {
 
         let runtime_path = option_path("CODEX_PLUGIN_OPTION_RUNTIME_PATH")
             .or_else(|| env_path("CAUSHELL_CODEX_RUNTIME_PATH"))
+            .or_else(|| current_exe_sibling("caushell"))
             .or_else(|| find_executable_on_path("caushell"))
             .unwrap_or_else(|| repo_root.join("target/debug/caushell"));
         let runtime_fingerprint = runtime_fingerprint(&runtime_path)?;
         let adapter_path = option_path("CODEX_PLUGIN_OPTION_ADAPTER_PATH")
             .or_else(|| env_path("CAUSHELL_CODEX_ADAPTER_PATH"))
+            .or_else(|| current_exe_sibling("caushell-adapter-codex"))
             .or_else(|| find_executable_on_path("caushell-adapter-codex"))
             .unwrap_or_else(|| repo_root.join("target/debug/caushell-adapter-codex"));
         let config_path = resolve_config_path()?;
@@ -1581,6 +1583,11 @@ fn current_exe_parent_n(levels: usize) -> Option<PathBuf> {
         path = path.parent()?.to_path_buf();
     }
     Some(path)
+}
+
+fn current_exe_sibling(name: &str) -> Option<PathBuf> {
+    let path = env::current_exe().ok()?.parent()?.join(name);
+    is_executable(&path).then_some(path)
 }
 
 fn find_executable_on_path(name: &str) -> Option<PathBuf> {

@@ -296,6 +296,7 @@ impl HookConfig {
 
         let runtime_path = option_path("CLAUDE_PLUGIN_OPTION_RUNTIME_PATH")
             .or_else(|| env_path("CAUSHELL_CLAUDE_RUNTIME_PATH"))
+            .or_else(|| current_exe_sibling("caushell"))
             .or_else(|| find_executable_on_path("caushell"))
             .unwrap_or_else(|| repo_root.join("target/debug/caushell"));
         let runtime_fingerprint = runtime_fingerprint(&runtime_path)?;
@@ -1535,6 +1536,11 @@ fn find_executable_on_path(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn current_exe_sibling(name: &str) -> Option<PathBuf> {
+    let path = env::current_exe().ok()?.parent()?.join(name);
+    is_executable(&path).then_some(path)
 }
 
 fn path_string(path: &Path) -> String {
