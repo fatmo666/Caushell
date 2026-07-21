@@ -56,13 +56,23 @@ codex plugin marketplace add fatmo666/Caushell
 codex plugin add caushell-codex@caushell
 ```
 
-安装后，让 Codex 执行一条无害命令确认 Caushell 已生效：
+检查安装状态：
 
 ```bash
-codex exec "Use the Bash tool exactly once to run: printf caushell-codex-ok. Then report the command output."
+caushell doctor codex
 ```
 
-如果 Codex 首次运行时提示确认插件，按提示确认即可。
+这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 agent shell action 之前，`runtime daemon is down` 只是 warning。
+
+如果要确认 Codex 真的调用了 Caushell lifecycle hooks，运行：
+
+```bash
+caushell doctor codex --smoke
+```
+
+smoke test 会执行一条无害的 Codex Bash action，并确认 Caushell 观察到了 `PreToolUse` 和 `PostToolUse`。成功标志是 `Result: OK`。
+
+日常使用时，如果 Codex 要求确认 hook，在 `/hooks` 里检查并信任 Caushell hook。
 
 ### Claude Code
 
@@ -71,11 +81,21 @@ claude plugin marketplace add fatmo666/Caushell
 claude plugin install caushell-claude@caushell
 ```
 
-安装后，让 Claude Code 执行一条无害命令确认 Caushell 已生效：
+检查安装状态：
 
 ```bash
-claude -p "Use the Bash tool exactly once to run: printf caushell-claude-ok. Then report the command output." --tools Bash
+caushell doctor claude
 ```
+
+这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 agent shell action 之前，`runtime daemon is down` 只是 warning。
+
+如果要确认 Claude Code 真的调用了 Caushell lifecycle hooks，运行：
+
+```bash
+caushell doctor claude --smoke
+```
+
+smoke test 会执行一条无害的 Claude Code Bash action，并确认 Caushell 观察到了 `PreToolUse` 和 `PostToolUse`。成功标志是 `Result: OK`。
 
 ## How it works / 工作原理
 

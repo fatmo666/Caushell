@@ -56,13 +56,23 @@ codex plugin marketplace add fatmo666/Caushell
 codex plugin add caushell-codex@caushell
 ```
 
-After installation, ask Codex to run a harmless command to confirm that Caushell is active:
+Check the installation:
 
 ```bash
-codex exec "Use the Bash tool exactly once to run: printf caushell-codex-ok. Then report the command output."
+caushell doctor codex
 ```
 
-If Codex asks you to confirm the plugin on first use, follow the prompt.
+This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first agent shell action.
+
+To verify that Codex actually invokes the Caushell lifecycle hooks, run:
+
+```bash
+caushell doctor codex --smoke
+```
+
+The smoke test runs one harmless Codex Bash action and verifies that Caushell observed both `PreToolUse` and `PostToolUse`. The success signal is `Result: OK`.
+
+For normal Codex use, review and trust the Caushell hook in `/hooks` if Codex asks you to do so.
 
 ### Claude Code
 
@@ -71,11 +81,21 @@ claude plugin marketplace add fatmo666/Caushell
 claude plugin install caushell-claude@caushell
 ```
 
-After installation, ask Claude Code to run a harmless command to confirm that Caushell is active:
+Check the installation:
 
 ```bash
-claude -p "Use the Bash tool exactly once to run: printf caushell-claude-ok. Then report the command output." --tools Bash
+caushell doctor claude
 ```
+
+This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first agent shell action.
+
+To verify that Claude Code actually invokes the Caushell lifecycle hooks, run:
+
+```bash
+caushell doctor claude --smoke
+```
+
+The smoke test runs one harmless Claude Code Bash action and verifies that Caushell observed both `PreToolUse` and `PostToolUse`. The success signal is `Result: OK`.
 
 ## How it works
 
