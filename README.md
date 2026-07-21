@@ -53,6 +53,8 @@ Then install the integration for your agent. Codex and Claude Code call these in
 
 ```bash
 codex plugin marketplace add fatmo666/Caushell
+codex plugin marketplace upgrade caushell
+codex plugin remove caushell-codex@caushell 2>/dev/null || true
 codex plugin add caushell-codex@caushell
 ```
 
@@ -78,7 +80,8 @@ For normal Codex use, review and trust the Caushell hook in `/hooks` if Codex as
 
 ```bash
 claude plugin marketplace add fatmo666/Caushell
-claude plugin install caushell-claude@caushell
+claude plugin marketplace update caushell
+claude plugin install caushell-claude@caushell || claude plugin update caushell-claude
 ```
 
 Check the installation:

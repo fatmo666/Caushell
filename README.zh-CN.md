@@ -53,6 +53,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 codex plugin marketplace add fatmo666/Caushell
+codex plugin marketplace upgrade caushell
+codex plugin remove caushell-codex@caushell 2>/dev/null || true
 codex plugin add caushell-codex@caushell
 ```
 
@@ -78,7 +80,8 @@ smoke test 会执行一条无害的 Codex Bash action，并确认 Caushell 观�
 
 ```bash
 claude plugin marketplace add fatmo666/Caushell
-claude plugin install caushell-claude@caushell
+claude plugin marketplace update caushell
+claude plugin install caushell-claude@caushell || claude plugin update caushell-claude
 ```
 
 检查安装状态：
