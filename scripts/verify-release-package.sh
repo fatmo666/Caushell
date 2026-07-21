@@ -28,6 +28,8 @@ done
 "${install_root}/caushell" --version >/dev/null
 "${install_root}/caushell-codex-hook" Status >/dev/null
 "${install_root}/caushell-claude-hook" Status >/dev/null
+PATH="${install_root}:${PATH}" "${install_root}/caushell" doctor codex >/dev/null
+PATH="${install_root}:${PATH}" "${install_root}/caushell" doctor claude >/dev/null
 
 case "${target}" in
   x86_64-unknown-linux-musl)

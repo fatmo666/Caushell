@@ -21,6 +21,8 @@ use caushell_runtime_security::{require_private_directory, write_private_file};
 use caushell_types::SessionId;
 use serde::Serialize;
 
+mod doctor;
+
 const CAUSHELL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
@@ -45,6 +47,7 @@ fn run_with_args(mut args: impl Iterator<Item = String>) -> Result<(), CliError>
 
     match command.as_str() {
         "config" => run_config_command(args),
+        "doctor" => doctor::run(args),
         "serve-stdio" => {
             let options = parse_serve_options(args)?;
             let config_path = runtime_config_path(options.config_path)?;
@@ -614,7 +617,7 @@ fn current_time_ms() -> Option<u64> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  caushell --version\n  caushell config <path|init|validate|show|set>\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and prints JSON health metadata\nquery-stdio reads JSONL QueryRequest messages and writes JSON QueryResponse messages\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
+        "usage:\n  caushell --version\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and prints JSON health metadata\nquery-stdio reads JSONL QueryRequest messages and writes JSON QueryResponse messages\ndoctor checks an installed Caushell agent integration; --smoke runs a harmless agent Bash action and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
     );
 }
 
