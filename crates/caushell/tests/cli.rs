@@ -81,7 +81,8 @@ fn doctor_codex_smoke_verifies_fresh_hook_log_events() {
         &hook_path,
         &format!(
             "#!/bin/sh\n\
-             if [ \"$1\" = Status ]; then\n\
+             case \"$1\" in\n\
+             Status)\n\
              printf '%s\\n' 'plugin_name=caushell-codex'\n\
              printf '%s\\n' 'plugin_version={version}'\n\
              printf '%s\\n' 'runtime_status=up'\n\
@@ -90,23 +91,45 @@ fn doctor_codex_smoke_verifies_fresh_hook_log_events() {
              printf '%s\\n' 'config_load_error='\n\
              printf '%s\\n' 'plugin_log_path={log_path}'\n\
              printf '%s\\n' 'last_failure='\n\
-             else\n\
-             exit 0\n\
-             fi\n",
+             ;;\n\
+             PreToolUse)\n\
+             cat >/dev/null\n\
+             printf '%s\\n' 'timestamp=fake level=info event=PreToolUse msg=fake decision_class=allow' >> {log_path_quoted}\n\
+             ;;\n\
+             PostToolUse)\n\
+             cat >/dev/null\n\
+             printf '%s\\n' 'timestamp=fake level=info event=PostToolUse msg=fake decision_class=observational' >> {log_path_quoted}\n\
+             ;;\n\
+             esac\n",
             version = env!("CARGO_PKG_VERSION"),
             runtime_path = env!("CARGO_BIN_EXE_caushell"),
             adapter_path = adapter_path.display(),
             log_path = log_path.display(),
+            log_path_quoted = shell_quote(&log_path.display().to_string()),
         ),
     );
     write_executable(
         &codex_path,
         &format!(
             "#!/bin/sh\n\
-             printf '%s\\n' 'timestamp=fake level=info event=PreToolUse msg=fake' >> {log_path}\n\
-             printf '%s\\n' 'timestamp=fake level=info event=PostToolUse msg=fake' >> {log_path}\n\
-             exit 0\n",
-            log_path = shell_quote(&log_path.display().to_string()),
+             if [ \"$1\" = plugin ] && [ \"$2\" = list ] && [ \"$3\" = --json ]; then\n\
+             printf '%s\\n' '{plugin_json}'\n\
+             exit 0\n\
+             fi\n\
+             exit 1\n",
+            plugin_json = serde_json::json!({
+                "installed": [
+                    {
+                        "pluginId": "caushell-codex@caushell",
+                        "name": "caushell-codex",
+                        "marketplaceName": "caushell",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "installed": true,
+                        "enabled": true
+                    }
+                ],
+                "available": []
+            }),
         ),
     );
 
@@ -123,8 +146,11 @@ fn doctor_codex_smoke_verifies_fresh_hook_log_events() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("doctor output must be UTF-8");
-    assert!(stdout.contains("[ok] smoke log contains event=PreToolUse"));
-    assert!(stdout.contains("[ok] smoke log contains event=PostToolUse"));
+    assert!(stdout.contains("[ok] Codex plugin enabled: caushell-codex@caushell"));
+    assert!(stdout.contains("[ok] direct PreToolUse hook completed"));
+    assert!(stdout.contains("[ok] PreToolUse allowed harmless smoke command"));
+    assert!(stdout.contains("[ok] hook log contains event=PreToolUse"));
+    assert!(stdout.contains("[ok] hook log contains event=PostToolUse"));
     assert!(stdout.contains("Result: OK"));
 }
 

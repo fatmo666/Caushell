@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use crate::CliError;
 
-const DOCTOR_CODEX_PROMPT: &str = "Use the Bash tool exactly once to run: printf caushell-codex-ok. Then report the command output.";
 const DOCTOR_CLAUDE_PROMPT: &str = "Use the Bash tool exactly once to run: printf caushell-claude-ok. Then report the command output.";
+const CODEX_PLUGIN_NAME: &str = "caushell-codex";
+const HOOK_SMOKE_COMMAND: &str = "printf caushell-hook-smoke-ok";
 
 #[derive(Debug, Clone, Copy)]
 enum DoctorAgent {
@@ -286,6 +287,11 @@ fn run_doctor_smoke(
     initial_status: &BTreeMap<String, String>,
     report: &mut DoctorReport,
 ) {
+    if matches!(agent, DoctorAgent::Codex) {
+        run_codex_doctor_smoke(initial_status, report);
+        return;
+    }
+
     let Some(agent_path) = find_executable_on_path(agent.agent_binary()) else {
         report.fail(format!(
             "{} CLI is not on PATH; cannot run smoke test",
@@ -310,11 +316,7 @@ fn run_doctor_smoke(
     let before_lines = count_lines_if_exists(&log_path).unwrap_or(0);
 
     let output = match agent {
-        DoctorAgent::Codex => Command::new(&agent_path)
-            .arg("exec")
-            .arg("--dangerously-bypass-hook-trust")
-            .arg(DOCTOR_CODEX_PROMPT)
-            .output(),
+        DoctorAgent::Codex => unreachable!("Codex smoke is handled by run_codex_doctor_smoke"),
         DoctorAgent::Claude => Command::new(&agent_path)
             .arg("-p")
             .arg(DOCTOR_CLAUDE_PROMPT)
@@ -392,6 +394,327 @@ fn run_doctor_smoke(
         report.ok("smoke log contains event=PostToolUse");
     } else {
         report.fail("smoke log does not contain event=PostToolUse; the agent did not invoke Caushell after Bash");
+    }
+}
+
+fn run_codex_doctor_smoke(initial_status: &BTreeMap<String, String>, report: &mut DoctorReport) {
+    check_codex_plugin_enabled(report);
+    run_direct_hook_smoke(DoctorAgent::Codex, initial_status, report);
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPluginList {
+    installed: Vec<CodexPluginEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexPluginEntry {
+    plugin_id: String,
+    name: String,
+    marketplace_name: String,
+    version: Option<String>,
+    installed: bool,
+    enabled: bool,
+}
+
+fn check_codex_plugin_enabled(report: &mut DoctorReport) {
+    let Some(codex_path) = find_executable_on_path("codex") else {
+        report.fail("codex CLI is not on PATH; cannot verify Codex plugin installation");
+        return;
+    };
+    report.ok(format!("codex CLI on PATH: {}", codex_path.display()));
+
+    let output = match Command::new(&codex_path)
+        .args(["plugin", "list", "--json"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            report.fail(format!("failed to run codex plugin list --json: {error}"));
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        report.fail(format!(
+            "codex plugin list --json failed: {}",
+            command_output_summary(&output)
+        ));
+        return;
+    }
+
+    let plugins = match serde_json::from_slice::<CodexPluginList>(&output.stdout) {
+        Ok(plugins) => plugins,
+        Err(error) => {
+            report.fail(format!(
+                "failed to parse codex plugin list --json output: {error}"
+            ));
+            return;
+        }
+    };
+
+    let matches = plugins
+        .installed
+        .iter()
+        .filter(|plugin| plugin.name == CODEX_PLUGIN_NAME)
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        report.fail(format!(
+            "{CODEX_PLUGIN_NAME} is not installed in Codex; run `codex plugin add caushell-codex@caushell`"
+        ));
+        return;
+    }
+
+    if matches.len() > 1 {
+        report.warn(format!(
+            "multiple Codex plugins named {CODEX_PLUGIN_NAME} are installed; using enabled state from all matches"
+        ));
+    }
+
+    let mut saw_enabled = false;
+    for plugin in matches {
+        let version = plugin.version.as_deref().unwrap_or("unknown");
+        if plugin.installed && plugin.enabled {
+            saw_enabled = true;
+            report.ok(format!(
+                "Codex plugin enabled: {} version={} marketplace={}",
+                plugin.plugin_id, version, plugin.marketplace_name
+            ));
+        } else if !plugin.installed {
+            report.fail(format!(
+                "Codex plugin is listed but not installed: {} version={} marketplace={}",
+                plugin.plugin_id, version, plugin.marketplace_name
+            ));
+        } else {
+            report.fail(format!(
+                "Codex plugin is installed but disabled: {} version={} marketplace={}",
+                plugin.plugin_id, version, plugin.marketplace_name
+            ));
+        }
+    }
+
+    if !saw_enabled {
+        report.fail(format!(
+            "no enabled {CODEX_PLUGIN_NAME} plugin found in Codex"
+        ));
+    }
+}
+
+fn run_direct_hook_smoke(
+    agent: DoctorAgent,
+    initial_status: &BTreeMap<String, String>,
+    report: &mut DoctorReport,
+) {
+    let Some(hook_path) = find_executable_on_path(agent.hook_binary()) else {
+        report.fail(format!(
+            "{} is not on PATH; cannot run direct hook smoke",
+            agent.hook_binary()
+        ));
+        return;
+    };
+
+    let Some(log_path) = initial_status
+        .get("plugin_log_path")
+        .filter(|value| !value.is_empty())
+    else {
+        report.fail("hook status did not report plugin_log_path; cannot run direct hook smoke");
+        return;
+    };
+    let log_path = PathBuf::from(log_path);
+    let before_lines = count_lines_if_exists(&log_path).unwrap_or(0);
+    let session_id = format!("caushell-doctor-{}", std::process::id());
+    let cwd = smoke_cwd(initial_status);
+
+    let pre_payload = codex_like_hook_payload(&session_id, &cwd, "PreToolUse");
+    let pre_output = match run_hook_event(&hook_path, "PreToolUse", &pre_payload) {
+        Ok(output) => output,
+        Err(error) => {
+            report.fail(format!(
+                "failed to run direct PreToolUse hook smoke: {error}"
+            ));
+            return;
+        }
+    };
+
+    if pre_output.status.success() {
+        report.ok("direct PreToolUse hook completed");
+        check_safe_hook_decision("PreToolUse", &pre_output, report);
+    } else {
+        report.fail(format!(
+            "direct PreToolUse hook failed: {}",
+            command_output_summary(&pre_output)
+        ));
+        return;
+    }
+
+    let post_output = match run_hook_event(&hook_path, "PostToolUse", "") {
+        Ok(output) => output,
+        Err(error) => {
+            report.fail(format!(
+                "failed to run direct PostToolUse hook smoke: {error}"
+            ));
+            return;
+        }
+    };
+
+    if post_output.status.success() {
+        report.ok("direct PostToolUse hook completed");
+    } else {
+        report.fail(format!(
+            "direct PostToolUse hook failed: {}",
+            command_output_summary(&post_output)
+        ));
+        return;
+    }
+
+    let status = match Command::new(&hook_path).arg("Status").output() {
+        Ok(output) if output.status.success() => {
+            parse_key_value_output(&String::from_utf8_lossy(&output.stdout))
+        }
+        Ok(output) => {
+            report.fail(format!(
+                "{} Status failed after direct hook smoke: {}",
+                agent.hook_binary(),
+                command_output_summary(&output)
+            ));
+            return;
+        }
+        Err(error) => {
+            report.fail(format!(
+                "failed to run {} Status after direct hook smoke: {error}",
+                agent.hook_binary()
+            ));
+            return;
+        }
+    };
+
+    match status.get("runtime_status").map(String::as_str) {
+        Some("up") => report.ok("runtime daemon is up after direct hook smoke"),
+        Some(other) => report.fail(format!("runtime_status={other} after direct hook smoke")),
+        None => report.fail("hook status did not report runtime_status after direct hook smoke"),
+    }
+
+    let new_log = match read_log_lines_after(&log_path, before_lines) {
+        Ok(new_log) => new_log,
+        Err(error) => {
+            report.fail(format!(
+                "failed to read hook log {}: {error}",
+                log_path.display()
+            ));
+            return;
+        }
+    };
+
+    check_smoke_log_event(&new_log, "PreToolUse", report);
+    check_smoke_log_event(&new_log, "PostToolUse", report);
+}
+
+fn smoke_cwd(status: &BTreeMap<String, String>) -> String {
+    status
+        .get("workspace_root")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .or_else(|| {
+            env::current_dir()
+                .ok()
+                .map(|path| path.display().to_string())
+        })
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn codex_like_hook_payload(session_id: &str, cwd: &str, event_name: &str) -> String {
+    serde_json::json!({
+        "session_id": session_id,
+        "cwd": cwd,
+        "hook_event_name": event_name,
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": HOOK_SMOKE_COMMAND
+        }
+    })
+    .to_string()
+}
+
+fn run_hook_event(hook_path: &Path, event_name: &str, stdin_text: &str) -> io::Result<Output> {
+    if stdin_text.is_empty() {
+        return Command::new(hook_path)
+            .arg(event_name)
+            .stdin(Stdio::null())
+            .output();
+    }
+
+    let mut child = Command::new(hook_path)
+        .arg(event_name)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            format!("failed to open stdin for {event_name} hook"),
+        )
+    })?;
+    stdin.write_all(stdin_text.as_bytes())?;
+    drop(stdin);
+
+    child.wait_with_output()
+}
+
+fn check_safe_hook_decision(event_name: &str, output: &Output, report: &mut DoctorReport) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout.trim();
+    if stdout.is_empty() {
+        report.ok(format!("{event_name} allowed harmless smoke command"));
+        return;
+    }
+
+    let value = match serde_json::from_str::<serde_json::Value>(stdout) {
+        Ok(value) => value,
+        Err(error) => {
+            report.fail(format!(
+                "{event_name} emitted non-empty non-JSON stdout for harmless smoke command: {error}"
+            ));
+            return;
+        }
+    };
+
+    let hook_output = value
+        .get("hookSpecificOutput")
+        .and_then(serde_json::Value::as_object);
+    let decision = hook_output
+        .and_then(|object| object.get("permissionDecision"))
+        .and_then(serde_json::Value::as_str);
+    let reason = hook_output
+        .and_then(|object| object.get("permissionDecisionReason"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+
+    match decision {
+        Some("allow") => report.ok(format!("{event_name} allowed harmless smoke command")),
+        Some(decision @ ("deny" | "ask")) => report.fail(format!(
+            "{event_name} returned permissionDecision={decision}: {reason}"
+        )),
+        Some(other) => report.fail(format!(
+            "{event_name} returned unsupported permissionDecision={other}"
+        )),
+        None => report.fail(format!(
+            "{event_name} emitted JSON without hookSpecificOutput.permissionDecision"
+        )),
+    }
+}
+
+fn check_smoke_log_event(new_log: &str, event_name: &str, report: &mut DoctorReport) {
+    if new_log.contains(&format!("event={event_name}")) {
+        report.ok(format!("hook log contains event={event_name}"));
+    } else {
+        report.fail(format!(
+            "hook log does not contain event={event_name}; the Caushell hook did not record the direct smoke event"
+        ));
     }
 }
 
@@ -544,6 +867,6 @@ fn invalid_cli_input(message: impl Into<String>) -> CliError {
 
 fn print_doctor_usage() {
     eprintln!(
-        "usage:\n  caushell doctor codex [--smoke]\n  caushell doctor claude [--smoke]\n\nwithout --smoke, doctor checks installed binaries, hook status, runtime/config compatibility, and daemon state\nwith --smoke, doctor also runs one harmless agent Bash action and verifies that Caushell saw PreToolUse and PostToolUse for that action"
+        "usage:\n  caushell doctor codex [--smoke]\n  caushell doctor claude [--smoke]\n\nwithout --smoke, doctor checks installed binaries, hook status, runtime/config compatibility, and daemon state\nwith --smoke, doctor runs a harmless lifecycle smoke test and verifies that Caushell can handle PreToolUse and PostToolUse"
     );
 }

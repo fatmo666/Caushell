@@ -66,13 +66,13 @@ caushell doctor codex
 
 这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 agent shell action 之前，`runtime daemon is down` 只是 warning。
 
-如果要确认 Codex 真的调用了 Caushell lifecycle hooks，运行：
+如果要更深入地检查 Codex 集成，运行：
 
 ```bash
 caushell doctor codex --smoke
 ```
 
-smoke test 会执行一条无害的 Codex Bash action，并确认 Caushell 观察到了 `PreToolUse` 和 `PostToolUse`。成功标志是 `Result: OK`。
+smoke test 会确认 Codex 能看到已启用的 `caushell-codex` 插件，然后把无害的合成 `PreToolUse` 和 `PostToolUse` hook 事件送入已安装的 Caushell hook。成功标志是 `Result: OK`。
 
 日常使用时，如果 Codex 要求确认 hook，在 `/hooks` 里检查并信任 Caushell hook。
 

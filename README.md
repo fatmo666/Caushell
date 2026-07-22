@@ -66,13 +66,13 @@ caushell doctor codex
 
 This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first agent shell action.
 
-To verify that Codex actually invokes the Caushell lifecycle hooks, run:
+To verify the Codex integration more deeply, run:
 
 ```bash
 caushell doctor codex --smoke
 ```
 
-The smoke test runs one harmless Codex Bash action and verifies that Caushell observed both `PreToolUse` and `PostToolUse`. The success signal is `Result: OK`.
+The smoke test checks that Codex sees the enabled `caushell-codex` plugin, then sends harmless synthetic `PreToolUse` and `PostToolUse` hook events through the installed Caushell hook. The success signal is `Result: OK`.
 
 For normal Codex use, review and trust the Caushell hook in `/hooks` if Codex asks you to do so.
 
