@@ -107,6 +107,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/fdisk.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "fd",
+        content: include_str!("../profiles/fd.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "conan",
         content: include_str!("../profiles/conan.yaml"),
     },
@@ -333,6 +337,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "parted",
         content: include_str!("../profiles/parted.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "parallel",
+        content: include_str!("../profiles/parallel.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "pgrep",

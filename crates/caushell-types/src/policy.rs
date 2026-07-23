@@ -266,6 +266,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::CatastrophicFileSystemDelete => RuleAction::Deny,
         RuleId::CatastrophicShellProcessExplosion => RuleAction::Deny,
         RuleId::CatastrophicPathMetadataMutation => RuleAction::NeedApproval,
+        RuleId::CatastrophicPathContentOverwrite => RuleAction::NeedApproval,
         RuleId::CatastrophicPathRelocation => RuleAction::NeedApproval,
         RuleId::CatastrophicPartitionLayoutMutation => RuleAction::NeedApproval,
         RuleId::CatastrophicPartitionTableSession => RuleAction::NeedApproval,

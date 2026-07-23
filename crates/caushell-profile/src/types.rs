@@ -452,6 +452,7 @@ pub enum BindingSpec {
     },
     ArgsWithPrefix(String),
     LeadingPositionalsWhile(ValueMatcher),
+    LeadingPositionalsBeforeModifier(ModifierId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -776,6 +777,7 @@ pub enum CatastrophicSemanticClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostRiskSemanticClass {
     MoveSourcePath,
+    PathContentOverwriteTarget,
     PartitionLayoutMutationTarget,
     PartitionTableStateMutationTarget,
     PartitionTableSessionTarget,

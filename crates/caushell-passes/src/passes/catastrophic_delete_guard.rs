@@ -31,6 +31,7 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
         let home = ctx.request().home.as_deref();
         let mut floor_reasons = BTreeSet::new();
         let mut path_metadata_mutation_reasons = BTreeSet::new();
+        let mut path_content_overwrite_reasons = BTreeSet::new();
         let mut path_relocation_reasons = BTreeSet::new();
         let mut partition_layout_mutation_reasons = BTreeSet::new();
         let mut partition_table_session_reasons = BTreeSet::new();
@@ -48,6 +49,7 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
                 let CommandSinkReasonBuckets {
                     floor_reasons: record_floor_reasons,
                     path_metadata_mutation_reasons: record_path_metadata_mutation_reasons,
+                    path_content_overwrite_reasons: record_path_content_overwrite_reasons,
                     path_relocation_reasons: record_path_relocation_reasons,
                     partition_layout_mutation_reasons: record_partition_layout_mutation_reasons,
                     partition_table_session_reasons: record_partition_table_session_reasons,
@@ -63,6 +65,7 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
 
                 floor_reasons.extend(record_floor_reasons);
                 path_metadata_mutation_reasons.extend(record_path_metadata_mutation_reasons);
+                path_content_overwrite_reasons.extend(record_path_content_overwrite_reasons);
                 path_relocation_reasons.extend(record_path_relocation_reasons);
                 partition_layout_mutation_reasons.extend(record_partition_layout_mutation_reasons);
                 partition_table_session_reasons.extend(record_partition_table_session_reasons);
@@ -102,6 +105,12 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
             ctx,
             RuleId::CatastrophicPathMetadataMutation,
             path_metadata_mutation_reasons,
+        );
+        emit_policy_findings_and_proposals(
+            self.name(),
+            ctx,
+            RuleId::CatastrophicPathContentOverwrite,
+            path_content_overwrite_reasons,
         );
         emit_policy_findings_and_proposals(
             self.name(),
@@ -1697,6 +1706,32 @@ mod tests {
     }
 
     #[test]
+    fn catastrophic_delete_guard_denies_fd_root_exec_rm_in_default_mode() {
+        for command in [r#"fd . / -x rm -rf {}"#, r#"fd . / -X rm -rf {}"#] {
+            let ctx = run_pass(command);
+
+            assert_eq!(
+                ctx.final_decision,
+                Some(Decision::Deny),
+                "expected deny for {command}, got findings: {:?}",
+                ctx.findings
+            );
+            assert!(
+                ctx.findings.iter().any(|finding| {
+                    finding.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete
+                        && finding
+                            .message
+                            .contains("dispatch-scoped destructive child command rm")
+                        && finding.message.contains("catastrophic search root /")
+                        && finding.message.contains("via fd")
+                }),
+                "expected catastrophic fd finding for {command}, got {:?}",
+                ctx.findings
+            );
+        }
+    }
+
+    #[test]
     fn catastrophic_delete_guard_denies_find_system_root_child_glob_exec_rm() {
         for (command, root_fragment) in [
             (r#"find /etc/* -type f -exec rm -f {} \;"#, "/etc/*"),
@@ -1797,6 +1832,67 @@ mod tests {
                 && finding.enforcement_class == FindingEnforcementClass::HardDenyFloor
                 && finding.message.contains("delete target / in command rm")
         }));
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_denies_parallel_wrapped_rm_root_in_default_mode() {
+        let ctx = run_pass(r#"parallel rm -rf ::: /"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::Deny));
+        assert!(ctx.findings.iter().any(|finding| {
+            finding.rule_id == RuleId::CatastrophicFileSystemDelete
+                && finding.enforcement_class == FindingEnforcementClass::HardDenyFloor
+                && finding.message.contains("delete target / in command rm")
+        }));
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_denies_tar_unlink_first_system_directory() {
+        let ctx = run_pass(r#"tar -x -f archive.tar -C /etc --unlink-first"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::Deny));
+        assert_has_finding(
+            &ctx,
+            RuleId::CatastrophicFileSystemDelete,
+            FindingEnforcementClass::HardDenyFloor,
+            &["delete target /etc", "command tar"],
+        );
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_requires_approval_for_tar_overwrite_system_directory() {
+        let ctx = run_pass(r#"tar -x -f archive.tar -C /etc --overwrite"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        assert_has_finding(
+            &ctx,
+            RuleId::CatastrophicPathContentOverwrite,
+            FindingEnforcementClass::Normal,
+            &["overwrite target /etc", "command tar"],
+        );
+        assert_has_proposal(
+            &ctx,
+            RuleId::CatastrophicPathContentOverwrite,
+            Decision::NeedApproval,
+        );
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_requires_approval_for_unzip_overwrite_system_directory() {
+        let ctx = run_pass(r#"unzip -o archive.zip -d /etc"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        assert_has_finding(
+            &ctx,
+            RuleId::CatastrophicPathContentOverwrite,
+            FindingEnforcementClass::Normal,
+            &["overwrite target /etc", "command unzip"],
+        );
+        assert_has_proposal(
+            &ctx,
+            RuleId::CatastrophicPathContentOverwrite,
+            Decision::NeedApproval,
+        );
     }
 
     #[test]

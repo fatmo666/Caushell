@@ -329,9 +329,9 @@ mod tests {
     };
     use crate::{
         BindError, BindingOrigin, BoundInvocation, BoundValue, CatastrophicSemanticClass,
-        EffectKind, InvocationRuntimeContext, ProcessTargetKind, ProfileRegistry, ResidualKind,
-        SemanticType, SessionBindings, StructuredValueContext, StructuredValueSemantic,
-        ValueMaterialization, collect_dispatch_command_candidates,
+        EffectKind, HostRiskSemanticClass, InvocationRuntimeContext, ProcessTargetKind,
+        ProfileRegistry, ResidualKind, SemanticType, SessionBindings, StructuredValueContext,
+        StructuredValueSemantic, ValueMaterialization, collect_dispatch_command_candidates,
     };
 
     fn built_in_registry() -> ProfileRegistry {
@@ -10864,6 +10864,196 @@ mod tests {
     }
 
     #[test]
+    fn resolve_invocation_resolves_parallel_wrapped_rm_arguments() {
+        let registry = built_in_registry();
+        let artifact =
+            parse_command("parallel rm -rf ::: /", ShellKind::Bash).expect("expected parse");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "parallel");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "dispatch_wrapped_command"
+                );
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "wrapped_command"),
+                    "rm"
+                );
+                assert_eq!(
+                    argument_texts(&resolved.bound, "wrapped_args"),
+                    vec!["-rf", "/"]
+                );
+
+                let dispatch = collect_dispatch_command_candidates(&resolved.bound);
+                assert_eq!(dispatch.len(), 1);
+                assert_eq!(dispatch[0].command.text, "rm");
+                assert_eq!(
+                    dispatch[0]
+                        .argv
+                        .iter()
+                        .map(|argument| argument.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["-rf", "/"]
+                );
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_fd_exec_each_dispatch_and_search_roots() {
+        let registry = built_in_registry();
+        let artifact =
+            parse_command(r#"fd . / -x rm -rf {}"#, ShellKind::Bash).expect("expected parse");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "fd");
+                assert_eq!(resolved.selection.form.id.as_str(), "exec_each");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "search_roots"),
+                    vec![".", "/"]
+                );
+                assert_eq!(first_argument_text(&resolved.bound, "exec_command"), "rm");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "exec_args"),
+                    vec!["-rf", "{}"]
+                );
+
+                let dispatch = collect_dispatch_command_candidates(&resolved.bound);
+                assert_eq!(dispatch.len(), 1);
+                assert_eq!(dispatch[0].command.text, "rm");
+                assert_eq!(
+                    dispatch[0]
+                        .argv
+                        .iter()
+                        .map(|argument| argument.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["-rf", "{}"]
+                );
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_fd_exec_batch_dispatch_and_search_roots() {
+        let registry = built_in_registry();
+        let artifact =
+            parse_command(r#"fd . / -X rm -rf {}"#, ShellKind::Bash).expect("expected parse");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "fd");
+                assert_eq!(resolved.selection.form.id.as_str(), "exec_batch");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "search_roots"),
+                    vec![".", "/"]
+                );
+                assert_eq!(first_argument_text(&resolved.bound, "exec_command"), "rm");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "exec_args"),
+                    vec!["-rf", "{}"]
+                );
+
+                let dispatch = collect_dispatch_command_candidates(&resolved.bound);
+                assert_eq!(dispatch.len(), 1);
+                assert_eq!(dispatch[0].command.text, "rm");
+                assert_eq!(
+                    dispatch[0]
+                        .argv
+                        .iter()
+                        .map(|argument| argument.text.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["-rf", "{}"]
+                );
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_tar_unlink_first_as_delete_target() {
+        let registry = built_in_registry();
+        let artifact = parse_command(
+            "tar -x -f archive.tar -C /etc --unlink-first",
+            ShellKind::Bash,
+        )
+        .expect("expected parse");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "tar");
+                assert_eq!(resolved.selection.form.id.as_str(), "extract_archive");
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "working_directory"),
+                    "/etc"
+                );
+                assert!(
+                    resolved
+                        .bound
+                        .applied_modifiers
+                        .iter()
+                        .any(|modifier| { modifier.as_str() == "unlink_first" })
+                );
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.kind == EffectKind::DeletePath
+                        && effect.catastrophic.semantic_class
+                            == Some(CatastrophicSemanticClass::DeletePath)
+                }));
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_tar_overwrite_as_host_risk_target() {
+        let registry = built_in_registry();
+        let artifact = parse_command("tar -x -f archive.tar -C /etc --overwrite", ShellKind::Bash)
+            .expect("expected parse");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "tar");
+                assert_eq!(resolved.selection.form.id.as_str(), "extract_archive");
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "working_directory"),
+                    "/etc"
+                );
+                assert!(
+                    resolved
+                        .bound
+                        .applied_modifiers
+                        .iter()
+                        .any(|modifier| { modifier.as_str() == "overwrite_existing" })
+                );
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.kind == EffectKind::WritePath
+                        && effect.host_risk.semantic_class
+                            == Some(HostRiskSemanticClass::PathContentOverwriteTarget)
+                }));
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
     fn resolve_invocation_resolves_unzip_extract_archive() {
         let registry = built_in_registry();
         let artifact = parse_command("unzip archive.zip member.sh -d ./out", ShellKind::Bash)
@@ -10905,6 +11095,40 @@ mod tests {
                         purpose: Some(crate::PathPurpose::GenericOperand),
                     }) if slot.as_str() == "archive_file"
                 ));
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_unzip_overwrite_as_host_risk_target() {
+        let registry = built_in_registry();
+        let artifact =
+            parse_command("unzip -o archive.zip -d /etc", ShellKind::Bash).expect("expected parse");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "unzip");
+                assert_eq!(resolved.selection.form.id.as_str(), "extract_archive");
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "output_directory"),
+                    "/etc"
+                );
+                assert!(
+                    resolved
+                        .bound
+                        .applied_modifiers
+                        .iter()
+                        .any(|modifier| { modifier.as_str() == "overwrite_existing" })
+                );
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.kind == EffectKind::WritePath
+                        && effect.host_risk.semantic_class
+                            == Some(HostRiskSemanticClass::PathContentOverwriteTarget)
+                }));
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

@@ -117,12 +117,24 @@ modifiers:
         - "-v"
         - "-Z"
 
-  - id: overwrite_policy
+  - id: skip_existing
     matcher:
       kind: any_flag
       flags:
         - "-n"
+
+  - id: overwrite_existing
+    matcher:
+      kind: any_flag
+      flags:
         - "-o"
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_directory
+        host_risk:
+          semantic_class: path_content_overwrite_target
 
 subcommands: null
 extensions:

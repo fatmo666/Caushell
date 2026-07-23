@@ -573,7 +573,7 @@ fn select_form_for_scope<'a>(
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
     consumed: &[bool],
-    modifiers: &[SelectedModifier<'_>],
+    modifiers: &[SelectedModifier<'a>],
     subcommand_path: &[String],
 ) -> Result<&'a Form, BindError> {
     let shape =
@@ -581,7 +581,7 @@ fn select_form_for_scope<'a>(
     let matched_forms: Vec<FormConsumptionPreview<'a>> = forms
         .iter()
         .filter(|form| form_matches(form, &shape))
-        .map(|form| preview_form_consumption(form, projection, scope, consumed))
+        .map(|form| preview_form_consumption(form, projection, scope, consumed, modifiers))
         .filter(|preview| {
             let remaining_shape = shape_for_scope_with_consumed(
                 projection,
@@ -826,7 +826,7 @@ fn match_scoped_modifiers<'a>(
 
 fn consume_selected_modifiers_for_scanning(
     modifiers: &[SelectedModifier<'_>],
-    state: &mut BindingState<'_>,
+    state: &mut BindingState<'_, '_>,
 ) {
     for selected_modifier in modifiers {
         for parameter in &selected_modifier.modifier.parameters {
@@ -843,7 +843,7 @@ fn consume_selected_modifiers_for_scanning(
 
 fn consume_flag_only_modifiers_for_binding(
     modifiers: &[SelectedModifier<'_>],
-    state: &mut BindingState<'_>,
+    state: &mut BindingState<'_, '_>,
 ) {
     for selected_modifier in modifiers {
         if !selected_modifier.modifier.parameters.is_empty() {
@@ -1045,9 +1045,10 @@ fn preview_form_consumption<'a>(
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
     base_consumed: &[bool],
+    modifiers: &[SelectedModifier<'a>],
 ) -> FormConsumptionPreview<'a> {
     let targets = collect_form_parameter_targets(form, scope);
-    let mut state = BindingState::with_consumed(projection, base_consumed);
+    let mut state = BindingState::with_consumed(projection, base_consumed, modifiers);
 
     for target in &targets {
         if is_flag_binding(&target.parameter.binding) {
@@ -1125,7 +1126,7 @@ fn is_flag_binding(binding: &BindingSpec) -> bool {
 
 fn bind_parameter_target(
     target: &ParameterTarget<'_>,
-    state: &mut BindingState<'_>,
+    state: &mut BindingState<'_, '_>,
     residuals: &mut Vec<Residual>,
 ) -> Option<BoundParameter> {
     let values = state.bind_parameter_values(target);
@@ -1248,48 +1249,62 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
         BindingSpec::LeadingPositionalsWhile(_) => {
             "leading positional arguments matching a constrained semantic pattern".to_string()
         }
+        BindingSpec::LeadingPositionalsBeforeModifier(modifier_id) => format!(
+            "leading positional arguments before modifier {}",
+            modifier_id.as_str()
+        ),
     }
 }
 
-struct BindingState<'a> {
-    projection: &'a ProjectedInvocation,
+struct BindingState<'p, 'm> {
+    projection: &'p ProjectedInvocation,
     consumed: Vec<bool>,
     declared_short_flags: BTreeSet<String>,
     short_flags_allowing_attached_operands: BTreeSet<String>,
+    selected_modifiers: Vec<SelectedModifier<'m>>,
 }
 
-impl<'a> BindingState<'a> {
-    fn new(projection: &'a ProjectedInvocation) -> Self {
+impl<'p, 'm> BindingState<'p, 'm> {
+    fn new(projection: &'p ProjectedInvocation) -> Self {
         Self {
             projection,
             consumed: vec![false; projection.args.len()],
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
+            selected_modifiers: Vec::new(),
         }
     }
 
-    fn with_consumed(projection: &'a ProjectedInvocation, consumed: &[bool]) -> Self {
-        Self {
+    fn with_consumed(
+        projection: &'p ProjectedInvocation,
+        consumed: &[bool],
+        modifiers: &[SelectedModifier<'m>],
+    ) -> Self {
+        let mut state = Self {
             projection,
             consumed: consumed.to_vec(),
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
-        }
+            selected_modifiers: Vec::new(),
+        };
+        state.set_modifier_context(modifiers);
+        state
     }
 
     fn with_modifier_context(
-        projection: &'a ProjectedInvocation,
-        modifiers: &[SelectedModifier<'_>],
+        projection: &'p ProjectedInvocation,
+        modifiers: &[SelectedModifier<'m>],
     ) -> Self {
         let mut state = Self::new(projection);
         state.set_modifier_context(modifiers);
         state
     }
 
-    fn set_modifier_context(&mut self, modifiers: &[SelectedModifier<'_>]) {
+    fn set_modifier_context(&mut self, modifiers: &[SelectedModifier<'m>]) {
         self.declared_short_flags = declared_short_modifier_flags_from_selected(modifiers);
         self.short_flags_allowing_attached_operands =
             short_flags_allowing_attached_operands_from_selected(modifiers);
+        self.selected_modifiers = modifiers.to_vec();
     }
 
     fn bind_parameter_values(&mut self, target: &ParameterTarget<'_>) -> Vec<BoundValue> {
@@ -1373,6 +1388,12 @@ impl<'a> BindingState<'a> {
             BindingSpec::LeadingPositionalsWhile(matcher) => {
                 self.consume_leading_positionals_while(target.scope, matcher, value_constraints)
             }
+            BindingSpec::LeadingPositionalsBeforeModifier(modifier_id) => self
+                .consume_leading_positionals_before_modifier(
+                    target.scope,
+                    modifier_id,
+                    value_constraints,
+                ),
         }
     }
 
@@ -1881,6 +1902,48 @@ impl<'a> BindingState<'a> {
         }
 
         values
+    }
+
+    fn consume_leading_positionals_before_modifier(
+        &mut self,
+        scope: ArgumentScope,
+        modifier_id: &crate::ModifierId,
+        value_constraints: &[ValueConstraint],
+    ) -> Vec<BoundValue> {
+        let Some(boundary_index) = self.first_modifier_flag_index(scope, modifier_id) else {
+            return Vec::new();
+        };
+
+        self.consume_remaining_positionals(
+            ArgumentScope::new(scope.start_index, boundary_index),
+            value_constraints,
+        )
+    }
+
+    fn first_modifier_flag_index(
+        &self,
+        scope: ArgumentScope,
+        modifier_id: &crate::ModifierId,
+    ) -> Option<usize> {
+        self.selected_modifiers
+            .iter()
+            .filter(|selected| selected.modifier.id == *modifier_id)
+            .flat_map(|selected| {
+                (scope.start_index..scope.end_index).filter_map(move |index| {
+                    let arg = &self.projection.args[index];
+                    (arg.kind == ProjectedArgKind::Flag
+                        && selected
+                            .modifier
+                            .matcher
+                            .flag_names()
+                            .iter()
+                            .any(|flag_name| {
+                                flag_token_matches_name(arg.text.as_str(), flag_name.as_str())
+                            }))
+                    .then_some(index)
+                })
+            })
+            .min()
     }
 
     fn consume_last_positional(

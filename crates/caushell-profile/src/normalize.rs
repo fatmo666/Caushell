@@ -467,6 +467,12 @@ fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError>
         RawBindingSpec::LeadingPositionalsWhile { matcher } => Ok(
             BindingSpec::LeadingPositionalsWhile(normalize_value_matcher(matcher)?),
         ),
+        RawBindingSpec::LeadingPositionalsBeforeModifier { modifier } => {
+            ensure_non_empty(&modifier, "binding.modifier")?;
+            Ok(BindingSpec::LeadingPositionalsBeforeModifier(
+                ModifierId::new(modifier),
+            ))
+        }
     }
 }
 
@@ -817,6 +823,9 @@ fn normalize_host_risk_effect_metadata(
 fn normalize_host_risk_semantic_class(raw: RawHostRiskSemanticClass) -> HostRiskSemanticClass {
     match raw {
         RawHostRiskSemanticClass::MoveSourcePath => HostRiskSemanticClass::MoveSourcePath,
+        RawHostRiskSemanticClass::PathContentOverwriteTarget => {
+            HostRiskSemanticClass::PathContentOverwriteTarget
+        }
         RawHostRiskSemanticClass::PartitionLayoutMutationTarget => {
             HostRiskSemanticClass::PartitionLayoutMutationTarget
         }

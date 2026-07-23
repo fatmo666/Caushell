@@ -1,0 +1,129 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: parallel
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: dispatch_wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: ":::"
+          - kind: exclude_literal
+            value: "::::"
+          - kind: exclude_literal
+            value: ":::+"
+          - kind: exclude_literal
+            value: "::::+"
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+
+  - id: show_help
+    selector:
+      kind: has_flag
+      flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+modifiers:
+  - id: jobs
+    matcher:
+      kind: any_flag
+      flags:
+        - "-j"
+        - "--jobs"
+    parameters:
+      - name: jobs_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_one
+
+  - id: arg_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--arg-file"
+    parameters:
+      - name: arg_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: arg_file
+
+  - id: dry_run
+    matcher:
+      kind: any_flag
+      flags:
+        - "--dry-run"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Explicit `:::` argument lists are modeled as wrapped command arguments; stdin-only item streams are not statically expanded yet.

@@ -29,6 +29,7 @@ pub enum RuleId {
     CatastrophicFileSystemDelete,
     CatastrophicShellProcessExplosion,
     CatastrophicPathMetadataMutation,
+    CatastrophicPathContentOverwrite,
     CatastrophicPathRelocation,
     CatastrophicPartitionLayoutMutation,
     CatastrophicPartitionTableSession,
@@ -60,6 +61,7 @@ impl RuleId {
             Self::CatastrophicFileSystemDelete => RuleFamily::HostSafety,
             Self::CatastrophicShellProcessExplosion => RuleFamily::HostSafety,
             Self::CatastrophicPathMetadataMutation => RuleFamily::HostSafety,
+            Self::CatastrophicPathContentOverwrite => RuleFamily::HostSafety,
             Self::CatastrophicPathRelocation => RuleFamily::HostSafety,
             Self::CatastrophicPartitionLayoutMutation => RuleFamily::HostSafety,
             Self::CatastrophicPartitionTableSession => RuleFamily::HostSafety,
@@ -119,6 +121,10 @@ mod tests {
         );
         assert_eq!(
             RuleId::CatastrophicPathMetadataMutation.family(),
+            RuleFamily::HostSafety
+        );
+        assert_eq!(
+            RuleId::CatastrophicPathContentOverwrite.family(),
             RuleFamily::HostSafety
         );
         assert_eq!(

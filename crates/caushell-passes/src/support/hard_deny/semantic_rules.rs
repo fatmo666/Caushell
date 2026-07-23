@@ -44,6 +44,7 @@ pub(crate) enum DestructiveBlockDeviceSemanticClass {
 pub(crate) struct CommandSinkReasonBuckets {
     pub(crate) floor_reasons: Vec<String>,
     pub(crate) path_metadata_mutation_reasons: Vec<String>,
+    pub(crate) path_content_overwrite_reasons: Vec<String>,
     pub(crate) path_relocation_reasons: Vec<String>,
     pub(crate) partition_layout_mutation_reasons: Vec<String>,
     pub(crate) partition_table_session_reasons: Vec<String>,
@@ -65,6 +66,10 @@ pub(crate) fn collect_command_sink_reason_buckets_with_optional_cwd(
     each_resolved_host_risk_sink(resolved, |sink| {
         let sink_buckets = collect_sink_reasons(sink, cwd, home, bindings);
         extend_unique(&mut buckets.floor_reasons, sink_buckets.floor_reasons);
+        extend_unique(
+            &mut buckets.path_content_overwrite_reasons,
+            sink_buckets.path_content_overwrite_reasons,
+        );
         extend_unique(
             &mut buckets.path_relocation_reasons,
             sink_buckets.path_relocation_reasons,
@@ -196,6 +201,18 @@ fn collect_sink_reasons(
                 ..CommandSinkReasonBuckets::default()
             }
         }
+        ResolvedHostRiskSemanticClass::HostRisk(
+            HostRiskSemanticClass::PathContentOverwriteTarget,
+        ) => CommandSinkReasonBuckets {
+            path_content_overwrite_reasons: target_operands
+                .iter()
+                .filter(|target| {
+                    sink_matches_host_target(sink.semantic_class, target.as_operand(), cwd, home)
+                })
+                .map(|target| sink_reason(&sink, target.text.as_str()))
+                .collect(),
+            ..CommandSinkReasonBuckets::default()
+        },
         ResolvedHostRiskSemanticClass::HostRisk(
             HostRiskSemanticClass::PartitionTableSessionTarget,
         ) => CommandSinkReasonBuckets {
@@ -405,7 +422,10 @@ fn sink_matches_host_target(
 ) -> bool {
     match semantic_class {
         ResolvedHostRiskSemanticClass::Catastrophic(CatastrophicSemanticClass::DeletePath)
-        | ResolvedHostRiskSemanticClass::HostRisk(HostRiskSemanticClass::MoveSourcePath) => {
+        | ResolvedHostRiskSemanticClass::HostRisk(HostRiskSemanticClass::MoveSourcePath)
+        | ResolvedHostRiskSemanticClass::HostRisk(
+            HostRiskSemanticClass::PathContentOverwriteTarget,
+        ) => {
             matches!(
                 classify_host_target_with_optional_cwd(target, cwd, home),
                 Some(HostTargetKind::CatastrophicDeleteRoot)
@@ -446,6 +466,12 @@ fn sink_reason(sink: &ResolvedHostRiskSink<'_>, target: &str) -> String {
         }
         ResolvedHostRiskSemanticClass::HostRisk(HostRiskSemanticClass::MoveSourcePath) => format!(
             "move source {target} in command {} is a catastrophic filesystem root relocation",
+            sink.normalized_command_name
+        ),
+        ResolvedHostRiskSemanticClass::HostRisk(
+            HostRiskSemanticClass::PathContentOverwriteTarget,
+        ) => format!(
+            "overwrite target {target} in command {} may replace contents under a catastrophic filesystem root",
             sink.normalized_command_name
         ),
         ResolvedHostRiskSemanticClass::Catastrophic(CatastrophicSemanticClass::RawWriteTarget) => {

@@ -157,6 +157,32 @@ modifiers:
           kind: slot
           name: working_directory
 
+  - id: overwrite_existing
+    matcher:
+      kind: any_flag
+      flags:
+        - "--overwrite"
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: working_directory
+        host_risk:
+          semantic_class: path_content_overwrite_target
+
+  - id: unlink_first
+    matcher:
+      kind: any_flag
+      flags:
+        - "--unlink-first"
+    effects:
+      - kind: delete_path
+        target:
+          kind: slot
+          name: working_directory
+        catastrophic:
+          semantic_class: delete_path
+
 subcommands: null
 extensions:
   caushell.profile/known_limitations:

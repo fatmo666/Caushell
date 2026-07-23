@@ -306,6 +306,9 @@ pub enum RawBindingSpec {
     LeadingPositionalsWhile {
         matcher: RawValueMatcher,
     },
+    LeadingPositionalsBeforeModifier {
+        modifier: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -537,6 +540,7 @@ pub enum RawCatastrophicSemanticClass {
 #[serde(rename_all = "snake_case")]
 pub enum RawHostRiskSemanticClass {
     MoveSourcePath,
+    PathContentOverwriteTarget,
     PartitionLayoutMutationTarget,
     PartitionTableStateMutationTarget,
     PartitionTableSessionTarget,
