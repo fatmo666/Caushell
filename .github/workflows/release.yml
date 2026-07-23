@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -122,7 +124,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -179,12 +181,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release delete "${GITHUB_REF_NAME}" --yes
-          fi
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            short_sha="${GITHUB_SHA::7}"
+            release_tag="nightly-${short_sha}"
 
-          gh release create "${GITHUB_REF_NAME}" dist/* \
-            --verify-tag \
-            --generate-notes \
-            --latest \
-            --title "Caushell ${GITHUB_REF_NAME}"
+            if gh release view "${release_tag}" >/dev/null 2>&1; then
+              gh release delete "${release_tag}" --yes --cleanup-tag
+            fi
+
+            gh release create "${release_tag}" dist/* \
+              --target "${GITHUB_SHA}" \
+              --generate-notes \
+              --latest \
+              --title "Caushell nightly ${short_sha}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+
+            if gh release view "${release_tag}" >/dev/null 2>&1; then
+              gh release delete "${release_tag}" --yes
+            fi
+
+            gh release create "${release_tag}" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --latest \
+              --title "Caushell ${release_tag}"
+          fi

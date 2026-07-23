@@ -45,6 +45,8 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+每次 push 到 `main` 都会自动发布一个新的 `nightly-<commit>` release，并标记为 GitHub latest；`v*` tag 则发布稳定版。所以上面的命令会安装最近一次发布的构建。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.6`。
+
 预构建版本支持 Linux x86_64 静态二进制，以及 macOS x86_64 / Apple Silicon。Windows 和 Linux ARM64 暂不提供预构建包。
 
 然后安装对应 agent integration。Codex 和 Claude Code 将这类集成称为 plugin。

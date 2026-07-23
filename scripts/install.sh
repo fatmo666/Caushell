@@ -12,7 +12,7 @@ Install Caushell runtime binaries from a GitHub release.
 
 Environment:
   CAUSHELL_REPO         GitHub repo, default: fatmo666/Caushell
-  CAUSHELL_VERSION      Release tag, default: latest
+  CAUSHELL_VERSION      Release tag, default: latest. Use v0.0.6 or a nightly-* tag to pin a build.
   CAUSHELL_INSTALL_DIR  Install directory, default: ~/.local/bin
   CAUSHELL_DOWNLOAD_BASE_URL
                         Override release download base URL, mostly for mirrors/tests

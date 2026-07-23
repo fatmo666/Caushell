@@ -45,6 +45,8 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+Every push to `main` publishes a fresh `nightly-<commit>` release and marks it as GitHub latest; `v*` tags publish stable releases. The command above therefore installs the most recent published build. To pin a reproducible build, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.6`.
+
 Prebuilt releases support Linux x86_64 as a static binary, macOS x86_64, and Apple Silicon. Windows and Linux ARM64 do not have prebuilt packages yet.
 
 Then install the integration for your agent. Codex and Claude Code call these integrations plugins.
