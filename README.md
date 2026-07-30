@@ -65,7 +65,7 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Stable releases are published from `v*` tags. The installer downloads the latest stable GitHub release by default. To pin a reproducible build, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.1`.
+Stable releases are published from `v*` tags. The installer downloads the latest stable GitHub release by default. To pin a reproducible build, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.2`.
 
 Prebuilt releases support Linux x86_64 as a static binary, macOS x86_64, and Apple Silicon. Windows and Linux ARM64 do not have prebuilt packages yet.
 
@@ -129,16 +129,16 @@ After the first installation, update Caushell with one command:
 caushell update
 ```
 
-`caushell --update` is a compatible alias. The updater verifies the release checksum, replaces the runtime bundle, refreshes only enabled Codex or Claude Code plugins that are already installed, and runs a post-update doctor check. It never installs an agent integration that you have not selected. Restart Codex or Claude Code after the update.
+`caushell --update` is a compatible alias. The updater checks the release manifest, verifies the release checksum before replacing the runtime bundle, refreshes only enabled Codex or Claude Code plugins that are already installed, and runs a post-update doctor check. It never installs an agent integration that you have not selected. Restart Codex or Claude Code after the update.
 
 If an older installation reports `unknown command: update`, run the installer once more; subsequent updates can then use the built-in updater.
 
 Useful variants:
 
 ```bash
-caushell update --check          # verify and report without changing files
+caushell update --check          # check the release manifest without changing files
 caushell update --runtime-only   # update runtime binaries only
-caushell update --version v0.0.1     # pin a stable release tag
+caushell update --version v0.0.2     # pin a stable release tag
 caushell build-info              # show version, commit, release, and target
 ```
 

@@ -65,7 +65,7 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-稳定版由 `v*` tag 发布。安装脚本默认下载 GitHub latest 指向的最新稳定版。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.1`。
+稳定版由 `v*` tag 发布。安装脚本默认下载 GitHub latest 指向的最新稳定版。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.2`。
 
 预构建版本支持 Linux x86_64 静态二进制，以及 macOS x86_64 / Apple Silicon。Windows 和 Linux ARM64 暂不提供预构建包。
 
@@ -129,16 +129,16 @@ smoke test 会执行一条无害的 Claude Code Bash action，并确认 Caushell
 caushell update
 ```
 
-`caushell --update` 是兼容别名。更新器会校验 release checksum，替换完整 runtime bundle，只刷新已经安装且启用的 Codex 或 Claude Code plugin，并自动运行更新后的 doctor 检查。它不会安装你没有选择的 agent 集成。更新完成后请重启 Codex 或 Claude Code。
+`caushell --update` 是兼容别名。更新器会先检查 release manifest；真正替换 runtime bundle 前会校验 release checksum。它只刷新已经安装且启用的 Codex 或 Claude Code plugin，并自动运行更新后的 doctor 检查，不会安装你没有选择的 agent 集成。更新完成后请重启 Codex 或 Claude Code。
 
 如果旧安装提示 `unknown command: update`，先重新运行一次安装脚本；之后就可以使用内置更新器。
 
 常用变体：
 
 ```bash
-caushell update --check          # 只校验并报告，不修改文件
+caushell update --check          # 只检查 release manifest，不修改文件
 caushell update --runtime-only   # 只更新 runtime 二进制
-caushell update --version v0.0.1     # 固定一个稳定 release tag
+caushell update --version v0.0.2     # 固定一个稳定 release tag
 caushell build-info              # 查看版本、commit、release 和 target
 ```
 

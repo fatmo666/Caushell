@@ -118,6 +118,7 @@ jobs:
           path: |
             target/dist/caushell-${{ matrix.target }}.tar.gz
             target/dist/caushell-${{ matrix.target }}.tar.gz.sha256
+            target/dist/caushell-${{ matrix.target }}.manifest.json
           if-no-files-found: error
           retention-days: 7
 
@@ -159,10 +160,13 @@ jobs:
           sort > "${RUNNER_TEMP}/expected-assets.txt" <<'EOF'
           caushell-aarch64-apple-darwin.tar.gz
           caushell-aarch64-apple-darwin.tar.gz.sha256
+          caushell-aarch64-apple-darwin.manifest.json
           caushell-x86_64-apple-darwin.tar.gz
           caushell-x86_64-apple-darwin.tar.gz.sha256
+          caushell-x86_64-apple-darwin.manifest.json
           caushell-x86_64-unknown-linux-musl.tar.gz
           caushell-x86_64-unknown-linux-musl.tar.gz.sha256
+          caushell-x86_64-unknown-linux-musl.manifest.json
           install.sh
           install.sh.sha256
           EOF

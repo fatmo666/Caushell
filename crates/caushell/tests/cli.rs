@@ -221,9 +221,20 @@ fn update_verifies_and_replaces_the_complete_runtime_bundle() {
         "name": "caushell",
         "version": env!("CARGO_PKG_VERSION"),
         "commit": "candidate-update-build",
-        "release": "v0.0.1-test",
+        "release": "v0.0.2-test",
         "target": target
     });
+    let asset = format!("{package_name}.tar.gz");
+    let check_dist_dir = temp_dir.join("check-dist");
+    fs::create_dir_all(&check_dist_dir).expect("check dist directory must be created");
+    write_release_manifest_for_test(
+        &check_dist_dir,
+        target,
+        &asset,
+        &"a".repeat(64),
+        &build_info,
+    );
+
     for binary in release_binaries_for_test() {
         let content = if binary == "caushell" {
             format!(
@@ -239,7 +250,6 @@ fn update_verifies_and_replaces_the_complete_runtime_bundle() {
         );
     }
 
-    let asset = format!("{package_name}.tar.gz");
     let archive = dist_dir.join(&asset);
     let tar_output = Command::new("tar")
         .arg("-C")
@@ -260,12 +270,13 @@ fn update_verifies_and_replaces_the_complete_runtime_bundle() {
         format!("{checksum}  {asset}\n"),
     )
     .expect("checksum file must be written");
+    write_release_manifest_for_test(&dist_dir, target, &asset, &checksum, &build_info);
 
     let check_output = Command::new(env!("CARGO_BIN_EXE_caushell"))
         .args(["update", "--check", "--runtime-only"])
         .env(
             "CAUSHELL_UPDATE_BASE_URL",
-            format!("file://{}", dist_dir.display()),
+            format!("file://{}", check_dist_dir.display()),
         )
         .env("CAUSHELL_UPDATE_INSTALL_DIR", &install_dir)
         .output()
@@ -280,6 +291,11 @@ fn update_verifies_and_replaces_the_complete_runtime_bundle() {
         !install_dir.join(".caushell-update.lock").exists(),
         "check-only update must not leave a persistent lock file"
     );
+    let check_stdout =
+        String::from_utf8(check_output.stdout).expect("update check output must be UTF-8");
+    assert!(check_stdout.contains("[ok] release manifest verified"));
+    assert!(!check_stdout.contains("[ok] release checksum verified"));
+    assert!(!check_stdout.contains(".tar.gz"));
 
     let output = Command::new(env!("CARGO_BIN_EXE_caushell"))
         .args(["update", "--runtime-only"])
@@ -300,7 +316,7 @@ fn update_verifies_and_replaces_the_complete_runtime_bundle() {
     let stdout = String::from_utf8(output.stdout).expect("update output must be UTF-8");
     assert!(stdout.contains("[ok] release checksum verified"));
     assert!(stdout.contains("[ok] runtime binaries updated"));
-    assert!(stdout.contains("available=v0.0.1-test/candida"));
+    assert!(stdout.contains("available=v0.0.2-test/candida"));
 
     for binary in release_binaries_for_test() {
         let contents = fs::read_to_string(install_dir.join(binary))
@@ -343,7 +359,7 @@ fn update_refreshes_an_installed_codex_plugin_when_runtime_is_current() {
         "name": "caushell",
         "version": env!("CARGO_PKG_VERSION"),
         "commit": commit,
-        "release": "v0.0.1-current",
+        "release": "v0.0.2-current",
         "target": "unknown"
     });
 
@@ -462,7 +478,39 @@ fn create_release_fixture(
         format!("{checksum}  {asset}\n"),
     )
     .expect("checksum file must be written");
+    write_release_manifest_for_test(&dist_dir, target, &asset, &checksum, build_info);
     dist_dir
+}
+
+#[cfg(all(
+    unix,
+    any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )
+))]
+fn write_release_manifest_for_test(
+    dist_dir: &std::path::Path,
+    target: &str,
+    asset: &str,
+    checksum: &str,
+    build_info: &serde_json::Value,
+) {
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "build_info": build_info,
+        "package": {
+            "target": target,
+            "asset": asset,
+            "sha256": checksum
+        }
+    });
+    fs::write(
+        dist_dir.join(format!("caushell-{target}.manifest.json")),
+        serde_json::to_string_pretty(&manifest).expect("manifest must serialize"),
+    )
+    .expect("manifest file must be written");
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

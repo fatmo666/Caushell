@@ -76,4 +76,27 @@ else
   exit 1
 fi
 
+checksum="$(awk 'NF { print $1; exit }' "${dist_root}/${package_name}.tar.gz.sha256")"
+manifest="${dist_root}/${package_name}.manifest.json"
+python3 - "${target}" "${package_name}.tar.gz" "${checksum}" "${package_dir}/bin/caushell" "${manifest}" <<'PY'
+import json
+import subprocess
+import sys
+
+target, asset, checksum, caushell, manifest = sys.argv[1:]
+build_info = json.loads(subprocess.check_output([caushell, "build-info"], text=True))
+payload = {
+    "schema_version": 1,
+    "build_info": build_info,
+    "package": {
+        "target": target,
+        "asset": asset,
+        "sha256": checksum.lower(),
+    },
+}
+with open(manifest, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+
 echo "${tarball}"

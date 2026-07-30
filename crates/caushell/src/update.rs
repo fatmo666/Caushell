@@ -48,6 +48,20 @@ struct Package {
     candidate_info: BuildInfo,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ReleaseManifest {
+    schema_version: u32,
+    build_info: BuildInfo,
+    package: ReleasePackageManifest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ReleasePackageManifest {
+    target: String,
+    asset: String,
+    sha256: String,
+}
+
 #[derive(Debug, Clone)]
 struct UpdateWorkspace {
     path: PathBuf,
@@ -155,9 +169,18 @@ pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<(), CliError
     println!("  install_dir={}", install_dir.display());
     println!("  target={target}");
 
-    let package =
-        download_and_stage_package(&workspace, &repository, &target, options.version.as_deref())?;
     let current = current_build_info();
+    let version = resolve_update_version(options.version.as_deref())?;
+    let manifest = try_download_candidate_manifest(&workspace, &repository, &target, &version)?;
+    let mut staged_package = None;
+    let candidate_info = if let Some(manifest) = manifest {
+        manifest.build_info
+    } else {
+        let package = download_and_stage_package(&workspace, &repository, &target, &version)?;
+        let candidate_info = package.candidate_info.clone();
+        staged_package = Some(package);
+        candidate_info
+    };
     println!(
         "  current={}/{}",
         current.release,
@@ -165,17 +188,21 @@ pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<(), CliError
     );
     println!(
         "  available={}/{}",
-        package.candidate_info.release,
-        short_commit(&package.candidate_info.commit)
+        candidate_info.release,
+        short_commit(&candidate_info.commit)
     );
 
-    let runtime_changed = !same_build(&current, &package.candidate_info);
+    let runtime_changed = !same_build(&current, &candidate_info);
     if runtime_changed {
         if options.check_only {
             println!("[ok] update is available (check only; nothing was changed)");
             return Ok(());
         }
 
+        let package = match staged_package {
+            Some(package) => package,
+            None => download_and_stage_package(&workspace, &repository, &target, &version)?,
+        };
         replace_runtime_binaries(&install_dir, &package.package_dir)?;
         println!("[ok] runtime binaries updated");
     } else {
@@ -404,22 +431,56 @@ fn create_update_workspace(
     Ok(UpdateWorkspace { path })
 }
 
-fn download_and_stage_package(
-    workspace: &UpdateWorkspace,
-    repository: &str,
-    target: &str,
-    requested_version: Option<&str>,
-) -> Result<Package, CliError> {
+fn resolve_update_version(requested_version: Option<&str>) -> Result<String, CliError> {
     let version = requested_version
         .map(str::to_owned)
         .or_else(|| env::var("CAUSHELL_UPDATE_VERSION").ok())
         .or_else(|| env::var("CAUSHELL_VERSION").ok())
         .unwrap_or_else(|| "latest".to_string());
     validate_release_tag(&version)?;
+    Ok(version)
+}
+
+fn try_download_candidate_manifest(
+    workspace: &UpdateWorkspace,
+    repository: &str,
+    target: &str,
+    version: &str,
+) -> Result<Option<ReleaseManifest>, CliError> {
+    let asset = format!("caushell-{target}.manifest.json");
+    let manifest_path = workspace.path.join(&asset);
+    let manifest_url = release_asset_url(repository, version, &asset);
+
+    println!("[info] downloading {manifest_url}");
+    if let Err(error) = download_file(&manifest_url, &manifest_path) {
+        eprintln!(
+            "[warn] release manifest unavailable; falling back to package verification: {error}"
+        );
+        return Ok(None);
+    }
+
+    let payload = fs::read(&manifest_path)?;
+    let manifest: ReleaseManifest = serde_json::from_slice(&payload).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("release manifest is not valid JSON: {error}"),
+        )
+    })?;
+    validate_release_manifest(&manifest, target)?;
+    println!("[ok] release manifest verified");
+    Ok(Some(manifest))
+}
+
+fn download_and_stage_package(
+    workspace: &UpdateWorkspace,
+    repository: &str,
+    target: &str,
+    version: &str,
+) -> Result<Package, CliError> {
     let asset = format!("caushell-{target}.tar.gz");
     let archive_path = workspace.path.join(&asset);
     let checksum_path = workspace.path.join(format!("{asset}.sha256"));
-    let package_url = release_asset_url(repository, &version, &asset);
+    let package_url = release_asset_url(repository, version, &asset);
     let checksum_url = format!("{package_url}.sha256");
 
     println!("[info] downloading {package_url}");
@@ -631,6 +692,57 @@ fn parse_checksum_file(payload: &str, expected_file_name: &str) -> Result<String
     Ok(digest)
 }
 
+fn validate_release_manifest(manifest: &ReleaseManifest, target: &str) -> Result<(), CliError> {
+    if manifest.schema_version != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported release manifest schema_version {}",
+                manifest.schema_version
+            ),
+        )
+        .into());
+    }
+
+    if manifest.package.target != target {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "release manifest target mismatch: package={} host={target}",
+                manifest.package.target
+            ),
+        )
+        .into());
+    }
+
+    let expected_asset = format!("caushell-{target}.tar.gz");
+    if manifest.package.asset != expected_asset {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "release manifest asset mismatch: package={} expected={expected_asset}",
+                manifest.package.asset
+            ),
+        )
+        .into());
+    }
+
+    let sha256 = manifest.package.sha256.as_str();
+    if sha256.len() != 64
+        || !sha256
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "release manifest contains an invalid package SHA-256 digest",
+        )
+        .into());
+    }
+
+    validate_build_info(&manifest.build_info, target)
+}
+
 fn extract_archive(archive: &Path, destination: &Path) -> Result<(), CliError> {
     let output = Command::new("tar")
         .args(["-xzf"])
@@ -679,6 +791,24 @@ fn validate_package(package_dir: &Path, target: &str) -> Result<BuildInfo, CliEr
             ),
         )
     })?;
+    validate_build_info(&info, target)?;
+    let update_help = Command::new(package_dir.join("bin/caushell"))
+        .args(["update", "--help"])
+        .output()?;
+    if !update_help.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "release binary does not support built-in updates: {}",
+                format_command_failure("update --help", &update_help)
+            ),
+        )
+        .into());
+    }
+    Ok(info)
+}
+
+fn validate_build_info(info: &BuildInfo, target: &str) -> Result<(), CliError> {
     if info.name != "caushell"
         || info.version.trim().is_empty()
         || info.commit.trim().is_empty()
@@ -700,20 +830,7 @@ fn validate_package(package_dir: &Path, target: &str) -> Result<BuildInfo, CliEr
         )
         .into());
     }
-    let update_help = Command::new(package_dir.join("bin/caushell"))
-        .args(["update", "--help"])
-        .output()?;
-    if !update_help.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "release binary does not support built-in updates: {}",
-                format_command_failure("update --help", &update_help)
-            ),
-        )
-        .into());
-    }
-    Ok(info)
+    Ok(())
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -1085,7 +1202,7 @@ mod tests {
             "--check".to_string(),
             "--runtime-only".to_string(),
             "--version".to_string(),
-            "v0.0.1".to_string(),
+            "v0.0.2".to_string(),
         ]
         .into_iter();
         assert_eq!(
@@ -1094,7 +1211,7 @@ mod tests {
                 help: false,
                 check_only: true,
                 runtime_only: true,
-                version: Some("v0.0.1".to_string())
+                version: Some("v0.0.2".to_string())
             }
         );
     }
@@ -1103,7 +1220,7 @@ mod tests {
     fn same_build_requires_known_commit() {
         let current = super::BuildInfo {
             name: "caushell".to_string(),
-            version: "0.0.1".to_string(),
+            version: "0.0.2".to_string(),
             commit: "unknown".to_string(),
             release: "source".to_string(),
             target: "x86_64-unknown-linux-musl".to_string(),
@@ -1119,7 +1236,7 @@ mod tests {
     fn same_build_rejects_a_different_target() {
         let current = super::BuildInfo {
             name: "caushell".to_string(),
-            version: "0.0.1".to_string(),
+            version: "0.0.2".to_string(),
             commit: "same-commit".to_string(),
             release: "source".to_string(),
             target: "x86_64-unknown-linux-gnu".to_string(),
