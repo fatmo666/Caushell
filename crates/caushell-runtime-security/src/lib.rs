@@ -140,14 +140,24 @@ pub fn write_private_file_atomic(path: &Path, contents: impl AsRef<[u8]>) -> io:
     let result = (|| {
         temp_file.write_all(contents.as_ref())?;
         temp_file.sync_all()?;
+
+        // Validate and harden the file while we still hold its descriptor. Once
+        // it is renamed into place, another legitimate atomic writer may
+        // immediately replace the path. Re-inspecting the path then can observe
+        // the unlinked predecessor (nlink == 0) and incorrectly report that
+        // this write failed.
+        let metadata = temp_file.metadata()?;
+        validate_private_regular_metadata(&metadata, &temp_path)?;
+        #[cfg(unix)]
+        if metadata.permissions().mode() & 0o777 != PRIVATE_FILE_MODE {
+            temp_file.set_permissions(fs::Permissions::from_mode(PRIVATE_FILE_MODE))?;
+        }
+
         drop(temp_file);
         fs::rename(&temp_path, path)?;
 
-        let metadata = fs::symlink_metadata(path)?;
-        validate_private_regular_metadata(&metadata, path)?;
         #[cfg(unix)]
         {
-            set_mode_if_needed(path, &metadata, PRIVATE_FILE_MODE)?;
             File::open(parent)?.sync_all()?;
         }
         Ok(())
@@ -891,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn harden_private_tree_tolerates_concurrent_atomic_replacement() {
+    fn private_tree_hardening_and_atomic_writes_tolerate_concurrent_replacement() {
         let root = temp_root();
         let nested = root.join("active-sessions/session");
         ensure_private_directory_tree(&root, &nested).unwrap();
