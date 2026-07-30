@@ -1,0 +1,187 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: rm
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+  - id: delete_paths
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: path_targets
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: delete_path
+        target:
+          kind: slot
+          name: path_targets
+        catastrophic:
+          semantic_class: delete_path
+
+modifiers:
+  - id: recursive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "-R"
+        - "--recursive"
+
+  - id: dir
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--dir"
+
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--force"
+
+  - id: interactive_always
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--interactive"
+        - "--interactive=always"
+    constraints:
+      - kind: mutually_exclusive_with
+        modifier: interactive_once
+      - kind: mutually_exclusive_with
+        modifier: interactive_never
+
+  - id: interactive_once
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "--interactive=once"
+    constraints:
+      - kind: mutually_exclusive_with
+        modifier: interactive_always
+      - kind: mutually_exclusive_with
+        modifier: interactive_never
+
+  - id: interactive_never
+    matcher:
+      kind: any_flag
+      flags:
+        - "--interactive=never"
+    constraints:
+      - kind: mutually_exclusive_with
+        modifier: interactive_always
+      - kind: mutually_exclusive_with
+        modifier: interactive_once
+
+  - id: one_file_system
+    matcher:
+      kind: any_flag
+      flags:
+        - "--one-file-system"
+
+  - id: no_preserve_root
+    matcher:
+      kind: any_flag
+      flags:
+        - "--no-preserve-root"
+    constraints:
+      - kind: mutually_exclusive_with
+        modifier: preserve_root
+      - kind: mutually_exclusive_with
+        modifier: preserve_root_all
+
+  - id: preserve_root
+    matcher:
+      kind: any_flag
+      flags:
+        - "--preserve-root"
+    constraints:
+      - kind: mutually_exclusive_with
+        modifier: no_preserve_root
+      - kind: mutually_exclusive_with
+        modifier: preserve_root_all
+
+  - id: preserve_root_all
+    matcher:
+      kind: any_flag
+      flags:
+        - "--preserve-root=all"
+    constraints:
+      - kind: mutually_exclusive_with
+        modifier: no_preserve_root
+      - kind: mutually_exclusive_with
+        modifier: preserve_root
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+subcommands: null
+extensions: {}

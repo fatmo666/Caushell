@@ -1,0 +1,107 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: nl
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: number_lines
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: numbering_style
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--body-numbering"
+        - "-h"
+        - "--header-numbering"
+        - "-f"
+        - "--footer-numbering"
+    parameters:
+      - name: style
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: line_format
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--number-format"
+        - "-s"
+        - "--number-separator"
+        - "-w"
+        - "--number-width"
+        - "-v"
+        - "--starting-line-number"
+        - "-i"
+        - "--line-increment"
+        - "-d"
+        - "--section-delimiter"
+    parameters:
+      - name: format_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: no_renumber
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--no-renumber"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - FILE value "-" is treated as a non-path stdin sentinel, but mixed stdin-plus-file input is not represented as an implicit input fact.

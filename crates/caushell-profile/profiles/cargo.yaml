@@ -1,0 +1,119 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: cargo
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms: []
+
+modifiers: []
+subcommands:
+  roots:
+    - name: build
+      aliases: []
+      forms:
+        - id: build_project
+          selector:
+            kind: all
+            items: []
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: Cargo.toml
+                convention: cargo.manifest
+                purpose: project_config
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .cargo/config.toml
+                convention: cargo.tool_config
+                purpose: tool_config
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: run
+      aliases: []
+      forms:
+        - id: run_project
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: run_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: Cargo.toml
+                convention: cargo.manifest
+                purpose: project_config
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .cargo/config.toml
+                convention: cargo.tool_config
+                purpose: tool_config
+            - kind: execute_config_defined_task
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: test
+      aliases: []
+      forms:
+        - id: test_project
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: test_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: Cargo.toml
+                convention: cargo.manifest
+                purpose: project_config
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .cargo/config.toml
+                convention: cargo.tool_config
+                purpose: tool_config
+            - kind: execute_config_defined_task
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/known_limitations:
+    - Cargo build-script execution is not parsed yet; the profile currently models the manifest/config load and project-defined task surfaces.

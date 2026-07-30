@@ -1,0 +1,79 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: su
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: switch_user_shell
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: target_user
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: optional_one
+      - name: command_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: privilege_modifier
+        target:
+          kind: none
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities:
+            - spawn_shell
+            - run_command
+
+modifiers:
+  - id: command
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--command"
+    parameters:
+      - name: command_string
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: command_string
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

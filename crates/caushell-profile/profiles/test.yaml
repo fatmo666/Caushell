@@ -1,0 +1,45 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: test
+  aliases:
+    - "["
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: evaluate_expression
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: expression
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - File predicate operands are not split into read-path effects in this first profile slice.

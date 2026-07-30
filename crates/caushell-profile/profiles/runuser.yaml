@@ -1,0 +1,284 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: runuser
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: run_as_user_dispatch
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: user
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: command
+              - kind: has_modifier
+                modifier: session_command
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: privilege_modifier
+        target:
+          kind: none
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+  - id: command_string
+    selector:
+      kind: any
+      items:
+        - kind: has_modifier
+          modifier: command
+        - kind: has_modifier
+          modifier: session_command
+    effects:
+      - kind: privilege_modifier
+        target:
+          kind: none
+
+  - id: switch_user_shell
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: command
+              - kind: has_modifier
+                modifier: session_command
+              - kind: all
+                items:
+                  - kind: has_modifier
+                    modifier: user
+                  - kind: has_positional_at
+                    index: 0
+    parameters:
+      - name: target_user
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: optional_one
+      - name: command_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: privilege_modifier
+        target:
+          kind: none
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities:
+            - spawn_shell
+            - run_command
+
+modifiers:
+  - id: user
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+        - "--user"
+    parameters:
+      - name: user_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: command
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--command"
+    parameters:
+      - name: command_string
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: command_string
+
+  - id: session_command
+    matcher:
+      kind: any_flag
+      flags:
+        - "--session-command"
+    parameters:
+      - name: command_string
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: command_string
+
+  - id: group
+    matcher:
+      kind: any_flag
+      flags:
+        - "-g"
+        - "--group"
+    parameters:
+      - name: group_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: supplementary_group
+    matcher:
+      kind: any_flag
+      flags:
+        - "-G"
+        - "--supp-group"
+    parameters:
+      - name: group_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: shell
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--shell"
+    parameters:
+      - name: shell_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: whitelist_environment
+    matcher:
+      kind: any_flag
+      flags:
+        - "-w"
+        - "--whitelist-environment"
+    parameters:
+      - name: environment_list
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: login
+    matcher:
+      kind: any_flag
+      flags:
+        - "-"
+        - "-l"
+        - "--login"
+
+  - id: preserve_environment
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "-p"
+        - "--preserve-environment"
+
+  - id: pty
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--pty"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions: {}

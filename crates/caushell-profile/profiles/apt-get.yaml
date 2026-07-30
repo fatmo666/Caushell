@@ -1,0 +1,92 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: apt-get
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms: []
+modifiers:
+  - id: assume_yes
+    matcher:
+      kind: any_flag
+      flags:
+        - "-y"
+        - "--yes"
+
+subcommands:
+  roots:
+    - name: install
+      aliases: []
+      forms:
+        - id: install_packages
+          selector:
+            kind: has_positional_at
+            index: 0
+          parameters:
+            - name: package_specs
+              semantic:
+                kind: package_locator
+                manager: apt
+                locator_kinds:
+                  - registry_ref
+                  - unknown_dynamic
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: package_specs
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: package_specs
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: source
+      aliases: []
+      forms:
+        - id: source_packages
+          selector:
+            kind: has_positional_at
+            index: 0
+          parameters:
+            - name: package_specs
+              semantic:
+                kind: package_locator
+                manager: apt
+                locator_kinds:
+                  - registry_ref
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: package_specs
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+extensions:
+  caushell.profile/known_limitations:
+    - This first slice models `apt-get install <package_specs...>`, `apt-get install -y/--yes <package_specs...>`, and `apt-get source <package_specs...>`.
+    - This slice treats apt package operands as package references, not local `.deb` files or arbitrary URLs.
+    - Package removal, build-dep resolution, archive cache mutation, and dpkg-level filesystem side effects are intentionally out of scope for this profile slice.

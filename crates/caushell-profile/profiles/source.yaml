@@ -1,0 +1,57 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: source
+  aliases:
+    - "."
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: script_file
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: script_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: script_path
+      - kind: source_script_into_current_shell
+        target:
+          kind: slot
+          name: script_path
+
+modifiers: []
+subcommands: null
+extensions: {}

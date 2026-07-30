@@ -1,0 +1,46 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ghcs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: copilot_shell_suggest
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: prompt_arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv
+  caushell.profile/known_limitations:
+    - Generated shell command text is modeled as data output; execution is handled only if a later shell command actually runs it.

@@ -1,0 +1,52 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: history
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bash
+    - sh
+  requires_features: []
+
+forms:
+  - id: read_or_write_history
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .bash_history
+          convention: bash.history_file
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: .bash_history
+          convention: bash.history_file
+          purpose: tool_config
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

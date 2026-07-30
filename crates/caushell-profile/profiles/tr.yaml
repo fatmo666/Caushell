@@ -1,0 +1,73 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: tr
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: translate_stream
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: set1
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: optional_one
+      - name: set2
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: data
+      stderr_mode: opaque
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    effects:
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "-C"
+        - "--complement"
+        - "-d"
+        - "--delete"
+        - "-s"
+        - "--squeeze-repeats"
+        - "-t"
+        - "--truncate-set1"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

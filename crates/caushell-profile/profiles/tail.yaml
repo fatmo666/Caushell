@@ -1,0 +1,120 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: tail
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: read_inputs
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+modifiers:
+  - id: bytes
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--bytes"
+    parameters:
+      - name: byte_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: lines
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--lines"
+    parameters:
+      - name: line_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: follow
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--follow"
+        - "-F"
+        - "--retry"
+
+  - id: pid
+    matcher:
+      kind: any_flag
+      flags:
+        - "--pid"
+    parameters:
+      - name: pid
+        semantic:
+          kind: process_target
+          target_kind: pid
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: output_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+        - "--silent"
+        - "-v"
+        - "--verbose"
+        - "-z"
+        - "--zero-terminated"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Short option attached operands such as -n5 and -c10 are not split by the current projection layer.

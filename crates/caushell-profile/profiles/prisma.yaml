@@ -1,0 +1,79 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: prisma
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: project_database_command
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: prisma/schema.prisma
+          convention: prisma.schema
+          purpose: project_config
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: node_modules/.prisma
+          convention: prisma.generated_client
+          purpose: generic_operand
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+
+modifiers:
+  - id: schema
+    matcher:
+      kind: any_flag
+      flags:
+        - "--schema"
+    parameters:
+      - name: schema_path
+        semantic:
+          kind: path
+          role: config
+          purpose: project_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: schema_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv
+  caushell.profile/known_limitations:
+    - Prisma subcommands are represented as database/project operations because migrate, db, generate, and introspect share schema and database control surfaces.

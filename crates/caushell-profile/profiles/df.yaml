@@ -1,0 +1,85 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: df
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: report_filesystems
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: path_targets
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: path_targets
+
+modifiers:
+  - id: display_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all"
+        - "-h"
+        - "--human-readable"
+        - "-H"
+        - "-i"
+        - "--inodes"
+        - "-l"
+        - "--local"
+        - "-P"
+        - "--portability"
+        - "-T"
+        - "--print-type"
+
+  - id: block_size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-B"
+        - "--block-size"
+        - "-t"
+        - "--type"
+        - "-x"
+        - "--exclude-type"
+    parameters:
+      - name: display_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

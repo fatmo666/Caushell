@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PLUGIN_ROOT="$(cd -P "${SCRIPT_DIR}/.." && pwd -P)"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}"
+
+native_hook="${CLAUDE_PLUGIN_OPTION_HOOK_PATH:-${CAUSHELL_CLAUDE_HOOK_PATH:-}}"
+if [[ -z "${native_hook}" ]]; then
+  repo_root="${CAUSHELL_REPO_ROOT:-$(cd -P "${PLUGIN_ROOT}/../.." && pwd -P)}"
+  native_hook="${repo_root}/target/debug/caushell-claude-hook"
+fi
+if [[ ! -x "${native_hook}" ]] && command -v caushell-claude-hook >/dev/null 2>&1; then
+  native_hook="$(command -v caushell-claude-hook)"
+fi
+
+if [[ -z "${native_hook}" || ! -x "${native_hook}" ]]; then
+  runtime_path="${CAUSHELL_CLAUDE_RUNTIME_PATH:-}"
+  if [[ -z "${runtime_path}" ]] && command -v caushell >/dev/null 2>&1; then
+    runtime_path="$(command -v caushell)"
+  fi
+  failure_action="allow"
+  if [[ -n "${runtime_path}" && -x "${runtime_path}" ]]; then
+    failure_action="$("${runtime_path}" config get failure_action 2>/dev/null || printf allow)"
+  fi
+  if [[ "${1:-}" == "PreToolUse" ]]; then
+    case "${failure_action}" in
+      deny)
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"[Caushell] hook executable is unavailable"}}\n'
+        ;;
+      need_approval)
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"[Caushell] hook executable is unavailable"}}\n'
+        ;;
+      allow|*)
+        ;;
+    esac
+  fi
+  exit 0
+fi
+
+exec "${native_hook}" "$@"

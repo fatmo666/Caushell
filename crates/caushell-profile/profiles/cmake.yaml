@@ -1,0 +1,136 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: cmake
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: configure_or_build_project
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: CMakeLists.txt
+          convention: cmake.project_config
+          purpose: task_config
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: CMakeFiles
+          convention: cmake.default_build_metadata
+          purpose: tool_config
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+
+modifiers:
+  - id: source_dir
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+    parameters:
+      - name: source_dir
+        semantic:
+          kind: path
+          role: read
+          purpose: project_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_dir
+
+  - id: build_dir
+    matcher:
+      kind: any_flag
+      flags:
+        - "-B"
+        - "--build"
+        - "--install"
+    parameters:
+      - name: build_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: build_dir
+
+  - id: cache_define
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+    parameters:
+      - name: cache_defines
+        semantic:
+          kind: structured_value
+          context: env_assignment
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_many
+
+  - id: preload_script
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "-P"
+    parameters:
+      - name: script_or_cache_path
+        semantic:
+          kind: path
+          role: config
+          purpose: script_source
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: script_or_cache_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Configure, build, install, and script modes are represented under one project-operation form because all can load project code and mutate build metadata.

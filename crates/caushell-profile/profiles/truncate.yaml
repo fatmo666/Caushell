@@ -1,0 +1,137 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: truncate
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: has_flag
+      flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--version"
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "--help"
+
+  - id: resize_targets
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: size
+            - kind: has_modifier
+              modifier: reference
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: path_targets
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: path_targets
+
+modifiers:
+  - id: no_create
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--no-create"
+
+  - id: io_blocks
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--io-blocks"
+
+  - id: reference
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--reference"
+    parameters:
+      - name: reference_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: reference_path
+
+  - id: size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--size"
+    parameters:
+      - name: size_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+
+subcommands: null
+extensions: {}

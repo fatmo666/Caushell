@@ -1,0 +1,168 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: doas
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-L"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: privilege_modifier
+        target:
+          kind: none
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+  - id: shell
+    selector:
+      kind: has_flag
+      flag: "-s"
+    effects:
+      - kind: privilege_modifier
+        target:
+          kind: none
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities:
+            - spawn_shell
+            - run_command
+
+modifiers:
+  - id: user
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+    parameters:
+      - name: user_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: login_class
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+    parameters:
+      - name: login_class
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: config
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+    parameters:
+      - name: config_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_path
+
+  - id: non_interactive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+
+  - id: persist
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+
+  - id: shell
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+
+  - id: list
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "--version"
+
+subcommands: null
+extensions: {}

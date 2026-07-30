@@ -1,0 +1,72 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ifconfig
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: configure_interface
+    selector:
+      kind: has_positional_at
+      index: 1
+    parameters:
+      - name: interface_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: positional_at
+          index: 0
+        cardinality: required_one
+      - name: interface_arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+  - id: inspect_interfaces
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+    parameters:
+      - name: interface_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

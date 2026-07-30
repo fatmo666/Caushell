@@ -1,0 +1,124 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: pgrep
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: find_processes
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: patterns
+        semantic:
+          kind: process_target
+          target_kind: process_pattern
+          broad_match: true
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: full
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--full"
+
+  - id: output_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--list-full"
+        - "-l"
+        - "--list-name"
+        - "-c"
+        - "--count"
+        - "-n"
+        - "--newest"
+        - "-o"
+        - "--oldest"
+        - "-x"
+        - "--exact"
+
+  - id: parent
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--parent"
+    parameters:
+      - name: parent_pids
+        semantic:
+          kind: process_target
+          target_kind: pid
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: pidfile
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--pidfile"
+    parameters:
+      - name: pidfile
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: pidfile
+
+  - id: delimiter
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--delimiter"
+    parameters:
+      - name: delimiter
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - The profile models process discovery only. It does not treat matched processes as control targets because pgrep does not signal or mutate them.

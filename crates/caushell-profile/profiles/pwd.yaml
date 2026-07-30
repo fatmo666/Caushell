@@ -1,0 +1,50 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: pwd
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: print_working_directory
+    selector:
+      kind: all
+      items: []
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+
+modifiers:
+  - id: logical
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+        - "--logical"
+
+  - id: physical
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--physical"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - The current working directory is emitted as process context, not an argv path parameter.

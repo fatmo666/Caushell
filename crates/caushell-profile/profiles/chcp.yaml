@@ -1,0 +1,50 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: chcp
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - windows
+  shell_families:
+    - cmd
+    - powershell
+  requires_features: []
+
+forms:
+  - id: set_code_page
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: code_page
+        semantic:
+          kind: structured_value
+          context: numeric_quantity
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+  - id: print_code_page
+    selector:
+      kind: no_positional_args
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv

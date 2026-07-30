@@ -1,0 +1,188 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkfs.minix
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: create_filesystem
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: block_count
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+modifiers:
+  - id: minix_v1
+    matcher:
+      kind: any_flag
+      flags:
+        - "-1"
+
+  - id: minix_v2
+    matcher:
+      kind: any_flag
+      flags:
+        - "-2"
+        - "-v"
+
+  - id: minix_v3
+    matcher:
+      kind: any_flag
+      flags:
+        - "-3"
+
+  - id: name_length
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--namelength"
+    parameters:
+      - name: name_length_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: inode_count
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--inodes"
+    parameters:
+      - name: inode_count_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: check
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--check"
+
+  - id: badblocks_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "--badblocks"
+    parameters:
+      - name: badblocks_file_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: lock
+    matcher:
+      kind: any_flag
+      flags:
+        - "--lock"
+    parameters:
+      - name: lock_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"

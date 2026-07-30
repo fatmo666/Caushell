@@ -1,0 +1,230 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: fd
+  aliases:
+    - fdfind
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: search_paths
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: exec_each
+              - kind: has_modifier
+                modifier: exec_batch
+    parameters:
+      - name: search_roots
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: ":::"
+          - kind: exclude_literal
+            value: "::::"
+          - kind: exclude_literal
+            value: ":::+"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: search_roots
+
+  - id: exec_each
+    selector:
+      kind: has_modifier
+      modifier: exec_each
+    parameters:
+      - name: search_roots
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: leading_positionals_before_modifier
+          modifier: exec_each
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: ":::"
+          - kind: exclude_literal
+            value: "::::"
+          - kind: exclude_literal
+            value: ":::+"
+      - name: exec_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: ":::"
+          - kind: exclude_literal
+            value: "::::"
+          - kind: exclude_literal
+            value: ":::+"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: search_roots
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: exec_command
+          argv:
+            - exec_args
+
+  - id: exec_batch
+    selector:
+      kind: has_modifier
+      modifier: exec_batch
+    parameters:
+      - name: search_roots
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: leading_positionals_before_modifier
+          modifier: exec_batch
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: ":::"
+          - kind: exclude_literal
+            value: "::::"
+          - kind: exclude_literal
+            value: ":::+"
+      - name: exec_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: ":::"
+          - kind: exclude_literal
+            value: "::::"
+          - kind: exclude_literal
+            value: ":::+"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: search_roots
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: exec_command
+          argv:
+            - exec_args
+
+modifiers:
+  - id: exec_each
+    matcher:
+      kind: any_flag
+      flags:
+        - "-x"
+        - "--exec"
+    parameters:
+      - name: exec_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: exec_batch
+    matcher:
+      kind: any_flag
+      flags:
+        - "-X"
+        - "--exec-batch"
+    parameters:
+      - name: exec_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: jobs
+    matcher:
+      kind: any_flag
+      flags:
+        - "-j"
+        - "--jobs"
+    parameters:
+      - name: jobs_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_one
+
+  - id: arg_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--arg-file"
+    parameters:
+      - name: arg_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: arg_file
+
+  - id: dry_run
+    matcher:
+      kind: any_flag
+      flags:
+        - "--dry-run"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Explicit `-x` and `-X` wrapper dispatch is modeled; stdin-only item expansion is not statically expanded yet.
+    - The profile treats leading positional search roots as read paths and leaves uncommon fd predicates as inert residual operands.

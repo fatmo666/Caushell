@@ -1,0 +1,70 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: rename
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: rename_paths
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: expression
+        semantic:
+          kind: structured_value
+          context: path_expression
+        binding:
+          kind: positional_at
+          index: 0
+        cardinality: required_one
+      - name: replacement
+        semantic:
+          kind: plain_value
+        binding:
+          kind: positional_at
+          index: 1
+        cardinality: optional_one
+      - name: path_targets
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: move_path
+        target:
+          kind: slot
+          name: path_targets
+        host_risk:
+          semantic_class: move_source_path
+
+modifiers:
+  - id: no_action
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--no-act"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Perl rename and util-linux rename have different argument conventions; both are modeled as path move surfaces.

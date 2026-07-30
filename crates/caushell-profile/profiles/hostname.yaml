@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: hostname
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: set_hostname
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: hostname_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+  - id: print_hostname
+    selector:
+      kind: no_positional_args
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

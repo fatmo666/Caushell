@@ -1,0 +1,274 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: openssl
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms: []
+
+modifiers: []
+
+subcommands:
+  roots:
+    - name: enc
+      aliases: []
+      forms:
+        - id: decrypt_stream_to_stdout
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: decode
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: input_path
+                    - kind: has_modifier
+                      modifier: output_path
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: decrypt
+
+        - id: decrypt_stream_to_file
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: decode
+              - kind: has_modifier
+                modifier: output_path
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: input_path
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: decrypt
+
+        - id: decrypt_file_to_stdout
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: decode
+              - kind: has_modifier
+                modifier: input_path
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: output_path
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: decrypt
+
+        - id: decrypt_file_to_file
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: decode
+              - kind: has_modifier
+                modifier: input_path
+              - kind: has_modifier
+                modifier: output_path
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: decrypt
+
+        - id: encrypt_stream_to_stdout
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: decode
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: input_path
+                    - kind: has_modifier
+                      modifier: output_path
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: encrypt
+
+        - id: encrypt_stream_to_file
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: decode
+              - kind: has_modifier
+                modifier: output_path
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: input_path
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: encrypt
+
+        - id: encrypt_file_to_stdout
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: decode
+              - kind: has_modifier
+                modifier: input_path
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: output_path
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: encrypt
+
+        - id: encrypt_file_to_file
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: decode
+              - kind: has_modifier
+                modifier: input_path
+              - kind: has_modifier
+                modifier: output_path
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+              extensions:
+                transform.kind: encrypt
+      modifiers:
+        - id: decode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-d"
+
+        - id: input_path
+          matcher:
+            kind: any_flag
+            flags:
+              - "-in"
+          parameters:
+            - name: input_path
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: input_path
+
+        - id: output_path
+          matcher:
+            kind: any_flag
+            flags:
+              - "-out"
+          parameters:
+            - name: output_path
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: output_path
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/known_limitations:
+    - Current coverage is intentionally scoped to the enc subcommand and its local stream/file transform semantics.
+    - Cipher selection flags such as -aes-256-cbc are carried as inert modifiers for form selection purposes and are not typed beyond the enclosing encrypt/decrypt transform.

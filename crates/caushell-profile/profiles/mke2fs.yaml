@@ -1,0 +1,517 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mke2fs
+  aliases:
+    - mkfs.ext2
+    - mkfs.ext3
+    - mkfs.ext4
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_modifier
+              modifier: extended_options
+            - kind: has_modifier_parameter_matching
+              modifier: extended_options
+              parameter: extended_options_value
+              matcher:
+                kind: literal
+                value: "help"
+        - kind: all
+          items:
+            - kind: has_modifier
+              modifier: usage_type
+            - kind: has_modifier_parameter_matching
+              modifier: usage_type
+              parameter: usage_type_name
+              matcher:
+                kind: literal
+                value: "help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: version
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: extended_options
+              - kind: has_modifier
+                modifier: usage_type
+
+  - id: inspect_layout
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_modifier
+          modifier: no_create
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: version
+              - kind: has_modifier
+                modifier: extended_options
+              - kind: has_modifier
+                modifier: usage_type
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: create_filesystem
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: no_create
+              - kind: has_modifier
+                modifier: version
+              - kind: has_modifier
+                modifier: extended_options
+              - kind: has_modifier
+                modifier: usage_type
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: size
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: format_target
+
+modifiers:
+  - id: no_create
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+
+  - id: check
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+
+  - id: cluster_size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+    parameters:
+      - name: cluster_size_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: list_bad_blocks_from_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+    parameters:
+      - name: bad_blocks_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: block_size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+    parameters:
+      - name: block_size_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: root_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+    parameters:
+      - name: root_directory_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: direct_io
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+
+  - id: blocks_per_group
+    matcher:
+      kind: any_flag
+      flags:
+        - "-g"
+    parameters:
+      - name: blocks_per_group_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: flex_group_count
+    matcher:
+      kind: any_flag
+      flags:
+        - "-G"
+    parameters:
+      - name: flex_group_count_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: bytes_per_inode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+    parameters:
+      - name: bytes_per_inode_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: inode_size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+    parameters:
+      - name: inode_size_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: extended_options
+    matcher:
+      kind: any_flag
+      flags:
+        - "-E"
+        - "-R"
+    parameters:
+      - name: extended_options_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+
+  - id: journal
+    matcher:
+      kind: any_flag
+      flags:
+        - "-j"
+
+  - id: journal_options
+    matcher:
+      kind: any_flag
+      flags:
+        - "-J"
+    parameters:
+      - name: journal_options_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: inode_count
+    matcher:
+      kind: any_flag
+      flags:
+        - "-N"
+    parameters:
+      - name: inode_count_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: reserved_blocks_percentage
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+    parameters:
+      - name: reserved_blocks_percentage_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: creator_os
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+    parameters:
+      - name: creator_os_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: features
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+    parameters:
+      - name: features_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+
+  - id: fs_revision_level
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+    parameters:
+      - name: fs_revision_level_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: superblock_only
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+
+  - id: volume_label
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+    parameters:
+      - name: volume_label_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: last_mounted_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-M"
+    parameters:
+      - name: last_mounted_directory_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: filesystem_type
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+    parameters:
+      - name: filesystem_type_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: usage_type
+    matcher:
+      kind: any_flag
+      flags:
+        - "-T"
+    parameters:
+      - name: usage_type_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: error_behavior
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+    parameters:
+      - name: error_behavior_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: undo_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-z"
+    parameters:
+      - name: undo_file_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: uuid
+    matcher:
+      kind: any_flag
+      flags:
+        - "-U"
+    parameters:
+      - name: uuid_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+
+subcommands: null
+extensions: {}

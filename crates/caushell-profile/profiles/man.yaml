@@ -1,0 +1,75 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: man
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_manual_page
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: page_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: man
+          convention: manpage.search_path
+          purpose: generic_operand
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: pager
+          requires_tty: false
+          capabilities:
+            - run_command
+
+modifiers:
+  - id: pager
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--pager"
+    parameters:
+      - name: pager_command
+        semantic:
+          kind: command_ref
+          dispatch: command_name
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: pager_command
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - The default pager is modeled as an interactive escape surface because common pagers can spawn shells.

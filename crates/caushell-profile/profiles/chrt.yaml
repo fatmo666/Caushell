@@ -1,0 +1,177 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: chrt
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: process_id
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: priority
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+modifiers:
+  - id: scheduling_policy
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--batch"
+        - "-d"
+        - "--deadline"
+        - "-f"
+        - "--fifo"
+        - "-i"
+        - "--idle"
+        - "-o"
+        - "--other"
+        - "-r"
+        - "--rr"
+
+  - id: process_id
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--pid"
+
+  - id: all_tasks
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all-tasks"
+
+  - id: max
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "--max"
+
+  - id: deadline_runtime
+    matcher:
+      kind: any_flag
+      flags:
+        - "-T"
+        - "--sched-runtime"
+    parameters:
+      - name: runtime
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: deadline_period
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--sched-period"
+    parameters:
+      - name: period
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: deadline
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+        - "--sched-deadline"
+    parameters:
+      - name: deadline
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: reset_on_fork
+    matcher:
+      kind: any_flag
+      flags:
+        - "-R"
+        - "--reset-on-fork"
+
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions: {}

@@ -1,0 +1,541 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: perf
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms: []
+
+modifiers:
+  - id: global_help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+        - "--version"
+        - "--debug"
+        - "--no-pager"
+        - "--paginate"
+
+subcommands:
+  roots:
+    - name: stat
+      aliases: []
+      forms:
+        - id: stat_wrapped_command_after_dashdash
+          selector:
+            kind: has_dash_dash
+          parameters:
+            - name: wrapped_command
+              semantic:
+                kind: command_ref
+                dispatch: wrapper_command
+              binding:
+                kind: next_positional_after_dashdash
+              cardinality: required_one
+            - name: wrapped_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: dispatch_command
+              target:
+                kind: dispatch
+                command: wrapped_command
+                argv:
+                  - wrapped_args
+                environment: []
+        - id: stat_wrapped_command
+          selector:
+            kind: all
+            items:
+              - kind: no_dash_dash
+              - kind: has_positional_at
+                index: 0
+          parameters:
+            - name: wrapped_command
+              semantic:
+                kind: command_ref
+                dispatch: wrapper_command
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: wrapped_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: dispatch_command
+              target:
+                kind: dispatch
+                command: wrapped_command
+                argv:
+                  - wrapped_args
+                environment: []
+        - id: stat_counter_query
+          selector:
+            kind: no_positional_args
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: data
+      modifiers:
+        - id: stat_output
+          matcher:
+            kind: any_flag
+            flags:
+              - "-o"
+              - "--output"
+          parameters:
+            - name: output_path
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: output_path
+        - id: stat_value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--event"
+              - "-p"
+              - "--pid"
+              - "-t"
+              - "--tid"
+              - "-C"
+              - "--cpu"
+              - "-M"
+              - "--metrics"
+              - "-G"
+              - "--cgroup"
+              - "-r"
+              - "--repeat"
+              - "-I"
+              - "--interval-print"
+              - "-x"
+              - "--field-separator"
+              - "-D"
+              - "--delay"
+              - "--timeout"
+              - "--interval-count"
+              - "--filter"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+        - id: stat_flag
+          matcher:
+            kind: any_flag
+            flags:
+              - "-a"
+              - "--all-cpus"
+              - "-A"
+              - "--no-aggr"
+              - "-B"
+              - "--big-num"
+              - "-d"
+              - "-n"
+              - "--null"
+              - "--append"
+              - "--per-core"
+              - "--per-socket"
+              - "--per-node"
+              - "--per-thread"
+              - "--metric-only"
+              - "--no-big-num"
+              - "--no-csv-summary"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Optional perf stat operands and event syntax are consumed as plain option values; PMU expression parsing is intentionally out of scope for this profile.
+
+    - name: record
+      aliases: []
+      forms:
+        - id: record_wrapped_command_after_dashdash
+          selector:
+            kind: has_dash_dash
+          parameters:
+            - name: wrapped_command
+              semantic:
+                kind: command_ref
+                dispatch: wrapper_command
+              binding:
+                kind: next_positional_after_dashdash
+              cardinality: required_one
+            - name: wrapped_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: dispatch_command
+              target:
+                kind: dispatch
+                command: wrapped_command
+                argv:
+                  - wrapped_args
+                environment: []
+        - id: record_wrapped_command
+          selector:
+            kind: all
+            items:
+              - kind: no_dash_dash
+              - kind: has_positional_at
+                index: 0
+          parameters:
+            - name: wrapped_command
+              semantic:
+                kind: command_ref
+                dispatch: wrapper_command
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: wrapped_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: dispatch_command
+              target:
+                kind: dispatch
+                command: wrapped_command
+                argv:
+                  - wrapped_args
+                environment: []
+        - id: record_existing_process
+          selector:
+            kind: no_positional_args
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: data
+      modifiers:
+        - id: record_output
+          matcher:
+            kind: any_flag
+            flags:
+              - "-o"
+              - "--output"
+          parameters:
+            - name: output_path
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: output_path
+        - id: record_value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--event"
+              - "-p"
+              - "--pid"
+              - "-t"
+              - "--tid"
+              - "-C"
+              - "--cpu"
+              - "-F"
+              - "--freq"
+              - "-c"
+              - "--count"
+              - "-m"
+              - "--mmap-pages"
+              - "--call-graph"
+              - "--filter"
+              - "--uid"
+              - "-D"
+              - "--delay"
+              - "--switch-output"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+        - id: record_flag
+          matcher:
+            kind: any_flag
+            flags:
+              - "-a"
+              - "--all-cpus"
+              - "-R"
+              - "--raw-samples"
+              - "-N"
+              - "--no-buildid"
+              - "-n"
+              - "--no-samples"
+              - "-q"
+              - "--quiet"
+              - "-g"
+              - "--append"
+              - "--timestamp-filename"
+              - "--tail-synthesize"
+              - "--sample-cpu"
+              - "--sample-identifier"
+              - "--no-bpf-event"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Optional perf record operands are consumed as plain option values; sampling configuration internals are not expanded.
+
+    - name: script
+      aliases: []
+      forms:
+        - id: script_report
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: perf_data_path
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_flag
+                flag: "-i"
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: perf_data_path
+      modifiers:
+        - id: script_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-s"
+              - "--script"
+          parameters:
+            - name: script_path
+              semantic:
+                kind: path
+                role: read
+                purpose: script_source
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: script_path
+            - kind: execute_payload
+              target:
+                kind: slot
+                name: script_path
+        - id: input_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-i"
+              - "--input"
+          parameters:
+            - name: perf_data_path
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: perf_data_path
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: report
+      aliases: []
+      forms:
+        - id: report_file
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: perf_data_path
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_flag
+                flag: "-i"
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: perf_data_path
+      modifiers:
+        - id: input_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-i"
+              - "--input"
+          parameters:
+            - name: perf_data_path
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: perf_data_path
+        - id: stdio
+          matcher:
+            kind: any_flag
+            flags:
+              - "--stdio"
+              - "-n"
+              - "--show-nr-samples"
+              - "-g"
+              - "--call-graph"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: annotate
+      aliases: []
+      forms:
+        - id: annotate_file
+          selector:
+            kind: all
+            items: []
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: data
+      modifiers:
+        - id: input_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-i"
+              - "--input"
+          parameters:
+            - name: perf_data_path
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: perf_data_path
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: top
+      aliases: []
+      forms:
+        - id: interactive_top
+          selector:
+            kind: all
+            items: []
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: terminal_ui
+                requires_tty: true
+                capabilities:
+                  - run_command
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: list
+      aliases: []
+      forms:
+        - id: list_events
+          selector:
+            kind: all
+            items: []
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: data
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D4-security-bash/gtfobins_commands.json
+  caushell.profile/known_limitations:
+    - This profile models perf subcommands with direct child execution or script execution surfaces; detailed event grammar and perf.data internals are intentionally not parsed.

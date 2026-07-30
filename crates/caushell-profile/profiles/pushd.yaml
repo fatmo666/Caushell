@@ -1,0 +1,55 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: pushd
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bash
+  requires_features: []
+
+forms:
+  - id: change_directory_stack
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: directory
+        semantic:
+          kind: path
+          role: cwd_anchor
+          purpose: working_directory
+        binding:
+          kind: next_positional
+        cardinality: optional_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: directory
+      - kind: set_current_working_directory
+        target:
+          kind: slot
+          name: directory
+
+modifiers:
+  - id: no_cd
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

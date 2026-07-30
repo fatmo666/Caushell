@@ -1,0 +1,1698 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: sfdisk
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-v"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: list_partition_tables
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-d"
+            - kind: has_flag
+              flag: "--dump"
+            - kind: has_flag
+              flag: "-J"
+            - kind: has_flag
+              flag: "--json"
+            - kind: has_flag
+              flag: "-g"
+            - kind: has_flag
+              flag: "--show-geometry"
+            - kind: has_flag
+              flag: "-G"
+            - kind: has_flag
+              flag: "--show-pt-geometry"
+            - kind: has_flag
+              flag: "-l"
+            - kind: has_flag
+              flag: "--list"
+            - kind: has_flag
+              flag: "-F"
+            - kind: has_flag
+              flag: "--list-free"
+            - kind: has_flag
+              flag: "-s"
+            - kind: has_flag
+              flag: "--show-size"
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--verify"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: device_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: device_paths
+
+  - id: list_partition_types
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-T"
+        - kind: has_flag
+          flag: "--list-types"
+
+  - id: delete_partitions
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--delete"
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--delete"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: delete_partition_numbers
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: inspect_active_partitions
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-A"
+            - kind: has_flag
+              flag: "--activate"
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: set_active_partitions
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-A"
+            - kind: has_flag
+              flag: "--activate"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: activate_partition_numbers
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: reorder_partitions
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-r"
+            - kind: has_flag
+              flag: "--reorder"
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: inspect_partition_label
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--part-label"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--part-label"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: set_partition_label
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--part-label"
+        - kind: has_positional_at
+          index: 2
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--part-label"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: label_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: inspect_partition_type
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "--part-type"
+            - kind: has_flag
+              flag: "--id"
+            - kind: has_flag
+              flag: "-c"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: set_partition_type
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "--part-type"
+            - kind: has_flag
+              flag: "--id"
+            - kind: has_flag
+              flag: "-c"
+        - kind: has_positional_at
+          index: 2
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: type_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: inspect_partition_uuid
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--part-uuid"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--part-uuid"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: set_partition_uuid
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--part-uuid"
+        - kind: has_positional_at
+          index: 2
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--part-uuid"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: uuid_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: inspect_partition_attributes
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--part-attrs"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--part-attrs"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: set_partition_attributes
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--part-attrs"
+        - kind: has_positional_at
+          index: 2
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--part-attrs"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: partition_number
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: attrs_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: inspect_disk_id
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--disk-id"
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--disk-id"
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: set_disk_id
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--disk-id"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--disk-id"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: disk_id_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: relocate_partition_headers
+    selector:
+      kind: all
+      items:
+        - kind: has_flag
+          flag: "--relocate"
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: relocate_operation
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_flag
+          flag: "--relocate"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: backup_partition_table
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-b"
+            - kind: has_flag
+              flag: "--backup"
+            - kind: has_flag
+              flag: "-B"
+            - kind: has_flag
+              flag: "--backup-pt-sectors"
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: backup_output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "-O"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: backup_output_path_long
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "--backup-file"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+      - kind: write_path
+        target:
+          kind: slot
+          name: backup_output_path
+      - kind: write_path
+        target:
+          kind: slot
+          name: backup_output_path_long
+
+  - id: scripted_device_session
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: stdin_payload_available
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-data"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_data
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-use-fsync"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_use_fsync
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-d"
+              - kind: has_flag
+                flag: "--dump"
+              - kind: has_flag
+                flag: "-J"
+              - kind: has_flag
+                flag: "--json"
+              - kind: has_flag
+                flag: "-b"
+              - kind: has_flag
+                flag: "--backup"
+              - kind: has_flag
+                flag: "-B"
+              - kind: has_flag
+                flag: "--backup-pt-sectors"
+              - kind: has_flag
+                flag: "-g"
+              - kind: has_flag
+                flag: "--show-geometry"
+              - kind: has_flag
+                flag: "-G"
+              - kind: has_flag
+                flag: "--show-pt-geometry"
+              - kind: has_flag
+                flag: "-l"
+              - kind: has_flag
+                flag: "--list"
+              - kind: has_flag
+                flag: "-F"
+              - kind: has_flag
+                flag: "--list-free"
+              - kind: has_flag
+                flag: "-s"
+              - kind: has_flag
+                flag: "--show-size"
+              - kind: has_flag
+                flag: "-T"
+              - kind: has_flag
+                flag: "--list-types"
+              - kind: has_flag
+                flag: "-A"
+              - kind: has_flag
+                flag: "--activate"
+              - kind: has_flag
+                flag: "-r"
+              - kind: has_flag
+                flag: "--reorder"
+              - kind: has_flag
+                flag: "--part-label"
+              - kind: has_flag
+                flag: "--part-type"
+              - kind: has_flag
+                flag: "--id"
+              - kind: has_flag
+                flag: "-c"
+              - kind: has_flag
+                flag: "--part-uuid"
+              - kind: has_flag
+                flag: "--part-attrs"
+              - kind: has_flag
+                flag: "--disk-id"
+              - kind: has_flag
+                flag: "--relocate"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--verify"
+              - kind: has_flag
+                flag: "--delete"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_session_target
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+
+  - id: dry_run_scripted_device_session
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: stdin_payload_available
+        - kind: has_modifier
+          modifier: no_act
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-data"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_data
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-use-fsync"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_use_fsync
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-d"
+              - kind: has_flag
+                flag: "--dump"
+              - kind: has_flag
+                flag: "-J"
+              - kind: has_flag
+                flag: "--json"
+              - kind: has_flag
+                flag: "-b"
+              - kind: has_flag
+                flag: "--backup"
+              - kind: has_flag
+                flag: "-B"
+              - kind: has_flag
+                flag: "--backup-pt-sectors"
+              - kind: has_flag
+                flag: "-g"
+              - kind: has_flag
+                flag: "--show-geometry"
+              - kind: has_flag
+                flag: "-G"
+              - kind: has_flag
+                flag: "--show-pt-geometry"
+              - kind: has_flag
+                flag: "-l"
+              - kind: has_flag
+                flag: "--list"
+              - kind: has_flag
+                flag: "-F"
+              - kind: has_flag
+                flag: "--list-free"
+              - kind: has_flag
+                flag: "-s"
+              - kind: has_flag
+                flag: "--show-size"
+              - kind: has_flag
+                flag: "-T"
+              - kind: has_flag
+                flag: "--list-types"
+              - kind: has_flag
+                flag: "-A"
+              - kind: has_flag
+                flag: "--activate"
+              - kind: has_flag
+                flag: "-r"
+              - kind: has_flag
+                flag: "--reorder"
+              - kind: has_flag
+                flag: "--part-label"
+              - kind: has_flag
+                flag: "--part-type"
+              - kind: has_flag
+                flag: "--id"
+              - kind: has_flag
+                flag: "-c"
+              - kind: has_flag
+                flag: "--part-uuid"
+              - kind: has_flag
+                flag: "--part-attrs"
+              - kind: has_flag
+                flag: "--disk-id"
+              - kind: has_flag
+                flag: "--relocate"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--verify"
+              - kind: has_flag
+                flag: "--delete"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+
+  - id: dry_run_interactive_device_session
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_modifier
+          modifier: no_act
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-data"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_data
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-use-fsync"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_use_fsync
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-d"
+              - kind: has_flag
+                flag: "--dump"
+              - kind: has_flag
+                flag: "-J"
+              - kind: has_flag
+                flag: "--json"
+              - kind: has_flag
+                flag: "-b"
+              - kind: has_flag
+                flag: "--backup"
+              - kind: has_flag
+                flag: "-B"
+              - kind: has_flag
+                flag: "--backup-pt-sectors"
+              - kind: has_flag
+                flag: "-g"
+              - kind: has_flag
+                flag: "--show-geometry"
+              - kind: has_flag
+                flag: "-G"
+              - kind: has_flag
+                flag: "--show-pt-geometry"
+              - kind: has_flag
+                flag: "-l"
+              - kind: has_flag
+                flag: "--list"
+              - kind: has_flag
+                flag: "-F"
+              - kind: has_flag
+                flag: "--list-free"
+              - kind: has_flag
+                flag: "-s"
+              - kind: has_flag
+                flag: "--show-size"
+              - kind: has_flag
+                flag: "-T"
+              - kind: has_flag
+                flag: "--list-types"
+              - kind: has_flag
+                flag: "-A"
+              - kind: has_flag
+                flag: "--activate"
+              - kind: has_flag
+                flag: "-r"
+              - kind: has_flag
+                flag: "--reorder"
+              - kind: has_flag
+                flag: "--part-label"
+              - kind: has_flag
+                flag: "--part-type"
+              - kind: has_flag
+                flag: "--id"
+              - kind: has_flag
+                flag: "-c"
+              - kind: has_flag
+                flag: "--part-uuid"
+              - kind: has_flag
+                flag: "--part-attrs"
+              - kind: has_flag
+                flag: "--disk-id"
+              - kind: has_flag
+                flag: "--relocate"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--verify"
+              - kind: has_flag
+                flag: "--delete"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+              - kind: stdin_payload_available
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: interactive_device_session
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-data"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_data
+        - kind: not
+          item:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--move-use-fsync"
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: move_use_fsync
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-d"
+              - kind: has_flag
+                flag: "--dump"
+              - kind: has_flag
+                flag: "-J"
+              - kind: has_flag
+                flag: "--json"
+              - kind: has_flag
+                flag: "-b"
+              - kind: has_flag
+                flag: "--backup"
+              - kind: has_flag
+                flag: "-B"
+              - kind: has_flag
+                flag: "--backup-pt-sectors"
+              - kind: has_flag
+                flag: "-g"
+              - kind: has_flag
+                flag: "--show-geometry"
+              - kind: has_flag
+                flag: "-G"
+              - kind: has_flag
+                flag: "--show-pt-geometry"
+              - kind: has_flag
+                flag: "-l"
+              - kind: has_flag
+                flag: "--list"
+              - kind: has_flag
+                flag: "-F"
+              - kind: has_flag
+                flag: "--list-free"
+              - kind: has_flag
+                flag: "-s"
+              - kind: has_flag
+                flag: "--show-size"
+              - kind: has_flag
+                flag: "-T"
+              - kind: has_flag
+                flag: "--list-types"
+              - kind: has_flag
+                flag: "-A"
+              - kind: has_flag
+                flag: "--activate"
+              - kind: has_flag
+                flag: "-r"
+              - kind: has_flag
+                flag: "--reorder"
+              - kind: has_flag
+                flag: "--part-label"
+              - kind: has_flag
+                flag: "--part-type"
+              - kind: has_flag
+                flag: "--id"
+              - kind: has_flag
+                flag: "-c"
+              - kind: has_flag
+                flag: "--part-uuid"
+              - kind: has_flag
+                flag: "--part-attrs"
+              - kind: has_flag
+                flag: "--disk-id"
+              - kind: has_flag
+                flag: "--relocate"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--verify"
+              - kind: has_flag
+                flag: "--delete"
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-v"
+              - kind: has_flag
+                flag: "--version"
+              - kind: stdin_payload_available
+              - kind: has_flag
+                flag: "-n"
+              - kind: has_flag
+                flag: "--no-act"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_session_target
+
+modifiers:
+  - id: append
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--append"
+
+  - id: backup
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--backup"
+
+  - id: bytes
+    matcher:
+      kind: any_flag
+      flags:
+        - "--bytes"
+
+  - id: move_data
+    matcher:
+      kind: any_flag
+      flags:
+        - "--move-data"
+    constraints:
+      - kind: requires_modifier
+        modifier: partno
+    parameters:
+      - name: move_data_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: move_use_fsync
+    matcher:
+      kind: any_flag
+      flags:
+        - "--move-use-fsync"
+    constraints:
+      - kind: requires_modifier
+        modifier: move_data
+
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--force"
+
+  - id: color
+    matcher:
+      kind: any_flag
+      flags:
+        - "--color"
+    parameters:
+      - name: color_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: lock
+    matcher:
+      kind: any_flag
+      flags:
+        - "--lock"
+    parameters:
+      - name: lock_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: no_act
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--no-act"
+
+  - id: no_reread
+    matcher:
+      kind: any_flag
+      flags:
+        - "--no-reread"
+
+  - id: no_tell_kernel
+    matcher:
+      kind: any_flag
+      flags:
+        - "--no-tell-kernel"
+
+  - id: output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_columns
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: partno
+    matcher:
+      kind: any_flag
+      flags:
+        - "-N"
+        - "--partno"
+    parameters:
+      - name: partition_number_selector
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: wipe
+    matcher:
+      kind: any_flag
+      flags:
+        - "-w"
+        - "--wipe"
+    parameters:
+      - name: wipe_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: wipe_partitions
+    matcher:
+      kind: any_flag
+      flags:
+        - "-W"
+        - "--wipe-partitions"
+    parameters:
+      - name: wipe_partitions_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: label
+    matcher:
+      kind: any_flag
+      flags:
+        - "-X"
+        - "--label"
+    parameters:
+      - name: label_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: label_nested
+    matcher:
+      kind: any_flag
+      flags:
+        - "-Y"
+        - "--label-nested"
+    parameters:
+      - name: nested_label_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: linux_compat
+    matcher:
+      kind: any_flag
+      flags:
+        - "-L"
+        - "--Linux"
+
+  - id: unit
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+        - "--unit"
+    parameters:
+      - name: unit_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: required_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--version"
+
+subcommands: null
+extensions: {}

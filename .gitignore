@@ -1,0 +1,64 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Release/package artifacts
+/dist/
+*.tar.gz
+*.tar.gz.sha256
+*.vsix
+
+# Node / VS Code local state
+node_modules/
+/.vscode/
+/.idea/
+/.cursor/
+/.codex/
+/.claude/
+/AGENTS.md
+
+# Python/test caches
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.ruff_cache/
+/.mypy_cache/
+/.coverage
+/coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Runtime state and logs
+/tmp/
+/.local/
+/state/
+*.log
+*.pid
+*.sock
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Local research/lab assets not included in the public v0.0.1 snapshot
+/docs/
+/docker/
+/assets/caushell-pipeline-placeholder.svg
+/scripts/check-command-profile-coverage.py
+/scripts/container-hard-deny-check.py
+/scripts/container-hard-deny-graph-check.py
+/scripts/container-profile-smoke.py
+/scripts/run-hard-deny-container-csv.py
+/scripts/run-hard-deny-graph-container-csv.py
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

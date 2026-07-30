@@ -1,0 +1,176 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: vim
+  aliases:
+    - vi
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: script_mode
+    selector:
+      kind: any
+      items:
+        - kind: has_modifier
+          modifier: script_input
+        - kind: all
+          items:
+            - kind: has_flag
+              flag: "-s"
+            - kind: any
+              items:
+                - kind: has_flag
+                  flag: "-e"
+                - kind: has_flag
+                  flag: "-E"
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: interactive_editor
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: script_input
+              - kind: all
+                items:
+                  - kind: has_flag
+                    flag: "-s"
+                  - kind: any
+                    items:
+                      - kind: has_flag
+                        flag: "-e"
+                      - kind: has_flag
+                        flag: "-E"
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: editor
+          requires_tty: true
+          capabilities:
+            - spawn_shell
+            - run_command
+            - write_buffer_to_path
+modifiers:
+  - id: script_input
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+    parameters:
+      - name: script_input
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: cmd_after_load
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+    parameters:
+      - name: editor_commands
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: cmd_before_vimrc
+    matcher:
+      kind: any_flag
+      flags:
+        - "--cmd"
+    parameters:
+      - name: pre_vimrc_commands
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: session_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+    parameters:
+      - name: session_file
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D4-security-bash/analysis.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - First slice only suppresses interactive breakout for explicit Ex-plus-silent mode and does not parse Vim command language.
+    - -S, -c, and --cmd operands are consumed to avoid false generic file reads, but their command/session semantics are not yet separately modeled.
+    - Startup config, modeline, and plugin surfaces remain separate from interactive breakout modeling.

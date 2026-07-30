@@ -1,0 +1,221 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mkfs.cramfs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: build_image
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: source_dir
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: output_file
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_dir
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_file
+
+modifiers:
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+
+  - id: warnings_as_errors
+    matcher:
+      kind: any_flag
+      flags:
+        - "-E"
+
+  - id: block_size
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+    parameters:
+      - name: block_size_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: edition
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+    parameters:
+      - name: edition_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: endianness
+    matcher:
+      kind: any_flag
+      flags:
+        - "-N"
+    parameters:
+      - name: endianness_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: insert_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+    parameters:
+      - name: insert_file_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: filesystem_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+    parameters:
+      - name: filesystem_name_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: pad_boot_code
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+
+  - id: sort_directory_entries
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+
+  - id: explicit_holes
+    matcher:
+      kind: any_flag
+      flags:
+        - "-z"
+
+  - id: lock
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+    parameters:
+      - name: lock_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"

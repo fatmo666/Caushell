@@ -1,0 +1,113 @@
+{
+  "name": "caushell-vscode",
+  "displayName": "Caushell Audit",
+  "description": "Inspect Caushell sessions, command streams, and execution details from VS Code.",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "publisher": "caushell",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:caushell.currentRunningSessions",
+    "onView:caushell.otherRunningSessions",
+    "onView:caushell.currentHistorySessions",
+    "onView:caushell.otherHistorySessions",
+    "onCommand:caushell.refreshSessions",
+    "onCommand:caushell.openSessionTimeline",
+    "onCommand:caushell.configureStoreRoot",
+    "onCommand:caushell.openConfig",
+    "onCommand:caushell.setFailureAction"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Caushell",
+      "properties": {
+        "caushell.storeRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Caushell store root containing caushell.sqlite3."
+        },
+        "caushell.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path or executable name for caushell. If omitted, the extension checks Caushell hook runtime env vars, then PATH, then repo-local target/debug."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "caushell",
+          "title": "Caushell",
+          "icon": "resources/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "caushell": [
+        {
+          "id": "caushell.currentRunningSessions",
+          "name": "Current Workspace Running"
+        },
+        {
+          "id": "caushell.otherRunningSessions",
+          "name": "Other Workspace Running"
+        },
+        {
+          "id": "caushell.currentHistorySessions",
+          "name": "Current Workspace History",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "caushell.otherHistorySessions",
+          "name": "Other Workspace History",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "caushell.refreshSessions",
+        "title": "Caushell: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "caushell.openSessionTimeline",
+        "title": "Caushell: Open Session Detail"
+      },
+      {
+        "command": "caushell.configureStoreRoot",
+        "title": "Caushell: Configure Store Root"
+      },
+      {
+        "command": "caushell.openConfig",
+        "title": "Caushell: Open Configuration"
+      },
+      {
+        "command": "caushell.setFailureAction",
+        "title": "Caushell: Set Failure Action"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "caushell.refreshSessions",
+          "when": "view =~ /^caushell\\.(currentRunningSessions|otherRunningSessions|currentHistorySessions|otherHistorySessions)$/",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "caushell.openSessionTimeline",
+          "when": "view =~ /^caushell\\.(currentRunningSessions|otherRunningSessions|currentHistorySessions|otherHistorySessions)$/ && viewItem == caushellSession",
+          "group": "inline"
+        }
+      ]
+    }
+  }
+}

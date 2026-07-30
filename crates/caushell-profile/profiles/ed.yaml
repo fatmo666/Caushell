@@ -1,0 +1,102 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ed
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: stdin_script_mode
+    selector:
+      kind: all
+      items:
+        - kind: stdin_payload_available
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    implicit_inputs:
+      - source: stdin_data
+        semantic:
+          kind: plain_value
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: consume_stdin
+        target:
+          kind: implicit_input
+          source: stdin_data
+
+  - id: interactive_editor
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: stdin_payload_available
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: line_editor
+          requires_tty: true
+          capabilities:
+            - spawn_shell
+            - write_buffer_to_path
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D4-security-bash/analysis.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - First slice treats stdin-fed ed command language as non-interactive data/script mode and does not parse ed command language.
+    - Shell escape capability is modeled only for ordinary interactive entry, not for scripted stdin playback.

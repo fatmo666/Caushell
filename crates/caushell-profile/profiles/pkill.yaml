@@ -1,0 +1,97 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: pkill
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: process_pattern_targets
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: full
+        - kind: has_positional_at
+          index: 0
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: targets
+        semantic:
+          kind: process_target
+          target_kind: process_pattern
+          broad_match: true
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: control_process
+        target:
+          kind: slot
+          name: targets
+
+  - id: process_name_targets
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: full
+        - kind: has_positional_at
+          index: 0
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: targets
+        semantic:
+          kind: process_target
+          target_kind: process_name
+          broad_match: true
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: control_process
+        target:
+          kind: slot
+          name: targets
+
+modifiers:
+  - id: full
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--full"
+
+  - id: signal
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--signal"
+    parameters:
+      - name: signal_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+subcommands: null
+extensions: {}

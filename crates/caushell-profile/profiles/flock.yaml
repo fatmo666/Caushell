@@ -1,0 +1,257 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: flock
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: lock_and_dispatch_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: command
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: lock_target
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: lock_target
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+  - id: lock_and_execute_command_string
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: command
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: lock_target
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: lock_target
+
+  - id: lock_fd
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at_matching
+          index: 0
+          matcher:
+            kind: regex_pattern
+            pattern: "^\\d+$"
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: command
+    parameters:
+      - name: fd
+        semantic:
+          kind: plain_value
+        binding:
+          kind: next_positional
+        cardinality: required_one
+
+  - id: lock_path_only
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: regex_pattern
+              pattern: "^\\d+$"
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: command
+    parameters:
+      - name: lock_target
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: lock_target
+
+  - id: metadata
+    selector:
+      kind: any
+      items:
+        - kind: no_positional_args
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+        - kind: has_flag
+          flag: "-V"
+        - kind: has_flag
+          flag: "--version"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: data
+
+modifiers:
+  - id: mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--shared"
+        - "-x"
+        - "-e"
+        - "--exclusive"
+        - "-u"
+        - "--unlock"
+        - "-n"
+        - "--nonblock"
+        - "-F"
+        - "--no-fork"
+        - "-o"
+        - "--close"
+        - "--verbose"
+
+  - id: command
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--command"
+    parameters:
+      - name: command_string
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: command_string
+
+  - id: timeout
+    matcher:
+      kind: any_flag
+      flags:
+        - "-w"
+        - "--wait"
+        - "-E"
+        - "--conflict-exit-code"
+    parameters:
+      - name: option_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D4-security-bash/gtfobins_commands.json
+  caushell.profile/known_limitations:
+    - Lock acquisition is modeled as a target path, not as raw file overwrite. The execution surfaces are the wrapped command and -c command string.

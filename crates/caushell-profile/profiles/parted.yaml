@@ -1,0 +1,1161 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: parted
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-v"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: list_devices
+    selector:
+      kind: has_modifier
+      modifier: list_devices
+
+  - id: print_device
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_positional_at_or_after_matching
+          index: 1
+          matcher:
+            kind: literal
+            value: "print"
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: align_check_device
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_positional_at_or_after_matching
+          index: 1
+          matcher:
+            kind: literal
+            value: "align-check"
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: target
+
+  - id: help_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_positional_at_matching
+          index: 1
+          matcher:
+            kind: literal
+            value: "help"
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 3
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_devices
+
+  - id: quit_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_positional_at_matching
+          index: 1
+          matcher:
+            kind: literal
+            value: "quit"
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 2
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_devices
+
+  - id: select_device
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_positional_at_matching
+          index: 1
+          matcher:
+            kind: literal
+            value: "select"
+        - kind: has_positional_at
+          index: 2
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 3
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_devices
+
+  - id: set_display_unit
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: has_positional_at_matching
+          index: 1
+          matcher:
+            kind: literal
+            value: "unit"
+        - kind: has_positional_at_matching
+          index: 2
+          matcher:
+            kind: regex_pattern
+            pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 3
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_devices
+
+  - id: mutate_disk_label
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "mklabel"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 2
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "mklabel"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: partition_table_mutation_target
+
+  - id: mutate_disk_label_after_select
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "mklabel"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 4
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 5
+              matcher:
+                kind: literal
+                value: "mklabel"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: positional_at
+          index: 2
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        catastrophic:
+          semantic_class: partition_table_mutation_target
+
+  - id: create_partition
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "mkpart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 2
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "mkpart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: create_partition_after_select
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "mkpart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 4
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 5
+              matcher:
+                kind: literal
+                value: "mkpart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: positional_at
+          index: 2
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: remove_partition
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "rm"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 2
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "rm"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: remove_partition_after_select
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "rm"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 4
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 5
+              matcher:
+                kind: literal
+                value: "rm"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: positional_at
+          index: 2
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: resize_partition
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "resizepart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 2
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "resizepart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: set_partition_metadata_after_select
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: any
+              items:
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "name"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "set"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "toggle"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "type"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "disk_set"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "disk_toggle"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "rescue"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 4
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: any
+              items:
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "name"
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "set"
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "toggle"
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "type"
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "disk_set"
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "disk_toggle"
+                - kind: has_positional_at_matching
+                  index: 5
+                  matcher:
+                    kind: literal
+                    value: "rescue"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: positional_at
+          index: 2
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: resize_partition_after_select
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "resizepart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "select"
+            - kind: has_positional_at
+              index: 2
+            - kind: has_positional_at_matching
+              index: 3
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 4
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: has_positional_at_matching
+              index: 5
+              matcher:
+                kind: literal
+                value: "resizepart"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: positional_at
+          index: 2
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_layout_mutation_target
+
+  - id: set_partition_metadata
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: any
+              items:
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "name"
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "set"
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "toggle"
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "type"
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "disk_set"
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "disk_toggle"
+                - kind: has_positional_at_matching
+                  index: 1
+                  matcher:
+                    kind: literal
+                    value: "rescue"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+        - kind: all
+          items:
+            - kind: has_positional_at
+              index: 0
+            - kind: has_positional_at_matching
+              index: 1
+              matcher:
+                kind: literal
+                value: "unit"
+            - kind: has_positional_at_matching
+              index: 2
+              matcher:
+                kind: regex_pattern
+                pattern: "(?i)^(s|b|kib|mib|gib|tib|kb|mb|gb|tb|%|cyl|chs|compact)$"
+            - kind: any
+              items:
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "name"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "set"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "toggle"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "type"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "disk_set"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "disk_toggle"
+                - kind: has_positional_at_matching
+                  index: 3
+                  matcher:
+                    kind: literal
+                    value: "rescue"
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: list_devices
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_state_mutation_target
+
+  - id: interactive_device_session
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: list_devices
+              - kind: has_modifier
+                modifier: script
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "print"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "help"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "quit"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "select"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "unit"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "align-check"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "mklabel"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "mkpart"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "rm"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "resizepart"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "name"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "set"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "toggle"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "type"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "disk_set"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "disk_toggle"
+              - kind: has_positional_at_or_after_matching
+                index: 1
+                matcher:
+                  kind: literal
+                  value: "rescue"
+    parameters:
+      - name: target
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: target
+        host_risk:
+          semantic_class: partition_table_session_target
+
+modifiers:
+  - id: align
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--align"
+    parameters:
+      - name: alignment_type
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: fix
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--fix"
+
+  - id: json
+    matcher:
+      kind: any_flag
+      flags:
+        - "-j"
+        - "--json"
+
+  - id: list_devices
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "--list"
+
+  - id: machine
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "--machine"
+
+  - id: script
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--script"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--version"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - gnu-parted-manual-2.3-command-line-options
+    - gnu-parted-manual-2.4-session-commands
+  caushell.profile/known_limitations:
+    - The current profile models direct destructive session commands plus the common `unit <arg> ...` and `select <device> ...` setup prefixes, but it still does not model broader command ordering or combinations of multiple setup commands before a destructive operation.

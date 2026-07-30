@@ -1,0 +1,23 @@
+{
+  "name": "caushell",
+  "interface": {
+    "displayName": "Caushell"
+  },
+  "plugins": [
+    {
+      "name": "caushell-codex",
+      "source": {
+        "source": "local",
+        "path": "./integrations/codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX"
+        ]
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

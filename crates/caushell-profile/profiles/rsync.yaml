@@ -1,0 +1,143 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: rsync
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: import_from_remote
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: has_positional_at_matching
+          index: 0
+          matcher:
+            kind: structured_value_context
+            context: remote_spec
+        - kind: not
+          item:
+            kind: last_positional_matches
+            matcher:
+              kind: structured_value_context
+              context: remote_spec
+    parameters:
+      - name: remote_sources
+        semantic:
+          kind: endpoint
+          endpoint_kind: remote_spec
+          usage: fetch_source
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: remote_sources
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+  - id: export_to_remote
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: structured_value_context
+              context: remote_spec
+        - kind: last_positional_matches
+          matcher:
+            kind: structured_value_context
+            context: remote_spec
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: remote_destination
+        semantic:
+          kind: endpoint
+          endpoint_kind: remote_spec
+          usage: upload_target
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: remote_destination
+
+modifiers:
+  - id: remote_shell
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--rsh"
+    parameters:
+      - name: remote_shell
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: remote_helper
+    matcher:
+      kind: any_flag
+      flags:
+        - "--rsync-path"
+    parameters:
+      - name: remote_helper
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - This profile covers the core local-vs-remote transfer boundary and does not expand rsync include/exclude rule files or daemon-side module configuration.
+    - Directory sync writes are represented at the explicit destination operand rather than at each implicit member path.

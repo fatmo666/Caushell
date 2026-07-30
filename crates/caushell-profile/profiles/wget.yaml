@@ -1,0 +1,327 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: wget
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: fetch_to_stdout
+    selector:
+      kind: has_modifier_parameter_matching
+      modifier: output_document
+      parameter: output_path
+      matcher:
+        kind: literal
+        value: "-"
+    parameters:
+      - name: endpoints
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoints
+
+  - id: fetch_to_explicit_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: output_document
+        - kind: not
+          item:
+            kind: has_modifier_parameter_matching
+            modifier: output_document
+            parameter: output_path
+            matcher:
+              kind: literal
+              value: "-"
+    parameters:
+      - name: endpoints
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoints
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: fetch_to_directory
+    selector:
+      kind: has_modifier
+      modifier: directory_prefix
+    parameters:
+      - name: endpoints
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoints
+      - kind: write_path
+        target:
+          kind: derived_path
+          root:
+            kind: slot
+            name: output_directory
+          source:
+            kind: slot
+            name: endpoints
+          rule:
+            kind: url_basename
+          purpose: generic_operand
+
+  - id: fetch_to_default_file
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: output_document
+              - kind: has_modifier
+                modifier: directory_prefix
+    parameters:
+      - name: endpoints
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: fetch_source
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoints
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: endpoints
+          rule:
+            kind: url_basename
+          purpose: generic_operand
+
+modifiers:
+  - id: output_document
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+        - "--output-document"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: directory_prefix
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--directory-prefix"
+    parameters:
+      - name: output_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_directory
+
+  - id: input_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--input-file"
+    parameters:
+      - name: input_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_file
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: common_value_option
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--execute"
+        - "-o"
+        - "--output-file"
+        - "-a"
+        - "--append-output"
+        - "--report-speed"
+        - "-B"
+        - "--base"
+        - "--config"
+        - "--rejected-log"
+        - "-t"
+        - "--tries"
+        - "--retry-on-http-error"
+        - "--start-pos"
+        - "--progress"
+        - "-T"
+        - "--timeout"
+        - "--dns-timeout"
+        - "--connect-timeout"
+        - "--read-timeout"
+        - "-w"
+        - "--wait"
+        - "--waitretry"
+        - "-Q"
+        - "--quota"
+        - "--bind-address"
+        - "--limit-rate"
+        - "--restrict-file-names"
+        - "--prefer-family"
+        - "--user"
+        - "--password"
+        - "--use-askpass"
+        - "--local-encoding"
+        - "--remote-encoding"
+        - "--cut-dirs"
+        - "--http-user"
+        - "--http-password"
+        - "--default-page"
+        - "--header"
+        - "--compression"
+        - "--max-redirect"
+        - "--proxy-user"
+        - "--proxy-password"
+        - "--referer"
+        - "-U"
+        - "--user-agent"
+        - "--load-cookies"
+        - "--save-cookies"
+        - "--post-data"
+        - "--post-file"
+        - "--method"
+        - "--body-data"
+        - "--body-file"
+        - "--secure-protocol"
+        - "--certificate"
+        - "--certificate-type"
+        - "--private-key"
+        - "--private-key-type"
+        - "--ca-certificate"
+        - "--ca-directory"
+        - "--crl-file"
+        - "--pinnedpubkey"
+        - "--random-file"
+        - "--ciphers"
+        - "--hsts-file"
+        - "--ftp-user"
+        - "--ftp-password"
+        - "--warc-file"
+        - "--warc-header"
+        - "--warc-max-size"
+        - "--warc-dedup"
+        - "--warc-tempdir"
+        - "-l"
+        - "--level"
+        - "--backups"
+        - "-A"
+        - "--accept"
+        - "-R"
+        - "--reject"
+        - "--accept-regex"
+        - "--reject-regex"
+        - "--regex-type"
+        - "-D"
+        - "--domains"
+        - "--exclude-domains"
+        - "--follow-tags"
+        - "--ignore-tags"
+        - "-I"
+        - "--include-directories"
+        - "-X"
+        - "--exclude-directories"
+    parameters:
+      - name: option_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - URL lists from -i are modeled as a read path, not expanded into endpoint artifacts without reading file content.

@@ -1,0 +1,10 @@
+[package]
+name = "caushell-parse"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+caushell-types = { path = "../caushell-types" }
+tree-sitter = "0.26.8"
+tree-sitter-bash = "0.25.1"

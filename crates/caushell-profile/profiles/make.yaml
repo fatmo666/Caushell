@@ -1,0 +1,88 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: make
+  aliases:
+    - gmake
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: run_default
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: file
+    parameters:
+      - name: targets
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: Makefile
+          convention: make.makefile
+          purpose: task_config
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+
+  - id: run_with_file
+    selector:
+      kind: has_modifier
+      modifier: file
+    parameters:
+      - name: config_path
+        semantic:
+          kind: path
+          role: config
+          purpose: task_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: targets
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_path
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+
+modifiers:
+  - id: file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - The default form models the conventional Makefile in the current working directory; recursive directory traversal and fallback filenames are not expanded yet.

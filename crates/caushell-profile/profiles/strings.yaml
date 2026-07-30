@@ -1,0 +1,123 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: strings
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: extract_from_stdin
+    selector:
+      kind: no_positional_args
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: extract_from_files
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: min_length
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--bytes"
+    parameters:
+      - name: min_length
+        semantic:
+          kind: structured_value
+          context: numeric_quantity
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: encoding
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--encoding"
+    parameters:
+      - name: encoding
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: output_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all"
+        - "-f"
+        - "--print-file-name"
+        - "-w"
+        - "--include-all-whitespace"
+
+  - id: radix
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--radix"
+    parameters:
+      - name: radix
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - The profile models strings as a read-only extraction transform and does not distinguish binary format-specific scanning modes.

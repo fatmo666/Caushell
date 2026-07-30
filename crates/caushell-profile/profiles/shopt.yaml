@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: shopt
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bash
+  requires_features: []
+
+forms:
+  - id: mutate_shell_options
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: option_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+modifiers:
+  - id: option_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "-u"
+        - "-p"
+        - "-q"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

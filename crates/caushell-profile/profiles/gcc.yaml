@@ -1,0 +1,212 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: gcc
+  aliases:
+    - cc
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: compile_to_explicit_output
+    selector:
+      kind: has_modifier
+      modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: compile_to_default_output
+    selector:
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: a.out
+          convention: gcc.default_output
+          purpose: generic_operand
+
+modifiers:
+  - id: output_path
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: include_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "-L"
+    parameters:
+      - name: search_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: search_paths
+
+  - id: include_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-include"
+        - "-imacros"
+    parameters:
+      - name: include_files
+        semantic:
+          kind: path
+          role: read
+          purpose: in_process_code
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: include_files
+
+  - id: specs_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-specs"
+    parameters:
+      - name: specs_file
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: specs_file
+
+  - id: plugin
+    matcher:
+      kind: any_flag
+      flags:
+        - "-fplugin"
+    parameters:
+      - name: plugin_path
+        semantic:
+          kind: in_process_code_load
+          load_kind: library_path
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_or_short_attached
+        cardinality: optional_many
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: plugin_path
+
+  - id: wrapper_program
+    matcher:
+      kind: any_flag
+      flags:
+        - "-wrapper"
+    parameters:
+      - name: wrapper_command
+        semantic:
+          kind: command_ref
+          dispatch: command_name
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapper_command
+
+  - id: compile_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "-S"
+        - "-E"
+        - "-shared"
+        - "-static"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Compiler driver response files and linker plugin side effects are not expanded yet.
+    - Attached output operands such as -oapp depend on projection support for short-option attached values in this profile.

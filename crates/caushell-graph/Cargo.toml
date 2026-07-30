@@ -1,0 +1,8 @@
+[package]
+name = "caushell-graph"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+caushell-types = { path = "../caushell-types" }

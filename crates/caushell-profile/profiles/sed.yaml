@@ -1,0 +1,160 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: sed
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: explicit_script_transform
+    selector:
+      kind: any
+      items:
+        - kind: has_modifier
+          modifier: inline_script
+        - kind: has_modifier
+          modifier: script_file
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: positional_script_transform
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: inline_script
+              - kind: has_modifier
+                modifier: script_file
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: script
+        semantic:
+          kind: structured_value
+          context: sed_script
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+modifiers:
+  - id: inline_script
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--expression"
+    parameters:
+      - name: scripts
+        semantic:
+          kind: structured_value
+          context: sed_script
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: script_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: script_files
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: script_files
+
+  - id: in_place
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--in-place"
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: input_paths
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--quiet"
+        - "--silent"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - In-place editing writes are modeled against input_paths when the -i flag appears, but backup suffix operands are not split from short-option clusters.
+    - Sed scripts are structured values, not recursively parsed shell payloads.

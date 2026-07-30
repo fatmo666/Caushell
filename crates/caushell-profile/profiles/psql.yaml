@@ -1,0 +1,303 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: psql
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: execute_sql_command
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: command
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: file
+    parameters:
+      - name: database_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: execute_sql_file
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: file
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: command
+    parameters:
+      - name: database_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: interactive_or_stdin_query
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: command
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: file
+    parameters:
+      - name: database_names
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: host
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--host"
+    parameters:
+      - name: host
+        semantic:
+          kind: endpoint
+          endpoint_kind: host_port
+          usage: control_plane
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: host
+
+  - id: port
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--port"
+    parameters:
+      - name: port
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: username
+    matcher:
+      kind: any_flag
+      flags:
+        - "-U"
+        - "--username"
+    parameters:
+      - name: username
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: dbname
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--dbname"
+    parameters:
+      - name: dbname
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: command
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--command"
+    parameters:
+      - name: sql
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: sql_file
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: sql_file
+
+  - id: output_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: record_separator
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--field-separator"
+        - "-R"
+        - "--record-separator"
+    parameters:
+      - name: separator
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: output_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-A"
+        - "--no-align"
+        - "-t"
+        - "--tuples-only"
+        - "-q"
+        - "--quiet"
+        - "-X"
+        - "--no-psqlrc"
+
+  - id: variable
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--set"
+        - "--variable"
+    parameters:
+      - name: variable_assignment
+        semantic:
+          kind: structured_value
+          context: env_assignment
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: print_option
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+        - "--pset"
+    parameters:
+      - name: print_option
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - SQL text is modeled as plain data rather than recursively parsed code; database-side mutation semantics are not inferred from SQL content.
+    - Connection information supplied through environment variables such as PGHOST and PGPASSWORD is outside this command profile and belongs to shell/environment state.

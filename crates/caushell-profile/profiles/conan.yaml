@@ -1,0 +1,126 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: conan
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms: []
+modifiers: []
+
+subcommands:
+  roots:
+    - name: install
+      aliases: []
+      forms:
+        - id: install_requirements
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: requires
+              - kind: has_modifier
+                modifier: tool_requires
+
+        - id: install_requirement_reference
+          selector:
+            kind: has_positional_at
+            index: 0
+          parameters:
+            - name: requires
+              semantic:
+                kind: package_locator
+                manager: conan
+                locator_kinds:
+                  - registry_ref
+                  - local_path
+                  - unknown_dynamic
+              binding:
+                kind: positional_at
+                index: 0
+              cardinality: required_one
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: requires
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: requires
+      modifiers:
+        - id: requires
+          matcher:
+            kind: any_flag
+            flags:
+              - "--requires"
+          parameters:
+            - name: requires
+              semantic:
+                kind: package_locator
+                manager: conan
+                locator_kinds:
+                  - registry_ref
+                  - local_path
+                  - unknown_dynamic
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: requires
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: requires
+
+        - id: tool_requires
+          matcher:
+            kind: any_flag
+            flags:
+              - "--tool-requires"
+          parameters:
+            - name: tool_requires
+              semantic:
+                kind: package_locator
+                manager: conan
+                locator_kinds:
+                  - registry_ref
+                  - local_path
+                  - unknown_dynamic
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+          effects:
+            - kind: import_package
+              target:
+                kind: slot
+                name: tool_requires
+            - kind: execute_imported_package_logic
+              target:
+                kind: slot
+                name: tool_requires
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+extensions:
+  caushell.profile/known_limitations:
+    - This first slice models `conan install <reference>`, `conan install --requires ...`, and `conan install --tool-requires ...`.
+    - Profile arguments, build/host context separation, lockfiles, generators, deployers, and graph-only modes are not modeled yet.

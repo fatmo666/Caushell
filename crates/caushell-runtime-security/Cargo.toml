@@ -1,0 +1,8 @@
+[package]
+name = "caushell-runtime-security"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+[dependencies]
+libc = "0.2"

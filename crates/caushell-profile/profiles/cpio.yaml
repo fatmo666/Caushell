@@ -1,0 +1,211 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: cpio
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: extract_archive
+    selector:
+      kind: has_modifier
+      modifier: extract_mode
+    parameters:
+      - name: member_patterns
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: archive_path
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_archive_path
+
+  - id: create_archive
+    selector:
+      kind: has_modifier
+      modifier: create_mode
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: archive_path
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_archive_path
+
+  - id: pass_through_archive
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: pass_through_mode
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: optional_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+modifiers:
+  - id: extract_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--extract"
+
+  - id: create_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--create"
+
+  - id: pass_through_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--pass-through"
+
+  - id: archive_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--file"
+    constraints:
+      - kind: requires_modifier
+        modifier: extract_mode
+    parameters:
+      - name: archive_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: create_archive_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "--file"
+        - "-F"
+    constraints:
+      - kind: requires_modifier
+        modifier: create_mode
+    parameters:
+      - name: archive_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: input_archive_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+    parameters:
+      - name: input_archive_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: output_archive_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+    parameters:
+      - name: output_archive_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Cpio mode-specific archive file surfaces are split, but extraction outputs into the working tree and stdin-provided file lists remain implicit.

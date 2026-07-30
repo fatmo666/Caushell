@@ -1,0 +1,197 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: find
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: exec_command
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-exec"
+        - kind: has_flag
+          flag: "-execdir"
+    parameters:
+      - name: exec_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: following_flag
+          flag: "-exec"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: execdir_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: following_flag
+          flag: "-execdir"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: exec_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_until_literal
+          terminator: ";"
+          include_terminator: false
+        cardinality: optional_many
+      - name: search_roots
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "{}"
+          - kind: exclude_literal
+            value: ";"
+          - kind: exclude_literal
+            value: "+"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: search_roots
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: exec_command
+          argv:
+            - exec_args
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: execdir_command
+          argv:
+            - exec_args
+
+  - id: enumerate_paths
+    selector:
+      kind: not
+      item:
+        kind: any
+        items:
+          - kind: has_flag
+            flag: "-exec"
+          - kind: has_flag
+            flag: "-execdir"
+    parameters:
+      - name: search_roots
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: search_roots
+
+modifiers:
+  - id: name_pattern
+    matcher:
+      kind: any_flag
+      flags:
+        - "-name"
+        - "-iname"
+        - "-path"
+        - "-ipath"
+        - "-regex"
+        - "-iregex"
+    parameters:
+      - name: patterns
+        semantic:
+          kind: structured_value
+          context: path_expression
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: type_filter
+    matcher:
+      kind: any_flag
+      flags:
+        - "-type"
+    parameters:
+      - name: file_types
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: traversal_control
+    matcher:
+      kind: any_flag
+      flags:
+        - "-maxdepth"
+        - "-mindepth"
+    parameters:
+      - name: depth_values
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: output_actions
+    matcher:
+      kind: any_flag
+      flags:
+        - "-print"
+        - "-print0"
+        - "-ls"
+
+  - id: delete_action
+    matcher:
+      kind: any_flag
+      flags:
+        - "-delete"
+    effects:
+      - kind: delete_path
+        target:
+          kind: slot
+          name: search_roots
+        catastrophic:
+          semantic_class: delete_path
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - The current profile models -exec and -execdir with semicolon termination. Plus-terminated batching is recognized as an argument value but is not yet a separate dispatch cardinality model.
+    - Search expressions are partially typed; uncommon predicates are left as residual operands rather than command-specific runtime behavior.

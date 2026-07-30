@@ -1,0 +1,303 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: wipefs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: show_help
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-h"
+        - kind: has_flag
+          flag: "--help"
+
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_flag
+              flag: "-V"
+            - kind: has_flag
+              flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+
+  - id: inspect_device
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: destructive_all
+              - kind: has_modifier
+                modifier: offset
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: device_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: device_paths
+
+  - id: preview_wipe_device_signatures
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: destructive_all
+            - kind: has_modifier
+              modifier: offset
+        - kind: has_modifier
+          modifier: no_act
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: device_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: device_paths
+
+  - id: wipe_device_signatures
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: destructive_all
+            - kind: has_modifier
+              modifier: offset
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: no_act
+              - kind: has_flag
+                flag: "-h"
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "-V"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: device_paths
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: device_paths
+        catastrophic:
+          semantic_class: filesystem_signature_wipe_target
+
+modifiers:
+  - id: destructive_all
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all"
+
+  - id: backup
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--backup"
+
+  - id: force
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--force"
+
+  - id: noheadings
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+        - "--noheadings"
+
+  - id: json
+    matcher:
+      kind: any_flag
+      flags:
+        - "-J"
+        - "--json"
+
+  - id: no_act
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--no-act"
+
+  - id: offset
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--offset"
+    parameters:
+      - name: offset_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
+  - id: output_columns
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+        - "--output"
+    parameters:
+      - name: output_column_list
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: parsable
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--parsable"
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: type_filter
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--types"
+    parameters:
+      - name: type_filter_list
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: lock
+    matcher:
+      kind: any_flag
+      flags:
+        - "--lock"
+    parameters:
+      - name: lock_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - The current profile recognizes `wipefs --backup`, but it does not yet model the HOME-relative backup file write side effect that occurs in destructive `--all` or `--offset` flows, including `--no-act` preview mode.

@@ -1,0 +1,109 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: mv
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: target_directory
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: move_path
+        target:
+          kind: slot
+          name: source_paths
+        host_risk:
+          semantic_class: move_source_path
+
+  - id: default_move
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: move_path
+        target:
+          kind: slot
+          name: source_paths
+        host_risk:
+          semantic_class: move_source_path
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+modifiers:
+  - id: target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--target-directory"
+    parameters:
+      - name: destination_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_directory
+
+subcommands: null
+extensions: {}

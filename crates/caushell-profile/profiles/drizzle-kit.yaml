@@ -1,0 +1,79 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: drizzle-kit
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: project_database_command
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: drizzle.config.ts
+          convention: drizzle.project_config
+          purpose: project_config
+      - kind: load_in_process_code
+        target:
+          kind: tool_convention_path
+          path: drizzle.config.ts
+          convention: drizzle.project_config
+          purpose: in_process_code
+      - kind: network_endpoint
+        target:
+          kind: none
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: drizzle
+          convention: drizzle.migrations_dir
+          purpose: generic_operand
+
+modifiers:
+  - id: config
+    matcher:
+      kind: any_flag
+      flags:
+        - "--config"
+    parameters:
+      - name: config_path
+        semantic:
+          kind: in_process_code_load
+          load_kind: path
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: config_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D3-real-incidents/frequency_sorted.csv

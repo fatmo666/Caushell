@@ -1,0 +1,224 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: sort
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: sort_to_stdout
+    selector:
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: sort_to_file
+    selector:
+      kind: has_modifier
+      modifier: output_path
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: output_path
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_path
+
+  - id: key
+    matcher:
+      kind: any_flag
+      flags:
+        - "-k"
+        - "--key"
+    parameters:
+      - name: key_spec
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: field_separator
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--field-separator"
+    parameters:
+      - name: separator
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: temp_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-T"
+        - "--temporary-directory"
+    parameters:
+      - name: temp_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: temp_directory
+
+  - id: compare_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--ignore-leading-blanks"
+        - "-d"
+        - "--dictionary-order"
+        - "-f"
+        - "--ignore-case"
+        - "-g"
+        - "--general-numeric-sort"
+        - "-h"
+        - "--human-numeric-sort"
+        - "-M"
+        - "--month-sort"
+        - "-n"
+        - "--numeric-sort"
+        - "-R"
+        - "--random-sort"
+        - "-r"
+        - "--reverse"
+        - "-V"
+        - "--version-sort"
+
+  - id: output_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--check"
+        - "-C"
+        - "--check=quiet"
+        - "-m"
+        - "--merge"
+        - "-s"
+        - "--stable"
+        - "-u"
+        - "--unique"
+        - "-z"
+        - "--zero-terminated"
+
+  - id: compress_program
+    matcher:
+      kind: any_flag
+      flags:
+        - "--compress-program"
+    parameters:
+      - name: compress_program
+        semantic:
+          kind: command_ref
+          dispatch: command_name
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: compress_program
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Inline --output=PATH and --compress-program=PROG operands depend on projection support for long-option attached values.

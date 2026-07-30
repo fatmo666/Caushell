@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "crates/caushell-codex-hook",
+    "crates/caushell-claude-hook",
+    "crates/caushell-adapter-codex",
+    "crates/caushell-adapter-claude",
+    "crates/caushell",
+    "crates/caushell-config",
+    "crates/caushell-core",
+    "crates/caushell-graph",
+    "crates/caushell-parse",
+    "crates/caushell-passes",
+    "crates/caushell-profile",
+    "crates/caushell-query",
+    "crates/caushell-runtime-security",
+    "crates/caushell-runner",
+    "crates/caushell-store",
+    "crates/caushell-types",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+license = "Apache-2.0"

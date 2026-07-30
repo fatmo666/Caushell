@@ -1,0 +1,102 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: dvc
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: repository_operation
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .dvc/config
+          convention: dvc.repo_config
+          purpose: project_config
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: dvc.yaml
+          convention: dvc.pipeline_config
+          purpose: task_config
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: .dvc
+          convention: dvc.metadata_dir
+          purpose: tool_config
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+
+modifiers:
+  - id: change_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+        - "--cd"
+    parameters:
+      - name: working_directory
+        semantic:
+          kind: path
+          role: cwd_anchor
+          purpose: working_directory
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: working_directory
+
+  - id: remote
+    matcher:
+      kind: any_flag
+      flags:
+        - "-r"
+        - "--remote"
+    parameters:
+      - name: remote_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: none
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - DVC subcommands are represented as repository operations because pull/push/repro/status share config, metadata, and pipeline execution surfaces.

@@ -1,0 +1,63 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: bind
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bash
+  requires_features: []
+
+forms:
+  - id: mutate_readline_bindings
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: bindings
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+modifiers:
+  - id: input_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+    parameters:
+      - name: input_path
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: input_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

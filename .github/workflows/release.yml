@@ -1,0 +1,193 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Validate release scripts
+        run: |
+          bash -n scripts/install.sh
+          bash -n scripts/package-release.sh
+          bash -n scripts/verify-release-package.sh
+
+      - name: Validate plugin contracts
+        run: python3 scripts/verify-plugin-contracts.py
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Install musl toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build release package
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: bash scripts/package-release.sh "${{ matrix.target }}"
+
+      - name: Verify package checksum
+        shell: bash
+        run: |
+          cd target/dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "caushell-${{ matrix.target }}.tar.gz.sha256"
+          else
+            shasum -a 256 -c "caushell-${{ matrix.target }}.tar.gz.sha256"
+          fi
+
+      - name: Smoke test installer
+        shell: bash
+        run: |
+          install_root="${RUNNER_TEMP}/caushell-install"
+          CAUSHELL_DOWNLOAD_BASE_URL="file://${PWD}/target/dist" \
+            CAUSHELL_INSTALL_DIR="${install_root}" \
+            bash scripts/install.sh
+
+          for binary in \
+            caushell \
+            caushell-adapter-codex \
+            caushell-codex-hook \
+            caushell-adapter-claude \
+            caushell-claude-hook
+          do
+            test -x "${install_root}/${binary}"
+          done
+
+          "${install_root}/caushell" --help >/dev/null
+          bash scripts/verify-release-package.sh "${{ matrix.target }}" "${install_root}"
+          CAUSHELL_UPDATE_BASE_URL="file://${PWD}/target/dist" \
+            CAUSHELL_UPDATE_INSTALL_DIR="${install_root}" \
+            "${install_root}/caushell" update --check
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: caushell-${{ matrix.target }}
+          path: |
+            target/dist/caushell-${{ matrix.target }}.tar.gz
+            target/dist/caushell-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify collected release assets
+        run: |
+          cd dist
+          for checksum in caushell-*.tar.gz.sha256; do
+            sha256sum -c "${checksum}"
+          done
+
+      - name: Add installer assets
+        run: |
+          install -m 0755 scripts/install.sh dist/install.sh
+          cd dist
+          sha256sum install.sh > install.sh.sha256
+
+      - name: Verify release asset names
+        shell: bash
+        run: |
+          cd dist
+          sort > "${RUNNER_TEMP}/expected-assets.txt" <<'EOF'
+          caushell-aarch64-apple-darwin.tar.gz
+          caushell-aarch64-apple-darwin.tar.gz.sha256
+          caushell-x86_64-apple-darwin.tar.gz
+          caushell-x86_64-apple-darwin.tar.gz.sha256
+          caushell-x86_64-unknown-linux-musl.tar.gz
+          caushell-x86_64-unknown-linux-musl.tar.gz.sha256
+          install.sh
+          install.sh.sha256
+          EOF
+          find . -maxdepth 1 -type f \
+            -printf '%f\n' \
+            | sort > "${RUNNER_TEMP}/actual-assets.txt"
+          diff -u "${RUNNER_TEMP}/expected-assets.txt" "${RUNNER_TEMP}/actual-assets.txt"
+
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: dist/*
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="${GITHUB_REF_NAME}"
+
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release delete "${release_tag}" --yes
+          fi
+
+          gh release create "${release_tag}" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --latest \
+            --title "Caushell ${release_tag}"

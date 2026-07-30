@@ -1,0 +1,54 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: gunzip
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: default_file_mode
+    selector:
+      kind: has_positional_at
+      index: 0
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+      - kind: write_path
+        target:
+          kind: derived_path
+          source:
+            kind: slot
+            name: input_paths
+          rule:
+            kind: strip_suffix
+            suffix: ".gz"
+          purpose: generic_operand
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Success-conditioned deletion of the compressed input file is not modeled in this slice.

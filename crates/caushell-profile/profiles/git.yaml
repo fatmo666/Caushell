@@ -1,0 +1,4863 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: git
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms: []
+
+modifiers:
+  - id: work_tree
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+    parameters:
+      - name: working_directory
+        semantic:
+          kind: path
+          role: cwd_anchor
+          purpose: working_directory
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: working_directory
+
+  - id: no_verify
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+        - "--no-verify"
+
+subcommands:
+  roots:
+    - name: clone
+      aliases: []
+      forms:
+        - id: clone_repository_with_recursive_submodules
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 1
+              - kind: has_flag
+                flag: "--recurse-submodules"
+          parameters:
+            - name: repository
+              semantic:
+                kind: endpoint
+                endpoint_kind: url
+                usage: fetch_source
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: destination
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: next_positional
+              cardinality: required_one
+          effects:
+            - kind: network_endpoint
+              target:
+                kind: slot
+                name: repository
+            - kind: write_path
+              target:
+                kind: slot
+                name: destination
+            - kind: load_config
+              target:
+                kind: derived_path
+                source:
+                  kind: slot
+                  name: destination
+                rule:
+                  kind: child_under
+                  relative_path: .gitmodules
+                purpose: tool_config
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                root: destination
+                path_set: registered_submodule_worktrees
+        - id: clone_repository
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: all
+                  items:
+                    - kind: has_positional_at
+                      index: 1
+                    - kind: has_flag
+                      flag: "--recurse-submodules"
+          parameters:
+            - name: repository
+              semantic:
+                kind: endpoint
+                endpoint_kind: url
+                usage: fetch_source
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: destination
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: next_positional
+              cardinality: optional_one
+          effects:
+            - kind: network_endpoint
+              target:
+                kind: slot
+                name: repository
+            - kind: write_path
+              target:
+                kind: slot
+                name: destination
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: remote
+      aliases: []
+      forms:
+        - id: list_remotes
+          selector:
+            kind: all
+            items: []
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers: []
+      children:
+        - name: add
+          aliases: []
+          forms:
+            - id: add_remote
+              selector:
+                kind: has_positional_at
+                index: 0
+              parameters:
+                - name: remote_name
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: next_positional
+                  cardinality: required_one
+                - name: endpoint
+                  semantic:
+                    kind: endpoint
+                    endpoint_kind: url
+                    usage: control_plane
+                  binding:
+                    kind: next_positional
+                  cardinality: required_one
+              effects:
+                - kind: network_endpoint
+                  target:
+                    kind: slot
+                    name: endpoint
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: remove
+          aliases:
+            - rm
+          forms:
+            - id: remove_remote
+              selector:
+                kind: has_positional_at
+                index: 0
+              parameters:
+                - name: remote_name
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: next_positional
+                  cardinality: required_one
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: rename
+          aliases: []
+          forms:
+            - id: rename_remote
+              selector:
+                kind: has_positional_at
+                index: 1
+              parameters:
+                - name: remote_names
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: required_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: get-url
+          aliases: []
+          forms:
+            - id: get_remote_url
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: remote_name
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              stream_contract:
+                stdin_mode: ignored
+                stdout_mode: data
+                stderr_mode: opaque
+              effects:
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+                - kind: transform_data
+                  target:
+                    kind: none
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: set-url
+          aliases: []
+          forms:
+            - id: set_remote_url
+              selector:
+                kind: has_positional_at
+                index: 1
+              parameters:
+                - name: remote_name
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: next_positional
+                  cardinality: required_one
+                - name: endpoint
+                  semantic:
+                    kind: endpoint
+                    endpoint_kind: url
+                    usage: control_plane
+                  binding:
+                    kind: next_positional
+                  cardinality: required_one
+              effects:
+                - kind: network_endpoint
+                  target:
+                    kind: slot
+                    name: endpoint
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: show
+          aliases: []
+          forms:
+            - id: show_remote
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: remote_names
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              stream_contract:
+                stdin_mode: ignored
+                stdout_mode: data
+                stderr_mode: opaque
+              effects:
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+                - kind: network_endpoint
+                  target:
+                    kind: none
+                - kind: transform_data
+                  target:
+                    kind: none
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions:
+            caushell.profile/known_limitations:
+              - git remote show can be local-only with -n, but this profile currently records the default network inspection surface for the subcommand.
+        - name: prune
+          aliases: []
+          forms:
+            - id: prune_remote_dry_run
+              selector:
+                kind: has_modifier
+                modifier: dry_run
+              parameters:
+                - name: remote_names
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              stream_contract:
+                stdin_mode: ignored
+                stdout_mode: data
+                stderr_mode: opaque
+              effects:
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+                - kind: network_endpoint
+                  target:
+                    kind: none
+                - kind: transform_data
+                  target:
+                    kind: none
+            - id: prune_remote_tracking_refs
+              selector:
+                kind: not
+                item:
+                  kind: has_modifier
+                  modifier: dry_run
+              parameters:
+                - name: remote_names
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              effects:
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+                - kind: network_endpoint
+                  target:
+                    kind: none
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+          modifiers:
+            - id: dry_run
+              matcher:
+                kind: any_flag
+                flags:
+                  - "-n"
+                  - "--dry-run"
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: update
+          aliases: []
+          forms:
+            - id: update_remotes
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: remote_names
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              effects:
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+                - kind: network_endpoint
+                  target:
+                    kind: none
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: set-head
+          aliases: []
+          forms:
+            - id: set_remote_head
+              selector:
+                kind: has_positional_at
+                index: 0
+              parameters:
+                - name: remote_args
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: required_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: set-branches
+          aliases: []
+          forms:
+            - id: set_remote_branches
+              selector:
+                kind: has_positional_at
+                index: 1
+              parameters:
+                - name: remote_args
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: required_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: status
+      aliases: []
+      forms:
+        - id: inspect_worktree_status
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: diff
+      aliases: []
+      forms:
+        - id: inspect_diff_pathspecs
+          selector:
+            kind: has_dash_dash
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: inspect_diff
+          selector:
+            kind: no_dash_dash
+          parameters:
+            - name: revision_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers:
+        - id: order_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-O"
+          parameters:
+            - name: order_file
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: inline_or_short_attached
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: order_file
+
+        - id: output_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "--output"
+          parameters:
+            - name: output_path
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: output_path
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Without an explicit -- separator, git diff positionals are left as plain revision args to avoid misclassifying commit names or blobs as filesystem paths.
+
+    - name: log
+      aliases: []
+      forms:
+        - id: inspect_history_pathspecs
+          selector:
+            kind: has_dash_dash
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: inspect_history
+          selector:
+            kind: no_dash_dash
+          parameters:
+            - name: revision_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: show
+      aliases: []
+      forms:
+        - id: inspect_object_or_history
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: object_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: rev-parse
+      aliases: []
+      forms:
+        - id: parse_revisions
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: revision_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: ls-files
+      aliases: []
+      forms:
+        - id: list_index_paths
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: add
+      aliases: []
+      forms:
+        - id: inspect_index_update
+          selector:
+            kind: has_modifier
+            modifier: dry_run
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: interactive_index_update
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: interactive
+              - kind: has_modifier
+                modifier: patch
+              - kind: has_modifier
+                modifier: edit
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: terminal_ui
+                requires_tty: true
+                capabilities:
+                  - run_command
+
+        - id: update_index
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: patch
+                    - kind: has_modifier
+                      modifier: edit
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+      modifiers:
+        - id: dry_run
+          matcher:
+            kind: any_flag
+            flags:
+              - "-n"
+              - "--dry-run"
+
+        - id: interactive
+          matcher:
+            kind: any_flag
+            flags:
+              - "-i"
+              - "--interactive"
+
+        - id: patch
+          matcher:
+            kind: any_flag
+            flags:
+              - "-p"
+              - "--patch"
+
+        - id: edit
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--edit"
+
+        - id: pathspec_from_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "--pathspec-from-file"
+          parameters:
+            - name: pathspec_file
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspec_file
+
+        - id: pathspec_file_nul
+          matcher:
+            kind: any_flag
+            flags:
+              - "--pathspec-file-nul"
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-A"
+              - "--all"
+              - "-u"
+              - "--update"
+              - "--refresh"
+              - "--renormalize"
+              - "-N"
+              - "--intent-to-add"
+              - "-f"
+              - "--force"
+              - "--ignore-removal"
+              - "--ignore-errors"
+              - "--ignore-missing"
+              - "--sparse"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - git add mutates the repository index. The current effect model records that as a .git/index write rather than a first-class index mutation scope.
+
+    - name: push
+      aliases: []
+      forms:
+        - id: upload_refs
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: push_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: network_endpoint
+              target:
+                kind: none
+      modifiers:
+        - id: repository
+          matcher:
+            kind: any_flag
+            flags:
+              - "--repo"
+          parameters:
+            - name: repository
+              semantic:
+                kind: endpoint
+                endpoint_kind: remote_spec
+                usage: upload_target
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: network_endpoint
+              target:
+                kind: slot
+                name: repository
+
+        - id: push_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "-o"
+              - "--push-option"
+          parameters:
+            - name: push_option
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: receive_pack
+          matcher:
+            kind: any_flag
+            flags:
+              - "--receive-pack"
+              - "--exec"
+          parameters:
+            - name: receive_pack
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-v"
+              - "--verbose"
+              - "-q"
+              - "--quiet"
+              - "--all"
+              - "--branches"
+              - "--mirror"
+              - "-d"
+              - "--delete"
+              - "--tags"
+              - "-n"
+              - "--dry-run"
+              - "--porcelain"
+              - "-f"
+              - "--force"
+              - "--force-with-lease"
+              - "--force-if-includes"
+              - "-u"
+              - "--set-upstream"
+              - "--progress"
+              - "--prune"
+              - "--no-verify"
+              - "--verify"
+              - "--follow-tags"
+              - "--signed"
+              - "--atomic"
+              - "-4"
+              - "--ipv4"
+              - "-6"
+              - "--ipv6"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Remote names such as origin are modeled as command arguments; resolving them to concrete URLs requires reading git config outside this command profile.
+
+    - name: fetch
+      aliases: []
+      forms:
+        - id: fetch_refs_dry_run
+          selector:
+            kind: has_modifier
+            modifier: dry_run
+          parameters:
+            - name: fetch_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: network_endpoint
+              target:
+                kind: none
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: fetch_refs
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: dry_run
+          parameters:
+            - name: fetch_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: data_optional
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: network_endpoint
+              target:
+                kind: none
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/FETCH_HEAD
+                convention: git.fetch_head
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+      modifiers:
+        - id: dry_run
+          matcher:
+            kind: any_flag
+            flags:
+              - "--dry-run"
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--upload-pack"
+              - "-j"
+              - "--jobs"
+              - "--depth"
+              - "--shallow-since"
+              - "--shallow-exclude"
+              - "--deepen"
+              - "--refmap"
+              - "-o"
+              - "--server-option"
+              - "--negotiation-tip"
+              - "--filter"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-v"
+              - "--verbose"
+              - "-q"
+              - "--quiet"
+              - "--all"
+              - "--set-upstream"
+              - "-a"
+              - "--append"
+              - "--atomic"
+              - "-f"
+              - "--force"
+              - "-m"
+              - "--multiple"
+              - "-t"
+              - "--tags"
+              - "-n"
+              - "-p"
+              - "--prune"
+              - "-P"
+              - "--prune-tags"
+              - "--porcelain"
+              - "--write-fetch-head"
+              - "-k"
+              - "--keep"
+              - "-u"
+              - "--update-head-ok"
+              - "--progress"
+              - "--unshallow"
+              - "--refetch"
+              - "--update-shallow"
+              - "-4"
+              - "--ipv4"
+              - "-6"
+              - "--ipv6"
+              - "--negotiate-only"
+              - "--stdin"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: pull
+      aliases: []
+      forms:
+        - id: pull_dry_run
+          selector:
+            kind: has_modifier
+            modifier: dry_run
+          parameters:
+            - name: pull_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: network_endpoint
+              target:
+                kind: none
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: pull_and_update_worktree
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: dry_run
+          parameters:
+            - name: pull_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: network_endpoint
+              target:
+                kind: none
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+      modifiers:
+        - id: dry_run
+          matcher:
+            kind: any_flag
+            flags:
+              - "--dry-run"
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--upload-pack"
+              - "-j"
+              - "--jobs"
+              - "--depth"
+              - "--shallow-since"
+              - "--shallow-exclude"
+              - "--deepen"
+              - "--refmap"
+              - "-o"
+              - "--server-option"
+              - "--negotiation-tip"
+              - "-s"
+              - "--strategy"
+              - "-X"
+              - "--strategy-option"
+              - "--cleanup"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-v"
+              - "--verbose"
+              - "-q"
+              - "--quiet"
+              - "--progress"
+              - "--all"
+              - "-a"
+              - "--append"
+              - "-f"
+              - "--force"
+              - "-t"
+              - "--tags"
+              - "-p"
+              - "--prune"
+              - "--stat"
+              - "-n"
+              - "--log"
+              - "--signoff"
+              - "--squash"
+              - "--commit"
+              - "--edit"
+              - "--ff"
+              - "--ff-only"
+              - "--verify"
+              - "--verify-signatures"
+              - "--autostash"
+              - "-S"
+              - "--gpg-sign"
+              - "--allow-unrelated-histories"
+              - "-k"
+              - "--keep"
+              - "--unshallow"
+              - "--update-shallow"
+              - "-4"
+              - "--ipv4"
+              - "-6"
+              - "--ipv6"
+              - "--show-forced-updates"
+              - "--set-upstream"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - git pull may fast-forward, merge, or rebase. The profile conservatively records both repository metadata writes and tracked worktree writes for non-dry-run pulls.
+
+    - name: branch
+      aliases: []
+      forms:
+        - id: edit_branch_description
+          selector:
+            kind: has_modifier
+            modifier: edit_description
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: delete_branch_refs
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: delete
+              - kind: has_modifier
+                modifier: force_delete
+          parameters:
+            - name: branch_names
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: move_branch_refs
+          selector:
+            kind: has_modifier
+            modifier: move
+          parameters:
+            - name: branch_names
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: copy_branch_refs
+          selector:
+            kind: has_modifier
+            modifier: copy
+          parameters:
+            - name: branch_names
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: set_branch_upstream
+          selector:
+            kind: has_modifier
+            modifier: set_upstream
+          parameters:
+            - name: branch_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+
+        - id: create_branch_ref
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: list
+                    - kind: has_modifier
+                      modifier: delete
+                    - kind: has_modifier
+                      modifier: force_delete
+                    - kind: has_modifier
+                      modifier: move
+                    - kind: has_modifier
+                      modifier: copy
+                    - kind: has_modifier
+                      modifier: set_upstream
+                    - kind: has_modifier
+                      modifier: edit_description
+          parameters:
+            - name: branch_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: list_branches
+          selector:
+            kind: all
+            items:
+              - kind: any
+                items:
+                  - kind: no_positional_args
+                  - kind: has_modifier
+                    modifier: list
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: delete
+                    - kind: has_modifier
+                      modifier: force_delete
+                    - kind: has_modifier
+                      modifier: move
+                    - kind: has_modifier
+                      modifier: copy
+                    - kind: has_modifier
+                      modifier: set_upstream
+                    - kind: has_modifier
+                      modifier: edit_description
+          parameters:
+            - name: branch_filters
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+      modifiers:
+        - id: list
+          matcher:
+            kind: any_flag
+            flags:
+              - "-l"
+              - "--list"
+              - "-a"
+              - "--all"
+              - "-r"
+              - "--remotes"
+              - "--show-current"
+
+        - id: delete
+          matcher:
+            kind: any_flag
+            flags:
+              - "-d"
+              - "--delete"
+
+        - id: force_delete
+          matcher:
+            kind: any_flag
+            flags:
+              - "-D"
+          effects:
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: local_ref_destroy
+
+        - id: move
+          matcher:
+            kind: any_flag
+            flags:
+              - "-m"
+              - "--move"
+              - "-M"
+
+        - id: copy
+          matcher:
+            kind: any_flag
+            flags:
+              - "-c"
+              - "--copy"
+              - "-C"
+
+        - id: set_upstream
+          matcher:
+            kind: any_flag
+            flags:
+              - "-u"
+              - "--set-upstream-to"
+              - "--unset-upstream"
+          parameters:
+            - name: upstream
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: edit_description
+          matcher:
+            kind: any_flag
+            flags:
+              - "--edit-description"
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--contains"
+              - "--no-contains"
+              - "--merged"
+              - "--no-merged"
+              - "--points-at"
+              - "--sort"
+              - "--format"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-v"
+              - "--verbose"
+              - "-q"
+              - "--quiet"
+              - "-t"
+              - "--track"
+              - "-f"
+              - "--force"
+              - "--create-reflog"
+              - "--color"
+              - "--column"
+              - "-i"
+              - "--ignore-case"
+              - "--recurse-submodules"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: tag
+      aliases: []
+      forms:
+        - id: delete_tags
+          selector:
+            kind: has_modifier
+            modifier: delete
+          parameters:
+            - name: tag_names
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: local_ref_destroy
+
+        - id: verify_tags
+          selector:
+            kind: has_modifier
+            modifier: verify
+          parameters:
+            - name: tag_names
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: list_tags
+          selector:
+            kind: any
+            items:
+              - kind: no_positional_args
+              - kind: has_modifier
+                modifier: list
+          parameters:
+            - name: tag_filters
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: create_tag_editor
+          selector:
+            kind: all
+            items:
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: annotate
+                  - kind: has_modifier
+                    modifier: sign
+                  - kind: has_modifier
+                    modifier: edit
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: message
+                    - kind: has_modifier
+                      modifier: message_file
+          parameters:
+            - name: tag_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: create_tag
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: delete
+                    - kind: has_modifier
+                      modifier: verify
+                    - kind: has_modifier
+                      modifier: list
+                    - kind: all
+                      items:
+                        - kind: any
+                          items:
+                            - kind: has_modifier
+                              modifier: annotate
+                            - kind: has_modifier
+                              modifier: sign
+                            - kind: has_modifier
+                              modifier: edit
+                        - kind: not
+                          item:
+                            kind: any
+                            items:
+                              - kind: has_modifier
+                                modifier: message
+                              - kind: has_modifier
+                                modifier: message_file
+          parameters:
+            - name: tag_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+      modifiers:
+        - id: list
+          matcher:
+            kind: any_flag
+            flags:
+              - "-l"
+              - "--list"
+
+        - id: delete
+          matcher:
+            kind: any_flag
+            flags:
+              - "-d"
+              - "--delete"
+
+        - id: verify
+          matcher:
+            kind: any_flag
+            flags:
+              - "-v"
+              - "--verify"
+
+        - id: annotate
+          matcher:
+            kind: any_flag
+            flags:
+              - "-a"
+              - "--annotate"
+
+        - id: sign
+          matcher:
+            kind: any_flag
+            flags:
+              - "-s"
+              - "--sign"
+
+        - id: edit
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--edit"
+
+        - id: message
+          matcher:
+            kind: any_flag
+            flags:
+              - "-m"
+              - "--message"
+          parameters:
+            - name: message
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: message_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-F"
+              - "--file"
+          parameters:
+            - name: message_file
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: message_file
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "-u"
+              - "--local-user"
+              - "--cleanup"
+              - "--contains"
+              - "--no-contains"
+              - "--merged"
+              - "--no-merged"
+              - "--points-at"
+              - "--sort"
+              - "--format"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-f"
+              - "--force"
+              - "--create-reflog"
+              - "--column"
+              - "--color"
+              - "-i"
+              - "--ignore-case"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: stash
+      aliases: []
+      forms:
+        - id: push_stash_default
+          selector:
+            kind: all
+            items: []
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+      modifiers: []
+      children:
+        - name: list
+          aliases: []
+          forms:
+            - id: list_stashes
+              selector:
+                kind: all
+                items: []
+              stream_contract:
+                stdin_mode: ignored
+                stdout_mode: data
+                stderr_mode: opaque
+              effects:
+                - kind: transform_data
+                  target:
+                    kind: none
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: show
+          aliases: []
+          forms:
+            - id: show_stash
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: stash_args
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              stream_contract:
+                stdin_mode: ignored
+                stdout_mode: data
+                stderr_mode: opaque
+              effects:
+                - kind: transform_data
+                  target:
+                    kind: none
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: push
+          aliases:
+            - save
+          forms:
+            - id: push_stash
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: pathspecs
+                  semantic:
+                    kind: path
+                    role: target
+                    purpose: generic_operand
+                  binding:
+                    kind: remaining_positionals_after_dash_dash
+                  cardinality: optional_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+                - kind: write_path
+                  target:
+                    kind: mutation_scope
+                    scope_kind: repository_worktree
+                    path_set: tracked
+          modifiers:
+            - id: message
+              matcher:
+                kind: any_flag
+                flags:
+                  - "-m"
+                  - "--message"
+              parameters:
+                - name: message
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: following_matched_flag
+                    operand_mode: next_arg
+                  cardinality: optional_one
+          children: []
+          default_behavior: reject_unknown
+          extensions:
+            caushell.profile/known_limitations:
+              - git stash push with --include-untracked or --all can also remove untracked or ignored files; this profile records the tracked-worktree restore surface and repository metadata update.
+        - name: apply
+          aliases: []
+          forms:
+            - id: apply_stash
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: stash_ref
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: mutation_scope
+                    scope_kind: repository_worktree
+                    path_set: tracked
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/index
+                    convention: git.index
+                    purpose: generic_operand
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: pop
+          aliases: []
+          forms:
+            - id: pop_stash
+              selector:
+                kind: all
+                items: []
+              parameters:
+                - name: stash_ref
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: mutation_scope
+                    scope_kind: repository_worktree
+                    path_set: tracked
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git/index
+                    convention: git.index
+                    purpose: generic_operand
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: drop
+          aliases:
+            - clear
+          forms:
+            - id: drop_stash_refs
+              selector:
+                kind: all
+                items: []
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+                - kind: repository_operation
+                  target:
+                    kind: none
+                  repository_operation: saved_state_destroy
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: branch
+          aliases: []
+          forms:
+            - id: branch_from_stash
+              selector:
+                kind: has_positional_at
+                index: 0
+              parameters:
+                - name: branch_args
+                  semantic:
+                    kind: plain_value
+                  binding:
+                    kind: remaining_args
+                  cardinality: optional_many
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+                - kind: write_path
+                  target:
+                    kind: mutation_scope
+                    scope_kind: repository_worktree
+                    path_set: tracked
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: create
+          aliases:
+            - store
+          forms:
+            - id: create_or_store_stash
+              selector:
+                kind: all
+                items: []
+              effects:
+                - kind: write_path
+                  target:
+                    kind: tool_convention_path
+                    path: .git
+                    convention: git.repository_metadata
+                    purpose: generic_operand
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: switch
+      aliases: []
+      forms:
+        - id: create_and_switch_branch
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: create
+              - kind: has_modifier
+                modifier: force_create
+              - kind: has_modifier
+                modifier: orphan
+          parameters:
+            - name: switch_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+
+        - id: switch_worktree
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: create
+                    - kind: has_modifier
+                      modifier: force_create
+                    - kind: has_modifier
+                      modifier: orphan
+          parameters:
+            - name: switch_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+      modifiers:
+        - id: create
+          matcher:
+            kind: any_flag
+            flags:
+              - "-c"
+              - "--create"
+          parameters:
+            - name: branch_name
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: force_create
+          matcher:
+            kind: any_flag
+            flags:
+              - "-C"
+              - "--force-create"
+          parameters:
+            - name: branch_name
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: orphan
+          matcher:
+            kind: any_flag
+            flags:
+              - "--orphan"
+          parameters:
+            - name: branch_name
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--conflict"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: force
+          matcher:
+            kind: any_flag
+            flags:
+              - "-f"
+              - "--force"
+          effects:
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: forced_worktree_switch
+
+        - id: discard_changes
+          matcher:
+            kind: any_flag
+            flags:
+              - "--discard-changes"
+          effects:
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: forced_worktree_switch
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "--guess"
+              - "-q"
+              - "--quiet"
+              - "--progress"
+              - "-m"
+              - "--merge"
+              - "-d"
+              - "--detach"
+              - "-t"
+              - "--track"
+              - "--overwrite-ignore"
+              - "--ignore-other-worktrees"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: merge
+      aliases: []
+      forms:
+        - id: merge_abort_or_continue
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: abort
+              - kind: has_modifier
+                modifier: continue_merge
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+
+        - id: merge_quit
+          selector:
+            kind: has_modifier
+            modifier: quit
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: merge_editor_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: edit
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: no_verify
+          parameters:
+            - name: merge_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: execute_hook
+              target:
+                kind: none
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: merge_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: continue_merge
+                    - kind: has_modifier
+                      modifier: quit
+                    - kind: has_modifier
+                      modifier: edit
+                    - kind: has_modifier
+                      modifier: no_verify
+          parameters:
+            - name: merge_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: execute_hook
+              target:
+                kind: none
+
+        - id: merge_no_verify
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: no_verify
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: continue_merge
+                    - kind: has_modifier
+                      modifier: quit
+          parameters:
+            - name: merge_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+      modifiers:
+        - id: abort
+          matcher:
+            kind: any_flag
+            flags:
+              - "--abort"
+
+        - id: continue_merge
+          matcher:
+            kind: any_flag
+            flags:
+              - "--continue"
+
+        - id: quit
+          matcher:
+            kind: any_flag
+            flags:
+              - "--quit"
+
+        - id: edit
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--edit"
+
+        - id: message
+          matcher:
+            kind: any_flag
+            flags:
+              - "-m"
+              - "--message"
+          parameters:
+            - name: message
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: message_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-F"
+              - "--file"
+          parameters:
+            - name: message_file
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: message_file
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--cleanup"
+              - "-s"
+              - "--strategy"
+              - "-X"
+              - "--strategy-option"
+              - "--into-name"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-n"
+              - "--stat"
+              - "--summary"
+              - "--log"
+              - "--squash"
+              - "--commit"
+              - "--ff"
+              - "--ff-only"
+              - "--rerere-autoupdate"
+              - "--verify-signatures"
+              - "-v"
+              - "--verbose"
+              - "-q"
+              - "--quiet"
+              - "--allow-unrelated-histories"
+              - "--progress"
+              - "-S"
+              - "--gpg-sign"
+              - "--autostash"
+              - "--overwrite-ignore"
+              - "--signoff"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Default git merge may fast-forward without a merge commit or may create a merge commit; this profile records the worktree and repository mutation surfaces but only marks editor use when --edit is explicit.
+
+    - name: rebase
+      aliases: []
+      forms:
+        - id: rebase_show_current_patch
+          selector:
+            kind: has_modifier
+            modifier: show_current_patch
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+
+        - id: rebase_edit_todo
+          selector:
+            kind: has_modifier
+            modifier: edit_todo
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: rebase_abort_skip_continue
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: abort
+              - kind: has_modifier
+                modifier: skip
+              - kind: has_modifier
+                modifier: continue_rebase
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+
+        - id: interactive_rebase_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: interactive
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: no_verify
+          parameters:
+            - name: rebase_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: execute_hook
+              target:
+                kind: none
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: rebase_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: no_verify
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: skip
+                    - kind: has_modifier
+                      modifier: continue_rebase
+                    - kind: has_modifier
+                      modifier: edit_todo
+                    - kind: has_modifier
+                      modifier: show_current_patch
+          parameters:
+            - name: rebase_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: execute_hook
+              target:
+                kind: none
+
+        - id: rebase_no_verify
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: no_verify
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: skip
+                    - kind: has_modifier
+                      modifier: continue_rebase
+                    - kind: has_modifier
+                      modifier: edit_todo
+                    - kind: has_modifier
+                      modifier: show_current_patch
+          parameters:
+            - name: rebase_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+      modifiers:
+        - id: interactive
+          matcher:
+            kind: any_flag
+            flags:
+              - "-i"
+              - "--interactive"
+
+        - id: abort
+          matcher:
+            kind: any_flag
+            flags:
+              - "--abort"
+
+        - id: skip
+          matcher:
+            kind: any_flag
+            flags:
+              - "--skip"
+
+        - id: continue_rebase
+          matcher:
+            kind: any_flag
+            flags:
+              - "--continue"
+
+        - id: edit_todo
+          matcher:
+            kind: any_flag
+            flags:
+              - "--edit-todo"
+
+        - id: show_current_patch
+          matcher:
+            kind: any_flag
+            flags:
+              - "--show-current-patch"
+
+        - id: exec
+          matcher:
+            kind: any_flag
+            flags:
+              - "-x"
+              - "--exec"
+          parameters:
+            - name: exec_command
+              semantic:
+                kind: payload
+                language: sh
+                source: inline_string
+                recursive: true
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: execute_payload
+              target:
+                kind: slot
+                name: exec_command
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--onto"
+              - "-C"
+              - "--whitespace"
+              - "--empty"
+              - "-s"
+              - "--strategy"
+              - "-X"
+              - "--strategy-option"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "--keep-base"
+              - "-q"
+              - "--quiet"
+              - "-v"
+              - "--verbose"
+              - "-n"
+              - "--no-stat"
+              - "--stat"
+              - "--signoff"
+              - "--committer-date-is-author-date"
+              - "--reset-author-date"
+              - "--ignore-whitespace"
+              - "-f"
+              - "--force-rebase"
+              - "--no-ff"
+              - "--ff"
+              - "--quit"
+              - "--apply"
+              - "-m"
+              - "--merge"
+              - "--rerere-autoupdate"
+              - "--autosquash"
+              - "--update-refs"
+              - "-S"
+              - "--gpg-sign"
+              - "--autostash"
+              - "-r"
+              - "--rebase-merges"
+              - "--fork-point"
+              - "--root"
+              - "--reschedule-failed-exec"
+              - "--reapply-cherry-picks"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Rebase strategy internals vary; this profile records repository metadata and tracked worktree mutation for operational rebases and surfaces --exec as shell payload execution.
+
+    - name: cherry-pick
+      aliases: []
+      forms:
+        - id: cherry_pick_abort_skip_continue
+          selector:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: abort
+              - kind: has_modifier
+                modifier: skip
+              - kind: has_modifier
+                modifier: continue_pick
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+
+        - id: cherry_pick_quit
+          selector:
+            kind: has_modifier
+            modifier: quit
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: cherry_pick_no_commit
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: no_commit
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: skip
+                    - kind: has_modifier
+                      modifier: continue_pick
+                    - kind: has_modifier
+                      modifier: quit
+                    - kind: has_modifier
+                      modifier: edit
+          parameters:
+            - name: commits
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+
+        - id: cherry_pick_editor
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: edit
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: skip
+                    - kind: has_modifier
+                      modifier: continue_pick
+                    - kind: has_modifier
+                      modifier: quit
+          parameters:
+            - name: commits
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: cherry_pick_commit
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: abort
+                    - kind: has_modifier
+                      modifier: skip
+                    - kind: has_modifier
+                      modifier: continue_pick
+                    - kind: has_modifier
+                      modifier: quit
+                    - kind: has_modifier
+                      modifier: no_commit
+                    - kind: has_modifier
+                      modifier: edit
+          parameters:
+            - name: commits
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+      modifiers:
+        - id: abort
+          matcher:
+            kind: any_flag
+            flags:
+              - "--abort"
+
+        - id: skip
+          matcher:
+            kind: any_flag
+            flags:
+              - "--skip"
+
+        - id: continue_pick
+          matcher:
+            kind: any_flag
+            flags:
+              - "--continue"
+
+        - id: quit
+          matcher:
+            kind: any_flag
+            flags:
+              - "--quit"
+
+        - id: no_commit
+          matcher:
+            kind: any_flag
+            flags:
+              - "-n"
+              - "--no-commit"
+
+        - id: edit
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--edit"
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--cleanup"
+              - "-m"
+              - "--mainline"
+              - "--strategy"
+              - "-X"
+              - "--strategy-option"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-s"
+              - "--signoff"
+              - "-x"
+              - "--ff"
+              - "-S"
+              - "--gpg-sign"
+              - "--allow-empty"
+              - "--allow-empty-message"
+              - "--keep-redundant-commits"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: commit
+      aliases: []
+      forms:
+        - id: commit_message_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: no_verify
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: message
+                  - kind: has_modifier
+                    modifier: message_file
+                  - kind: has_modifier
+                    modifier: no_edit
+          parameters:
+            - name: commit_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: read_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: execute_hook
+              target:
+                kind: none
+
+        - id: commit_message_no_verify
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: no_verify
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: message
+                  - kind: has_modifier
+                    modifier: message_file
+                  - kind: has_modifier
+                    modifier: no_edit
+          parameters:
+            - name: commit_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: read_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+
+        - id: commit_editor_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: no_verify
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: message
+                    - kind: has_modifier
+                      modifier: message_file
+                    - kind: has_modifier
+                      modifier: no_edit
+          parameters:
+            - name: commit_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: read_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: execute_hook
+              target:
+                kind: none
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+
+        - id: commit_editor_no_verify
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: no_verify
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: message
+                    - kind: has_modifier
+                      modifier: message_file
+                    - kind: has_modifier
+                      modifier: no_edit
+          parameters:
+            - name: commit_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: opaque
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: read_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git
+                convention: git.repository_metadata
+                purpose: generic_operand
+            - kind: open_interactive_escape_surface
+              target:
+                kind: none
+              surface:
+                kind: editor
+                requires_tty: true
+                capabilities:
+                  - spawn_shell
+                  - run_command
+                  - write_buffer_to_path
+      modifiers:
+        - id: message
+          matcher:
+            kind: any_flag
+            flags:
+              - "-m"
+              - "--message"
+          parameters:
+            - name: message
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: message_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "-F"
+              - "--file"
+          parameters:
+            - name: message_file
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: message_file
+
+        - id: no_edit
+          matcher:
+            kind: any_flag
+            flags:
+              - "--no-edit"
+
+        - id: amend
+          matcher:
+            kind: any_flag
+            flags:
+              - "--amend"
+
+        - id: no_post_rewrite
+          matcher:
+            kind: any_flag
+            flags:
+              - "--no-post-rewrite"
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--author"
+              - "--date"
+              - "-t"
+              - "--template"
+              - "--cleanup"
+              - "--pathspec-from-file"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_many
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-a"
+              - "--all"
+              - "--allow-empty"
+              - "--allow-empty-message"
+              - "--signoff"
+              - "-s"
+              - "--no-gpg-sign"
+              - "-S"
+              - "--gpg-sign"
+              - "--quiet"
+              - "-q"
+              - "--verbose"
+              - "-v"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Commit message reuse options such as -C/--reuse-message and -c/--reedit-message are left as plain args in this slice because one bypasses editor and the other opens editor; they need dedicated modeling before being promoted.
+
+    - name: apply
+      aliases: []
+      forms:
+        - id: apply_patch_to_index_and_worktree
+          selector:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--index"
+              - kind: not
+                item:
+                  kind: has_flag
+                  flag: "--cached"
+          parameters:
+            - name: patch_paths
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: patch_paths
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: patch_selected_tracked
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/index
+                convention: git.index
+                purpose: generic_operand
+
+        - id: apply_patch_to_worktree_with_apply_override
+          selector:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--apply"
+              - kind: not
+                item:
+                  kind: has_flag
+                  flag: "--cached"
+          parameters:
+            - name: patch_paths
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: patch_paths
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: patch_selected_tracked
+
+        - id: inspect_patch_only
+          selector:
+            kind: all
+            items:
+              - kind: any
+                items:
+                  - kind: has_flag
+                    flag: "--check"
+                  - kind: has_flag
+                    flag: "--stat"
+                  - kind: has_flag
+                    flag: "--numstat"
+                  - kind: has_flag
+                    flag: "--summary"
+              - kind: not
+                item:
+                  kind: has_flag
+                  flag: "--apply"
+          parameters:
+            - name: patch_paths
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: patch_paths
+
+        - id: apply_patch_to_worktree
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_flag
+                  flag: "--cached"
+              - kind: not
+                item:
+                  kind: has_flag
+                  flag: "--index"
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_flag
+                      flag: "--check"
+                    - kind: has_flag
+                      flag: "--stat"
+                    - kind: has_flag
+                      flag: "--numstat"
+                    - kind: has_flag
+                      flag: "--summary"
+          parameters:
+            - name: patch_paths
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: patch_paths
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: patch_selected_tracked
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: am
+      aliases: []
+      forms:
+        - id: apply_mailbox_with_hooks
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: no_verify
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_flag
+                      flag: "--continue"
+                    - kind: has_flag
+                      flag: "-r"
+                    - kind: has_flag
+                      flag: "--skip"
+                    - kind: has_flag
+                      flag: "--abort"
+                    - kind: has_flag
+                      flag: "--quit"
+                    - kind: has_flag
+                      flag: "--show-current-patch"
+                    - kind: has_flag
+                      flag: "--allow-empty"
+          parameters:
+            - name: mailbox_paths
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: mailbox_paths
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: patch_selected_tracked
+            - kind: execute_hook
+              target:
+                kind: none
+
+        - id: apply_mailbox_no_verify
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: no_verify
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_flag
+                      flag: "--continue"
+                    - kind: has_flag
+                      flag: "-r"
+                    - kind: has_flag
+                      flag: "--skip"
+                    - kind: has_flag
+                      flag: "--abort"
+                    - kind: has_flag
+                      flag: "--quit"
+                    - kind: has_flag
+                      flag: "--show-current-patch"
+                    - kind: has_flag
+                      flag: "--allow-empty"
+          parameters:
+            - name: mailbox_paths
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: mailbox_paths
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: patch_selected_tracked
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: rm
+      aliases: []
+      forms:
+        - id: inspect_delete_paths
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: dry_run
+              - kind: any
+                items:
+                  - kind: has_positional_at
+                    index: 0
+                  - kind: has_modifier
+                    modifier: pathspec_from_file
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+
+        - id: unstage_paths
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: cached
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: dry_run
+              - kind: any
+                items:
+                  - kind: has_positional_at
+                    index: 0
+                  - kind: has_modifier
+                    modifier: pathspec_from_file
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+
+        - id: delete_paths
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: cached
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: delete_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_path_delete
+
+        - id: delete_paths_from_file
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: pathspec_from_file
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: cached
+          effects:
+            - kind: delete_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_path_delete
+      modifiers:
+        - id: dry_run
+          matcher:
+            kind: any_flag
+            flags:
+              - "-n"
+              - "--dry-run"
+
+        - id: cached
+          matcher:
+            kind: any_flag
+            flags:
+              - "--cached"
+
+        - id: force
+          matcher:
+            kind: any_flag
+            flags:
+              - "-f"
+              - "--force"
+
+        - id: recursive
+          matcher:
+            kind: any_flag
+            flags:
+              - "-r"
+
+        - id: ignore_unmatch
+          matcher:
+            kind: any_flag
+            flags:
+              - "--ignore-unmatch"
+
+        - id: quiet
+          matcher:
+            kind: any_flag
+            flags:
+              - "-q"
+              - "--quiet"
+
+        - id: sparse
+          matcher:
+            kind: any_flag
+            flags:
+              - "--sparse"
+
+        - id: pathspec_from_file
+          matcher:
+            kind: any_flag
+            flags:
+              - "--pathspec-from-file"
+          parameters:
+            - name: pathspec_file
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspec_file
+
+        - id: pathspec_file_nul
+          matcher:
+            kind: any_flag
+            flags:
+              - "--pathspec-file-nul"
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - git rm --cached mutates the repository index but the current effect model does not yet distinguish index-only removal from worktree deletion.
+          - git rm --pathspec-from-file records the pathspec source file as a read and projects the delete as a coarse tracked-worktree mutation scope because the current runtime does not expand pathspec files into exact target-path sets.
+
+    - name: clean
+      aliases: []
+      forms:
+        - id: inspect_ignored_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_positional_args
+              - kind: has_modifier
+                modifier: include_ignored_only
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: dry_run
+                  - kind: has_modifier
+                    modifier: interactive
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: include_ignored
+
+        - id: inspect_ignored_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: has_modifier
+                modifier: include_ignored_only
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: dry_run
+                  - kind: has_modifier
+                    modifier: interactive
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: include_ignored
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+
+        - id: inspect_untracked_and_ignored_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_positional_args
+              - kind: has_modifier
+                modifier: include_ignored
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: dry_run
+                  - kind: has_modifier
+                    modifier: interactive
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: include_ignored_only
+
+        - id: inspect_untracked_and_ignored_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: has_modifier
+                modifier: include_ignored
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: dry_run
+                  - kind: has_modifier
+                    modifier: interactive
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: include_ignored_only
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+
+        - id: delete_untracked_and_ignored_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_positional_args
+              - kind: has_modifier
+                modifier: force
+              - kind: has_modifier
+                modifier: include_ignored
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: include_ignored_only
+          effects:
+            - kind: delete_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: untracked_and_ignored
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: untracked_worktree_delete
+
+        - id: delete_untracked_and_ignored_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: has_modifier
+                modifier: force
+              - kind: has_modifier
+                modifier: include_ignored
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: include_ignored_only
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: delete_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: untracked_worktree_delete
+
+        - id: inspect_untracked_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_positional_args
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: dry_run
+                  - kind: has_modifier
+                    modifier: interactive
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: include_ignored
+                    - kind: has_modifier
+                      modifier: include_ignored_only
+
+        - id: inspect_untracked_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: dry_run
+                  - kind: has_modifier
+                    modifier: interactive
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: include_ignored
+                    - kind: has_modifier
+                      modifier: include_ignored_only
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+
+        - id: delete_untracked_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_positional_args
+              - kind: has_modifier
+                modifier: force
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: include_ignored
+                    - kind: has_modifier
+                      modifier: include_ignored_only
+          effects:
+            - kind: delete_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: untracked_only
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: untracked_worktree_delete
+
+        - id: delete_untracked_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: has_modifier
+                modifier: force
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: include_ignored
+                    - kind: has_modifier
+                      modifier: include_ignored_only
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: delete_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: untracked_worktree_delete
+
+        - id: delete_ignored_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_positional_args
+              - kind: has_modifier
+                modifier: force
+              - kind: has_modifier
+                modifier: include_ignored_only
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: include_ignored
+          effects:
+            - kind: delete_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: ignored_only
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: untracked_worktree_delete
+
+        - id: delete_ignored_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: has_modifier
+                modifier: force
+              - kind: has_modifier
+                modifier: include_ignored_only
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: dry_run
+                    - kind: has_modifier
+                      modifier: interactive
+                    - kind: has_modifier
+                      modifier: include_ignored
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: delete_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: untracked_worktree_delete
+      modifiers:
+        - id: dry_run
+          matcher:
+            kind: any_flag
+            flags:
+              - "-n"
+              - "--dry-run"
+
+        - id: force
+          matcher:
+            kind: any_flag
+            flags:
+              - "-f"
+              - "--force"
+
+        - id: interactive
+          matcher:
+            kind: any_flag
+            flags:
+              - "-i"
+              - "--interactive"
+
+        - id: dirs
+          matcher:
+            kind: any_flag
+            flags:
+              - "-d"
+
+        - id: include_ignored
+          matcher:
+            kind: any_flag
+            flags:
+              - "-x"
+
+        - id: include_ignored_only
+          matcher:
+            kind: any_flag
+            flags:
+              - "-X"
+
+        - id: quiet
+          matcher:
+            kind: any_flag
+            flags:
+              - "-q"
+              - "--quiet"
+
+        - id: exclude_pattern
+          matcher:
+            kind: any_flag
+            flags:
+              - "-e"
+              - "--exclude"
+          parameters:
+            - name: exclude_pattern_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: required_one
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - git clean -e/--exclude narrows the actual candidate set, but the current effect model still records only the coarse untracked/ignored worktree scope rather than the post-filter exact path set.
+
+    - name: reset
+      aliases: []
+      forms:
+        - id: reset_hard_worktree
+          selector:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--hard"
+              - kind: no_dash_dash
+          remaining_selector:
+            kind: no_positional_args
+          parameters:
+            - name: revision
+              semantic:
+                kind: plain_value
+              binding:
+                kind: positional_at
+                index: 0
+              cardinality: optional_one
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                root: working_directory
+                path_set: tracked
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_worktree_discard
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: restore
+      aliases: []
+      forms:
+        - id: restore_staged_only
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: staged
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: worktree
+          remaining_selector:
+            kind: no_positional_args
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+
+        - id: restore_worktree_subtree
+          selector:
+            kind: all
+            items:
+              - kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: source
+                  - kind: has_modifier
+                    modifier: source_inline
+              - kind: has_modifier
+                modifier: worktree
+              - kind: has_positional_at_matching
+                index: 0
+                matcher:
+                  kind: literal
+                  value: "."
+          parameters:
+            - name: subtree
+              semantic:
+                kind: path
+                role: target
+                purpose: generic_operand
+              binding:
+                kind: next_positional
+              cardinality: required_one
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+                subtree: subtree
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_worktree_discard
+
+        - id: restore_dashdash_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_dash_dash
+              - kind: not
+                item:
+                  kind: all
+                  items:
+                    - kind: has_modifier
+                      modifier: staged
+                    - kind: not
+                      item:
+                        kind: has_modifier
+                        modifier: worktree
+          remaining_selector:
+            kind: no_positional_args
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: required_many
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_worktree_discard
+
+        - id: restore_explicit_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: no_dash_dash
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: all
+                  items:
+                    - kind: has_modifier
+                      modifier: staged
+                    - kind: not
+                      item:
+                        kind: has_modifier
+                        modifier: worktree
+              - kind: not
+                item:
+                  kind: all
+                  items:
+                    - kind: any
+                      items:
+                        - kind: has_modifier
+                          modifier: source
+                        - kind: has_modifier
+                          modifier: source_inline
+                    - kind: has_flag
+                      flag: "--worktree"
+                    - kind: has_positional_at_matching
+                      index: 0
+                      matcher:
+                        kind: literal
+                        value: "."
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals
+              cardinality: required_many
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_worktree_discard
+      modifiers:
+        - id: source
+          matcher:
+            kind: any_flag
+            flags:
+              - "-s"
+              - "--source"
+          parameters:
+            - name: treeish
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: source_inline
+          matcher:
+            kind: any_flag
+            flags:
+              - "-s"
+              - "--source"
+          parameters:
+            - name: treeish_inline
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: inline_only
+              cardinality: optional_one
+
+        - id: value_option
+          matcher:
+            kind: any_flag
+            flags:
+              - "--conflict"
+          parameters:
+            - name: option_value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: following_matched_flag
+                operand_mode: next_arg
+              cardinality: optional_one
+
+        - id: staged
+          matcher:
+            kind: any_flag
+            flags:
+              - "-S"
+              - "--staged"
+
+        - id: worktree
+          matcher:
+            kind: any_flag
+            flags:
+              - "-W"
+              - "--worktree"
+
+        - id: mode
+          matcher:
+            kind: any_flag
+            flags:
+              - "-p"
+              - "--patch"
+              - "-q"
+              - "--quiet"
+              - "--progress"
+              - "--no-progress"
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: checkout
+      aliases: []
+      forms:
+        - id: checkout_treeish_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_dash_dash
+              - kind: has_positional_before_dash_dash_at
+                index: 0
+          remaining_selector:
+            kind: no_positional_args
+          parameters:
+            - name: treeish
+              semantic:
+                kind: plain_value
+              binding:
+                kind: positional_at
+                index: 0
+              cardinality: required_one
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: required_many
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_worktree_discard
+
+        - id: checkout_branch_worktree
+          selector:
+            kind: all
+            items:
+              - kind: no_dash_dash
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: has_positional_at
+                  index: 1
+          effects:
+            - kind: write_path
+              target:
+                kind: mutation_scope
+                scope_kind: repository_worktree
+                path_set: tracked
+
+        - id: checkout_explicit_pathspecs
+          selector:
+            kind: all
+            items:
+              - kind: has_dash_dash
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: has_positional_before_dash_dash_at
+                  index: 0
+          remaining_selector:
+            kind: no_positional_args
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: write
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: required_many
+          effects:
+            - kind: write_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: tracked_worktree_discard
+      modifiers:
+        - id: force
+          matcher:
+            kind: any_flag
+            flags:
+              - "-f"
+              - "--force"
+          effects:
+            - kind: repository_operation
+              target:
+                kind: none
+              repository_operation: forced_worktree_switch
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: submodule
+      aliases: []
+      forms: []
+      modifiers: []
+      children:
+        - name: update
+          aliases: []
+          forms:
+            - id: update_registered_submodules
+              selector:
+                kind: all
+                items:
+                  - kind: has_flag
+                    flag: "--init"
+                  - kind: has_flag
+                    flag: "--recursive"
+              parameters:
+                - name: pathspecs
+                  semantic:
+                    kind: path
+                    role: target
+                    purpose: generic_operand
+                  binding:
+                    kind: remaining_positionals_after_dash_dash
+                  cardinality: optional_many
+              effects:
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .gitmodules
+                    convention: git.modules_config
+                    purpose: tool_config
+                - kind: load_config
+                  target:
+                    kind: tool_convention_path
+                    path: .git/config
+                    convention: git.local_config
+                    purpose: tool_config
+                - kind: write_path
+                  target:
+                    kind: mutation_scope
+                    scope_kind: repository_worktree
+                    path_set: registered_submodule_worktrees
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/known_limitations:
+    - Clone only records an explicit destination path. The default basename destination and repository member writes remain tracked under the pending derived/default path effect capability.
+    - Commit and am delegate git hook path materialization to the runtime path pass so effective hook roots can be resolved from git config precedence rather than hardcoded profile paths. Hook-stage coverage currently focuses on `git commit` and `git am`.
+    - "`git apply` / `git am` now project mailbox or patch reads plus a coarse `patch_selected_tracked` repository-worktree write scope. The runtime still does not parse patch bodies into exact target-path sets."
+    - "`git submodule update --init --recursive` now projects `.gitmodules` and `.git/config` reads plus a coarse `registered_submodule_worktrees` repository-worktree write scope. Nested submodule endpoint extraction and per-submodule checkout lineage are not yet materialized."
+    - "`git clone --recurse-submodules` gets the richer submodule-control-plane modeling only in the explicit-destination slice. When clone falls back to Git's default basename destination, nested submodule root materialization and endpoint extraction remain outside the current honest profile surface."

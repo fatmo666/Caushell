@@ -1,0 +1,109 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: file
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: classify_files
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+        value_constraints:
+          - kind: exclude_literal
+            value: "-"
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_paths
+
+modifiers:
+  - id: files_from
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--files-from"
+    parameters:
+      - name: list_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: list_file
+
+  - id: magic_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-m"
+        - "--magic-file"
+    parameters:
+      - name: magic_file
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: magic_file
+
+  - id: output_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+        - "--brief"
+        - "-i"
+        - "--mime"
+        - "-L"
+        - "--dereference"
+        - "-z"
+        - "--uncompress"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv

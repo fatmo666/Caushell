@@ -1,0 +1,198 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: script
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: command_string
+    selector:
+      kind: has_modifier
+      modifier: command
+    effects:
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities:
+            - run_command
+
+  - id: record_shell
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: command
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: next_positional
+        cardinality: optional_one
+    effects:
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities:
+            - spawn_shell
+            - run_command
+
+modifiers:
+  - id: command
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+        - "--command"
+    parameters:
+      - name: command_string
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: command_string
+
+  - id: append
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--append"
+
+  - id: return_exit_code
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--return"
+
+  - id: flush
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--flush"
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "--quiet"
+
+  - id: timing
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--timing"
+    parameters:
+      - name: timing_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: log_in
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "--log-in"
+    parameters:
+      - name: log_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: log_out
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+        - "--log-out"
+    parameters:
+      - name: log_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: log_io
+    matcher:
+      kind: any_flag
+      flags:
+        - "-B"
+        - "--log-io"
+    parameters:
+      - name: log_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions: {}

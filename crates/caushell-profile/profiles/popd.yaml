@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: popd
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bash
+  requires_features: []
+
+forms:
+  - id: change_directory_stack
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: stack_entries
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: set_current_working_directory
+        target:
+          kind: none
+      - kind: metadata_mutation
+        target:
+          kind: none
+
+modifiers:
+  - id: no_cd
+    matcher:
+      kind: any_flag
+      flags:
+        - "-n"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

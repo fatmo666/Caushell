@@ -1,0 +1,119 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: meson
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: project_operation
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: meson.build
+          convention: meson.project_config
+          purpose: task_config
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: builddir
+          convention: meson.default_build_dir
+          purpose: tool_config
+      - kind: execute_config_defined_task
+        target:
+          kind: none
+
+modifiers:
+  - id: build_dir
+    matcher:
+      kind: any_flag
+      flags:
+        - "-C"
+    parameters:
+      - name: build_dir
+        semantic:
+          kind: path
+          role: target
+          purpose: working_directory
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: build_dir
+
+  - id: machine_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "--cross-file"
+        - "--native-file"
+    parameters:
+      - name: machine_file
+        semantic:
+          kind: path
+          role: config
+          purpose: project_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: machine_file
+
+  - id: prefix
+    matcher:
+      kind: any_flag
+      flags:
+        - "--prefix"
+    parameters:
+      - name: install_prefix
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: install_prefix
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Setup, compile, test, and install are represented as project operations because Meson can execute build definitions and mutate build directories across those modes.

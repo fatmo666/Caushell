@@ -1,0 +1,60 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: jobs
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families:
+    - bourne
+    - bash
+    - sh
+    - dash
+  requires_features: []
+
+forms:
+  - id: list_jobs
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: job_targets
+        semantic:
+          kind: process_target
+          target_kind: job_spec
+          broad_match: false
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "-p"
+        - "-r"
+        - "-s"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

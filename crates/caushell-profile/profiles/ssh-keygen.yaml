@@ -1,0 +1,165 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ssh-keygen
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: mutate_known_hosts
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-H"
+        - kind: has_flag
+          flag: "-R"
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: key_path
+
+  - id: load_pkcs11_provider
+    selector:
+      kind: has_modifier
+      modifier: pkcs11_provider
+
+  - id: read_key_material
+    selector:
+      kind: any
+      items:
+        - kind: has_flag
+          flag: "-y"
+        - kind: has_flag
+          flag: "-e"
+        - kind: has_flag
+          flag: "-i"
+        - kind: has_flag
+          flag: "-l"
+        - kind: has_flag
+          flag: "-B"
+        - kind: has_flag
+          flag: "-L"
+        - kind: has_flag
+          flag: "-Q"
+        - kind: has_flag
+          flag: "-F"
+        - kind: has_flag
+          flag: "-r"
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: key_path
+
+  - id: mutate_or_generate_key
+    selector:
+      kind: not
+      item:
+        kind: any
+        items:
+          - kind: has_flag
+            flag: "-H"
+          - kind: has_flag
+            flag: "-R"
+          - kind: has_modifier
+            modifier: pkcs11_provider
+          - kind: has_flag
+            flag: "-y"
+          - kind: has_flag
+            flag: "-e"
+          - kind: has_flag
+            flag: "-i"
+          - kind: has_flag
+            flag: "-l"
+          - kind: has_flag
+            flag: "-B"
+          - kind: has_flag
+            flag: "-L"
+          - kind: has_flag
+            flag: "-Q"
+          - kind: has_flag
+            flag: "-F"
+          - kind: has_flag
+            flag: "-r"
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: key_path
+
+modifiers:
+  - id: key_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+    parameters:
+      - name: key_path
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: key_type
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "-b"
+        - "-C"
+        - "-N"
+    parameters:
+      - name: key_option
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: pkcs11_provider
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+    parameters:
+      - name: provider_path
+        semantic:
+          kind: in_process_code_load
+          load_kind: library_path
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_in_process_code
+        target:
+          kind: slot
+          name: provider_path
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Default key and known_hosts path conventions are not expanded when -f is omitted.
+    - Moduli-generation and signature submodes remain conservatively grouped under the mutation form unless a dedicated selector is present.

@@ -1,0 +1,170 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: scp
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: import_from_remote
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: has_positional_at_matching
+          index: 0
+          matcher:
+            kind: structured_value_context
+            context: remote_spec
+        - kind: not
+          item:
+            kind: last_positional_matches
+            matcher:
+              kind: structured_value_context
+              context: remote_spec
+    parameters:
+      - name: remote_sources
+        semantic:
+          kind: endpoint
+          endpoint_kind: remote_spec
+          usage: fetch_source
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: remote_sources
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
+  - id: export_to_remote
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: structured_value_context
+              context: remote_spec
+        - kind: last_positional_matches
+          matcher:
+            kind: structured_value_context
+            context: remote_spec
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: remote_destination
+        semantic:
+          kind: endpoint
+          endpoint_kind: remote_spec
+          usage: upload_target
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: remote_destination
+
+modifiers:
+  - id: port
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+    parameters:
+      - name: port
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: identity_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-i"
+    parameters:
+      - name: identity_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: identity_file
+
+  - id: config_file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+    parameters:
+      - name: config_file
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_file
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Remote specs are modeled as remote boundary operands, not as local filesystem paths.
+    - Remote-to-remote copies and implicit destination filename derivation are intentionally left outside the current pressure surface.

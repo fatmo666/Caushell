@@ -1,0 +1,71 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: chown
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: change_owner_or_group
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at_matching
+          index: 0
+          matcher:
+            kind: structured_value_context
+            context: owner_group_spec
+        - kind: has_positional_at
+          index: 1
+    parameters:
+      - name: owner_spec
+        semantic:
+          kind: structured_value
+          context: owner_group_spec
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: path_targets
+        semantic:
+          kind: path
+          role: metadata_mutation
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: slot
+          name: path_targets
+        extensions:
+          metadata_mutation.raw_operand_slot: owner_spec
+
+modifiers:
+  - id: recursive
+    matcher:
+      kind: any_flag
+      flags:
+        - "-R"
+        - "--recursive"
+    effects:
+      - kind: metadata_mutation
+        target:
+          kind: slot
+          name: path_targets
+        extensions:
+          metadata_mutation.recursive: true
+
+subcommands: null

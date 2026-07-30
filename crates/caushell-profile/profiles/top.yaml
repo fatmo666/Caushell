@@ -1,0 +1,65 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: top
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: batch
+    selector:
+      kind: has_flag
+      flag: "-b"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+
+  - id: interactive
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_flag
+            flag: "-b"
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities:
+            - run_command
+
+modifiers:
+  - id: batch
+    matcher:
+      kind: any_flag
+      flags:
+        - "-b"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/D4-security-bash/analysis.md
+    - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Config-driven breakout and other startup/control-plane surfaces are intentionally not modeled in this first slice.

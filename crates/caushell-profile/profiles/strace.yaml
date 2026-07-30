@@ -1,0 +1,262 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: strace
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - linux
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: wrapped_command
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: attach_process
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+    parameters:
+      - name: wrapped_command
+        semantic:
+          kind: command_ref
+          dispatch: wrapper_command
+        binding:
+          kind: next_positional
+        cardinality: required_one
+      - name: wrapped_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv:
+            - wrapped_args
+          environment: []
+
+modifiers:
+  - id: output
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: trace_expression
+    matcher:
+      kind: any_flag
+      flags:
+        - "-e"
+        - "--trace"
+    parameters:
+      - name: trace_expression
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: trace_path
+    matcher:
+      kind: any_flag
+      flags:
+        - "-P"
+    parameters:
+      - name: trace_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: string_limit
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+    parameters:
+      - name: string_limit
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: attach_process
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--attach"
+    parameters:
+      - name: pid
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: user
+    matcher:
+      kind: any_flag
+      flags:
+        - "-u"
+    parameters:
+      - name: user_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: environment
+    matcher:
+      kind: any_flag
+      flags:
+        - "-E"
+    parameters:
+      - name: environment_assignment
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: interruptible
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+    parameters:
+      - name: interruptible_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+  - id: syscall_overhead
+    matcher:
+      kind: any_flag
+      flags:
+        - "-O"
+    parameters:
+      - name: overhead_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: summary_sort
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+    parameters:
+      - name: sort_key
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: const_print_style
+    matcher:
+      kind: any_flag
+      flags:
+        - "-X"
+    parameters:
+      - name: style
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
+  - id: follow_forks
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "-ff"
+        - "--follow-forks"
+
+  - id: quiet
+    matcher:
+      kind: any_flag
+      flags:
+        - "-q"
+        - "-qq"
+        - "-qqq"
+        - "--quiet"
+
+  - id: daemonize
+    matcher:
+      kind: any_flag
+      flags:
+        - "-D"
+        - "-DD"
+        - "-DDD"
+
+  - id: help
+    matcher:
+      kind: any_flag
+      flags:
+        - "-h"
+        - "--help"
+
+  - id: version
+    matcher:
+      kind: any_flag
+      flags:
+        - "-V"
+        - "--version"
+
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - This profile models strace command launch mode; attach-only mode is intentionally not dispatched.

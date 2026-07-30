@@ -1,0 +1,90 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: pyreverse
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: generate_diagrams
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_targets
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_targets
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: .
+          convention: pyreverse.default_output_dir
+          purpose: generic_operand
+      - kind: execute_imported_package_logic
+        target:
+          kind: none
+
+modifiers:
+  - id: output_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--output-directory"
+    parameters:
+      - name: output_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: output_dir
+
+  - id: output_format
+    matcher:
+      kind: any_flag
+      flags:
+        - "-o"
+        - "--output"
+    parameters:
+      - name: output_format
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

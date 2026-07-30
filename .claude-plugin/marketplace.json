@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "caushell",
+  "description": "Caushell integrations for pre-execution semantic analysis of AI coding agent shell commands.",
+  "owner": {
+    "name": "Caushell"
+  },
+  "plugins": [
+    {
+      "name": "caushell-claude",
+      "description": "Session-aware shell guardrails for Claude Code backed by the Caushell runtime.",
+      "author": {
+        "name": "Caushell"
+      },
+      "category": "security",
+      "source": "./integrations/claude-code",
+      "homepage": "https://github.com/fatmo666/Caushell"
+    }
+  ]
+}

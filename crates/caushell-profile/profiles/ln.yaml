@@ -1,0 +1,105 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ln
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: target_directory
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: target_directory
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: link_targets
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: link_targets
+
+  - id: default_link
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+    parameters:
+      - name: link_targets
+        semantic:
+          kind: path
+          role: target
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: link_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: target_path
+        target:
+          kind: slot
+          name: link_targets
+      - kind: write_path
+        target:
+          kind: slot
+          name: link_path
+
+modifiers:
+  - id: target_directory
+    matcher:
+      kind: any_flag
+      flags:
+        - "-t"
+        - "--target-directory"
+    parameters:
+      - name: destination_directory
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_directory
+
+subcommands: null
+extensions: {}

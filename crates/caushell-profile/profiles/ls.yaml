@@ -1,0 +1,129 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: ls
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: list_paths
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: path_targets
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: path_targets
+
+modifiers:
+  - id: display_mode
+    matcher:
+      kind: any_flag
+      flags:
+        - "-a"
+        - "--all"
+        - "-A"
+        - "--almost-all"
+        - "-d"
+        - "--directory"
+        - "-l"
+        - "-1"
+        - "-R"
+        - "--recursive"
+
+  - id: classify
+    matcher:
+      kind: any_flag
+      flags:
+        - "-F"
+        - "--classify"
+        - "-p"
+        - "--indicator-style"
+    parameters:
+      - name: indicator_style
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: ignore_pattern
+    matcher:
+      kind: any_flag
+      flags:
+        - "-I"
+        - "--ignore"
+        - "--hide"
+    parameters:
+      - name: patterns
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+  - id: color
+    matcher:
+      kind: any_flag
+      flags:
+        - "--color"
+    parameters:
+      - name: color_mode
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: inline_only
+        cardinality: optional_one
+
+  - id: output_width
+    matcher:
+      kind: any_flag
+      flags:
+        - "-w"
+        - "--width"
+        - "-T"
+        - "--tabsize"
+    parameters:
+      - name: numeric_value
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_many
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Listing the implicit current directory is represented as no explicit path slot until cwd anchoring is materialized by the caller.

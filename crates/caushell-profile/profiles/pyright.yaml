@@ -1,0 +1,80 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: pyright
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: type_check_project
+    selector:
+      kind: all
+      items: []
+    parameters:
+      - name: input_targets
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: input_targets
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: pyrightconfig.json
+          convention: pyright.project_config
+          purpose: tool_config
+
+modifiers:
+  - id: project_config
+    matcher:
+      kind: any_flag
+      flags:
+        - "-p"
+        - "--project"
+    parameters:
+      - name: config_or_project_path
+        semantic:
+          kind: path
+          role: config
+          purpose: project_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: config_or_project_path
+
+  - id: output_format
+    matcher:
+      kind: any_flag
+      flags:
+        - "--outputjson"
+        - "--warnings"
+        - "--stats"
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

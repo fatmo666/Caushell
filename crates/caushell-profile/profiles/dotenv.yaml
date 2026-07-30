@@ -1,0 +1,292 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: dotenv
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families:
+    - posix
+    - linux
+    - macos
+  shell_families: []
+  requires_features: []
+
+forms:
+
+  - id: edit_named_env_file
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_positional_at_matching
+              index: 0
+              matcher:
+                kind: literal
+                value: set
+            - kind: has_positional_at_matching
+              index: 0
+              matcher:
+                kind: literal
+                value: unset
+        - kind: has_modifier
+          modifier: file
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: env_file
+      - kind: write_path
+        target:
+          kind: slot
+          name: env_file
+
+  - id: edit_default_env_file
+    selector:
+      kind: all
+      items:
+        - kind: any
+          items:
+            - kind: has_positional_at_matching
+              index: 0
+              matcher:
+                kind: literal
+                value: set
+            - kind: has_positional_at_matching
+              index: 0
+              matcher:
+                kind: literal
+                value: unset
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: file
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .env
+          convention: dotenv.env_file
+          purpose: project_config
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: .env
+          convention: dotenv.env_file
+          purpose: project_config
+
+  - id: query_named_env_file
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: literal
+              value: run
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_positional_at_matching
+                index: 0
+                matcher:
+                  kind: literal
+                  value: set
+              - kind: has_positional_at_matching
+                index: 0
+                matcher:
+                  kind: literal
+                  value: unset
+        - kind: has_modifier
+          modifier: file
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: slot
+          name: env_file
+      - kind: transform_data
+        target:
+          kind: none
+
+  - id: query_default_env_file
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: literal
+              value: run
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_positional_at_matching
+                index: 0
+                matcher:
+                  kind: literal
+                  value: set
+              - kind: has_positional_at_matching
+                index: 0
+                matcher:
+                  kind: literal
+                  value: unset
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: file
+    parameters:
+      - name: arguments
+        semantic:
+          kind: plain_value
+        binding:
+          kind: remaining_args
+        cardinality: optional_many
+    effects:
+      - kind: load_config
+        target:
+          kind: tool_convention_path
+          path: .env
+          convention: dotenv.env_file
+          purpose: project_config
+      - kind: transform_data
+        target:
+          kind: none
+
+modifiers:
+  - id: file
+    matcher:
+      kind: any_flag
+      flags:
+        - "-f"
+        - "--file"
+    parameters:
+      - name: env_file
+        semantic:
+          kind: path
+          role: config
+          purpose: project_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+
+subcommands:
+  roots:
+    - name: run
+      aliases: []
+      forms:
+        - id: run_named_env_file
+          selector:
+            kind: all
+            items:
+              - kind: has_modifier
+                modifier: file
+              - kind: has_positional_at
+                index: 0
+          parameters:
+            - name: wrapped_command
+              semantic:
+                kind: command_ref
+                dispatch: wrapper_command
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: wrapped_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: load_config
+              target:
+                kind: slot
+                name: env_file
+            - kind: dispatch_command
+              target:
+                kind: dispatch
+                command: wrapped_command
+                argv:
+                  - wrapped_args
+                environment: []
+
+        - id: run_default_env_file
+          selector:
+            kind: all
+            items:
+              - kind: not
+                item:
+                  kind: has_modifier
+                  modifier: file
+              - kind: has_positional_at
+                index: 0
+          parameters:
+            - name: wrapped_command
+              semantic:
+                kind: command_ref
+                dispatch: wrapper_command
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: wrapped_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .env
+                convention: dotenv.env_file
+                purpose: project_config
+            - kind: dispatch_command
+              target:
+                kind: dispatch
+                command: wrapped_command
+                argv:
+                  - wrapped_args
+                environment: []
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/source_research:
+    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - Query (`get`/`list`), edit (`set`/`unset`), and `run` surfaces are split, but less-common subcommands outside that set still fall back to the query form.
