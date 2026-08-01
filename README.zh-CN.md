@@ -1,8 +1,21 @@
-[English](README.md) | 简体中文
+<p align="center">
+  <img src="assets/logo.png" alt="Caushell" width="560" />
+</p>
 
-# Caushell
+<p align="center">
+  <strong>面向 AI agent shell action 的编译器式执行前安全分析。</strong>
+</p>
 
-> Compiler-style pre-execution safety for AI agent shell actions.
+<p align="center">
+  <a href="README.md">English</a> | 简体中文
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#能拦什么">能拦什么</a> ·
+  <a href="#为什么不用沙箱">为什么不用沙箱</a> ·
+  <a href="#how-it-works--工作原理">工作原理</a>
+</p>
 
 Caushell（causal + shell）运行在 Codex、Claude Code 等 coding agent 和本地 shell 之间，在 shell action 进入本地 shell 前完成执行前语义分析。
 
@@ -54,7 +67,7 @@ Caushell 与沙箱是互补关系，它们覆盖的是不同阶段的风险。
 
 运行时沙箱会在进程已经启动、触碰边界时阻断。Caushell 在 shell action 真正执行前阻断。
 
-这样做有两个好处：第一，提前阻断可以避免高风险命令进入后续执行流程；第二，在最终副作用发生之前，进程可能已经产生一些非预期行为，Caushell 的执行前阻断可以减少这类风险。
+这样做有两个好处：第一，在组合命令里，如果高危命令在后期出现，前置命令会照常运行，导致不必要的等待；第二，在最终副作用发生之前，进程可能已经产生一些非预期行为，Caushell 的执行前阻断可以减少这类风险。
 
 ## 快速开始
 
@@ -180,3 +193,7 @@ Caushell 在每条 shell 命令执行前运行，因此延迟本身就是产品�
 ## License
 
 Caushell is available under the [Apache License 2.0](LICENSE).
+
+## 友链
+
+- [LinuxDo](https://linux.do) — 真诚、友善、团结的中文技术社区

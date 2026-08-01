@@ -1,8 +1,21 @@
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <img src="assets/logo.png" alt="Caushell" width="560" />
+</p>
 
-# Caushell
+<p align="center">
+  <strong>Compiler-style pre-execution safety analysis for AI agent shell actions.</strong>
+</p>
 
-> Compiler-style pre-execution safety for AI agent shell actions.
+<p align="center">
+  English | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-caushell-catches">What Caushell catches</a> ·
+  <a href="#why-not-sandbox">Why not sandbox?</a> ·
+  <a href="#how-it-works">How it works</a>
+</p>
 
 Caushell (causal + shell) runs between AI coding agents such as Codex and Claude Code and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
 
@@ -54,7 +67,7 @@ A common scenario is that tests or local runs need to read `.env`, while depende
 
 Runtime sandboxing blocks a process after it has started and touched a boundary. Caushell blocks before the shell action actually executes.
 
-This has two benefits: first, early blocking prevents high-risk commands from entering later execution stages; second, before the final side effect happens, a process may already accumulate unexpected intermediate behavior, and Caushell's pre-execution blocking can reduce that risk.
+This has two benefits: first, in a combined command, if a high-risk command appears later, the preceding commands still run as usual, causing unnecessary waiting; second, before the final side effect happens, a process may already produce unexpected intermediate behavior, and Caushell's pre-execution blocking can reduce that risk.
 
 ## Quick start
 
@@ -170,7 +183,7 @@ Safety analysis passes run on the execution graph. Each pass focuses on a verifi
 
 ## Measured behavior
 
-Caushell runs before every shell command, so latency is part of the product surface. Current measurements cover the Codex and Claude Code integrations.
+Caushell runs before every shell command, so latency itself is part of the product capability. Current measurements cover the Codex and Claude Code integrations.
 
 | Item | Result |
 | --- | --- |
