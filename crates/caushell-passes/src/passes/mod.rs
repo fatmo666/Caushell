@@ -28,6 +28,7 @@ mod parse_command;
 mod project_top_level_commands;
 mod resolve_invocation;
 mod resolve_policy;
+mod sensitive_data_exfiltration_guard;
 mod sequence_integrity;
 mod tainted_execution_guard;
 
@@ -61,5 +62,6 @@ pub use parse_command::ParseCommandPass;
 pub use project_top_level_commands::ProjectTopLevelCommandsPass;
 pub use resolve_invocation::ResolveInvocationPass;
 pub use resolve_policy::ResolvePolicyPass;
+pub use sensitive_data_exfiltration_guard::SensitiveDataExfiltrationGuardPass;
 pub use sequence_integrity::SequenceIntegrityPass;
 pub use tainted_execution_guard::TaintedExecutionGuardPass;

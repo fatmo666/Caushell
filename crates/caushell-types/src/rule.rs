@@ -42,6 +42,7 @@ pub enum RuleId {
     GitSavedStateDestroy,
     GitLocalRefDestroy,
     TaintedExecution,
+    SensitiveDataExfiltration,
     ImportedPackageExecution,
 }
 
@@ -73,7 +74,7 @@ impl RuleId {
             | Self::GitTrackedPathDelete
             | Self::GitSavedStateDestroy
             | Self::GitLocalRefDestroy => RuleFamily::RepositorySafety,
-            Self::TaintedExecution => RuleFamily::Taint,
+            Self::TaintedExecution | Self::SensitiveDataExfiltration => RuleFamily::Taint,
             Self::ImportedPackageExecution => RuleFamily::Taint,
         }
     }
@@ -172,6 +173,10 @@ mod tests {
             RuleFamily::RepositorySafety
         );
         assert_eq!(RuleId::TaintedExecution.family(), RuleFamily::Taint);
+        assert_eq!(
+            RuleId::SensitiveDataExfiltration.family(),
+            RuleFamily::Taint
+        );
         assert_eq!(RuleId::ImportedPackageExecution.family(), RuleFamily::Taint);
     }
 

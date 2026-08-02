@@ -16,7 +16,8 @@ use caushell_passes::{
     GitDestructiveOperationGuardPass, ImportedPackageExecutionGuardPass,
     InteractiveEscapeGuardPass, OutsideWorkspaceScriptSourcePass,
     OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProjectTopLevelCommandsPass,
-    ResolveInvocationPass, ResolvePolicyPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
+    ResolveInvocationPass, ResolvePolicyPass, SensitiveDataExfiltrationGuardPass,
+    SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
 use caushell_profile::{BuiltInRegistryError, ProfileRegistry};
 use caushell_query::{
@@ -474,6 +475,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
+    runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);
     runner.register_session_analysis_pass(TaintedExecutionGuardPass);
     runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
     runner.register_session_analysis_pass(OutsideWorkspaceScriptSourcePass);
@@ -1689,6 +1691,7 @@ PY""#,
             },
             semantic_expansion: caushell_types::SemanticExpansionPolicy::default(),
             runtime_taint: caushell_types::RuntimeTaintPolicy::default(),
+            sensitive_paths: caushell_types::SensitivePathPolicy::default(),
             path_trust_sets: BTreeMap::new(),
         });
         let session_id = SessionId::new("sess-unknown-2");

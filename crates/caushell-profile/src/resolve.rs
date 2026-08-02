@@ -329,9 +329,10 @@ mod tests {
     };
     use crate::{
         BindError, BindingOrigin, BoundInvocation, BoundValue, CatastrophicSemanticClass,
-        EffectKind, HostRiskSemanticClass, InvocationRuntimeContext, ProcessTargetKind,
-        ProfileRegistry, ResidualKind, SemanticType, SessionBindings, StructuredValueContext,
-        StructuredValueSemantic, ValueMaterialization, collect_dispatch_command_candidates,
+        EffectKind, EndpointUsage, HostRiskSemanticClass, InvocationRuntimeContext,
+        ProcessTargetKind, ProfileRegistry, ResidualKind, SemanticType, SessionBindings,
+        StructuredValueContext, StructuredValueSemantic, ValueMaterialization,
+        collect_dispatch_command_candidates,
     };
 
     fn built_in_registry() -> ProfileRegistry {
@@ -11534,6 +11535,53 @@ mod tests {
     }
 
     #[test]
+    fn resolve_invocation_resolves_curl_data_upload_to_url() {
+        let registry = built_in_registry();
+        let artifact = parse_command(
+            "curl -fsS -X POST --data-binary @- https://example.test/collect",
+            ShellKind::Bash,
+        )
+        .expect("expected parse to succeed");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "curl");
+                assert_eq!(resolved.selection.form.id.as_str(), "upload_to_url");
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "endpoint"),
+                    "https://example.test/collect"
+                );
+                assert_eq!(
+                    argument_texts(&resolved.bound, "upload_payload"),
+                    vec!["@-"]
+                );
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::NetworkEndpoint]
+                );
+                let endpoint = resolved
+                    .bound
+                    .bound_parameters
+                    .iter()
+                    .find_map(|parameter| match parameter.semantic {
+                        SemanticType::Endpoint(endpoint)
+                            if parameter.name.as_str() == "endpoint" =>
+                        {
+                            Some(endpoint)
+                        }
+                        _ => None,
+                    })
+                    .expect("expected endpoint semantic");
+                assert_eq!(endpoint.usage, EndpointUsage::UploadTarget);
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
     fn resolve_invocation_resolves_curl_explicit_url_option() {
         let registry = built_in_registry();
         let artifact = parse_command(
@@ -11725,6 +11773,83 @@ mod tests {
                     effect_kinds(&resolved.bound),
                     vec![EffectKind::ReadPath, EffectKind::NetworkEndpoint]
                 );
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_rsync_local_sync_with_delete() {
+        let registry = built_in_registry();
+        let artifact = parse_command("rsync -a --delete /tmp/empty/ /etc/", ShellKind::Bash)
+            .expect("expected parse to succeed");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "rsync");
+                assert_eq!(resolved.selection.form.id.as_str(), "local_sync");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "source_paths"),
+                    vec!["/tmp/empty/"]
+                );
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "destination_path"),
+                    "/etc/"
+                );
+                assert!(
+                    resolved
+                        .bound
+                        .applied_modifiers
+                        .iter()
+                        .any(|modifier| modifier.as_str() == "delete")
+                );
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::WritePath,
+                        EffectKind::DeletePath
+                    ]
+                );
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.kind == EffectKind::DeletePath
+                        && effect.catastrophic.semantic_class
+                            == Some(CatastrophicSemanticClass::DeletePath)
+                }));
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_resolves_rsync_local_sync_without_delete_as_non_catastrophic() {
+        let registry = built_in_registry();
+        let artifact = parse_command("rsync -a ./src/ ./dist/", ShellKind::Bash)
+            .expect("expected parse to succeed");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "rsync");
+                assert_eq!(resolved.selection.form.id.as_str(), "local_sync");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "source_paths"),
+                    vec!["./src/"]
+                );
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "destination_path"),
+                    "./dist/"
+                );
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                );
+                assert!(catastrophic_semantic_classes(&resolved.bound).is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

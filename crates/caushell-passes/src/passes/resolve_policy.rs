@@ -425,6 +425,7 @@ mod tests {
                 },
                 semantic_expansion: caushell_types::SemanticExpansionPolicy::default(),
                 runtime_taint: caushell_types::RuntimeTaintPolicy::default(),
+                sensitive_paths: caushell_types::SensitivePathPolicy::default(),
                 path_trust_sets: std::collections::BTreeMap::new(),
             },
             vec![execution_unit_record(

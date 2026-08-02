@@ -18,6 +18,43 @@ platform:
   requires_features: []
 
 forms:
+  - id: upload_to_url
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: upload_data
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: output
+              - kind: has_modifier
+                modifier: remote_name
+    remaining_selector:
+      kind: no_positional_args
+    parameters:
+      - name: endpoint
+        semantic:
+          kind: endpoint
+          endpoint_kind: url
+          usage: upload_target
+        binding:
+          kind: next_positional
+        cardinality: required_one
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: opaque
+    effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: endpoint
+
   - id: fetch_explicit_url_to_file
     selector:
       kind: all
@@ -64,6 +101,8 @@ forms:
                 modifier: output
               - kind: has_modifier
                 modifier: remote_name
+              - kind: has_modifier
+                modifier: upload_data
     remaining_selector:
       kind: no_positional_args
     stream_contract:
@@ -148,6 +187,8 @@ forms:
                 modifier: output
               - kind: has_modifier
                 modifier: remote_name
+              - kind: has_modifier
+                modifier: upload_data
     remaining_selector:
       kind: no_positional_args
     parameters:
@@ -219,6 +260,31 @@ modifiers:
       flags:
         - "-O"
         - "--remote-name"
+
+  - id: upload_data
+    matcher:
+      kind: any_flag
+      flags:
+        - "-d"
+        - "--data"
+        - "--data-ascii"
+        - "--data-binary"
+        - "--data-raw"
+        - "--data-urlencode"
+        - "-F"
+        - "--form"
+        - "--form-string"
+        - "-T"
+        - "--upload-file"
+        - "--json"
+    parameters:
+      - name: upload_payload
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
 
   - id: common_value_option
     matcher:

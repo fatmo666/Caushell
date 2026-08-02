@@ -4,7 +4,8 @@ use caushell_profile::normalize_command_name;
 use caushell_types::{
     FamilyPolicy, NoProfilePolicy, PathTrustGrant, PathTrustScope, PathTrustSet, PolicyConfig,
     ResolveGapPolicy, RuleAction, RuleFamily, RuleId, RulePolicy, RulePolicyEntry,
-    RuntimeTaintPolicy, SemanticExpansionPolicy,
+    RuntimeTaintPolicy, SemanticExpansionPolicy, SensitivePathPolicy,
+    default_sensitive_path_patterns,
 };
 
 use crate::{
@@ -156,9 +157,34 @@ pub fn normalize_config(raw: RawConfigFile) -> Result<CaushellConfig, NormalizeC
                 max_hops: raw.analysis.max_taint_hops,
                 max_visited_nodes: raw.analysis.max_taint_nodes,
             },
+            sensitive_paths: normalize_sensitive_paths(raw.sensitive_paths),
             path_trust_sets,
         },
     })
+}
+
+fn normalize_sensitive_paths(raw: crate::RawSensitivePathConfig) -> SensitivePathPolicy {
+    let mut include = Vec::new();
+    if raw.defaults {
+        include.extend(
+            default_sensitive_path_patterns()
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    include.extend(raw.include);
+    include.sort();
+    include.dedup();
+
+    let mut exclude = raw.exclude;
+    exclude.sort();
+    exclude.dedup();
+
+    SensitivePathPolicy {
+        defaults: raw.defaults,
+        include,
+        exclude,
+    }
 }
 
 fn validate_hard_deny_overrides(

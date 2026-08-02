@@ -44,6 +44,8 @@ pub struct PolicyConfig {
     pub semantic_expansion: SemanticExpansionPolicy,
     #[serde(default)]
     pub runtime_taint: RuntimeTaintPolicy,
+    #[serde(default)]
+    pub sensitive_paths: SensitivePathPolicy,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub path_trust_sets: BTreeMap<String, PathTrustSet>,
 }
@@ -80,6 +82,44 @@ impl Default for RuntimeTaintPolicy {
             max_visited_nodes: 256,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensitivePathPolicy {
+    pub defaults: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+impl Default for SensitivePathPolicy {
+    fn default() -> Self {
+        Self {
+            defaults: true,
+            include: default_sensitive_path_patterns()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
+pub fn default_sensitive_path_patterns() -> Vec<&'static str> {
+    vec![
+        ".env",
+        ".env.*",
+        "*.pem",
+        "*.key",
+        "id_rsa",
+        "id_ed25519",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        "credentials",
+        "credentials.json",
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -279,6 +319,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         | RuleId::GitSavedStateDestroy
         | RuleId::GitLocalRefDestroy => RuleAction::NeedApproval,
         RuleId::TaintedExecution => RuleAction::NeedApproval,
+        RuleId::SensitiveDataExfiltration => RuleAction::NeedApproval,
         RuleId::ImportedPackageExecution => RuleAction::Observe,
     }
 }
@@ -366,7 +407,7 @@ mod tests {
     use super::{
         FamilyPolicy, NoProfilePolicy, PathTrustGrant, PathTrustScope, PathTrustSet, PolicyConfig,
         ResolveGapKind, ResolveGapPolicy, RuleAction, RulePolicy, RulePolicyEntry,
-        RuntimeTaintPolicy, SemanticExpansionPolicy,
+        RuntimeTaintPolicy, SemanticExpansionPolicy, SensitivePathPolicy,
     };
     use crate::{PackageLocatorKind, RuleFamily, RuleId};
     use serde_json::json;
@@ -415,9 +456,16 @@ mod tests {
         assert_eq!(
             config
                 .rule_policy
+                .action_for(RuleId::SensitiveDataExfiltration),
+            RuleAction::NeedApproval
+        );
+        assert_eq!(
+            config
+                .rule_policy
                 .action_for(RuleId::ImportedPackageExecution),
             RuleAction::Observe
         );
+        assert_eq!(config.sensitive_paths, SensitivePathPolicy::default());
         assert_eq!(
             config
                 .rule_policy
@@ -624,6 +672,11 @@ mod tests {
             },
             semantic_expansion: SemanticExpansionPolicy::default(),
             runtime_taint: RuntimeTaintPolicy::default(),
+            sensitive_paths: SensitivePathPolicy {
+                defaults: false,
+                include: vec![".env".to_string(), "*.pem".to_string()],
+                exclude: vec![".env.example".to_string()],
+            },
             path_trust_sets: BTreeMap::from([
                 (
                     "system_scripts".to_string(),
@@ -684,6 +737,11 @@ mod tests {
                 "runtime_taint": {
                     "max_hops": 12,
                     "max_visited_nodes": 256
+                },
+                "sensitive_paths": {
+                    "defaults": false,
+                    "include": [".env", "*.pem"],
+                    "exclude": [".env.example"]
                 },
                 "path_trust_sets": {
                     "system_scripts": {

@@ -50,7 +50,8 @@ pub use persistence::{
 pub use policy::{
     FamilyPolicy, NoProfilePolicy, PathTrustGrant, PathTrustScope, PathTrustSet, PolicyConfig,
     ResolveGapKind, ResolveGapPolicy, RuleAction, RulePolicy, RulePolicyEntry, RuntimeTaintPolicy,
-    SemanticExpansionPolicy, UnresolvedExecutionPayloadSubtype,
+    SemanticExpansionPolicy, SensitivePathPolicy, UnresolvedExecutionPayloadSubtype,
+    default_sensitive_path_patterns,
 };
 pub use provenance::{
     ImplicitInputSource, InlineShellContentCarrier, PackageLocatorKind, PackageManagerKind,

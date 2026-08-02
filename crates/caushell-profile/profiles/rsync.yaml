@@ -18,6 +18,52 @@ platform:
   requires_features: []
 
 forms:
+  - id: local_sync
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: structured_value_context
+              context: remote_spec
+        - kind: not
+          item:
+            kind: last_positional_matches
+            matcher:
+              kind: structured_value_context
+              context: remote_spec
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        target:
+          kind: slot
+          name: destination_path
+
   - id: import_from_remote
     selector:
       kind: all
@@ -135,6 +181,24 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+
+  - id: delete
+    matcher:
+      kind: any_flag
+      flags:
+        - "--delete"
+        - "--delete-before"
+        - "--delete-during"
+        - "--delete-delay"
+        - "--delete-after"
+        - "--delete-excluded"
+    effects:
+      - kind: delete_path
+        target:
+          kind: slot
+          name: destination_path
+        catastrophic:
+          semantic_class: delete_path
 
 subcommands: null
 extensions:

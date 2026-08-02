@@ -1896,6 +1896,19 @@ mod tests {
     }
 
     #[test]
+    fn catastrophic_delete_guard_denies_rsync_delete_system_directory() {
+        let ctx = run_pass(r#"rsync -a --delete /tmp/empty/ /etc/"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::Deny));
+        assert_has_finding(
+            &ctx,
+            RuleId::CatastrophicFileSystemDelete,
+            FindingEnforcementClass::HardDenyFloor,
+            &["delete target /etc", "command rsync"],
+        );
+    }
+
+    #[test]
     fn catastrophic_delete_guard_denies_pipeline_xargs_quoted_rm_root_in_default_mode() {
         let ctx = run_pass(r#"printf "'/'\n" | xargs rm -rf"#);
 

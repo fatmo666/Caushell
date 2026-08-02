@@ -12,6 +12,7 @@ pub struct RawConfigFile {
     pub failure_action: RawAction,
     pub policy: RawPolicy,
     pub trusted_paths: Vec<RawTrustedPath>,
+    pub sensitive_paths: RawSensitivePathConfig,
     pub analysis: RawAnalysisConfig,
 }
 
@@ -22,6 +23,7 @@ impl Default for RawConfigFile {
             failure_action: RawAction::Allow,
             policy: RawPolicy::default(),
             trusted_paths: Vec::new(),
+            sensitive_paths: RawSensitivePathConfig::default(),
             analysis: RawAnalysisConfig::default(),
         }
     }
@@ -74,6 +76,24 @@ pub struct RawTrustedPath {
 pub enum RawTrustedPathScope {
     ScriptExecute,
     StartupConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RawSensitivePathConfig {
+    pub defaults: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl Default for RawSensitivePathConfig {
+    fn default() -> Self {
+        Self {
+            defaults: true,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
