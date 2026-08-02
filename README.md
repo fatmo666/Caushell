@@ -193,3 +193,7 @@ Caushell runs before every shell command, so latency itself is part of the produ
 ## License
 
 Caushell is available under the [Apache License 2.0](LICENSE).
+
+## Friendly Links
+
+- [LinuxDo](https://linux.do) — A sincere, friendly, and united Chinese tech community
