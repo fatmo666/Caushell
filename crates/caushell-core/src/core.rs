@@ -4710,7 +4710,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
     }
 
     #[test]
-    fn core_default_runner_requires_approval_for_pip_requirement_file_import() {
+    fn core_default_runner_observes_pip_requirement_file_import() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request(
@@ -4719,7 +4719,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             "pip install -r requirements.txt",
         ));
 
-        assert_eq!(response.decision, Decision::NeedApproval);
+        assert_eq!(response.decision, Decision::Allow);
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert_eq!(
             response.decision_trace.execution_semantics[0].normalized_command_name,
@@ -4873,7 +4873,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
     }
 
     #[test]
-    fn core_default_runner_requires_approval_for_pip_local_path_import() {
+    fn core_default_runner_observes_pip_local_path_import() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request(
@@ -4882,7 +4882,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             "pip install ./dist/pkg.whl",
         ));
 
-        assert_eq!(response.decision, Decision::NeedApproval);
+        assert_eq!(response.decision, Decision::Allow);
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert!(response.decision_trace.execution_semantics[0].executes_imported_package_logic);
         assert!(

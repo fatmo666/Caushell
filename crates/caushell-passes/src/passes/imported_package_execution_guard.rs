@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_package_execution_guard_requires_approval_for_local_path_by_default() {
+    fn imported_package_execution_guard_observes_local_path_by_default() {
         let mut ctx = RunnerContext::new(sample_request("pip install ./dist/pkg.whl", 3));
         let graph = SessionGraph::new();
         let summary = SessionSummary::new();
@@ -341,7 +341,7 @@ mod tests {
         runner.register_final_decision_pass(DecisionAssemblyPass);
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
 
-        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        assert_eq!(ctx.final_decision, Some(Decision::Allow));
         assert!(ctx.findings.iter().any(|finding| {
             finding.rule_id == RuleId::ImportedPackageExecution
                 && finding.message.contains("local_path")
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn imported_package_execution_guard_requires_approval_for_requirement_file_by_default() {
+    fn imported_package_execution_guard_observes_requirement_file_by_default() {
         let mut ctx = RunnerContext::new(sample_request("pip install -r requirements.txt", 3));
         let graph = SessionGraph::new();
         let summary = SessionSummary::new();
@@ -364,7 +364,7 @@ mod tests {
         runner.register_final_decision_pass(DecisionAssemblyPass);
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
 
-        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        assert_eq!(ctx.final_decision, Some(Decision::Allow));
         assert!(ctx.findings.iter().any(|finding| {
             finding.rule_id == RuleId::ImportedPackageExecution
                 && finding.message.contains("requirement_file")

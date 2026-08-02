@@ -352,11 +352,11 @@ fn default_unresolved_execution_payload_subtype_action(
 
 fn default_imported_package_locator_kind_action(kind: PackageLocatorKind) -> RuleAction {
     match kind {
-        PackageLocatorKind::RegistryRef => RuleAction::Observe,
-        PackageLocatorKind::LocalPath
-        | PackageLocatorKind::DirectUrl
+        PackageLocatorKind::RegistryRef
+        | PackageLocatorKind::LocalPath
+        | PackageLocatorKind::RequirementFile => RuleAction::Observe,
+        PackageLocatorKind::DirectUrl
         | PackageLocatorKind::VcsUrl
-        | PackageLocatorKind::RequirementFile
         | PackageLocatorKind::UnknownDynamic => RuleAction::NeedApproval,
     }
 }
@@ -585,9 +585,19 @@ mod tests {
             policy.action_for_imported_package_locator_kind(PackageLocatorKind::UnknownDynamic),
             RuleAction::NeedApproval
         );
+    }
+
+    #[test]
+    fn imported_package_locator_kind_defaults_to_observe_for_local_and_requirement_sources() {
+        let policy = RulePolicy::default();
+
+        assert_eq!(
+            policy.action_for_imported_package_locator_kind(PackageLocatorKind::LocalPath),
+            RuleAction::Observe
+        );
         assert_eq!(
             policy.action_for_imported_package_locator_kind(PackageLocatorKind::RequirementFile),
-            RuleAction::NeedApproval
+            RuleAction::Observe
         );
     }
 
