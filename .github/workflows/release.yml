@@ -111,6 +111,7 @@ jobs:
             CAUSHELL_UPDATE_INSTALL_DIR="${install_root}" \
             "${install_root}/caushell" update --check
           python3 scripts/smoke-sensitive-exfiltration.py "${install_root}/caushell"
+          python3 scripts/smoke-adversarial-shell.py "${install_root}/caushell"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

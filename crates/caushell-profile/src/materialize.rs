@@ -297,6 +297,12 @@ pub enum ShellParameterReference {
         operator: ShellParameterExpansionOperator,
         word: String,
     },
+    PatternSubstitution {
+        parameter: ShellParameterName,
+        replace_all: bool,
+        pattern: String,
+        replacement: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,7 +352,8 @@ where
                 if is_valid_variable_name(&body) {
                     return Some(ShellParameterReference::Variable(body));
                 }
-                return parse_braced_shell_parameter_expansion(&body);
+                return parse_braced_shell_parameter_expansion(&body)
+                    .or_else(|| parse_braced_shell_parameter_substitution(&body));
             }
             body.push(ch);
         }
@@ -416,6 +423,18 @@ pub fn exact_scalar_shell_parameter_value(
             operator,
             word,
         } => exact_scalar_shell_parameter_expansion_value(bindings, parameter, *operator, word),
+        ShellParameterReference::PatternSubstitution {
+            parameter,
+            replace_all,
+            pattern,
+            replacement,
+        } => exact_scalar_shell_parameter_substitution_value(
+            bindings,
+            parameter,
+            *replace_all,
+            pattern,
+            replacement,
+        ),
     }
 }
 
@@ -471,6 +490,31 @@ fn parse_braced_shell_parameter_expansion(body: &str) -> Option<ShellParameterRe
         parameter,
         operator,
         word: word.to_string(),
+    })
+}
+
+fn parse_braced_shell_parameter_substitution(body: &str) -> Option<ShellParameterReference> {
+    let (parameter, rest) = parse_shell_parameter_name_prefix(body)?;
+    let (replace_all, rest) = if let Some(rest) = rest.strip_prefix("//") {
+        (true, rest)
+    } else if let Some(rest) = rest.strip_prefix('/') {
+        (false, rest)
+    } else {
+        return None;
+    };
+
+    let (pattern, replacement) = rest.split_once('/')?;
+    if !is_literal_parameter_substitution_pattern(pattern)
+        || !is_literal_parameter_substitution_replacement(replacement)
+    {
+        return None;
+    }
+
+    Some(ShellParameterReference::PatternSubstitution {
+        parameter,
+        replace_all,
+        pattern: pattern.to_string(),
+        replacement: replacement.to_string(),
     })
 }
 
@@ -564,6 +608,25 @@ fn exact_scalar_shell_parameter_expansion_value(
     }
 }
 
+fn exact_scalar_shell_parameter_substitution_value(
+    bindings: &SessionBindings,
+    parameter: &ShellParameterName,
+    replace_all: bool,
+    pattern: &str,
+    replacement: &str,
+) -> Option<String> {
+    let value = match shell_parameter_binding(bindings, parameter) {
+        ShellParameterBindingRef::Unset => String::new(),
+        ShellParameterBindingRef::Bound { value } => exact_scalar_session_value(value)?,
+    };
+
+    if replace_all {
+        Some(value.replace(pattern, replacement))
+    } else {
+        Some(value.replacen(pattern, replacement, 1))
+    }
+}
+
 fn literal_parameter_expansion_word(word: &str) -> Option<String> {
     if contains_unescaped_dynamic_syntax(word)
         || word.chars().any(|ch| matches!(ch, '\'' | '"' | '\\'))
@@ -572,6 +635,21 @@ fn literal_parameter_expansion_word(word: &str) -> Option<String> {
     }
 
     Some(word.to_string())
+}
+
+fn is_literal_parameter_substitution_pattern(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && is_literal_parameter_substitution_word(pattern)
+        && !pattern.chars().any(|ch| matches!(ch, '*' | '?' | '['))
+}
+
+fn is_literal_parameter_substitution_replacement(replacement: &str) -> bool {
+    is_literal_parameter_substitution_word(replacement)
+}
+
+fn is_literal_parameter_substitution_word(word: &str) -> bool {
+    !contains_unescaped_dynamic_syntax(word)
+        && !word.chars().any(|ch| matches!(ch, '\'' | '"' | '\\'))
 }
 
 fn shell_value_to_session_value(value: &ShellValueSnapshot) -> Option<SessionValue> {
@@ -875,7 +953,8 @@ fn materialize_shell_parameter_reference_fields(
             )
             .map(|field| vec![field])
         }
-        ShellParameterReference::Expansion { .. } => {
+        ShellParameterReference::Expansion { .. }
+        | ShellParameterReference::PatternSubstitution { .. } => {
             let value = exact_scalar_shell_parameter_value(bindings, reference)?;
             if !quoted && !is_safe_unquoted_scalar(&value) {
                 return None;
@@ -1152,8 +1231,10 @@ pub(crate) fn materialize_argument_text(
         }
     }
 
-    if let Some(reference @ ShellParameterReference::Expansion { .. }) =
-        exact_shell_parameter_reference(text)
+    if let Some(
+        reference @ (ShellParameterReference::Expansion { .. }
+        | ShellParameterReference::PatternSubstitution { .. }),
+    ) = exact_shell_parameter_reference(text)
     {
         if let Some(value) = exact_scalar_shell_parameter_value(bindings, &reference) {
             if !quoted && !is_safe_unquoted_scalar(&value) {
@@ -1200,6 +1281,9 @@ fn shell_parameter_reference_name(reference: &ShellParameterReference) -> String
         ShellParameterReference::AllPositionals(ShellAllPositionalsKind::At) => "@".to_string(),
         ShellParameterReference::AllPositionals(ShellAllPositionalsKind::Star) => "*".to_string(),
         ShellParameterReference::Expansion { parameter, .. } => shell_parameter_name(parameter),
+        ShellParameterReference::PatternSubstitution { parameter, .. } => {
+            shell_parameter_name(parameter)
+        }
     }
 }
 
@@ -1824,6 +1908,67 @@ mod tests {
                 variable_name: "TARGET_ROOT".to_string(),
                 value: "/".to_string(),
                 origin: BindingOrigin::SessionBinding,
+            }
+        );
+    }
+
+    #[test]
+    fn projected_invocation_materializes_literal_parameter_substitution() {
+        let artifact = parse_command(r#"rm -rf "${TARGET//XXX//}""#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+        let command = artifact.commands.first().expect("expected one command");
+        let projection = project_invocation(command, crate::InvocationRuntimeContext::new());
+
+        let bindings = SessionBindings::new().with_exact_scalar("TARGET", "XXXetc");
+        let materialized = materialize_projected_invocation(&projection, &bindings);
+
+        assert_eq!(materialized.invocation.args[1].text, "/etc");
+        assert_eq!(
+            materialized.arg_resolutions[1],
+            ValueMaterialization::ResolvedExactScalar {
+                variable_name: "TARGET".to_string(),
+                value: "/etc".to_string(),
+                origin: BindingOrigin::SessionBinding,
+            }
+        );
+    }
+
+    #[test]
+    fn projected_invocation_materializes_literal_parameter_substitution_empty_replacement() {
+        let artifact = parse_command(r#"rm -rf "${TARGET//XXX/}""#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+        let command = artifact.commands.first().expect("expected one command");
+        let projection = project_invocation(command, crate::InvocationRuntimeContext::new());
+
+        let bindings = SessionBindings::new().with_exact_scalar("TARGET", "/etXXXc");
+        let materialized = materialize_projected_invocation(&projection, &bindings);
+
+        assert_eq!(materialized.invocation.args[1].text, "/etc");
+        assert_eq!(
+            materialized.arg_resolutions[1],
+            ValueMaterialization::ResolvedExactScalar {
+                variable_name: "TARGET".to_string(),
+                value: "/etc".to_string(),
+                origin: BindingOrigin::SessionBinding,
+            }
+        );
+    }
+
+    #[test]
+    fn projected_invocation_leaves_glob_parameter_substitution_dynamic() {
+        let artifact = parse_command(r#"rm -rf "${TARGET//X*/}""#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+        let command = artifact.commands.first().expect("expected one command");
+        let projection = project_invocation(command, crate::InvocationRuntimeContext::new());
+
+        let bindings = SessionBindings::new().with_exact_scalar("TARGET", "/etc");
+        let materialized = materialize_projected_invocation(&projection, &bindings);
+
+        assert_eq!(materialized.invocation.args[1].text, "${TARGET//X*/}");
+        assert_eq!(
+            materialized.arg_resolutions[1],
+            ValueMaterialization::UnsupportedDynamicText {
+                text: "${TARGET//X*/}".to_string(),
             }
         );
     }

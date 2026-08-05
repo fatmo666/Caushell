@@ -1062,6 +1062,32 @@ mod tests {
     }
 
     #[test]
+    fn catastrophic_delete_guard_denies_static_parameter_substitution_system_target() {
+        for command in [
+            r#"TARGET=XXXetc; rm -rf "${TARGET//XXX//}""#,
+            r#"TARGET=/etXXXc; rm -rf "${TARGET//XXX/}""#,
+        ] {
+            let ctx = run_pass(command);
+
+            assert_eq!(
+                ctx.final_decision,
+                Some(Decision::Deny),
+                "expected deny for {command}, got findings: {:?}",
+                ctx.findings
+            );
+            assert!(
+                ctx.findings.iter().any(|finding| {
+                    finding.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete
+                        && finding.enforcement_class == FindingEnforcementClass::HardDenyFloor
+                        && finding.message.contains("delete target")
+                }),
+                "expected catastrophic delete finding for {command}, got {:?}",
+                ctx.findings
+            );
+        }
+    }
+
+    #[test]
     fn catastrophic_delete_guard_ignores_non_catastrophic_project_delete() {
         let ctx = run_pass("rm -rf ./target");
 
