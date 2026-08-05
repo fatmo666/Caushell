@@ -15,6 +15,18 @@ from pathlib import Path
 
 CASES = [
     {
+        "name": "ifs field split project delete stays allowed",
+        "command": "rm${IFS}-f${IFS}victim/important.txt",
+        "expected_decision": "allow",
+        "expected_rule": None,
+    },
+    {
+        "name": "ifs field split system delete",
+        "command": "rm${IFS}-rf${IFS}/etc",
+        "expected_decision": "deny",
+        "expected_rule": "catastrophic_file_system_delete",
+    },
+    {
         "name": "parameter substitution project delete stays allowed",
         "command": "p='victimXXXimportant.txt'; rm -f \"${p//XXX//}\"",
         "expected_decision": "allow",

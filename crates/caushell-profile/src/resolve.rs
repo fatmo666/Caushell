@@ -1,4 +1,4 @@
-use caushell_parse::CommandFact;
+use caushell_parse::{CommandFact, CommandToken, CommandTokenKind};
 use caushell_types::{ResolveGapKind, SessionSummary};
 
 use crate::bind::bind_modifier_only_invocation;
@@ -130,6 +130,9 @@ pub fn resolve_invocation_with_bindings<'a>(
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
 ) -> ResolveInvocationResult<'a> {
+    let recovered_command = recover_ifs_field_split_command(command, bindings);
+    let command = recovered_command.as_ref().unwrap_or(command);
+
     if let Some(gap_kind) = dynamic_command_target_gap(command) {
         return ResolveInvocationResult::MissingCommandName { gap_kind };
     }
@@ -314,6 +317,178 @@ fn is_dynamic_command_token_kind(node_kind: &str) -> bool {
             | "arithmetic_expansion"
             | "concatenation"
     )
+}
+
+fn recover_ifs_field_split_command(
+    command: &CommandFact,
+    bindings: &SessionBindings,
+) -> Option<CommandFact> {
+    let trimmed_text = command.text.trim_start();
+    if trimmed_text.starts_with('\'') || trimmed_text.starts_with('"') {
+        return None;
+    }
+
+    let (source_word, source_span, remaining_tokens) =
+        if let Some(command_name) = command.command_name.as_deref() {
+            if !looks_like_dynamic_command_name(command_name) {
+                return None;
+            }
+            (command_name, &command.span, command.tokens.as_slice())
+        } else {
+            let first_token = command.tokens.first()?;
+            if first_token.quoted {
+                return None;
+            }
+            (
+                first_token.text.as_str(),
+                &first_token.span,
+                command.tokens.get(1..).unwrap_or_default(),
+            )
+        };
+
+    let fields = split_word_on_static_ifs_references(source_word, bindings)?;
+    let (command_name, field_args) = fields.split_first()?;
+    if command_name.is_empty() {
+        return None;
+    }
+
+    let mut recovered = command.clone();
+    recovered.command_name = Some(command_name.clone());
+    recovered.tokens = Vec::new();
+
+    let mut dashdash_seen = false;
+    for field in field_args {
+        recovered.tokens.push(recovered_field_token(
+            field.clone(),
+            source_span,
+            &mut dashdash_seen,
+        ));
+    }
+
+    for token in remaining_tokens {
+        let mut token = token.clone();
+        token.kind = classify_recovered_arg_kind(&token.text, &mut dashdash_seen);
+        recovered.tokens.push(token);
+    }
+
+    Some(recovered)
+}
+
+fn recovered_field_token(
+    text: String,
+    span: &caushell_parse::SourceSpan,
+    dashdash_seen: &mut bool,
+) -> CommandToken {
+    CommandToken {
+        kind: classify_recovered_arg_kind(&text, dashdash_seen),
+        text,
+        quoted: false,
+        node_kind: "ifs_field_split".to_string(),
+        span: span.clone(),
+        command_substitutions: Vec::new(),
+    }
+}
+
+fn classify_recovered_arg_kind(text: &str, dashdash_seen: &mut bool) -> CommandTokenKind {
+    if text == "--" {
+        *dashdash_seen = true;
+        CommandTokenKind::DashDash
+    } else if !*dashdash_seen && text.len() > 1 && text.starts_with('-') {
+        CommandTokenKind::Flag
+    } else {
+        CommandTokenKind::Arg
+    }
+}
+
+fn split_word_on_static_ifs_references(
+    text: &str,
+    bindings: &SessionBindings,
+) -> Option<Vec<String>> {
+    let ifs = static_ifs_value(bindings)?;
+    if ifs.is_empty() {
+        return None;
+    }
+
+    let mut expanded = String::new();
+    let mut used_ifs_reference = false;
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((_, ch)) = chars.next() {
+        if ch == '`' {
+            return None;
+        }
+
+        if ch != '$' {
+            expanded.push(ch);
+            continue;
+        }
+
+        let Some((next_index, next)) = chars.peek().copied() else {
+            return None;
+        };
+
+        if next == '{' {
+            let rest = text.get(next_index..)?;
+            if rest.starts_with("{IFS}") {
+                for _ in 0..5 {
+                    chars.next();
+                }
+                expanded.push_str(&ifs);
+                used_ifs_reference = true;
+                continue;
+            }
+            return None;
+        }
+
+        if next == 'I' {
+            let rest = text.get(next_index..)?;
+            if rest.starts_with("IFS") {
+                let after_ifs = next_index + 3;
+                if text
+                    .get(after_ifs..)
+                    .and_then(|suffix| suffix.chars().next())
+                    .is_some_and(is_shell_name_char)
+                {
+                    return None;
+                }
+                for _ in 0..3 {
+                    chars.next();
+                }
+                expanded.push_str(&ifs);
+                used_ifs_reference = true;
+                continue;
+            }
+        }
+
+        return None;
+    }
+
+    used_ifs_reference.then(|| split_on_ifs_chars(&expanded, &ifs))
+}
+
+fn static_ifs_value(bindings: &SessionBindings) -> Option<String> {
+    let Some(binding) = bindings.get("IFS") else {
+        return Some(" \t\n".to_string());
+    };
+
+    match binding.value {
+        crate::SessionValue::ExactScalar(value) => Some(value.clone()),
+        crate::SessionValue::RuntimeProduced { value, .. } => Some(value.clone()),
+        crate::SessionValue::OpaqueDynamic { .. } | crate::SessionValue::RuntimeInput { .. } => {
+            None
+        }
+    }
+}
+
+fn split_on_ifs_chars(text: &str, ifs: &str) -> Vec<String> {
+    text.split(|ch| ifs.contains(ch))
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_shell_name_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
 }
 
 #[cfg(test)]
@@ -7608,6 +7783,78 @@ mod tests {
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_invocation_recovers_unquoted_ifs_field_split_command() {
+        let registry = built_in_registry();
+        let artifact = parse_command(r#"rm${IFS}-f${IFS}victim/important.txt"#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+
+        let command = artifact.commands.first().expect("expected one command");
+        assert_eq!(
+            command.command_name.as_deref(),
+            Some("rm${IFS}-f${IFS}victim/important.txt")
+        );
+
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "rm");
+                assert_eq!(resolved.selection.form.id.as_str(), "delete_paths");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "path_targets"),
+                    vec!["victim/important.txt"]
+                );
+                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::DeletePath]);
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_recovers_explicit_comma_ifs_field_split_command() {
+        let registry = built_in_registry();
+        let artifact = parse_command(r#"rm${IFS}-f${IFS}/etc"#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+        let bindings = SessionBindings::new().with_exact_scalar("IFS", ",");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation_with_bindings(
+            &registry,
+            command,
+            InvocationRuntimeContext::new(),
+            &bindings,
+        );
+
+        match result {
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "rm");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "path_targets"),
+                    vec!["/etc"]
+                );
+            }
+            other => panic!("unexpected resolve result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_does_not_recover_quoted_ifs_field_split_command() {
+        let registry = built_in_registry();
+        let artifact = parse_command(r#""rm${IFS}-f${IFS}victim/important.txt""#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+
+        let command = artifact.commands.first().expect("expected one command");
+        let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
+
+        assert_eq!(
+            result,
+            ResolveInvocationResult::MissingCommandName {
+                gap_kind: ResolveGapKind::DynamicCommandTarget
+            }
+        );
     }
 
     #[test]
