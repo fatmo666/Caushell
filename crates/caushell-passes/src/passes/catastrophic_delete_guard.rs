@@ -2227,6 +2227,18 @@ mod tests {
     }
 
     #[test]
+    fn catastrophic_delete_guard_denies_base64_decoded_stdin_shell_payload_system_delete() {
+        let ctx = run_pass("printf 'cm0gLXJmIC9ldGMK' | base64 -d | sh");
+
+        assert_eq!(ctx.final_decision, Some(Decision::Deny));
+        assert!(ctx.findings.iter().any(|finding| {
+            finding.rule_id == RuleId::CatastrophicFileSystemDelete
+                && finding.enforcement_class == FindingEnforcementClass::HardDenyFloor
+                && finding.message.contains("delete target /etc in command rm")
+        }));
+    }
+
+    #[test]
     fn catastrophic_delete_guard_de_floors_pipeline_xargs_mv_root_in_default_mode() {
         assert_de_floored_surface_requires_approval(
             r#"printf '/\n' | xargs mv -t /tmp"#,

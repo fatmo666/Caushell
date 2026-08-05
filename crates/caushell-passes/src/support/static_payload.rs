@@ -67,6 +67,17 @@ pub(crate) fn static_stdout_payloads_for_scoped_command(
             home,
             remaining_depth,
         ),
+        Some("base64") => base64_decode_scoped_stdout_payloads(
+            session,
+            parsed,
+            command_index,
+            sequence_no,
+            bindings,
+            scope_base_bindings,
+            cwd,
+            home,
+            remaining_depth,
+        ),
         Some("bash" | "sh") => shell_scoped_stdout_payloads(
             session,
             command,
@@ -77,6 +88,173 @@ pub(crate) fn static_stdout_payloads_for_scoped_command(
             remaining_depth,
         ),
         _ => static_stdout_payloads_for_command(session, command, sequence_no, bindings, cwd, home),
+    }
+}
+
+fn base64_decode_scoped_stdout_payloads(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence_no: CommandSequenceNo,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    cwd: &str,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> Vec<String> {
+    let Some(command) = parsed.commands.get(command_index) else {
+        return Vec::new();
+    };
+    let Some(ignore_garbage) = base64_decode_mode(command) else {
+        return Vec::new();
+    };
+
+    let mut encoded_chunks = Vec::new();
+    let input_args = arg_tokens(command);
+
+    if input_args.is_empty() {
+        encoded_chunks.extend(static_stdin_payloads_for_scoped_command(
+            session,
+            parsed,
+            command_index,
+            sequence_no,
+            bindings,
+            scope_base_bindings,
+            cwd,
+            home,
+            remaining_depth,
+        ));
+    } else {
+        for arg in input_args {
+            let text = materialize_static_token_text(&arg.text, bindings);
+            if text == "-" {
+                encoded_chunks.extend(static_stdin_payloads_for_scoped_command(
+                    session,
+                    parsed,
+                    command_index,
+                    sequence_no,
+                    bindings,
+                    scope_base_bindings,
+                    cwd,
+                    home,
+                    remaining_depth,
+                ));
+                continue;
+            }
+
+            let Some(path) = resolve_path_operand(&text, arg.quoted, &arg.node_kind, cwd, home)
+            else {
+                return Vec::new();
+            };
+            let Some(content) =
+                known_literal_path_content_before_sequence(session, &path, sequence_no, cwd, home)
+            else {
+                return Vec::new();
+            };
+            encoded_chunks.push(content);
+        }
+    }
+
+    if encoded_chunks.is_empty() {
+        return Vec::new();
+    }
+
+    decode_base64_standard_to_utf8(&encoded_chunks.join(""), ignore_garbage)
+        .into_iter()
+        .collect()
+}
+
+fn base64_decode_mode(command: &CommandFact) -> Option<bool> {
+    let mut decode = false;
+    let mut ignore_garbage = false;
+
+    for token in &command.tokens {
+        match token.kind {
+            CommandTokenKind::Flag => match token.text.as_str() {
+                "-d" | "--decode" => decode = true,
+                "-i" | "--ignore-garbage" => ignore_garbage = true,
+                _ => return None,
+            },
+            CommandTokenKind::Arg | CommandTokenKind::DashDash => {}
+        }
+    }
+
+    decode.then_some(ignore_garbage)
+}
+
+fn decode_base64_standard_to_utf8(input: &str, ignore_garbage: bool) -> Option<String> {
+    let mut values = Vec::new();
+    let mut saw_padding = false;
+
+    for byte in input.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+
+        if byte == b'=' {
+            saw_padding = true;
+            values.push(None);
+            continue;
+        }
+
+        let Some(value) = base64_standard_value(byte) else {
+            if ignore_garbage {
+                continue;
+            }
+            return None;
+        };
+
+        if saw_padding {
+            return None;
+        }
+        values.push(Some(value));
+    }
+
+    if values.is_empty() || values.len() % 4 != 0 {
+        return None;
+    }
+
+    let mut decoded = Vec::with_capacity(values.len() / 4 * 3);
+    let chunk_count = values.len() / 4;
+    for (chunk_index, chunk) in values.chunks_exact(4).enumerate() {
+        let is_last = chunk_index + 1 == chunk_count;
+        let first = chunk[0]?;
+        let second = chunk[1]?;
+        let third = chunk[2];
+        let fourth = chunk[3];
+
+        if (third.is_none() || fourth.is_none()) && !is_last {
+            return None;
+        }
+        if third.is_none() && fourth.is_some() {
+            return None;
+        }
+
+        let combined = ((first as u32) << 18)
+            | ((second as u32) << 12)
+            | ((third.unwrap_or(0) as u32) << 6)
+            | (fourth.unwrap_or(0) as u32);
+
+        decoded.push(((combined >> 16) & 0xff) as u8);
+        if third.is_some() {
+            decoded.push(((combined >> 8) & 0xff) as u8);
+        }
+        if fourth.is_some() {
+            decoded.push((combined & 0xff) as u8);
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn base64_standard_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
     }
 }
 
@@ -2177,6 +2355,27 @@ mod tests {
 
         assert_eq!(render_static_printf_payload("%10s\\n", &args), None);
         assert_eq!(render_static_printf_payload("%d\\n", &args), None);
+    }
+
+    #[test]
+    fn base64_decoder_decodes_standard_payload() {
+        assert_eq!(
+            decode_base64_standard_to_utf8("ZWNobyBtYXRlcmlhbGl6ZWQK", false),
+            Some("echo materialized\n".to_string())
+        );
+    }
+
+    #[test]
+    fn base64_decoder_ignores_whitespace_but_rejects_garbage_by_default() {
+        assert_eq!(
+            decode_base64_standard_to_utf8("Z W N o\nb w ==", false),
+            Some("echo".to_string())
+        );
+        assert_eq!(decode_base64_standard_to_utf8("ZWNobw==!!", false), None);
+        assert_eq!(
+            decode_base64_standard_to_utf8("ZWNobw==!!", true),
+            Some("echo".to_string())
+        );
     }
 
     #[test]

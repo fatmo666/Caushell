@@ -32,6 +32,18 @@ CASES = [
         "expected_decision": "deny",
         "expected_rule": "catastrophic_file_system_delete",
     },
+    {
+        "name": "base64 decoded workspace shell payload stays allowed",
+        "command": "printf 'cm0gLWYgdmljdGltL2ltcG9ydGFudC50eHQK' | base64 -d | sh",
+        "expected_decision": "allow",
+        "expected_rule": None,
+    },
+    {
+        "name": "base64 decoded system delete shell payload",
+        "command": "printf 'cm0gLXJmIC9ldGMK' | base64 -d | sh",
+        "expected_decision": "deny",
+        "expected_rule": "catastrophic_file_system_delete",
+    },
 ]
 
 

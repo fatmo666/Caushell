@@ -6596,6 +6596,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_invocation_pass_materializes_static_base64_decoded_stdin_shell_payload() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(
+            &summary,
+            ShellKind::Bash,
+            "printf 'ZWNobyBtYXRlcmlhbGl6ZWQK' | base64 -d | sh",
+        );
+
+        assert!(
+            ctx.execution_unit_resolve_records()
+                .iter()
+                .any(|record| { record.rendered_command_text == "echo materialized" })
+        );
+    }
+
+    #[test]
     fn resolve_invocation_pass_materializes_static_pipeline_stdin_in_derived_shell_payload() {
         let summary = SessionSummary::new();
         let ctx = run_pass(
