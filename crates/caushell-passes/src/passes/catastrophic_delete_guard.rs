@@ -1,12 +1,15 @@
-use caushell_profile::ResolveInvocationArtifactResult;
+use caushell_profile::{
+    PayloadLanguage, RecursivePayloadInput, ResolveInvocationArtifactResult, ValueMaterialization,
+};
 use caushell_query::QuerySession;
 use caushell_runner::{EffectiveCwd, RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{FindingEnforcementClass, RuleId};
 use std::collections::BTreeSet;
 
 use crate::support::{
-    CommandSinkReasonBuckets, collect_block_device_destructive_reasons,
-    collect_block_device_session_reasons, collect_command_sink_reason_buckets_with_optional_cwd,
+    CommandSinkReasonBuckets, HostTargetOperand, catastrophic_delete_target_for_arg,
+    collect_block_device_destructive_reasons, collect_block_device_session_reasons,
+    collect_command_sink_reason_buckets_with_optional_cwd,
     collect_execution_unit_scoped_reason_buckets, decision_for_rule_action,
 };
 
@@ -91,6 +94,7 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
             ctx,
             QuerySession::from_session(&staged_session),
         ));
+        floor_reasons.extend(collect_python_static_delete_reasons(ctx, cwd, home));
 
         for reason in floor_reasons {
             ctx.add_finding_with_class(
@@ -143,6 +147,275 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
             partition_table_state_mutation_reasons,
         );
     }
+}
+
+fn collect_python_static_delete_reasons(
+    ctx: &RunnerContext,
+    cwd: &str,
+    home: Option<&str>,
+) -> BTreeSet<String> {
+    let mut reasons = BTreeSet::new();
+
+    for record in ctx.nested_payload_records() {
+        if record.candidate.candidate.language != PayloadLanguage::Python {
+            continue;
+        }
+
+        if !matches!(
+            record.candidate.resolution,
+            ValueMaterialization::Static
+                | ValueMaterialization::ResolvedExactScalar { .. }
+                | ValueMaterialization::ResolvedRuntimeProduced { .. }
+        ) {
+            continue;
+        }
+
+        let Some(payload) = python_payload_text(&record.candidate.candidate.input) else {
+            continue;
+        };
+
+        for target in python_static_delete_targets(&payload) {
+            let Some(resolved_target) = catastrophic_delete_target_for_arg(
+                HostTargetOperand {
+                    text: target.path.as_str(),
+                    quoted: true,
+                    node_kind: "string",
+                },
+                cwd,
+                home,
+            ) else {
+                continue;
+            };
+
+            reasons.insert(format!(
+                "delete target {resolved_target} in Python payload via {} is a catastrophic filesystem root delete",
+                target.callee
+            ));
+        }
+    }
+
+    reasons
+}
+
+fn python_payload_text(input: &RecursivePayloadInput) -> Option<String> {
+    match input {
+        RecursivePayloadInput::LiteralText { text } => Some(text.clone()),
+        RecursivePayloadInput::ArgumentFragments { fragments } => Some(
+            fragments
+                .iter()
+                .map(|fragment| fragment.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        RecursivePayloadInput::ImplicitInput { .. } => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PythonDeleteTarget {
+    callee: &'static str,
+    path: String,
+}
+
+const PYTHON_DELETE_CALLEES: &[&str] = &["os.remove", "os.unlink", "os.rmdir", "shutil.rmtree"];
+
+fn python_static_delete_targets(source: &str) -> Vec<PythonDeleteTarget> {
+    let mut targets = Vec::new();
+    let mut index = 0usize;
+
+    while index < source.len() {
+        let Some(rest) = source.get(index..) else {
+            break;
+        };
+
+        if rest.starts_with('#') {
+            index = skip_until_newline(source, index);
+            continue;
+        }
+
+        if let Some((_, end)) = parse_python_string_literal_at(source, index) {
+            index = end;
+            continue;
+        }
+
+        let mut matched = false;
+        for &callee in PYTHON_DELETE_CALLEES {
+            let Some(path) = python_static_delete_target_for_callee(source, index, callee) else {
+                continue;
+            };
+            targets.push(PythonDeleteTarget { callee, path });
+            index += callee.len();
+            matched = true;
+            break;
+        }
+
+        if matched {
+            continue;
+        }
+
+        index += rest.chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+
+    targets
+}
+
+fn python_static_delete_target_for_callee(
+    source: &str,
+    index: usize,
+    callee: &'static str,
+) -> Option<String> {
+    if !source.get(index..)?.starts_with(callee) {
+        return None;
+    }
+    if index > 0 {
+        let before = source.get(..index)?.chars().next_back()?;
+        if is_python_identifier_char(before) || before == '.' {
+            return None;
+        }
+    }
+
+    let after_callee = index + callee.len();
+    if source
+        .get(after_callee..)?
+        .chars()
+        .next()
+        .is_some_and(|ch| is_python_identifier_char(ch))
+    {
+        return None;
+    }
+
+    let open_paren = skip_python_whitespace(source, after_callee);
+    if source.get(open_paren..)?.chars().next()? != '(' {
+        return None;
+    }
+
+    let first_arg = skip_python_whitespace(source, open_paren + 1);
+    parse_python_string_literal_at(source, first_arg).map(|(value, _)| value)
+}
+
+fn parse_python_string_literal_at(source: &str, index: usize) -> Option<(String, usize)> {
+    let mut cursor = index;
+    let mut raw = false;
+
+    while let Some(ch) = source.get(cursor..)?.chars().next() {
+        if matches!(ch, 'r' | 'R') {
+            raw = true;
+            cursor += ch.len_utf8();
+            continue;
+        }
+        if matches!(ch, 'u' | 'U' | 'b' | 'B') {
+            cursor += ch.len_utf8();
+            continue;
+        }
+        if matches!(ch, 'f' | 'F') {
+            return None;
+        }
+        break;
+    }
+
+    let quote = source.get(cursor..)?.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+
+    let quote_len = quote.len_utf8();
+    let triple = source
+        .get(cursor..)?
+        .starts_with(&quote.to_string().repeat(3));
+    let body_start = cursor + if triple { quote_len * 3 } else { quote_len };
+    let mut body_cursor = body_start;
+    let mut value = String::new();
+
+    while body_cursor < source.len() {
+        if triple {
+            if source
+                .get(body_cursor..)?
+                .starts_with(&quote.to_string().repeat(3))
+            {
+                return Some((value, body_cursor + quote_len * 3));
+            }
+        } else if source.get(body_cursor..)?.chars().next()? == quote {
+            return Some((value, body_cursor + quote_len));
+        }
+
+        let ch = source.get(body_cursor..)?.chars().next()?;
+        body_cursor += ch.len_utf8();
+
+        if ch != '\\' || raw {
+            value.push(ch);
+            continue;
+        }
+
+        let Some(escaped) = source
+            .get(body_cursor..)
+            .and_then(|rest| rest.chars().next())
+        else {
+            value.push('\\');
+            break;
+        };
+        body_cursor += escaped.len_utf8();
+        push_python_escape(&mut value, escaped, source, &mut body_cursor);
+    }
+
+    None
+}
+
+fn push_python_escape(out: &mut String, escaped: char, source: &str, cursor: &mut usize) {
+    match escaped {
+        'n' => out.push('\n'),
+        'r' => out.push('\r'),
+        't' => out.push('\t'),
+        'b' => out.push('\u{0008}'),
+        'f' => out.push('\u{000c}'),
+        'a' => out.push('\u{0007}'),
+        'v' => out.push('\u{000b}'),
+        '\\' => out.push('\\'),
+        '\'' => out.push('\''),
+        '"' => out.push('"'),
+        'x' => {
+            if let Some(decoded) = read_hex_escape(source, cursor, 2) {
+                out.push(decoded);
+            } else {
+                out.push('\\');
+                out.push('x');
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+fn read_hex_escape(source: &str, cursor: &mut usize, digits: usize) -> Option<char> {
+    let end = cursor.checked_add(digits)?;
+    let hex = source.get(*cursor..end)?;
+    if hex.len() != digits || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    *cursor = end;
+    u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+}
+
+fn skip_python_whitespace(source: &str, mut index: usize) -> usize {
+    while let Some(ch) = source.get(index..).and_then(|rest| rest.chars().next()) {
+        if !matches!(ch, ' ' | '\t' | '\r' | '\n') {
+            break;
+        }
+        index += ch.len_utf8();
+    }
+    index
+}
+
+fn skip_until_newline(source: &str, mut index: usize) -> usize {
+    while let Some(ch) = source.get(index..).and_then(|rest| rest.chars().next()) {
+        index += ch.len_utf8();
+        if ch == '\n' {
+            break;
+        }
+    }
+    index
+}
+
+fn is_python_identifier_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
 }
 
 fn effective_cwd_options<'a>(
@@ -1883,6 +2156,83 @@ mod tests {
             FindingEnforcementClass::HardDenyFloor,
             &["delete target /etc", "command tar"],
         );
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_allows_tar_checkpoint_action_exec_project_touch() {
+        let ctx = run_pass(
+            r#"tar cf /tmp/out.tar victim --checkpoint=1 --checkpoint-action=exec='sh -c "touch marker.txt"'"#,
+        );
+
+        assert_eq!(
+            ctx.final_decision,
+            Some(Decision::Allow),
+            "expected allow, got findings: {:?}",
+            ctx.findings
+        );
+        assert!(ctx.findings.is_empty());
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_denies_tar_checkpoint_action_exec_system_delete() {
+        for command in [
+            r#"tar cf /tmp/out.tar victim --checkpoint=1 --checkpoint-action=exec='sh -c "rm -rf /etc"'"#,
+            r#"tar cf /tmp/out.tar victim --checkpoint=1 --checkpoint-action 'exec=sh -c "rm -rf /etc"'"#,
+        ] {
+            let ctx = run_pass(command);
+
+            assert_eq!(
+                ctx.final_decision,
+                Some(Decision::Deny),
+                "expected deny for {command}, got findings: {:?}",
+                ctx.findings
+            );
+            assert_has_finding(
+                &ctx,
+                RuleId::CatastrophicFileSystemDelete,
+                FindingEnforcementClass::HardDenyFloor,
+                &["delete target /etc", "command rm"],
+            );
+        }
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_allows_python_os_remove_project_file() {
+        let ctx = run_pass(r#"python3 -c 'import os; os.remove("victim/important.txt")'"#);
+
+        assert_eq!(
+            ctx.final_decision,
+            Some(Decision::Allow),
+            "expected allow, got findings: {:?}",
+            ctx.findings
+        );
+        assert!(ctx.findings.is_empty());
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_denies_python_shutil_rmtree_system_directory() {
+        let ctx = run_pass(r#"python3 -c 'import shutil; shutil.rmtree("/etc")'"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::Deny));
+        assert_has_finding(
+            &ctx,
+            RuleId::CatastrophicFileSystemDelete,
+            FindingEnforcementClass::HardDenyFloor,
+            &["delete target /etc", "Python payload", "shutil.rmtree"],
+        );
+    }
+
+    #[test]
+    fn catastrophic_delete_guard_ignores_python_delete_text_inside_string_literal() {
+        let ctx = run_pass(r#"python3 -c 'print("shutil.rmtree(\"/etc\")")'"#);
+
+        assert_eq!(
+            ctx.final_decision,
+            Some(Decision::Allow),
+            "expected allow, got findings: {:?}",
+            ctx.findings
+        );
+        assert!(ctx.findings.is_empty());
     }
 
     #[test]

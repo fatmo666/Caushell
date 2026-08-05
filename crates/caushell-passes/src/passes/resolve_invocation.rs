@@ -4626,6 +4626,15 @@ fn recursive_payload_candidates_for_scoped_command(
 ) -> Vec<caushell_profile::RecursivePayloadCandidate> {
     let mut candidates =
         recursive_payload_candidates_for_parsed_command(parsed_command, command_index, bound);
+    candidates.extend(tar_checkpoint_action_exec_payload_candidates(
+        session,
+        request,
+        parsed_command,
+        command_index,
+        bound,
+        bindings,
+        max_nested_parse_depth,
+    ));
     rewrite_static_stdin_payload_candidates(
         session,
         request,
@@ -4637,6 +4646,163 @@ fn recursive_payload_candidates_for_scoped_command(
         &mut candidates,
     );
     candidates
+}
+
+fn tar_checkpoint_action_exec_payload_candidates(
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    parsed_command: &caushell_parse::ParsedCommandArtifact,
+    command_index: usize,
+    bound: &caushell_profile::BoundInvocation,
+    bindings: &SessionBindings,
+    max_nested_parse_depth: u8,
+) -> Vec<caushell_profile::RecursivePayloadCandidate> {
+    if bound.command_name.as_str() != "tar" {
+        return Vec::new();
+    }
+
+    let Some(command) = parsed_command.commands.get(command_index) else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    let mut index = 0usize;
+    while index < command.tokens.len() {
+        let token = &command.tokens[index];
+        if matches!(token.kind, caushell_parse::CommandTokenKind::DashDash) {
+            break;
+        }
+
+        let Some(argument) = materialized_static_shell_word_argument(
+            token,
+            session,
+            request,
+            bindings,
+            max_nested_parse_depth,
+        ) else {
+            index += 1;
+            continue;
+        };
+
+        let action = if let Some(action) = argument.strip_prefix("--checkpoint-action=") {
+            Some(action.to_string())
+        } else if argument == "--checkpoint-action" {
+            index += 1;
+            command.tokens.get(index).and_then(|next| {
+                if matches!(next.kind, caushell_parse::CommandTokenKind::DashDash) {
+                    return None;
+                }
+                materialized_static_shell_word_argument(
+                    next,
+                    session,
+                    request,
+                    bindings,
+                    max_nested_parse_depth,
+                )
+            })
+        } else {
+            None
+        };
+
+        if let Some(payload) = action.and_then(|action| tar_checkpoint_exec_payload(&action)) {
+            candidates.push(caushell_profile::RecursivePayloadCandidate {
+                language: PayloadLanguage::Sh,
+                source: PayloadSource::InlineString,
+                origin: RecursivePayloadOrigin::Parameter {
+                    slot: SlotName::new("checkpoint_action"),
+                },
+                input: RecursivePayloadInput::LiteralText { text: payload },
+            });
+        }
+
+        index += 1;
+    }
+
+    candidates
+}
+
+fn tar_checkpoint_exec_payload(action: &str) -> Option<String> {
+    let payload = action.strip_prefix("exec=")?.trim();
+    (!payload.is_empty()).then(|| payload.to_string())
+}
+
+fn materialized_static_shell_word_argument(
+    token: &caushell_parse::CommandToken,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    bindings: &SessionBindings,
+    max_nested_parse_depth: u8,
+) -> Option<String> {
+    let materialized = materialize_static_token_command_substitutions(
+        &token.text,
+        &token.command_substitutions,
+        caushell_query::QuerySession::from_session(&session),
+        request.shell_kind,
+        request.sequence_no,
+        bindings,
+        request.shell_state_before.cwd(),
+        request.home.as_deref(),
+        max_nested_parse_depth,
+    )?;
+
+    if token.quoted
+        && matches!(
+            token.node_kind.as_str(),
+            "string" | "raw_string" | "ansi_c_string"
+        )
+    {
+        return Some(materialized);
+    }
+
+    static_shell_word_to_argument(&materialized)
+}
+
+fn static_shell_word_to_argument(text: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    let mut quote = StaticShellWordQuote::None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            StaticShellWordQuote::None => match ch {
+                '\'' => quote = StaticShellWordQuote::Single,
+                '"' => quote = StaticShellWordQuote::Double,
+                '\\' => match chars.next() {
+                    Some(next) => out.push(next),
+                    None => out.push(ch),
+                },
+                _ => out.push(ch),
+            },
+            StaticShellWordQuote::Single => {
+                if ch == '\'' {
+                    quote = StaticShellWordQuote::None;
+                } else {
+                    out.push(ch);
+                }
+            }
+            StaticShellWordQuote::Double => match ch {
+                '"' => quote = StaticShellWordQuote::None,
+                '\\' => match chars.next() {
+                    Some(next @ ('$' | '`' | '"' | '\\' | '\n')) => out.push(next),
+                    Some(next) => {
+                        out.push('\\');
+                        out.push(next);
+                    }
+                    None => out.push(ch),
+                },
+                _ => out.push(ch),
+            },
+        }
+    }
+
+    (quote == StaticShellWordQuote::None).then_some(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticShellWordQuote {
+    None,
+    Single,
+    Double,
 }
 
 fn rewrite_static_stdin_payload_candidates(
@@ -6562,6 +6728,53 @@ mod tests {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::RecursivePayload
                 && record.rendered_command_text == "echo materialized"
         }));
+    }
+
+    #[test]
+    fn resolve_invocation_pass_materializes_tar_checkpoint_action_exec_payload() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(
+            &summary,
+            ShellKind::Bash,
+            r#"tar cf /tmp/out.tar victim --checkpoint=1 --checkpoint-action=exec='sh -c "echo materialized"'"#,
+        );
+
+        let record = ctx
+            .nested_payload_records()
+            .iter()
+            .find(|record| {
+                record.candidate.candidate.origin
+                    == caushell_profile::RecursivePayloadOrigin::Parameter {
+                        slot: caushell_profile::SlotName::new("checkpoint_action"),
+                    }
+            })
+            .expect("expected tar checkpoint-action exec nested payload");
+
+        assert_eq!(
+            record.candidate.candidate.input,
+            caushell_profile::RecursivePayloadInput::LiteralText {
+                text: r#"sh -c "echo materialized""#.to_string(),
+            }
+        );
+
+        let inner = ctx
+            .nested_payload_records()
+            .iter()
+            .find(|record| record.depth == 2)
+            .expect("expected inner sh -c nested payload");
+
+        match &inner.resolution {
+            NestedPayloadResolution::Parsed { shell_kind, parsed } => {
+                assert_eq!(*shell_kind, ShellKind::Sh);
+                assert!(
+                    parsed
+                        .commands
+                        .iter()
+                        .any(|command| command.command_name.as_deref() == Some("echo"))
+                );
+            }
+            other => panic!("expected parsed inner sh -c payload, got {other:?}"),
+        }
     }
 
     #[test]
