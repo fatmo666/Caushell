@@ -5036,7 +5036,7 @@ policy:
     }
 
     #[test]
-    fn query_stdio_does_not_restore_uncommitted_pip_requirement_file_imported_package_execution_semantics_from_persisted_session()
+    fn query_stdio_reads_pip_requirement_file_imported_package_execution_semantics_from_persisted_session()
      {
         let store_root =
             temp_store_root("query-pip-requirement-imported-package-execution-semantics");
@@ -5070,7 +5070,13 @@ policy:
 
         match response {
             QueryResponse::ExecutionSemantics(response) => {
-                assert!(response.semantics.is_empty());
+                assert_eq!(response.semantics.len(), 1);
+
+                let semantics = &response.semantics[0];
+                assert_eq!(semantics.normalized_command_name, "pip");
+                assert_eq!(semantics.form_id, "install_packages");
+                assert!(semantics.executes_imported_package_logic);
+                assert!(!semantics.executes_payload);
             }
             other => panic!("expected execution semantics query response, got {other:?}"),
         }

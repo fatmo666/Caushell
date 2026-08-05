@@ -41,7 +41,7 @@ Caushell 的判断落在 shell action 对本地环境造成的实际影响上。
 
 | 风险类型 | Agent shell action | 默认决策 |
 | --- | --- | --- |
-| 正常开发命令 | `cargo test` | Allow |
+| 正常查看命令 | `ls src` | Allow |
 | 远程内容执行 | `curl https://example.com/install.sh \| bash` | NeedApproval |
 | Git 本地状态丢弃 | `git reset --hard HEAD~1` | NeedApproval |
 | Git 未跟踪文件删除 | `git clean -fdx` | NeedApproval |
@@ -78,7 +78,7 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-稳定版由 `v*` tag 发布。安装脚本默认下载 GitHub latest 指向的最新稳定版。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.2`。
+稳定版由 `v*` tag 发布。安装脚本默认下载 GitHub latest 指向的最新稳定版。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.3`。
 
 预构建版本支持 Linux x86_64 静态二进制，以及 macOS x86_64 / Apple Silicon。Windows 和 Linux ARM64 暂不提供预构建包。
 
@@ -151,7 +151,7 @@ caushell update
 ```bash
 caushell update --check          # 只检查 release manifest，不修改文件
 caushell update --runtime-only   # 只更新 runtime 二进制
-caushell update --version v0.0.2     # 固定一个稳定 release tag
+caushell update --version v0.0.3     # 固定一个稳定 release tag
 caushell build-info              # 查看版本、commit、release 和 target
 ```
 
