@@ -757,13 +757,14 @@ fn collect_top_level_dispatch_derived_commands(
 
         for candidate in projection.resolved {
             let child_bindings = dispatch_child_bindings(&parent_bindings, &candidate.environment);
+            let command = materialized_dispatch_child_command_fact(resolved, &candidate);
             commands.push(TopLevelDispatchDerivedCommand {
                 source_command_index: record.command_ref.command_index,
                 dispatch_index: candidate.dispatch_index,
                 command_slot: candidate.command.slot.as_str().to_string(),
                 parent_node_id: record.source_node_id.clone(),
                 bindings: child_bindings,
-                command: candidate.to_command_fact(),
+                command,
             });
         }
 
@@ -786,6 +787,55 @@ fn should_skip_generic_dispatch_projection(
 ) -> bool {
     resolved.normalized_command_name.as_str() == "xargs"
         && resolved.bound.form_id.as_str() == "dispatch_from_stdin"
+}
+
+fn materialized_dispatch_child_command_fact(
+    parent: &caushell_profile::ResolvedInvocationArtifact,
+    candidate: &caushell_profile::DispatchCommandCandidate,
+) -> caushell_parse::CommandFact {
+    let mut candidate = candidate.clone();
+    materialize_find_dispatch_placeholder_args(parent, &mut candidate);
+    candidate.to_command_fact()
+}
+
+fn materialize_find_dispatch_placeholder_args(
+    parent: &caushell_profile::ResolvedInvocationArtifact,
+    candidate: &mut caushell_profile::DispatchCommandCandidate,
+) {
+    if parent.normalized_command_name.as_str() != "find" {
+        return;
+    }
+    if !matches!(candidate.command.text.as_str(), "sh" | "bash") {
+        return;
+    }
+    if !candidate.argv.iter().any(|argument| argument.text == "{}") {
+        return;
+    }
+
+    let Some(replacement) = find_dispatch_placeholder_replacement(&parent.bound) else {
+        return;
+    };
+
+    for argument in &mut candidate.argv {
+        if argument.text == "{}" {
+            argument.text = replacement.clone();
+        }
+    }
+}
+
+fn find_dispatch_placeholder_replacement(
+    bound: &caushell_profile::BoundInvocation,
+) -> Option<String> {
+    for root in bound_argument_texts_for_slot(bound, "search_roots") {
+        if let Some(candidate) = find_search_target_candidates_for_root(bound, root)
+            .into_iter()
+            .next()
+        {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 fn dispatch_child_bindings(
@@ -1436,7 +1486,7 @@ fn expanded_dispatch_children(
 
     for child in collect_dispatch_command_projection(&resolved.bound).resolved {
         let child_bindings = dispatch_child_bindings(&entry.bindings, &child.environment);
-        let command = child.to_command_fact();
+        let command = materialized_dispatch_child_command_fact(resolved, &child);
         let Ok(parsed_scope) = caushell_parse::parse_command(&command.text, entry.shell_kind)
         else {
             continue;
@@ -6433,6 +6483,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_invocation_pass_records_find_exec_shell_positional_placeholder_child() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(
+            &summary,
+            ShellKind::Bash,
+            r#"find victim -name important.txt -exec sh -c 'rm -f "$1"' sh {} \;"#,
+        );
+
+        let find_child = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .find(|record| {
+                record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
+                    && record.rendered_command_text
+                        == "sh -c rm -f \"$1\" sh victim/important.txt \\;"
+            })
+            .expect("expected find -exec shell child with materialized placeholder");
+
+        assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
+            record.origin_kind
+                == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
+                && record.rendered_command_text == "rm -f \"victim/important.txt\""
+                && record.parent_execution_node_id == find_child.source_node_id
+        }));
+    }
+
+    #[test]
     fn resolve_invocation_pass_records_static_xargs_max_args_children() {
         let summary = SessionSummary::new();
         let ctx = run_pass(
@@ -7048,7 +7125,7 @@ mod tests {
             .find(|record| {
                 record.origin_kind
                     == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
-                    && record.rendered_command_text == "mv \"{}\" /tmp/trash"
+                    && record.rendered_command_text == "mv \"/*\" /tmp/trash"
             })
             .expect("expected shell payload relocation child");
 

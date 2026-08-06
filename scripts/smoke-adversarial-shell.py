@@ -92,6 +92,18 @@ CASES = [
         "expected_decision": "need_approval",
         "expected_rule": "sensitive_data_exfiltration",
     },
+    {
+        "name": "find exec shell positional project delete stays allowed",
+        "command": "find victim -name important.txt -exec sh -c 'rm -f \"$1\"' sh {} \\;",
+        "expected_decision": "allow",
+        "expected_rule": None,
+    },
+    {
+        "name": "find exec shell positional system delete",
+        "command": "find /etc -name important.txt -exec sh -c 'rm -f \"$1\"' sh {} \\;",
+        "expected_decision": "deny",
+        "expected_rule": "catastrophic_file_system_delete",
+    },
 ]
 
 

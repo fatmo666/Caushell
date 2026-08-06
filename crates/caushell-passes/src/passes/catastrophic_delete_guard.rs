@@ -2005,6 +2005,23 @@ mod tests {
     }
 
     #[test]
+    fn catastrophic_delete_guard_denies_find_exec_shell_positional_system_path() {
+        let ctx = run_pass(r#"find /etc -path '/etc/*' -exec sh -c 'rm -rf $1' sh {} \;"#);
+
+        assert_eq!(ctx.final_decision, Some(Decision::Deny));
+        assert!(
+            ctx.findings.iter().any(|finding| {
+                finding.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete
+                    && finding
+                        .message
+                        .contains("delete target /etc/* in command rm")
+            }),
+            "expected exact nested rm target finding, got {:?}",
+            ctx.findings
+        );
+    }
+
+    #[test]
     fn catastrophic_delete_guard_denies_fd_root_exec_rm_in_default_mode() {
         for command in [r#"fd . / -x rm -rf {}"#, r#"fd . / -X rm -rf {}"#] {
             let ctx = run_pass(command);
