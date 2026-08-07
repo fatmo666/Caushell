@@ -22,12 +22,17 @@ bins=(
 
 cd "${repo_root}"
 
-build_commit="${CAUSHELL_BUILD_COMMIT:-${GITHUB_SHA:-}}"
+git_head="$(git rev-parse HEAD 2>/dev/null || true)"
+
+build_commit="${CAUSHELL_BUILD_COMMIT:-}"
 if [[ -z "${build_commit}" ]]; then
-  build_commit="$(git rev-parse HEAD 2>/dev/null || printf unknown)"
+  build_commit="${git_head:-${GITHUB_SHA:-}}"
+fi
+if [[ -z "${build_commit}" ]]; then
+  build_commit="unknown"
 fi
 
-build_release="${CAUSHELL_RELEASE_TAG:-}"
+build_release="${CAUSHELL_RELEASE_TAG:-${RELEASE_TAG:-}}"
 if [[ -z "${build_release}" ]]; then
   if [[ "${GITHUB_REF_NAME:-}" == v* ]]; then
     build_release="${GITHUB_REF_NAME}"
@@ -38,6 +43,7 @@ fi
 
 export CAUSHELL_BUILD_COMMIT="${build_commit}"
 export CAUSHELL_RELEASE_TAG="${build_release}"
+echo "package-release: build commit=${CAUSHELL_BUILD_COMMIT} release=${CAUSHELL_RELEASE_TAG}" >&2
 cargo build --release --locked --target "${target}" \
   -p caushell \
   -p caushell-adapter-codex \

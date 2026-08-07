@@ -87,6 +87,7 @@ jobs:
 
       - name: Build release package
         env:
+          CAUSHELL_RELEASE_TAG: ${{ env.RELEASE_TAG }}
           CC_x86_64_unknown_linux_musl: musl-gcc
         run: bash scripts/package-release.sh "${{ matrix.target }}"
 
@@ -119,7 +120,11 @@ jobs:
           done
 
           "${install_root}/caushell" --help >/dev/null
-          bash scripts/verify-release-package.sh "${{ matrix.target }}" "${install_root}"
+          expected_commit="$(git rev-parse HEAD)"
+          CAUSHELL_EXPECT_RELEASE_TAG="${RELEASE_TAG}" \
+            CAUSHELL_EXPECT_VERSION="${RELEASE_TAG#v}" \
+            CAUSHELL_EXPECT_COMMIT="${expected_commit}" \
+            bash scripts/verify-release-package.sh "${{ matrix.target }}" "${install_root}"
           CAUSHELL_UPDATE_BASE_URL="file://${PWD}/target/dist" \
             CAUSHELL_UPDATE_INSTALL_DIR="${install_root}" \
             "${install_root}/caushell" update --check
@@ -163,6 +168,23 @@ jobs:
           for checksum in caushell-*.tar.gz.sha256; do
             sha256sum -c "${checksum}"
           done
+          expected_commit="$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)"
+          python3 - "${RELEASE_TAG}" "${RELEASE_TAG#v}" "${expected_commit}" caushell-*.manifest.json <<'PY'
+          import json
+          import sys
+
+          release_tag, version, commit, *manifests = sys.argv[1:]
+          for manifest_path in manifests:
+              with open(manifest_path, "r", encoding="utf-8") as handle:
+                  manifest = json.load(handle)
+              build_info = manifest.get("build_info", {})
+              if build_info.get("release") != release_tag:
+                  raise SystemExit(f"{manifest_path}: release mismatch: {build_info.get('release')} != {release_tag}")
+              if build_info.get("version") != version:
+                  raise SystemExit(f"{manifest_path}: version mismatch: {build_info.get('version')} != {version}")
+              if build_info.get("commit") != commit:
+                  raise SystemExit(f"{manifest_path}: commit mismatch: {build_info.get('commit')} != {commit}")
+          PY
 
       - name: Add installer assets
         run: |

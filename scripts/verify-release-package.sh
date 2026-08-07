@@ -33,7 +33,45 @@ run_check() {
 }
 
 run_check "${install_root}/caushell" --version
-run_check "${install_root}/caushell" build-info
+build_info_file="$(mktemp)"
+run_check "${install_root}/caushell" build-info | tee "${build_info_file}"
+python3 - "${build_info_file}" "${target}" <<'PY'
+import json
+import os
+import sys
+
+build_info_path, target = sys.argv[1:]
+with open(build_info_path, "r", encoding="utf-8") as handle:
+    build_info = json.load(handle)
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(f"verify-release-package: {message}")
+
+require(build_info.get("target") == target, f"build target mismatch: build-info={build_info.get('target')} expected={target}")
+
+expected_release = os.environ.get("CAUSHELL_EXPECT_RELEASE_TAG", "")
+if expected_release:
+    require(
+        build_info.get("release") == expected_release,
+        f"release tag mismatch: build-info={build_info.get('release')} expected={expected_release}",
+    )
+
+expected_version = os.environ.get("CAUSHELL_EXPECT_VERSION", "")
+if expected_version:
+    require(
+        build_info.get("version") == expected_version,
+        f"version mismatch: build-info={build_info.get('version')} expected={expected_version}",
+    )
+
+expected_commit = os.environ.get("CAUSHELL_EXPECT_COMMIT", "")
+if expected_commit:
+    require(
+        build_info.get("commit") == expected_commit,
+        f"commit mismatch: build-info={build_info.get('commit')} expected={expected_commit}",
+    )
+PY
+rm -f "${build_info_file}"
 run_check "${install_root}/caushell" update --help
 run_check "${install_root}/caushell" --update --help
 run_check "${install_root}/caushell-codex-hook" Status
