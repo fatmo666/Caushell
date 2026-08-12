@@ -88,6 +88,12 @@ enum HookDecision {
     Deny { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexNeedApprovalMode {
+    Block,
+    Observe,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct HookResponse {
     #[serde(rename = "hookSpecificOutput")]
@@ -133,6 +139,7 @@ impl CodexHostContext {
 
 pub fn run_pretooluse<R: Read, W: Write>(
     socket_path: &Path,
+    need_approval_mode: CodexNeedApprovalMode,
     reader: R,
     writer: &mut W,
 ) -> Result<(), AdapterError> {
@@ -150,12 +157,13 @@ pub fn run_pretooluse<R: Read, W: Write>(
     write_hook_decision(
         writer,
         &hook_request.hook_event_name,
-        map_pretooluse_response_to_decision(&response),
+        map_pretooluse_response_to_decision(&response, need_approval_mode),
     )
 }
 
 pub fn run_permission_request<R: Read, W: Write>(
     socket_path: &Path,
+    need_approval_mode: CodexNeedApprovalMode,
     reader: R,
     writer: &mut W,
 ) -> Result<(), AdapterError> {
@@ -173,7 +181,7 @@ pub fn run_permission_request<R: Read, W: Write>(
     write_hook_decision(
         writer,
         &hook_request.hook_event_name,
-        map_permission_request_response_to_decision(&response),
+        map_permission_request_response_to_decision(&response, need_approval_mode),
     )
 }
 
@@ -257,10 +265,15 @@ fn resolve_os_home_dir() -> Option<String> {
     None
 }
 
-fn map_pretooluse_response_to_decision(response: &CheckResponse) -> HookDecision {
+fn map_pretooluse_response_to_decision(
+    response: &CheckResponse,
+    need_approval_mode: CodexNeedApprovalMode,
+) -> HookDecision {
     match response.decision {
         Decision::Allow => HookDecision::Allow,
-        Decision::NeedApproval => HookDecision::Allow,
+        Decision::NeedApproval => {
+            map_need_approval_response_to_decision(response, need_approval_mode)
+        }
         Decision::Deny => HookDecision::Deny {
             reason: user_visible_reason(&joined_reasons(
                 &response.reasons,
@@ -270,10 +283,15 @@ fn map_pretooluse_response_to_decision(response: &CheckResponse) -> HookDecision
     }
 }
 
-fn map_permission_request_response_to_decision(response: &CheckResponse) -> HookDecision {
+fn map_permission_request_response_to_decision(
+    response: &CheckResponse,
+    need_approval_mode: CodexNeedApprovalMode,
+) -> HookDecision {
     match response.decision {
         Decision::Allow => HookDecision::Allow,
-        Decision::NeedApproval => HookDecision::Allow,
+        Decision::NeedApproval => {
+            map_need_approval_response_to_decision(response, need_approval_mode)
+        }
         Decision::Deny => HookDecision::Deny {
             reason: user_visible_reason(&joined_reasons(
                 &response.reasons,
@@ -281,6 +299,25 @@ fn map_permission_request_response_to_decision(response: &CheckResponse) -> Hook
             )),
         },
     }
+}
+
+fn map_need_approval_response_to_decision(
+    response: &CheckResponse,
+    mode: CodexNeedApprovalMode,
+) -> HookDecision {
+    match mode {
+        CodexNeedApprovalMode::Observe => HookDecision::Allow,
+        CodexNeedApprovalMode::Block => HookDecision::Deny {
+            reason: user_visible_reason(&codex_need_approval_block_reason(response)),
+        },
+    }
+}
+
+fn codex_need_approval_block_reason(response: &CheckResponse) -> String {
+    let reason = joined_reasons(&response.reasons, "manual review required");
+    format!(
+        "Caushell classified this shell action as NeedApproval, but Codex hooks cannot ask for approval. Caushell blocked it before execution by the current Codex configuration. Reason: {reason}. To let Codex run NeedApproval actions while still logging Caushell reasons, run: caushell config set codex.need_approval_mode observe. Deny decisions are always blocked."
+    )
 }
 
 fn joined_reasons(reasons: &[String], fallback: &str) -> String {
@@ -331,7 +368,7 @@ fn build_hook_response(hook_event_name: &str, decision: HookDecision) -> Option<
 #[cfg(test)]
 mod tests {
     use super::{
-        CodexHostContext, build_hook_response, build_runtime_request,
+        CodexHostContext, CodexNeedApprovalMode, build_hook_response, build_runtime_request,
         map_permission_request_response_to_decision, map_pretooluse_response_to_decision,
     };
     use caushell_types::{CheckResponse, Decision};
@@ -396,28 +433,41 @@ mod tests {
     }
 
     #[test]
-    fn pretooluse_need_approval_falls_through() {
+    fn pretooluse_need_approval_blocks_by_default() {
         let response = build_hook_response(
             "PreToolUse",
-            map_pretooluse_response_to_decision(&CheckResponse {
-                decision: Decision::NeedApproval,
-                reasons: vec!["manual review required".to_string()],
-                decision_trace: Default::default(),
-            }),
+            map_pretooluse_response_to_decision(
+                &CheckResponse {
+                    decision: Decision::NeedApproval,
+                    reasons: vec!["manual review required".to_string()],
+                    decision_trace: Default::default(),
+                },
+                CodexNeedApprovalMode::Block,
+            ),
         );
 
-        assert!(response.is_none());
+        let response = response.expect("NeedApproval should block in Codex block mode");
+        assert_eq!(response.hook_specific_output.permission_decision, "deny");
+        assert!(
+            response
+                .hook_specific_output
+                .permission_decision_reason
+                .contains("Codex hooks cannot ask for approval")
+        );
     }
 
     #[test]
-    fn permission_request_need_approval_falls_through() {
+    fn permission_request_need_approval_observes_when_configured() {
         let response = build_hook_response(
             "PermissionRequest",
-            map_permission_request_response_to_decision(&CheckResponse {
-                decision: Decision::NeedApproval,
-                reasons: vec!["manual review required".to_string()],
-                decision_trace: Default::default(),
-            }),
+            map_permission_request_response_to_decision(
+                &CheckResponse {
+                    decision: Decision::NeedApproval,
+                    reasons: vec!["manual review required".to_string()],
+                    decision_trace: Default::default(),
+                },
+                CodexNeedApprovalMode::Observe,
+            ),
         );
 
         assert!(response.is_none());

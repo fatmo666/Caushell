@@ -14,8 +14,8 @@ use caushell::{
     repair_session_log, serve_query_stdio, serve_stdio, serve_unix_socket,
 };
 use caushell_config::{
-    RawAction, RawConfigFile, initialize_config_file, load_config_file_or_default,
-    resolve_config_path, write_config_file,
+    RawAction, RawCodexNeedApprovalMode, RawConfigFile, initialize_config_file,
+    load_config_file_or_default, resolve_config_path, write_config_file,
 };
 use caushell_runtime_security::{require_private_directory, write_private_file};
 use caushell_types::SessionId;
@@ -265,8 +265,12 @@ fn run_config_command(mut args: impl Iterator<Item = String>) -> Result<(), CliE
                     println!("{}", loaded.effective.failure_action.as_str());
                     Ok(())
                 }
+                "codex.need_approval_mode" => {
+                    println!("{}", loaded.effective.codex.need_approval_mode.as_str());
+                    Ok(())
+                }
                 other => Err(invalid_cli_input(format!(
-                    "unsupported config field {other:?}; supported field: failure_action"
+                    "unsupported config field {other:?}; supported fields: failure_action, codex.need_approval_mode"
                 ))),
             }
         }
@@ -286,9 +290,13 @@ fn run_config_command(mut args: impl Iterator<Item = String>) -> Result<(), CliE
             let mut loaded = load_config_file_or_default(&path)?;
             match field.as_str() {
                 "failure_action" => loaded.raw.failure_action = parse_raw_action(&value)?,
+                "codex.need_approval_mode" => {
+                    loaded.raw.codex.need_approval_mode =
+                        parse_raw_codex_need_approval_mode(&value)?
+                }
                 other => {
                     return Err(invalid_cli_input(format!(
-                        "unsupported config field {other:?}; supported field: failure_action"
+                        "unsupported config field {other:?}; supported fields: failure_action, codex.need_approval_mode"
                     )));
                 }
             }
@@ -314,6 +322,16 @@ fn parse_raw_action(value: &str) -> Result<RawAction, CliError> {
         "deny" => Ok(RawAction::Deny),
         other => Err(invalid_cli_input(format!(
             "invalid action {other:?}; expected allow, need_approval, or deny"
+        ))),
+    }
+}
+
+fn parse_raw_codex_need_approval_mode(value: &str) -> Result<RawCodexNeedApprovalMode, CliError> {
+    match value {
+        "block" => Ok(RawCodexNeedApprovalMode::Block),
+        "observe" => Ok(RawCodexNeedApprovalMode::Observe),
+        other => Err(invalid_cli_input(format!(
+            "invalid Codex NeedApproval mode {other:?}; expected block or observe"
         ))),
     }
 }
@@ -626,7 +644,7 @@ fn print_usage() {
 
 fn print_config_usage() {
     eprintln!(
-        "usage:\n  caushell config path\n  caushell config init\n  caushell config validate\n  caushell config show\n  caushell config get failure_action\n  caushell config set failure_action <allow|need_approval|deny>"
+        "usage:\n  caushell config path\n  caushell config init\n  caushell config validate\n  caushell config show\n  caushell config get failure_action\n  caushell config get codex.need_approval_mode\n  caushell config set failure_action <allow|need_approval|deny>\n  caushell config set codex.need_approval_mode <block|observe>"
     );
 }
 

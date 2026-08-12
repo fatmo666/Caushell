@@ -110,6 +110,14 @@ The smoke test checks that Codex sees the enabled `caushell-codex` plugin, then 
 
 For normal Codex use, review and trust the Caushell hook in `/hooks` if Codex asks you to do so.
 
+Codex hooks currently cannot ask for approval directly. When Caushell classifies a shell action as `NeedApproval`, the Codex integration blocks it by default and prints the reason. To let Codex run `NeedApproval` actions while still recording Caushell decisions, switch the Codex mode to `observe`:
+
+```bash
+caushell config set codex.need_approval_mode observe
+```
+
+`Deny` decisions are always blocked.
+
 ### Claude Code
 
 ```bash

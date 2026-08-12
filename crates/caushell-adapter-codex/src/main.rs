@@ -3,7 +3,9 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use caushell_adapter_codex::{AdapterError, run_permission_request, run_pretooluse};
+use caushell_adapter_codex::{
+    AdapterError, CodexNeedApprovalMode, run_permission_request, run_pretooluse,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -38,23 +40,39 @@ fn run() -> Result<(), AdapterError> {
 }
 
 fn run_pretooluse_command(args: impl Iterator<Item = String>) -> Result<(), AdapterError> {
-    let socket_path = parse_socket_path(args)?;
+    let options = parse_options(args)?;
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
-    run_pretooluse(&socket_path, stdin.lock(), &mut stdout)
+    run_pretooluse(
+        &options.socket_path,
+        options.need_approval_mode,
+        stdin.lock(),
+        &mut stdout,
+    )
 }
 
 fn run_permission_request_command(args: impl Iterator<Item = String>) -> Result<(), AdapterError> {
-    let socket_path = parse_socket_path(args)?;
+    let options = parse_options(args)?;
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
-    run_permission_request(&socket_path, stdin.lock(), &mut stdout)
+    run_permission_request(
+        &options.socket_path,
+        options.need_approval_mode,
+        stdin.lock(),
+        &mut stdout,
+    )
 }
 
-fn parse_socket_path(mut args: impl Iterator<Item = String>) -> Result<PathBuf, AdapterError> {
+struct AdapterOptions {
+    socket_path: PathBuf,
+    need_approval_mode: CodexNeedApprovalMode,
+}
+
+fn parse_options(mut args: impl Iterator<Item = String>) -> Result<AdapterOptions, AdapterError> {
     let mut socket_path = None;
+    let mut need_approval_mode = CodexNeedApprovalMode::Block;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -68,6 +86,15 @@ fn parse_socket_path(mut args: impl Iterator<Item = String>) -> Result<PathBuf, 
 
                 socket_path = Some(PathBuf::from(path));
             }
+            "--need-approval-mode" => {
+                let Some(value) = args.next() else {
+                    return Err(AdapterError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--need-approval-mode requires a following value",
+                    )));
+                };
+                need_approval_mode = parse_need_approval_mode(&value)?;
+            }
             other => {
                 return Err(AdapterError::Io(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -77,16 +104,32 @@ fn parse_socket_path(mut args: impl Iterator<Item = String>) -> Result<PathBuf, 
         }
     }
 
-    socket_path.ok_or_else(|| {
+    let socket_path = socket_path.ok_or_else(|| {
         AdapterError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--socket is required for caushell-adapter-codex",
         ))
+    })?;
+
+    Ok(AdapterOptions {
+        socket_path,
+        need_approval_mode,
     })
+}
+
+fn parse_need_approval_mode(value: &str) -> Result<CodexNeedApprovalMode, AdapterError> {
+    match value {
+        "block" => Ok(CodexNeedApprovalMode::Block),
+        "observe" => Ok(CodexNeedApprovalMode::Observe),
+        other => Err(AdapterError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid --need-approval-mode {other:?}; expected block or observe"),
+        ))),
+    }
 }
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  caushell-adapter-codex pretooluse --socket <path>\n  caushell-adapter-codex permission-request --socket <path>\n\npretooluse reads Codex PreToolUse hook JSON from stdin and writes Codex hook decision JSON to stdout\npermission-request reads Codex PermissionRequest hook JSON from stdin and writes Codex hook decision JSON to stdout"
+        "usage:\n  caushell-adapter-codex pretooluse --socket <path> [--need-approval-mode <block|observe>]\n  caushell-adapter-codex permission-request --socket <path> [--need-approval-mode <block|observe>]\n\npretooluse reads Codex PreToolUse hook JSON from stdin and writes Codex hook decision JSON to stdout\npermission-request reads Codex PermissionRequest hook JSON from stdin and writes Codex hook decision JSON to stdout"
     );
 }

@@ -10,6 +10,7 @@ pub const CURRENT_CONFIG_VERSION: u32 = 1;
 pub struct RawConfigFile {
     pub version: u32,
     pub failure_action: RawAction,
+    pub codex: RawCodexConfig,
     pub policy: RawPolicy,
     pub trusted_paths: Vec<RawTrustedPath>,
     pub sensitive_paths: RawSensitivePathConfig,
@@ -21,6 +22,7 @@ impl Default for RawConfigFile {
         Self {
             version: CURRENT_CONFIG_VERSION,
             failure_action: RawAction::NeedApproval,
+            codex: RawCodexConfig::default(),
             policy: RawPolicy::default(),
             trusted_paths: Vec::new(),
             sensitive_paths: RawSensitivePathConfig::default(),
@@ -36,6 +38,29 @@ pub enum RawAction {
     #[default]
     NeedApproval,
     Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawCodexNeedApprovalMode {
+    #[default]
+    Block,
+    Observe,
+}
+
+impl RawCodexNeedApprovalMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Observe => "observe",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RawCodexConfig {
+    pub need_approval_mode: RawCodexNeedApprovalMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -116,7 +141,10 @@ impl Default for RawAnalysisConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_CONFIG_VERSION, RawAction, RawConfigFile, RawTrustedPathScope};
+    use super::{
+        CURRENT_CONFIG_VERSION, RawAction, RawCodexNeedApprovalMode, RawConfigFile,
+        RawTrustedPathScope,
+    };
 
     #[test]
     fn raw_config_defaults_to_need_approval_fallback() {
@@ -124,9 +152,36 @@ mod tests {
 
         assert_eq!(config.version, CURRENT_CONFIG_VERSION);
         assert_eq!(config.failure_action, RawAction::NeedApproval);
+        assert_eq!(
+            config.codex.need_approval_mode,
+            RawCodexNeedApprovalMode::Block
+        );
         assert_eq!(config.policy.unknown_commands.default, RawAction::Allow);
         assert!(config.policy.rules.is_empty());
         assert!(config.trusted_paths.is_empty());
+    }
+
+    #[test]
+    fn raw_config_parses_codex_need_approval_mode() {
+        let config = serde_yaml::from_str::<RawConfigFile>(
+            "version: 1\ncodex:\n  need_approval_mode: observe\n",
+        )
+        .expect("codex need approval mode should parse");
+
+        assert_eq!(
+            config.codex.need_approval_mode,
+            RawCodexNeedApprovalMode::Observe
+        );
+    }
+
+    #[test]
+    fn raw_config_rejects_invalid_codex_need_approval_mode() {
+        let error = serde_yaml::from_str::<RawConfigFile>(
+            "version: 1\ncodex:\n  need_approval_mode: allow\n",
+        )
+        .expect_err("codex need approval mode should not accept allow/deny mapping names");
+
+        assert!(error.to_string().contains("unknown variant"));
     }
 
     #[test]

@@ -110,6 +110,14 @@ smoke test 会确认 Codex 能看到已启用的 `caushell-codex` 插件，然�
 
 日常使用时，如果 Codex 要求确认 hook，在 `/hooks` 里检查并信任 Caushell hook。
 
+Codex hooks 目前不能直接发起 approval。当 Caushell 把一条 shell action 判定为 `NeedApproval` 时，Codex 集成默认会阻断这次执行并打印原因。如果你希望 Codex 继续执行 `NeedApproval` action，同时保留 Caushell 决策记录，可以把 Codex 模式切到 `observe`：
+
+```bash
+caushell config set codex.need_approval_mode observe
+```
+
+`Deny` 决策始终会被阻断。
+
 ### Claude Code
 
 ```bash

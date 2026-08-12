@@ -9,8 +9,8 @@ use caushell_types::{
 };
 
 use crate::{
-    CURRENT_CONFIG_VERSION, CaushellConfig, FailureAction, RawAction, RawConfigFile,
-    RawTrustedPath, RawTrustedPathScope,
+    CURRENT_CONFIG_VERSION, CaushellConfig, CodexConfig, CodexNeedApprovalMode, FailureAction,
+    RawAction, RawCodexNeedApprovalMode, RawConfigFile, RawTrustedPath, RawTrustedPathScope,
 };
 
 const HARD_DENY_FLOOR_RULES: [RuleId; 2] = [
@@ -143,6 +143,9 @@ pub fn normalize_config(raw: RawConfigFile) -> Result<CaushellConfig, NormalizeC
     Ok(CaushellConfig {
         version: raw.version,
         failure_action: normalize_failure_action(raw.failure_action),
+        codex: CodexConfig {
+            need_approval_mode: normalize_codex_need_approval_mode(raw.codex.need_approval_mode),
+        },
         policy: PolicyConfig {
             rule_policy: RulePolicy {
                 families,
@@ -313,6 +316,13 @@ fn normalize_failure_action(action: RawAction) -> FailureAction {
     }
 }
 
+fn normalize_codex_need_approval_mode(mode: RawCodexNeedApprovalMode) -> CodexNeedApprovalMode {
+    match mode {
+        RawCodexNeedApprovalMode::Block => CodexNeedApprovalMode::Block,
+        RawCodexNeedApprovalMode::Observe => CodexNeedApprovalMode::Observe,
+    }
+}
+
 fn normalize_trusted_path_scope(scope: RawTrustedPathScope) -> PathTrustScope {
     match scope {
         RawTrustedPathScope::ScriptExecute => PathTrustScope::ScriptSourceExecute,
@@ -324,7 +334,10 @@ fn normalize_trusted_path_scope(scope: RawTrustedPathScope) -> PathTrustScope {
 mod tests {
     use caushell_types::{PathTrustScope, RuleAction, RuleId};
 
-    use crate::{FailureAction, NormalizeConfigError, RawAction, RawConfigFile, normalize_config};
+    use crate::{
+        CodexNeedApprovalMode, FailureAction, NormalizeConfigError, RawAction, RawConfigFile,
+        normalize_config,
+    };
 
     #[test]
     fn normalizes_user_actions_and_failure_action() {
@@ -332,6 +345,8 @@ mod tests {
             r#"
 version: 1
 failure_action: need_approval
+codex:
+  need_approval_mode: observe
 policy:
   rules:
     tainted_execution: need_approval
@@ -347,6 +362,10 @@ policy:
         let config = normalize_config(raw).expect("config should normalize");
 
         assert_eq!(config.failure_action, FailureAction::NeedApproval);
+        assert_eq!(
+            config.codex.need_approval_mode,
+            CodexNeedApprovalMode::Observe
+        );
         assert_eq!(
             config
                 .policy

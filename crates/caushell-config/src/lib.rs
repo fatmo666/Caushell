@@ -13,10 +13,11 @@ pub use loader::{
     LoadConfigError, load_config_from_path, load_config_from_str, load_raw_config_from_path,
     load_raw_config_from_str,
 };
-pub use model::{CaushellConfig, FailureAction};
+pub use model::{CaushellConfig, CodexConfig, CodexNeedApprovalMode, FailureAction};
 pub use normalize::{NormalizeConfigError, normalize_config};
 pub use path::{CONFIG_FILE_NAME, CONFIG_PATH_ENV, ConfigPathError, resolve_config_path};
 pub use raw::{
-    CURRENT_CONFIG_VERSION, RawAction, RawAnalysisConfig, RawConfigFile, RawPolicy,
-    RawSensitivePathConfig, RawTrustedPath, RawTrustedPathScope, RawUnknownCommandPolicy,
+    CURRENT_CONFIG_VERSION, RawAction, RawAnalysisConfig, RawCodexConfig, RawCodexNeedApprovalMode,
+    RawConfigFile, RawPolicy, RawSensitivePathConfig, RawTrustedPath, RawTrustedPathScope,
+    RawUnknownCommandPolicy,
 };

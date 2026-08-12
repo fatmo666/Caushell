@@ -14,8 +14,8 @@ use std::os::unix::process::CommandExt;
 
 use caushell::{CliError, ping_unix_socket};
 use caushell_config::{
-    ConfigFileError, ConfigPathError, FailureAction, load_config_file_or_default,
-    resolve_config_path,
+    CodexNeedApprovalMode, ConfigFileError, ConfigPathError, FailureAction,
+    load_config_file_or_default, resolve_config_path,
 };
 use caushell_runtime_security::{
     ensure_private_directory, ensure_private_directory_tree, harden_private_tree,
@@ -128,6 +128,7 @@ struct HookConfig {
     adapter_path: PathBuf,
     config_path: PathBuf,
     failure_action: FailureAction,
+    codex_need_approval_mode: CodexNeedApprovalMode,
     config_load_error: Option<String>,
     store_root: PathBuf,
     runtime_security_root: PathBuf,
@@ -173,6 +174,8 @@ struct DaemonMetadata {
     config_path: String,
     #[serde(default)]
     failure_action: FailureAction,
+    #[serde(default)]
+    codex_need_approval_mode: CodexNeedApprovalMode,
     workspace_hash: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     startup_progress_path: String,
@@ -231,7 +234,7 @@ impl HookContext {
             hook_path_io_error("ensure session store root", &config.store_root, error)
         })?;
 
-        reconcile_failure_action(&mut config, &paths)?;
+        reconcile_runtime_config_metadata(&mut config, &paths)?;
 
         Ok(Self {
             event_name,
@@ -298,10 +301,19 @@ impl HookConfig {
             .or_else(|| find_executable_on_path("caushell-adapter-codex"))
             .unwrap_or_else(|| repo_root.join("target/debug/caushell-adapter-codex"));
         let config_path = resolve_config_path()?;
-        let (failure_action, config_load_error) = match load_config_file_or_default(&config_path) {
-            Ok(loaded) => (loaded.effective.failure_action, None),
-            Err(error) => (FailureAction::NeedApproval, Some(error.to_string())),
-        };
+        let (failure_action, codex_need_approval_mode, config_load_error) =
+            match load_config_file_or_default(&config_path) {
+                Ok(loaded) => (
+                    loaded.effective.failure_action,
+                    loaded.effective.codex.need_approval_mode,
+                    None,
+                ),
+                Err(error) => (
+                    FailureAction::NeedApproval,
+                    CodexNeedApprovalMode::Block,
+                    Some(error.to_string()),
+                ),
+            };
         let store_root = option_path("CODEX_PLUGIN_OPTION_STORE_ROOT")
             .or_else(|| env_path("CAUSHELL_CODEX_STORE_ROOT"))
             .unwrap_or_else(|| {
@@ -329,6 +341,7 @@ impl HookConfig {
             adapter_path,
             config_path,
             failure_action,
+            codex_need_approval_mode,
             config_load_error,
             store_root,
             runtime_security_root,
@@ -704,6 +717,10 @@ fn run_status() -> Result<(), HookError> {
     );
     println!("failure_action={}", context.config.failure_action.as_str());
     println!(
+        "codex_need_approval_mode={}",
+        context.config.codex_need_approval_mode.as_str()
+    );
+    println!(
         "config_load_error={}",
         context.config.config_load_error.as_deref().unwrap_or("")
     );
@@ -808,6 +825,8 @@ fn run_adapter_process(
         .arg(subcommand)
         .arg("--socket")
         .arg(&context.paths.socket_path)
+        .arg("--need-approval-mode")
+        .arg(context.config.codex_need_approval_mode.as_str())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1045,6 +1064,7 @@ fn start_daemon(context: &HookContext) -> Result<DaemonMetadata, HookError> {
         runtime_fingerprint: context.config.runtime_fingerprint.clone(),
         config_path: path_string(&context.config.config_path),
         failure_action: context.config.failure_action,
+        codex_need_approval_mode: context.config.codex_need_approval_mode,
         workspace_hash: context.paths.workspace_hash.clone(),
         startup_progress_path: path_string(&context.paths.daemon_startup_progress_path),
     };
@@ -1078,7 +1098,7 @@ fn append_config_arg(command: &mut Command, config_path: &Path) {
     command.arg("--config").arg(config_path);
 }
 
-fn reconcile_failure_action(
+fn reconcile_runtime_config_metadata(
     config: &mut HookConfig,
     paths: &RuntimePaths,
 ) -> Result<(), HookError> {
@@ -1093,8 +1113,15 @@ fn reconcile_failure_action(
 
     if config.config_load_error.is_some() {
         config.failure_action = metadata.failure_action;
+        config.codex_need_approval_mode = metadata.codex_need_approval_mode;
     } else if metadata.failure_action != config.failure_action {
         metadata.failure_action = config.failure_action;
+        write_daemon_metadata(&paths.daemon_metadata_path, &metadata)?;
+    }
+    if config.config_load_error.is_none()
+        && metadata.codex_need_approval_mode != config.codex_need_approval_mode
+    {
+        metadata.codex_need_approval_mode = config.codex_need_approval_mode;
         write_daemon_metadata(&paths.daemon_metadata_path, &metadata)?;
     }
     Ok(())
@@ -1811,11 +1838,12 @@ mod tests {
         HookConfig, HookContext, RuntimePaths, active_session_record_path, append_config_arg,
         civil_from_days, daemon_process_matches, emit_pre_context_fallback_response, is_executable,
         prune_stale_active_sessions_locked, read_active_session_record, read_daemon_metadata,
-        reconcile_failure_action, runtime_root_for, seconds_to_iso8601, session_id_from_payload,
-        startup_progress_is_fresh, startup_progress_matches_metadata, user_visible_reason,
-        validate_adapter_output, write_active_session_record, write_daemon_metadata,
+        reconcile_runtime_config_metadata, runtime_root_for, seconds_to_iso8601,
+        session_id_from_payload, startup_progress_is_fresh, startup_progress_matches_metadata,
+        user_visible_reason, validate_adapter_output, write_active_session_record,
+        write_daemon_metadata,
     };
-    use caushell_config::FailureAction;
+    use caushell_config::{CodexNeedApprovalMode, FailureAction};
     use caushell_runtime_security::{
         ensure_private_directory, ensure_private_directory_tree, open_private_read_write,
         write_private_file,
@@ -1836,6 +1864,7 @@ mod tests {
             adapter_path: root.join("caushell-adapter-codex"),
             config_path: root.join("config.yaml"),
             failure_action: FailureAction::Allow,
+            codex_need_approval_mode: CodexNeedApprovalMode::Block,
             config_load_error: None,
             store_root: root.join("store"),
             runtime_security_root: root.clone(),
@@ -2065,7 +2094,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_action_reconciliation_keeps_the_last_valid_value() {
+    fn runtime_config_metadata_reconciliation_keeps_the_last_valid_value() {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after Unix epoch")
@@ -2080,6 +2109,7 @@ mod tests {
             adapter_path: root.join("adapter"),
             config_path: root.join("config.yaml"),
             failure_action: FailureAction::Deny,
+            codex_need_approval_mode: CodexNeedApprovalMode::Block,
             config_load_error: None,
             store_root: root.join("store"),
             runtime_security_root: root.clone(),
@@ -2104,13 +2134,14 @@ mod tests {
             runtime_fingerprint: config.runtime_fingerprint.clone(),
             config_path: config.config_path.to_string_lossy().into_owned(),
             failure_action: FailureAction::Allow,
+            codex_need_approval_mode: CodexNeedApprovalMode::Observe,
             workspace_hash: paths.workspace_hash.clone(),
             startup_progress_path: String::new(),
         };
         write_daemon_metadata(&paths.daemon_metadata_path, &metadata)
             .expect("metadata should be written");
 
-        reconcile_failure_action(&mut config, &paths)
+        reconcile_runtime_config_metadata(&mut config, &paths)
             .expect("valid config action should be persisted");
         assert_eq!(
             read_daemon_metadata(&paths.daemon_metadata_path)
@@ -2119,12 +2150,24 @@ mod tests {
                 .failure_action,
             FailureAction::Deny
         );
+        assert_eq!(
+            read_daemon_metadata(&paths.daemon_metadata_path)
+                .expect("metadata should be readable")
+                .expect("metadata should exist")
+                .codex_need_approval_mode,
+            CodexNeedApprovalMode::Block
+        );
 
         config.failure_action = FailureAction::Allow;
+        config.codex_need_approval_mode = CodexNeedApprovalMode::Observe;
         config.config_load_error = Some("invalid YAML".to_string());
-        reconcile_failure_action(&mut config, &paths)
+        reconcile_runtime_config_metadata(&mut config, &paths)
             .expect("invalid edit should use the last valid action");
         assert_eq!(config.failure_action, FailureAction::Deny);
+        assert_eq!(
+            config.codex_need_approval_mode,
+            CodexNeedApprovalMode::Block
+        );
 
         std::fs::remove_dir_all(root).expect("temporary runtime root should be removed");
     }
@@ -2256,6 +2299,7 @@ mod tests {
             runtime_fingerprint: "fingerprint".to_string(),
             config_path: "/tmp/config.yaml".to_string(),
             failure_action: FailureAction::Allow,
+            codex_need_approval_mode: CodexNeedApprovalMode::Block,
             workspace_hash: "workspace".to_string(),
             startup_progress_path: "/tmp/progress.json".to_string(),
         };
@@ -2326,6 +2370,7 @@ mod tests {
             runtime_fingerprint: "fingerprint".to_string(),
             config_path: "/tmp/config.yaml".to_string(),
             failure_action: FailureAction::Allow,
+            codex_need_approval_mode: CodexNeedApprovalMode::Block,
             workspace_hash: "workspace".to_string(),
             startup_progress_path: "/tmp/progress.json".to_string(),
         };
