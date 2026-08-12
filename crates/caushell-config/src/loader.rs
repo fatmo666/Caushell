@@ -83,12 +83,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_config_uses_non_disruptive_defaults() {
+    fn empty_config_uses_need_approval_fallback_by_default() {
         let raw = load_raw_config_from_str("").expect("empty config should load");
-        assert_eq!(raw.failure_action, RawAction::Allow);
+        assert_eq!(raw.failure_action, RawAction::NeedApproval);
 
         let config = load_config_from_str("").expect("empty config should normalize");
-        assert_eq!(config.failure_action, FailureAction::Allow);
+        assert_eq!(config.failure_action, FailureAction::NeedApproval);
     }
 
     #[test]

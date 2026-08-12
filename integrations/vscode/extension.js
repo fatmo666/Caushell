@@ -1320,7 +1320,7 @@ async function setFailureAction(client) {
       },
       {
         label: "Need approval",
-        description: "Ask in Claude Code; defer to Codex host behavior.",
+        description: "Ask in Claude Code; block in Codex because Codex hooks cannot ask.",
         value: "need_approval"
       },
       {

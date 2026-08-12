@@ -327,7 +327,7 @@ impl HookConfig {
         let config_path = resolve_config_path()?;
         let (failure_action, config_load_error) = match load_config_file_or_default(&config_path) {
             Ok(loaded) => (loaded.effective.failure_action, None),
-            Err(error) => (FailureAction::Allow, Some(error.to_string())),
+            Err(error) => (FailureAction::NeedApproval, Some(error.to_string())),
         };
         let store_root = option_path("CLAUDE_PLUGIN_OPTION_STORE_ROOT")
             .or_else(|| env_path("CAUSHELL_CLAUDE_STORE_ROOT"))
@@ -838,9 +838,12 @@ fn emit_pre_context_fallback_response<W: Write>(
 ) -> Result<(), HookError> {
     match action {
         FailureAction::Allow => Ok(()),
-        FailureAction::NeedApproval => {
-            write_claude_response(writer, hook_event_name, "ask", &user_visible_reason(reason))
-        }
+        FailureAction::NeedApproval => write_claude_response(
+            writer,
+            hook_event_name,
+            "ask",
+            &user_visible_reason(&fallback_need_approval_reason(reason)),
+        ),
         FailureAction::Deny => write_claude_response(
             writer,
             hook_event_name,
@@ -848,6 +851,12 @@ fn emit_pre_context_fallback_response<W: Write>(
             &user_visible_reason(reason),
         ),
     }
+}
+
+fn fallback_need_approval_reason(_reason: &str) -> String {
+    const MESSAGE: &str = "Caushell could not analyze this shell action, so approval is required by the current configuration.\nIf you want Caushell to allow shell actions when analysis is unavailable, you can change the fallback behavior:\n  caushell config set failure_action allow";
+
+    MESSAGE.to_string()
 }
 
 fn emit_pretooluse_protocol_error_response<W: Write>(
@@ -2050,7 +2059,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_context_fallback_allows_by_default_for_claude() {
+    fn pre_context_fallback_allows_when_configured_for_claude() {
         let mut output = Vec::new();
         emit_pre_context_fallback_response(
             &mut output,
@@ -2084,7 +2093,7 @@ mod tests {
         assert_eq!(hook_output["permissionDecision"], "ask");
         assert_eq!(
             hook_output["permissionDecisionReason"],
-            "[Caushell] caushell runtime is not executable: /nonexistent/caushell"
+            "[Caushell] Caushell could not analyze this shell action, so approval is required by the current configuration.\nIf you want Caushell to allow shell actions when analysis is unavailable, you can change the fallback behavior:\n  caushell config set failure_action allow"
         );
     }
 

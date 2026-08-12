@@ -300,7 +300,7 @@ impl HookConfig {
         let config_path = resolve_config_path()?;
         let (failure_action, config_load_error) = match load_config_file_or_default(&config_path) {
             Ok(loaded) => (loaded.effective.failure_action, None),
-            Err(error) => (FailureAction::Allow, Some(error.to_string())),
+            Err(error) => (FailureAction::NeedApproval, Some(error.to_string())),
         };
         let store_root = option_path("CODEX_PLUGIN_OPTION_STORE_ROOT")
             .or_else(|| env_path("CAUSHELL_CODEX_STORE_ROOT"))
@@ -751,11 +751,22 @@ fn emit_pre_context_fallback_response(
     action: FailureAction,
 ) -> Result<(), HookError> {
     match action {
-        FailureAction::Allow | FailureAction::NeedApproval => Ok(()),
+        FailureAction::Allow => Ok(()),
+        FailureAction::NeedApproval => write_deny_response(
+            writer,
+            event_name,
+            &user_visible_reason(&fallback_need_approval_reason(reason)),
+        ),
         FailureAction::Deny => {
             write_deny_response(writer, event_name, &user_visible_reason(reason))
         }
     }
+}
+
+fn fallback_need_approval_reason(_reason: &str) -> String {
+    const MESSAGE: &str = "Caushell could not analyze this shell action, so approval is required by the current configuration.\nIf you want Caushell to allow shell actions when analysis is unavailable, you can change the fallback behavior:\n  caushell config set failure_action allow";
+
+    MESSAGE.to_string()
 }
 
 fn write_deny_response(
@@ -1943,7 +1954,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_context_fallback_allows_by_default_for_codex() {
+    fn pre_context_fallback_allows_when_configured_for_codex() {
         let mut output = Vec::new();
         emit_pre_context_fallback_response(
             &mut output,
@@ -1954,6 +1965,31 @@ mod tests {
         .expect("fallback response should write");
 
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn pre_context_fallback_blocks_with_hint_for_need_approval_in_codex() {
+        let mut output = Vec::new();
+        emit_pre_context_fallback_response(
+            &mut output,
+            "PreToolUse",
+            "caushell runtime is not executable: /nonexistent/caushell",
+            FailureAction::NeedApproval,
+        )
+        .expect("fallback response should write");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&output).expect("fallback response should be JSON");
+        let hook_output = value
+            .get("hookSpecificOutput")
+            .expect("hookSpecificOutput should be present");
+
+        assert_eq!(hook_output["hookEventName"], "PreToolUse");
+        assert_eq!(hook_output["permissionDecision"], "deny");
+        assert_eq!(
+            hook_output["permissionDecisionReason"],
+            "[Caushell] Caushell could not analyze this shell action, so approval is required by the current configuration.\nIf you want Caushell to allow shell actions when analysis is unavailable, you can change the fallback behavior:\n  caushell config set failure_action allow"
+        );
     }
 
     #[test]

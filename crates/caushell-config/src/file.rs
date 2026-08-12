@@ -167,7 +167,7 @@ mod tests {
 
         assert!(!loaded.exists);
         assert_eq!(loaded.path, path);
-        assert_eq!(loaded.effective.failure_action, FailureAction::Allow);
+        assert_eq!(loaded.effective.failure_action, FailureAction::NeedApproval);
     }
 
     #[test]

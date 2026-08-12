@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureAction {
-    #[default]
     Allow,
+    #[default]
     NeedApproval,
     Deny,
 }
@@ -31,7 +31,7 @@ impl Default for CaushellConfig {
     fn default() -> Self {
         Self {
             version: crate::CURRENT_CONFIG_VERSION,
-            failure_action: FailureAction::Allow,
+            failure_action: FailureAction::NeedApproval,
             policy: PolicyConfig::default(),
         }
     }

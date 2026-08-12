@@ -54,17 +54,21 @@ if [[ -z "${native_hook}" || ! -x "${native_hook}" ]]; then
   if [[ -z "${runtime_path}" ]] && command -v caushell >/dev/null 2>&1; then
     runtime_path="$(command -v caushell)"
   fi
-  failure_action="allow"
+  failure_action="need_approval"
   if [[ -n "${runtime_path}" && -x "${runtime_path}" ]]; then
-    failure_action="$("${runtime_path}" config get failure_action 2>/dev/null || printf allow)"
+    failure_action="$("${runtime_path}" config get failure_action 2>/dev/null || printf need_approval)"
   fi
+  fallback_reason_json='[Caushell] Caushell could not analyze this shell action, so approval is required by the current configuration.\nIf you want Caushell to allow shell actions when analysis is unavailable, you can change the fallback behavior:\n  caushell config set failure_action allow'
   case "${1:-}" in
     PreToolUse|PermissionRequest)
       case "${failure_action}" in
         deny)
           printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"deny","permissionDecisionReason":"[Caushell] hook executable is unavailable"}}\n' "${1}"
           ;;
-        allow|need_approval|*)
+        need_approval)
+          printf '{"hookSpecificOutput":{"hookEventName":"%s","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "${1}" "${fallback_reason_json}"
+          ;;
+        allow|*)
           ;;
       esac
       ;;

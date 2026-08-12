@@ -20,7 +20,7 @@ impl Default for RawConfigFile {
     fn default() -> Self {
         Self {
             version: CURRENT_CONFIG_VERSION,
-            failure_action: RawAction::Allow,
+            failure_action: RawAction::NeedApproval,
             policy: RawPolicy::default(),
             trusted_paths: Vec::new(),
             sensitive_paths: RawSensitivePathConfig::default(),
@@ -32,8 +32,8 @@ impl Default for RawConfigFile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawAction {
-    #[default]
     Allow,
+    #[default]
     NeedApproval,
     Deny,
 }
@@ -119,11 +119,11 @@ mod tests {
     use super::{CURRENT_CONFIG_VERSION, RawAction, RawConfigFile, RawTrustedPathScope};
 
     #[test]
-    fn raw_config_defaults_to_non_disruptive_behavior() {
+    fn raw_config_defaults_to_need_approval_fallback() {
         let config = RawConfigFile::default();
 
         assert_eq!(config.version, CURRENT_CONFIG_VERSION);
-        assert_eq!(config.failure_action, RawAction::Allow);
+        assert_eq!(config.failure_action, RawAction::NeedApproval);
         assert_eq!(config.policy.unknown_commands.default, RawAction::Allow);
         assert!(config.policy.rules.is_empty());
         assert!(config.trusted_paths.is_empty());
