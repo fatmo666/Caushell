@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="#快速开始">快速开始</a> ·
+  <a href="#配置">配置</a> ·
   <a href="#能拦什么">能拦什么</a> ·
   <a href="#为什么不用沙箱">为什么不用沙箱</a> ·
   <a href="#how-it-works--工作原理">工作原理</a>
@@ -162,6 +163,12 @@ caushell update --runtime-only   # 只更新 runtime 二进制
 caushell update --version v0.0.6     # 固定一个稳定 release tag
 caushell build-info              # 查看版本、commit、release 和 target
 ```
+
+## 配置
+
+配置文件位置、配置管理命令和用户配置项见：
+
+- [配置说明](docs/configuration.zh-CN.md)
 
 ## How it works / 工作原理
 

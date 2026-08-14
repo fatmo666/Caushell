@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
   <a href="#what-caushell-catches">What Caushell catches</a> ·
   <a href="#why-not-sandbox">Why not sandbox?</a> ·
   <a href="#how-it-works">How it works</a>
@@ -162,6 +163,12 @@ caushell update --runtime-only   # update runtime binaries only
 caushell update --version v0.0.6     # pin a stable release tag
 caushell build-info              # show version, commit, release, and target
 ```
+
+## Configuration
+
+For the configuration file location, configuration management commands, and user configuration fields, see:
+
+- [Configuration](docs/configuration.md)
 
 ## How it works
 

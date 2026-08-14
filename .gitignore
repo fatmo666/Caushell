@@ -46,7 +46,8 @@ __pycache__/
 *.db-wal
 
 # Local research/lab assets not included in the public v0.0.1 snapshot
-/docs/
+/docs/*
+!/docs/*.md
 /docker/
 /assets/caushell-pipeline-placeholder.svg
 /scripts/check-command-profile-coverage.py
