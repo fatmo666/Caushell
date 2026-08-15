@@ -79,7 +79,7 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-稳定版由 `v*` tag 发布。安装脚本默认下载 GitHub latest 指向的最新稳定版。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.6`。
+稳定版由 `v*` tag 发布。安装脚本默认下载 GitHub latest 指向的最新稳定版。如果需要固定可复现版本，可以设置 `CAUSHELL_VERSION`，例如 `CAUSHELL_VERSION=v0.0.7`。
 
 预构建版本支持 Linux x86_64 静态二进制，以及 macOS x86_64 / Apple Silicon。Windows 和 Linux ARM64 暂不提供预构建包。
 
@@ -176,7 +176,7 @@ caushell update
 ```bash
 caushell update --check          # 只检查 release manifest，不修改文件
 caushell update --runtime-only   # 只更新 runtime 二进制
-caushell update --version v0.0.6     # 固定一个稳定 release tag
+caushell update --version v0.0.7     # 固定一个稳定 release tag
 caushell build-info              # 查看版本、commit、release 和 target
 ```
 

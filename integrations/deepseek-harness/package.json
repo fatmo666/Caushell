@@ -1,6 +1,6 @@
 {
   "name": "caushell-dsh-bash",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Pre-execution Caushell analysis for the ordinary DeepSeek Harness Bash tool.",
   "license": "Apache-2.0",
   "engines": {
