@@ -195,11 +195,47 @@ def verify_claude_plugin() -> None:
         )
 
 
+def verify_dsh_plugin() -> None:
+    plugin_root = REPO_ROOT / "integrations/deepseek-harness"
+    package_path = plugin_root / "package.json"
+    package = require_object(load_json(package_path), str(package_path))
+    require(package.get("name") == "caushell-dsh-bash", "DSH package name mismatch")
+    require(
+        package.get("main") == "./caushell-dsh-bash.mjs",
+        "DSH package main must point to caushell-dsh-bash.mjs",
+    )
+    require(
+        package.get("exports") == "./caushell-dsh-bash.mjs",
+        "DSH package exports must point to caushell-dsh-bash.mjs",
+    )
+    dsh = require_object(package.get("dsh"), "DSH package dsh metadata")
+    bundle = require_object(dsh.get("bundle"), "DSH package bundle metadata")
+    require(
+        bundle.get("patch") == "./cordis.patch.yml",
+        "DSH package must declare ./cordis.patch.yml as its bundle patch",
+    )
+    require(
+        (plugin_root / "caushell-dsh-bash.mjs").is_file(),
+        "DSH plugin module must exist",
+    )
+    require(
+        (plugin_root / "cordis.patch.yml").is_file(),
+        "DSH Cordis patch must exist",
+    )
+    require(
+        "tools/pre-execute" in (plugin_root / "caushell-dsh-bash.mjs").read_text(
+            encoding="utf-8"
+        ),
+        "DSH plugin must register tools/pre-execute",
+    )
+
+
 def main() -> None:
     verify_codex_marketplace()
     verify_codex_plugin()
     verify_claude_marketplace()
     verify_claude_plugin()
+    verify_dsh_plugin()
     print("verify-plugin-contracts: ok")
 
 

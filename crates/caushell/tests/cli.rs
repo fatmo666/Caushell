@@ -529,12 +529,13 @@ fn release_target_for_test() -> &'static str {
 }
 
 #[cfg(unix)]
-fn release_binaries_for_test() -> [&'static str; 5] {
+fn release_binaries_for_test() -> [&'static str; 6] {
     [
         "caushell",
         "caushell-adapter-codex",
         "caushell-codex-hook",
         "caushell-adapter-claude",
+        "caushell-adapter-dsh",
         "caushell-claude-hook",
     ]
 }

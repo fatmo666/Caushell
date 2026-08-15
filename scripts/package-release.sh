@@ -17,6 +17,7 @@ bins=(
   caushell-adapter-codex
   caushell-codex-hook
   caushell-adapter-claude
+  caushell-adapter-dsh
   caushell-claude-hook
 )
 
@@ -49,6 +50,7 @@ cargo build --release --locked --target "${target}" \
   -p caushell-adapter-codex \
   -p caushell-codex-hook \
   -p caushell-adapter-claude \
+  -p caushell-adapter-dsh \
   -p caushell-claude-hook
 
 rm -rf "${package_dir}"

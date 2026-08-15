@@ -15,6 +15,7 @@ const RELEASE_BINARIES: &[&str] = &[
     "caushell-adapter-codex",
     "caushell-codex-hook",
     "caushell-adapter-claude",
+    "caushell-adapter-dsh",
     "caushell-claude-hook",
 ];
 const CODEX_PLUGIN_ID: &str = "caushell-codex@caushell";
@@ -234,7 +235,7 @@ pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<(), CliError
 
     if runtime_changed || !agents.is_empty() {
         println!(
-            "[ok] update complete; restart Codex or Claude Code to load the updated runtime/plugin"
+            "[ok] update complete; restart the active Harness to load the updated runtime/plugin"
         );
     } else {
         println!("[ok] update complete; no runtime or enabled plugin changes were needed");

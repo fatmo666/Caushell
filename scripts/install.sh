@@ -185,7 +185,7 @@ if [[ ! -d "${package_dir}/bin" ]]; then
 fi
 
 mkdir -p "${install_dir}"
-for binary in caushell caushell-adapter-codex caushell-codex-hook caushell-adapter-claude caushell-claude-hook; do
+for binary in caushell caushell-adapter-codex caushell-codex-hook caushell-adapter-claude caushell-adapter-dsh caushell-claude-hook; do
   if [[ ! -f "${package_dir}/bin/${binary}" || -L "${package_dir}/bin/${binary}" ]]; then
     echo "caushell install: release package is missing ${binary}" >&2
     exit 1
@@ -202,7 +202,7 @@ Caushell runtime binaries installed to:
 Build identity:
 ${build_info:-  unavailable}
 
-Make sure this directory is on PATH before starting Codex or Claude Code:
+Make sure this directory is on PATH before starting Codex, Claude Code, or DeepSeek Harness:
   export PATH="${install_dir}:\$PATH"
 
 For future updates:

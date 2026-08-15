@@ -14,6 +14,7 @@ bins=(
   caushell-adapter-codex
   caushell-codex-hook
   caushell-adapter-claude
+  caushell-adapter-dsh
   caushell-claude-hook
 )
 
@@ -76,6 +77,7 @@ run_check "${install_root}/caushell" update --help
 run_check "${install_root}/caushell" --update --help
 run_check "${install_root}/caushell-codex-hook" Status
 run_check "${install_root}/caushell-claude-hook" Status
+run_check "${install_root}/caushell-adapter-dsh" --help
 run_check "${install_root}/caushell" doctor codex
 run_check "${install_root}/caushell" doctor claude
 

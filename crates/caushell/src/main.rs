@@ -687,6 +687,10 @@ mod tests {
                 "Claude Code",
                 include_str!("../../../integrations/claude-code/.claude-plugin/plugin.json"),
             ),
+            (
+                "DeepSeek Harness",
+                include_str!("../../../integrations/deepseek-harness/package.json"),
+            ),
         ] {
             let manifest: serde_json::Value =
                 serde_json::from_str(manifest).expect("plugin manifest must be valid JSON");
