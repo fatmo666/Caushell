@@ -1,0 +1,9 @@
+- insert:
+    - id: caushell-dsh-bash
+      name: caushell-dsh-bash
+      config:
+        storeRoot: /tmp/caushell-dsh-store
+        failureAction: deny
+
+    - id: caushell-dsh-real-smoke
+      name: /opt/caushell/real-dsh-smoke-runner.mjs

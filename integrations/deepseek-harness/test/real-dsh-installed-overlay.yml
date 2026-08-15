@@ -1,0 +1,3 @@
+- insert:
+    - id: caushell-dsh-real-smoke
+      name: /opt/caushell/real-dsh-smoke-runner.mjs
