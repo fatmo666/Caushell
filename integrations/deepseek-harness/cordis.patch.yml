@@ -1,0 +1,5 @@
+# The package is a DSH bundle. Its patch is applied after the profile's base
+# bundles and requires ordinary @deepseek-ai/dsh-tool-bash in the composition.
+- insert:
+    - id: caushell-dsh-bash
+      name: caushell-dsh-bash
