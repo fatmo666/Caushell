@@ -37,6 +37,7 @@ jobs:
           while IFS= read -r file; do
             bash -n "${file}"
           done < <(git grep -l '^#!/usr/bin/env bash')
+          bash -n scripts/package-dsh-plugin.sh
 
       - name: Validate JSON files
         shell: bash
@@ -47,6 +48,15 @@ jobs:
 
       - name: Validate plugin contracts
         run: python3 scripts/verify-plugin-contracts.py
+
+      - name: Validate DeepSeek Harness plugin
+        run: |
+          node --check integrations/deepseek-harness/caushell-dsh-bash.mjs
+          node --check integrations/deepseek-harness/test/real-dsh-runner.mjs
+          node --check integrations/deepseek-harness/test/real-dsh-smoke-runner.mjs
+          node integrations/deepseek-harness/test/smoke.mjs
+          python3 -m py_compile scripts/smoke-dsh-adapter.py scripts/smoke-dsh-adapter-container.py scripts/smoke-dsh-composition-container.py
+          bash scripts/package-dsh-plugin.sh
 
       - name: Run VS Code extension smoke test
         run: node integrations/vscode/smoke-test.js

@@ -46,11 +46,54 @@ jobs:
       - name: Validate release scripts
         run: |
           bash -n scripts/install.sh
+          bash -n scripts/package-dsh-plugin.sh
           bash -n scripts/package-release.sh
           bash -n scripts/verify-release-package.sh
 
       - name: Validate plugin contracts
         run: python3 scripts/verify-plugin-contracts.py
+
+      - name: Validate DeepSeek Harness plugin
+        run: |
+          node --check integrations/deepseek-harness/caushell-dsh-bash.mjs
+          node --check integrations/deepseek-harness/test/real-dsh-runner.mjs
+          node --check integrations/deepseek-harness/test/real-dsh-smoke-runner.mjs
+          node integrations/deepseek-harness/test/smoke.mjs
+          python3 -m py_compile scripts/smoke-dsh-adapter.py scripts/smoke-dsh-adapter-container.py scripts/smoke-dsh-composition-container.py
+
+  package-dsh:
+    name: Package DeepSeek Harness integration
+    needs: validate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust metadata toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Package DeepSeek Harness bundle
+        run: bash scripts/package-dsh-plugin.sh
+
+      - name: Verify package checksum
+        run: |
+          cd target/dist
+          sha256sum -c caushell-dsh-bash.tgz.sha256
+
+      - name: Upload DeepSeek Harness package artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: caushell-deepseek-harness
+          path: |
+            target/dist/caushell-dsh-bash.tgz
+            target/dist/caushell-dsh-bash.tgz.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   package:
     name: Package ${{ matrix.target }}
@@ -114,6 +157,7 @@ jobs:
             caushell-adapter-codex \
             caushell-codex-hook \
             caushell-adapter-claude \
+            caushell-adapter-dsh \
             caushell-claude-hook
           do
             test -x "${install_root}/${binary}"
@@ -130,6 +174,13 @@ jobs:
             "${install_root}/caushell" update --check
           python3 scripts/smoke-sensitive-exfiltration.py "${install_root}/caushell"
           python3 scripts/smoke-adversarial-shell.py "${install_root}/caushell"
+          python3 scripts/smoke-dsh-adapter.py "${install_root}/caushell-adapter-dsh"
+
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            python3 scripts/smoke-dsh-adapter-container.py \
+              --image debian:bookworm-slim \
+              "${install_root}/caushell-adapter-dsh"
+          fi
 
       - name: Upload package artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -144,7 +195,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: package
+    needs: [package, package-dsh]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -168,6 +219,7 @@ jobs:
           for checksum in caushell-*.tar.gz.sha256; do
             sha256sum -c "${checksum}"
           done
+          sha256sum -c caushell-dsh-bash.tgz.sha256
           expected_commit="$(git -C "${GITHUB_WORKSPACE}" rev-parse HEAD)"
           python3 - "${RELEASE_TAG}" "${RELEASE_TAG#v}" "${expected_commit}" caushell-*.manifest.json <<'PY'
           import json
@@ -185,6 +237,8 @@ jobs:
               if build_info.get("commit") != commit:
                   raise SystemExit(f"{manifest_path}: commit mismatch: {build_info.get('commit')} != {commit}")
           PY
+          package_version="$(tar -xOf caushell-dsh-bash.tgz package/package.json | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+          test "${package_version}" = "${RELEASE_TAG#v}"
 
       - name: Add installer assets
         run: |
@@ -206,6 +260,8 @@ jobs:
           caushell-x86_64-unknown-linux-musl.tar.gz
           caushell-x86_64-unknown-linux-musl.tar.gz.sha256
           caushell-x86_64-unknown-linux-musl.manifest.json
+          caushell-dsh-bash.tgz
+          caushell-dsh-bash.tgz.sha256
           install.sh
           install.sh.sha256
           EOF
