@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>面向 AI agent shell action 的编译器式执行前安全分析。</strong>
+  <strong>面向 AI Harness Shell Action 的编译器式执行前安全分析。</strong>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
   <a href="#how-it-works--工作原理">工作原理</a>
 </p>
 
-Caushell（causal + shell）运行在 Codex、Claude Code 等 coding agent 和本地 shell 之间，在 shell action 进入本地 shell 前完成执行前语义分析。
+Caushell（causal + shell）运行在 Codex、Claude Code 等 AI Harness 和本地 shell 之间，在 shell action 进入本地 shell 前完成执行前语义分析。
 
 `Shell action → AST → 会话执行图 → 安全分析 passes → 决策`
 
@@ -83,7 +83,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 预构建版本支持 Linux x86_64 静态二进制，以及 macOS x86_64 / Apple Silicon。Windows 和 Linux ARM64 暂不提供预构建包。
 
-然后安装对应 agent integration。Codex 和 Claude Code 将这类集成称为 plugin。
+然后安装对应的 Harness 集成。Codex 和 Claude Code 将这类集成称为 plugin。
 
 ### Codex
 
@@ -151,7 +151,7 @@ smoke test 会执行一条无害的 Claude Code Bash action，并确认 Caushell
 caushell update
 ```
 
-`caushell --update` 是兼容别名。更新器会先检查 release manifest；真正替换 runtime bundle 前会校验 release checksum。它只刷新已经安装且启用的 Codex 或 Claude Code plugin，并自动运行更新后的 doctor 检查，不会安装你没有选择的 agent 集成。更新完成后请重启 Codex 或 Claude Code。
+`caushell --update` 是兼容别名。更新器会先检查 release manifest；真正替换 runtime bundle 前会校验 release checksum。它只刷新已经安装且启用的 Codex 或 Claude Code plugin，并自动运行更新后的 doctor 检查，不会安装你没有选择的 Harness 集成。更新完成后请重启 Codex 或 Claude Code。
 
 如果旧安装提示 `unknown command: update`，先重新运行一次安装脚本；之后就可以使用内置更新器。
 

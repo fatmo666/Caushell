@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Compiler-style pre-execution safety analysis for AI agent shell actions.</strong>
+  <strong>Compiler-style pre-execution safety analysis for AI Harness Shell Actions.</strong>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
   <a href="#how-it-works">How it works</a>
 </p>
 
-Caushell (causal + shell) runs between AI coding agents such as Codex and Claude Code and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
+Caushell (causal + shell) runs between AI Harnesses such as Codex and Claude Code and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
 
 `Shell action → AST → session execution graph → safety analysis passes → decision`
 
@@ -83,7 +83,7 @@ Stable releases are published from `v*` tags. The installer downloads the latest
 
 Prebuilt releases support Linux x86_64 as a static binary, macOS x86_64, and Apple Silicon. Windows and Linux ARM64 do not have prebuilt packages yet.
 
-Then install the integration for your agent. Codex and Claude Code call these integrations plugins.
+Then install the corresponding Harness integration. Codex and Claude Code call these integrations plugins.
 
 ### Codex
 
@@ -151,7 +151,7 @@ After the first installation, update Caushell with one command:
 caushell update
 ```
 
-`caushell --update` is a compatible alias. The updater checks the release manifest, verifies the release checksum before replacing the runtime bundle, refreshes only enabled Codex or Claude Code plugins that are already installed, and runs a post-update doctor check. It never installs an agent integration that you have not selected. Restart Codex or Claude Code after the update.
+`caushell --update` is a compatible alias. The updater checks the release manifest, verifies the release checksum before replacing the runtime bundle, refreshes only enabled Codex or Claude Code plugins that are already installed, and runs a post-update doctor check. It never installs a Harness integration that you have not selected. Restart Codex or Claude Code after the update.
 
 If an older installation reports `unknown command: update`, run the installer once more; subsequent updates can then use the built-in updater.
 
