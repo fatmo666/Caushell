@@ -4,6 +4,7 @@ members = [
     "crates/caushell-claude-hook",
     "crates/caushell-adapter-codex",
     "crates/caushell-adapter-claude",
+    "crates/caushell-adapter-dsh",
     "crates/caushell",
     "crates/caushell-config",
     "crates/caushell-core",

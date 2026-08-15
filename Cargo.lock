@@ -78,6 +78,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "caushell-adapter-dsh"
+version = "0.0.6"
+dependencies = [
+ "caushell",
+ "caushell-config",
+ "caushell-types",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "caushell-claude-hook"
 version = "0.0.6"
 dependencies = [
