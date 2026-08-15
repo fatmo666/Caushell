@@ -177,6 +177,7 @@ jobs:
           python3 scripts/smoke-dsh-adapter.py "${install_root}/caushell-adapter-dsh"
 
           if [[ "${{ runner.os }}" == "Linux" ]]; then
+            docker pull debian:bookworm-slim
             python3 scripts/smoke-dsh-adapter-container.py \
               --image debian:bookworm-slim \
               "${install_root}/caushell-adapter-dsh"
