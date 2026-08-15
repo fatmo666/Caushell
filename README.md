@@ -143,6 +143,23 @@ caushell doctor claude --smoke
 
 The smoke test runs one harmless Claude Code Bash action and verifies that Caushell observed both `PreToolUse` and `PostToolUse`. The success signal is `Result: OK`.
 
+### DeepSeek Harness
+
+The first DeepSeek Harness integration targets the ordinary non-persistent
+`bash` tool. Install the released integration bundle into the DSH profile:
+
+```bash
+dsh plugin --profile <profile> add https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+```
+
+The package automatically adds its Cordis patch to the profile. A source
+checkout can be installed with the same command shape by replacing the URL with
+`/absolute/path/to/Caushell/integrations/deepseek-harness`. See [DeepSeek Harness
+integration](integrations/deepseek-harness/README.md) for configuration.
+Persistent Bash is intentionally unsupported: its cross-action shell state is
+not exposed at `tools/pre-execute`, so Caushell refuses that invocation shape
+instead of analyzing it as a fresh shell.
+
 ### Update an existing installation
 
 After the first installation, update Caushell with one command:
@@ -151,7 +168,7 @@ After the first installation, update Caushell with one command:
 caushell update
 ```
 
-`caushell --update` is a compatible alias. The updater checks the release manifest, verifies the release checksum before replacing the runtime bundle, refreshes only enabled Codex or Claude Code plugins that are already installed, and runs a post-update doctor check. It never installs a Harness integration that you have not selected. Restart Codex or Claude Code after the update.
+`caushell --update` is a compatible alias. The updater checks the release manifest, verifies the release checksum before replacing the runtime bundle, refreshes only enabled Codex or Claude Code plugins that are already installed, and runs a post-update doctor check. It never installs a Harness integration that you have not selected. Restart the active Harness after the update.
 
 If an older installation reports `unknown command: update`, run the installer once more; subsequent updates can then use the built-in updater.
 

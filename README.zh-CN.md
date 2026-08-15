@@ -143,6 +143,22 @@ caushell doctor claude --smoke
 
 smoke test 会执行一条无害的 Claude Code Bash action，并确认 Caushell 观察到了 `PreToolUse` 和 `PostToolUse`。成功标志是 `Result: OK`。
 
+### DeepSeek Harness
+
+首个 DeepSeek Harness 集成只支持普通的非持久化 `bash` 工具。把发布的
+集成 bundle 安装到 DSH profile：
+
+```bash
+dsh plugin --profile <profile> add https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+```
+
+这个包会自动把自己的 Cordis patch 加入 profile。使用源码 checkout 时，
+把 URL 换成 `/absolute/path/to/Caushell/integrations/deepseek-harness` 即可。
+配置说明见 [DeepSeek Harness 集成](integrations/deepseek-harness/README.md)。
+Persistent Bash 会跨 action 保存 shell 状态，但这些状态没有在
+`tools/pre-execute` 暴露；Caushell 会拒绝这种调用形态，不会把它当成
+fresh shell 分析。
+
 ### 更新已有安装
 
 首次安装之后，使用一条命令更新 Caushell：
@@ -151,7 +167,7 @@ smoke test 会执行一条无害的 Claude Code Bash action，并确认 Caushell
 caushell update
 ```
 
-`caushell --update` 是兼容别名。更新器会先检查 release manifest；真正替换 runtime bundle 前会校验 release checksum。它只刷新已经安装且启用的 Codex 或 Claude Code plugin，并自动运行更新后的 doctor 检查，不会安装你没有选择的 Harness 集成。更新完成后请重启 Codex 或 Claude Code。
+`caushell --update` 是兼容别名。更新器会先检查 release manifest；真正替换 runtime bundle 前会校验 release checksum。它只刷新已经安装且启用的 Codex 或 Claude Code plugin，并自动运行更新后的 doctor 检查，不会安装你没有选择的 Harness 集成。更新完成后请重启当前使用的 Harness。
 
 如果旧安装提示 `unknown command: update`，先重新运行一次安装脚本；之后就可以使用内置更新器。
 
