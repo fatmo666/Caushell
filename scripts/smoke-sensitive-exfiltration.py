@@ -83,7 +83,7 @@ def main() -> int:
                         "tool_name": "Bash",
                         "shell_runtime_capabilities": capabilities(),
                     },
-                    "home": "/home/fatmo",
+                    "home": "/home/caushell-smoke",
                     "workspace_root": "/lab/workspace",
                 },
             }

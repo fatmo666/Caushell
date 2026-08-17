@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 DEFAULT_IMAGE = "node:22-bookworm"
-DEFAULT_NODE_MODULES = "/home/fatmo/.dsh/profiles/node_modules"
+DEFAULT_NODE_MODULES = Path.home() / ".dsh" / "profiles" / "node_modules"
 CONTAINER_TIMEOUT_SECONDS = 300
 
 
