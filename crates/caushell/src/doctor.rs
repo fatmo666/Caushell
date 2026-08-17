@@ -12,12 +12,12 @@ const CODEX_PLUGIN_NAME: &str = "caushell-codex";
 const HOOK_SMOKE_COMMAND: &str = "printf caushell-hook-smoke-ok";
 
 #[derive(Debug, Clone, Copy)]
-enum DoctorAgent {
+enum DoctorHarness {
     Codex,
     Claude,
 }
 
-impl DoctorAgent {
+impl DoctorHarness {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "codex" => Some(Self::Codex),
@@ -54,7 +54,7 @@ impl DoctorAgent {
         }
     }
 
-    fn agent_binary(self) -> &'static str {
+    fn harness_binary(self) -> &'static str {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
@@ -63,7 +63,7 @@ impl DoctorAgent {
 }
 
 struct DoctorOptions {
-    agent: DoctorAgent,
+    harness: DoctorHarness,
     smoke: bool,
 }
 
@@ -73,8 +73,8 @@ struct DoctorReport {
 }
 
 impl DoctorReport {
-    fn new(agent: DoctorAgent) -> Self {
-        println!("Caushell doctor: {}", agent.label());
+    fn new(harness: DoctorHarness) -> Self {
+        println!("Caushell doctor: {}", harness.label());
         Self {
             failures: 0,
             warnings: 0,
@@ -120,12 +120,12 @@ pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<(), CliError> {
     let Some(options) = parse_doctor_options(args)? else {
         return Ok(());
     };
-    let mut report = DoctorReport::new(options.agent);
-    let status = run_doctor_basic(options.agent, &mut report);
+    let mut report = DoctorReport::new(options.harness);
+    let status = run_doctor_basic(options.harness, &mut report);
 
     if options.smoke {
         match status {
-            Some(status) => run_doctor_smoke(options.agent, &status, &mut report),
+            Some(status) => run_doctor_smoke(options.harness, &status, &mut report),
             None => report.fail("skipping smoke test because the basic hook status check failed"),
         }
     }
@@ -136,21 +136,21 @@ pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<(), CliError> {
 fn parse_doctor_options(
     mut args: impl Iterator<Item = String>,
 ) -> Result<Option<DoctorOptions>, CliError> {
-    let Some(agent_arg) = args.next() else {
+    let Some(harness_arg) = args.next() else {
         print_doctor_usage();
         return Err(invalid_cli_input(
             "caushell doctor requires codex or claude",
         ));
     };
 
-    if matches!(agent_arg.as_str(), "--help" | "-h" | "help") {
+    if matches!(harness_arg.as_str(), "--help" | "-h" | "help") {
         print_doctor_usage();
         return Ok(None);
     }
 
-    let Some(agent) = DoctorAgent::parse(&agent_arg) else {
+    let Some(harness) = DoctorHarness::parse(&harness_arg) else {
         return Err(invalid_cli_input(format!(
-            "unknown doctor target {agent_arg:?}; expected codex or claude"
+            "unknown doctor target {harness_arg:?}; expected codex or claude"
         )));
     };
 
@@ -170,11 +170,11 @@ fn parse_doctor_options(
         }
     }
 
-    Ok(Some(DoctorOptions { agent, smoke }))
+    Ok(Some(DoctorOptions { harness, smoke }))
 }
 
 fn run_doctor_basic(
-    agent: DoctorAgent,
+    harness: DoctorHarness,
     report: &mut DoctorReport,
 ) -> Option<BTreeMap<String, String>> {
     match env::current_exe() {
@@ -182,28 +182,28 @@ fn run_doctor_basic(
         Err(error) => report.warn(format!("could not resolve caushell binary path: {error}")),
     }
 
-    let hook_path = match find_executable_on_path(agent.hook_binary()) {
+    let hook_path = match find_executable_on_path(harness.hook_binary()) {
         Some(path) => {
             report.ok(format!(
                 "{} on PATH: {}",
-                agent.hook_binary(),
+                harness.hook_binary(),
                 path.display()
             ));
             path
         }
         None => {
-            report.fail(format!("{} is not on PATH", agent.hook_binary()));
+            report.fail(format!("{} is not on PATH", harness.hook_binary()));
             return None;
         }
     };
 
-    match find_executable_on_path(agent.adapter_binary()) {
+    match find_executable_on_path(harness.adapter_binary()) {
         Some(path) => report.ok(format!(
             "{} on PATH: {}",
-            agent.adapter_binary(),
+            harness.adapter_binary(),
             path.display()
         )),
-        None => report.fail(format!("{} is not on PATH", agent.adapter_binary())),
+        None => report.fail(format!("{} is not on PATH", harness.adapter_binary())),
     }
 
     let output = match Command::new(&hook_path).arg("Status").output() {
@@ -211,7 +211,7 @@ fn run_doctor_basic(
         Err(error) => {
             report.fail(format!(
                 "failed to run {} Status: {error}",
-                agent.hook_binary()
+                harness.hook_binary()
             ));
             return None;
         }
@@ -220,7 +220,7 @@ fn run_doctor_basic(
     if !output.status.success() {
         report.fail(format!(
             "{} Status failed: {}",
-            agent.hook_binary(),
+            harness.hook_binary(),
             command_output_summary(&output)
         ));
         return None;
@@ -228,7 +228,7 @@ fn run_doctor_basic(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let status = parse_key_value_output(&stdout);
-    check_status_field(report, &status, "plugin_name", agent.plugin_name());
+    check_status_field(report, &status, "plugin_name", harness.plugin_name());
 
     if let Some(version) = status.get("plugin_version") {
         report.ok(format!("plugin_version={version}"));
@@ -248,7 +248,7 @@ fn run_doctor_basic(
         report.fail("hook status did not report runtime_path");
     }
 
-    if agent.plugin_name() == "caushell-codex" {
+    if harness.plugin_name() == "caushell-codex" {
         if let Some(adapter_path) = status.get("adapter_path") {
             let path = PathBuf::from(adapter_path);
             if is_executable(&path) {
@@ -270,7 +270,7 @@ fn run_doctor_basic(
     match status.get("runtime_status").map(String::as_str) {
         Some("up") => report.ok("runtime daemon is up"),
         Some("down") => report
-            .warn("runtime daemon is down; this is normal before the first agent shell action"),
+            .warn("runtime daemon is down; this is normal before the first Harness shell action"),
         Some(other) => report.fail(format!("unexpected runtime_status={other}")),
         None => report.fail("hook status did not report runtime_status"),
     }
@@ -283,26 +283,26 @@ fn run_doctor_basic(
 }
 
 fn run_doctor_smoke(
-    agent: DoctorAgent,
+    harness: DoctorHarness,
     initial_status: &BTreeMap<String, String>,
     report: &mut DoctorReport,
 ) {
-    if matches!(agent, DoctorAgent::Codex) {
+    if matches!(harness, DoctorHarness::Codex) {
         run_codex_doctor_smoke(initial_status, report);
         return;
     }
 
-    let Some(agent_path) = find_executable_on_path(agent.agent_binary()) else {
+    let Some(harness_path) = find_executable_on_path(harness.harness_binary()) else {
         report.fail(format!(
             "{} CLI is not on PATH; cannot run smoke test",
-            agent.agent_binary()
+            harness.harness_binary()
         ));
         return;
     };
     report.ok(format!(
         "{} CLI on PATH: {}",
-        agent.agent_binary(),
-        agent_path.display()
+        harness.harness_binary(),
+        harness_path.display()
     ));
 
     let Some(log_path) = initial_status
@@ -315,9 +315,9 @@ fn run_doctor_smoke(
     let log_path = PathBuf::from(log_path);
     let before_lines = count_lines_if_exists(&log_path).unwrap_or(0);
 
-    let output = match agent {
-        DoctorAgent::Codex => unreachable!("Codex smoke is handled by run_codex_doctor_smoke"),
-        DoctorAgent::Claude => Command::new(&agent_path)
+    let output = match harness {
+        DoctorHarness::Codex => unreachable!("Codex smoke is handled by run_codex_doctor_smoke"),
+        DoctorHarness::Claude => Command::new(&harness_path)
             .arg("-p")
             .arg(DOCTOR_CLAUDE_PROMPT)
             .arg("--allowedTools")
@@ -327,12 +327,12 @@ fn run_doctor_smoke(
 
     match output {
         Ok(output) if output.status.success() => {
-            report.ok(format!("{} smoke command completed", agent.label()));
+            report.ok(format!("{} smoke command completed", harness.label()));
         }
         Ok(output) => {
             report.fail(format!(
                 "{} smoke command failed: {}",
-                agent.label(),
+                harness.label(),
                 command_output_summary(&output)
             ));
             return;
@@ -340,20 +340,20 @@ fn run_doctor_smoke(
         Err(error) => {
             report.fail(format!(
                 "failed to start {} smoke command: {error}",
-                agent.label()
+                harness.label()
             ));
             return;
         }
     }
 
-    let status = match Command::new(agent.hook_binary()).arg("Status").output() {
+    let status = match Command::new(harness.hook_binary()).arg("Status").output() {
         Ok(output) if output.status.success() => {
             parse_key_value_output(&String::from_utf8_lossy(&output.stdout))
         }
         Ok(output) => {
             report.fail(format!(
                 "{} Status failed after smoke command: {}",
-                agent.hook_binary(),
+                harness.hook_binary(),
                 command_output_summary(&output)
             ));
             return;
@@ -361,7 +361,7 @@ fn run_doctor_smoke(
         Err(error) => {
             report.fail(format!(
                 "failed to run {} Status after smoke command: {error}",
-                agent.hook_binary()
+                harness.hook_binary()
             ));
             return;
         }
@@ -387,19 +387,19 @@ fn run_doctor_smoke(
     if new_log.contains("event=PreToolUse") {
         report.ok("smoke log contains event=PreToolUse");
     } else {
-        report.fail("smoke log does not contain event=PreToolUse; the agent did not invoke Caushell before Bash");
+        report.fail("smoke log does not contain event=PreToolUse; the Harness did not invoke Caushell before Bash");
     }
 
     if new_log.contains("event=PostToolUse") {
         report.ok("smoke log contains event=PostToolUse");
     } else {
-        report.fail("smoke log does not contain event=PostToolUse; the agent did not invoke Caushell after Bash");
+        report.fail("smoke log does not contain event=PostToolUse; the Harness did not invoke Caushell after Bash");
     }
 }
 
 fn run_codex_doctor_smoke(initial_status: &BTreeMap<String, String>, report: &mut DoctorReport) {
     check_codex_plugin_enabled(report);
-    run_direct_hook_smoke(DoctorAgent::Codex, initial_status, report);
+    run_direct_hook_smoke(DoctorHarness::Codex, initial_status, report);
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -504,14 +504,14 @@ fn check_codex_plugin_enabled(report: &mut DoctorReport) {
 }
 
 fn run_direct_hook_smoke(
-    agent: DoctorAgent,
+    harness: DoctorHarness,
     initial_status: &BTreeMap<String, String>,
     report: &mut DoctorReport,
 ) {
-    let Some(hook_path) = find_executable_on_path(agent.hook_binary()) else {
+    let Some(hook_path) = find_executable_on_path(harness.hook_binary()) else {
         report.fail(format!(
             "{} is not on PATH; cannot run direct hook smoke",
-            agent.hook_binary()
+            harness.hook_binary()
         ));
         return;
     };
@@ -578,7 +578,7 @@ fn run_direct_hook_smoke(
         Ok(output) => {
             report.fail(format!(
                 "{} Status failed after direct hook smoke: {}",
-                agent.hook_binary(),
+                harness.hook_binary(),
                 command_output_summary(&output)
             ));
             return;
@@ -586,7 +586,7 @@ fn run_direct_hook_smoke(
         Err(error) => {
             report.fail(format!(
                 "failed to run {} Status after direct hook smoke: {error}",
-                agent.hook_binary()
+                harness.hook_binary()
             ));
             return;
         }

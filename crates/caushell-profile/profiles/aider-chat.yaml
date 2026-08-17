@@ -18,7 +18,7 @@ platform:
   requires_features: []
 
 forms:
-  - id: coding_agent_session
+  - id: harness_session
     selector:
       kind: all
       items: []

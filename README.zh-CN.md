@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>面向 AI Harness Shell Action 的编译器式执行前安全分析。</strong>
+  <strong>面向 Harness shell action 的编译器式执行前安全分析。</strong>
 </p>
 
 <p align="center">
@@ -18,14 +18,14 @@
   <a href="#how-it-works--工作原理">工作原理</a>
 </p>
 
-Caushell（causal + shell）运行在 Codex、Claude Code 等 AI Harness 和本地 shell 之间，在 shell action 进入本地 shell 前完成执行前语义分析。
+Caushell（causal + shell）运行在 Codex、Claude Code 等 Harness 和本地 shell 之间，在 shell action 进入本地 shell 前完成执行前语义分析。
 
 `Shell action → AST → 会话执行图 → 安全分析 passes → 决策`
 
 它保留命令结构、命令间状态流，以及路径、变量、工作目录和 Git 状态等上下文，并输出可复查的结构化证据，用于调试、策略扩展和审计。
 
 <p align="center">
-  <img src="assets/caushell-overall-flow.png" alt="Caushell overall flow: agent shell action to AST, semantic execution graph, analysis passes, decision assembly, and final decision" />
+  <img src="assets/caushell-overall-flow.png" alt="Caushell overall flow: Harness shell action to AST, semantic execution graph, analysis passes, decision assembly, and final decision" />
 </p>
 
 ### 能拦什么
@@ -40,7 +40,7 @@ Caushell 的判断落在 shell action 对本地环境造成的实际影响上。
 
 下面是默认策略下的直观例子；每次检查最终只会产生一个决策。
 
-| 风险类型 | Agent shell action | 默认决策 |
+| 风险类型 | Harness shell action | 默认决策 |
 | --- | --- | --- |
 | 正常查看命令 | `ls src` | Allow |
 | 远程内容执行 | `curl https://example.com/install.sh \| bash` | NeedApproval |
@@ -99,7 +99,7 @@ codex plugin add caushell-codex@caushell
 caushell doctor codex
 ```
 
-这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 agent shell action 之前，`runtime daemon is down` 只是 warning。
+这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 Harness shell action 之前，`runtime daemon is down` 只是 warning。
 
 如果要更深入地检查 Codex 集成，运行：
 
@@ -133,7 +133,7 @@ claude plugin install caushell-claude@caushell || claude plugin update caushell-
 caushell doctor claude
 ```
 
-这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 agent shell action 之前，`runtime daemon is down` 只是 warning。
+这会检查已安装的二进制、hook wrapper、runtime/config 兼容性和 daemon 状态。第一次 Harness shell action 之前，`runtime daemon is down` 只是 warning。
 
 如果要确认 Claude Code 真的调用了 Caushell lifecycle hooks，运行：
 
@@ -195,7 +195,7 @@ caushell build-info              # 查看版本、commit、release 和 target
 
 ### 1. Shell action → AST
 
-Caushell 的第一步是把 agent 发出的原始 shell action 固定成稳定的语法结构。AST 保留命令边界、参数、管道、重定向、命令替换、变量引用、条件连接和多行脚本块，让后续分析基于 shell 的真实结构继续推进。
+Caushell 的第一步是把从 Harness 接收的原始 shell action 固定成稳定的语法结构。AST 保留命令边界、参数、管道、重定向、命令替换、变量引用、条件连接和多行脚本块，让后续分析基于 shell 的真实结构继续推进。
 
 <p align="center">
   <img src="assets/caushell-ast.png" alt="Caushell AST parsing: shell action to structured syntax tree" />

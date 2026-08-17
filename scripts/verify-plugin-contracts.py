@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate published agent plugin manifests and bundled hook contracts."""
+"""Validate published Harness plugin manifests and bundled hook contracts."""
 
 from __future__ import annotations
 

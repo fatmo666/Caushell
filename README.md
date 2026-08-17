@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Compiler-style pre-execution safety analysis for AI Harness Shell Actions.</strong>
+  <strong>Compiler-style pre-execution safety analysis for Harness shell actions.</strong>
 </p>
 
 <p align="center">
@@ -18,14 +18,14 @@
   <a href="#how-it-works">How it works</a>
 </p>
 
-Caushell (causal + shell) runs between AI Harnesses such as Codex and Claude Code and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
+Caushell (causal + shell) runs between Harnesses such as Codex and Claude Code and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
 
 `Shell action → AST → session execution graph → safety analysis passes → decision`
 
 It preserves command structure, cross-command state flow, paths, variables, working directory state, Git state, and related context, then emits reviewable structured evidence for debugging, policy extension, and audit.
 
 <p align="center">
-  <img src="assets/caushell-overall-flow.png" alt="Caushell overall flow: agent shell action to AST, semantic execution graph, analysis passes, decision assembly, and final decision" />
+  <img src="assets/caushell-overall-flow.png" alt="Caushell overall flow: Harness shell action to AST, semantic execution graph, analysis passes, decision assembly, and final decision" />
 </p>
 
 ### What Caushell catches
@@ -40,7 +40,7 @@ Caushell decides based on the actual impact a shell action can have on the local
 
 The examples below show the default policy. Each check produces exactly one final decision.
 
-| Risk | Agent shell action | Default decision |
+| Risk | Harness shell action | Default decision |
 | --- | --- | --- |
 | Normal inspection command | `ls src` | Allow |
 | Remote content execution | `curl https://example.com/install.sh \| bash` | NeedApproval |
@@ -99,7 +99,7 @@ Check the installation:
 caushell doctor codex
 ```
 
-This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first agent shell action.
+This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first Harness shell action.
 
 To verify the Codex integration more deeply, run:
 
@@ -133,7 +133,7 @@ Check the installation:
 caushell doctor claude
 ```
 
-This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first agent shell action.
+This checks the installed binaries, hook wrapper, runtime/config compatibility, and daemon state. `runtime daemon is down` is only a warning before the first Harness shell action.
 
 To verify that Claude Code actually invokes the Caushell lifecycle hooks, run:
 
@@ -196,7 +196,7 @@ For the configuration file location, configuration management commands, and user
 
 ### 1. Shell action → AST
 
-Caushell first pins the raw shell action emitted by the agent into a stable syntax structure. The AST preserves command boundaries, arguments, pipelines, redirections, command substitutions, variable references, conditional connectors, and multiline script blocks so later analysis runs on the shell's real structure.
+Caushell first pins the raw shell action received from the Harness into a stable syntax structure. The AST preserves command boundaries, arguments, pipelines, redirections, command substitutions, variable references, conditional connectors, and multiline script blocks so later analysis runs on the shell's real structure.
 
 <p align="center">
   <img src="assets/caushell-ast.png" alt="Caushell AST parsing: shell action to structured syntax tree" />

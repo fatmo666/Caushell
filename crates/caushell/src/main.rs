@@ -638,7 +638,7 @@ fn current_time_ms() -> Option<u64> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  caushell --version\n  caushell build-info\n  caushell update [--check] [--runtime-only] [--version <release-tag>]\n  caushell --update [--check] [--runtime-only] [--version <release-tag>]\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nupdate downloads and verifies the latest release, refreshes installed agent plugins, and runs doctor\nbuild-info prints the embedded version, commit, release, and target identity\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and writes JSON health metadata\ndoctor checks an installed Caushell agent integration; --smoke runs a harmless agent Bash action and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
+        "usage:\n  caushell --version\n  caushell build-info\n  caushell update [--check] [--runtime-only] [--version <release-tag>]\n  caushell --update [--check] [--runtime-only] [--version <release-tag>]\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nupdate downloads and verifies the latest release, refreshes installed Harness plugins, and runs doctor\nbuild-info prints the embedded version, commit, release, and target identity\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and writes JSON health metadata\ndoctor checks an installed Caushell Harness integration; --smoke runs a harmless Bash action through the Harness and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
     );
 }
 
@@ -677,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_plugin_versions_match_runtime_version() {
+    fn harness_plugin_versions_match_runtime_version() {
         for (name, manifest) in [
             (
                 "Codex",

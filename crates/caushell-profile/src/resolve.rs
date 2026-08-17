@@ -9323,7 +9323,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_invocation_resolves_git_agent_readonly_queries() {
+    fn resolve_invocation_resolves_git_readonly_queries() {
         let registry = built_in_registry();
 
         let cases = [
@@ -13693,7 +13693,7 @@ mod tests {
             (
                 "aider-chat src/main.rs",
                 "aider-chat",
-                "coding_agent_session",
+                "harness_session",
                 &[
                     EffectKind::NetworkEndpoint,
                     EffectKind::ReadPath,

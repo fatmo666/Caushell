@@ -96,7 +96,7 @@ fn doctor_help_succeeds() {
 }
 
 #[test]
-fn doctor_requires_known_agent() {
+fn doctor_requires_known_harness() {
     let output = Command::new(env!("CARGO_BIN_EXE_caushell"))
         .args(["doctor", "does-not-exist"])
         .output()

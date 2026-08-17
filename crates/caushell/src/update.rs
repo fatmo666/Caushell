@@ -79,19 +79,19 @@ struct UpdateLock {
 }
 
 #[derive(Debug, Clone)]
-struct InstalledAgent {
-    name: AgentName,
+struct InstalledIntegration {
+    harness: HarnessName,
     scope: Option<String>,
     enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentName {
+enum HarnessName {
     Codex,
     Claude,
 }
 
-impl AgentName {
+impl HarnessName {
     fn label(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
@@ -213,11 +213,11 @@ pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<(), CliError
         }
     }
 
-    let agents = if options.runtime_only {
+    let integrations = if options.runtime_only {
         Vec::new()
     } else {
-        match refresh_installed_plugins(&repository) {
-            Ok(agents) => agents,
+        match refresh_installed_harness_plugins(&repository) {
+            Ok(integrations) => integrations,
             Err(error) => {
                 let state = if runtime_changed {
                     "runtime updated"
@@ -225,15 +225,15 @@ pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<(), CliError
                     "runtime is current"
                 };
                 return Err(io::Error::other(format!(
-                    "{state}, but an installed agent plugin could not be refreshed: {error}"
+                    "{state}, but an installed Harness plugin could not be refreshed: {error}"
                 ))
                 .into());
             }
         }
     };
-    run_post_update_doctor(&install_dir, &agents)?;
+    run_post_update_doctor(&install_dir, &integrations)?;
 
-    if runtime_changed || !agents.is_empty() {
+    if runtime_changed || !integrations.is_empty() {
         println!(
             "[ok] update complete; restart the active Harness to load the updated runtime/plugin"
         );
@@ -314,7 +314,7 @@ fn validate_release_tag(value: &str) -> Result<(), CliError> {
 
 fn print_update_usage() {
     eprintln!(
-        "usage: caushell update [--check] [--runtime-only] [--version <release-tag>]\n       caushell --update [--check] [--runtime-only] [--version <release-tag>]\n\nupdates the Caushell runtime and already-installed, enabled agent plugins\n--check verifies and reports the available build without changing files\n--runtime-only updates runtime binaries without touching agent plugins\n--no-plugins is an alias for --runtime-only\n--version pins a GitHub release tag; default is the GitHub latest release"
+        "usage: caushell update [--check] [--runtime-only] [--version <release-tag>]\n       caushell --update [--check] [--runtime-only] [--version <release-tag>]\n\nupdates the Caushell runtime and already-installed, enabled Harness plugins\n--check verifies and reports the available build without changing files\n--runtime-only updates runtime binaries without touching Harness plugins\n--no-plugins is an alias for --runtime-only\n--version pins a GitHub release tag; default is the GitHub latest release"
     );
 }
 
@@ -920,16 +920,18 @@ fn rollback_replacements(changes: &[(PathBuf, PathBuf, bool)]) {
     }
 }
 
-fn refresh_installed_plugins(repository: &str) -> Result<Vec<InstalledAgent>, CliError> {
-    let mut agents = Vec::new();
+fn refresh_installed_harness_plugins(
+    repository: &str,
+) -> Result<Vec<InstalledIntegration>, CliError> {
+    let mut integrations = Vec::new();
     let mut errors = Vec::new();
     if executable_on_path("codex") {
         match installed_codex_plugin() {
-            Ok(Some(agent)) => {
-                if agent.enabled {
-                    println!("[info] refreshing {} plugin", agent.name.label());
+            Ok(Some(integration)) => {
+                if integration.enabled {
+                    println!("[info] refreshing {} plugin", integration.harness.label());
                     match refresh_codex_plugin(repository) {
-                        Ok(()) => agents.push(agent),
+                        Ok(()) => integrations.push(integration),
                         Err(error) => {
                             eprintln!("[warn] Codex plugin refresh failed: {error}");
                             errors.push(format!("Codex: {error}"));
@@ -950,11 +952,11 @@ fn refresh_installed_plugins(repository: &str) -> Result<Vec<InstalledAgent>, Cl
     }
     if executable_on_path("claude") {
         match installed_claude_plugin() {
-            Ok(Some(agent)) => {
-                if agent.enabled {
-                    println!("[info] refreshing {} plugin", agent.name.label());
-                    match refresh_claude_plugin(&agent, repository) {
-                        Ok(()) => agents.push(agent),
+            Ok(Some(integration)) => {
+                if integration.enabled {
+                    println!("[info] refreshing {} plugin", integration.harness.label());
+                    match refresh_claude_plugin(&integration, repository) {
+                        Ok(()) => integrations.push(integration),
                         Err(error) => {
                             eprintln!("[warn] Claude Code plugin refresh failed: {error}");
                             errors.push(format!("Claude Code: {error}"));
@@ -976,13 +978,13 @@ fn refresh_installed_plugins(repository: &str) -> Result<Vec<InstalledAgent>, Cl
         println!("[skip] Claude Code CLI is not on PATH");
     }
     if errors.is_empty() {
-        Ok(agents)
+        Ok(integrations)
     } else {
         Err(io::Error::other(errors.join("; ")).into())
     }
 }
 
-fn installed_codex_plugin() -> Result<Option<InstalledAgent>, CliError> {
+fn installed_codex_plugin() -> Result<Option<InstalledIntegration>, CliError> {
     let output = run_command("codex", ["plugin", "list", "--json"])?;
     if !output.status.success() {
         return Err(command_error("codex plugin list", &output));
@@ -990,7 +992,7 @@ fn installed_codex_plugin() -> Result<Option<InstalledAgent>, CliError> {
     parse_codex_plugin_list(&output.stdout)
 }
 
-fn parse_codex_plugin_list(payload: &[u8]) -> Result<Option<InstalledAgent>, CliError> {
+fn parse_codex_plugin_list(payload: &[u8]) -> Result<Option<InstalledIntegration>, CliError> {
     let list: CodexPluginList = serde_json::from_slice(payload).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1001,14 +1003,14 @@ fn parse_codex_plugin_list(payload: &[u8]) -> Result<Option<InstalledAgent>, Cli
         .installed
         .into_iter()
         .find(|entry| entry.plugin_id == CODEX_PLUGIN_ID && entry.installed)
-        .map(|entry| InstalledAgent {
-            name: AgentName::Codex,
+        .map(|entry| InstalledIntegration {
+            harness: HarnessName::Codex,
             scope: None,
             enabled: entry.enabled,
         }))
 }
 
-fn installed_claude_plugin() -> Result<Option<InstalledAgent>, CliError> {
+fn installed_claude_plugin() -> Result<Option<InstalledIntegration>, CliError> {
     let output = run_command("claude", ["plugin", "list", "--json"])?;
     if !output.status.success() {
         return Err(command_error("claude plugin list", &output));
@@ -1016,7 +1018,7 @@ fn installed_claude_plugin() -> Result<Option<InstalledAgent>, CliError> {
     parse_claude_plugin_list(&output.stdout)
 }
 
-fn parse_claude_plugin_list(payload: &[u8]) -> Result<Option<InstalledAgent>, CliError> {
+fn parse_claude_plugin_list(payload: &[u8]) -> Result<Option<InstalledIntegration>, CliError> {
     let list: Vec<ClaudePluginEntry> = serde_json::from_slice(payload).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1026,8 +1028,8 @@ fn parse_claude_plugin_list(payload: &[u8]) -> Result<Option<InstalledAgent>, Cl
     Ok(list
         .into_iter()
         .find(|entry| entry.id == CLAUDE_PLUGIN_ID)
-        .map(|entry| InstalledAgent {
-            name: AgentName::Claude,
+        .map(|entry| InstalledIntegration {
+            harness: HarnessName::Claude,
             scope: entry.scope,
             enabled: entry.enabled,
         }))
@@ -1052,10 +1054,13 @@ fn refresh_codex_plugin(repository: &str) -> Result<(), CliError> {
     }
 }
 
-fn refresh_claude_plugin(agent: &InstalledAgent, repository: &str) -> Result<(), CliError> {
+fn refresh_claude_plugin(
+    integration: &InstalledIntegration,
+    repository: &str,
+) -> Result<(), CliError> {
     run_checked("claude", ["plugin", "marketplace", "add", repository])?;
     run_checked("claude", ["plugin", "marketplace", "update", "caushell"])?;
-    let scope = agent.scope.as_deref().unwrap_or("user");
+    let scope = integration.scope.as_deref().unwrap_or("user");
     run_checked(
         "claude",
         ["plugin", "update", CLAUDE_PLUGIN_ID, "--scope", scope],
@@ -1063,14 +1068,17 @@ fn refresh_claude_plugin(agent: &InstalledAgent, repository: &str) -> Result<(),
     Ok(())
 }
 
-fn run_post_update_doctor(install_dir: &Path, agents: &[InstalledAgent]) -> Result<(), CliError> {
+fn run_post_update_doctor(
+    install_dir: &Path,
+    integrations: &[InstalledIntegration],
+) -> Result<(), CliError> {
     let runtime = install_dir.join("caushell");
     let updated_path = path_with_install_dir(install_dir);
     let mut failures = Vec::new();
-    for agent in agents {
-        let target = match agent.name {
-            AgentName::Codex => "codex",
-            AgentName::Claude => "claude",
+    for integration in integrations {
+        let target = match integration.harness {
+            HarnessName::Codex => "codex",
+            HarnessName::Claude => "claude",
         };
         let mut command = Command::new(&runtime);
         command.args(["doctor", target]);
@@ -1079,22 +1087,22 @@ fn run_post_update_doctor(install_dir: &Path, agents: &[InstalledAgent]) -> Resu
         }
         match command.output() {
             Ok(output) if output.status.success() => {
-                println!("[ok] {} doctor passed", agent.name.label());
+                println!("[ok] {} doctor passed", integration.harness.label());
             }
             Ok(output) => {
                 eprintln!(
                     "[warn] {} doctor failed: {}",
-                    agent.name.label(),
+                    integration.harness.label(),
                     format_command_failure("doctor", &output)
                 );
-                failures.push(agent.name.label());
+                failures.push(integration.harness.label());
             }
             Err(error) => {
                 eprintln!(
                     "[warn] could not run {} doctor: {error}",
-                    agent.name.label()
+                    integration.harness.label()
                 );
-                failures.push(agent.name.label());
+                failures.push(integration.harness.label());
             }
         }
     }
@@ -1193,7 +1201,7 @@ fn format_command_failure(program: &str, output: &std::process::Output) -> Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentName, UpdateOptions, acquire_update_lock, parse_checksum_file,
+        HarnessName, UpdateOptions, acquire_update_lock, parse_checksum_file,
         parse_claude_plugin_list, parse_codex_plugin_list, parse_update_options, same_build,
     };
 
@@ -1289,13 +1297,13 @@ mod tests {
     }
 
     #[test]
-    fn installed_agent_plugin_shapes_are_detected() {
+    fn installed_harness_plugin_shapes_are_detected() {
         let codex = parse_codex_plugin_list(
             br#"{"installed":[{"pluginId":"caushell-codex@caushell","installed":true,"enabled":false}]}"#,
         )
         .expect("Codex plugin JSON should parse")
         .expect("Codex plugin should be found");
-        assert_eq!(codex.name, AgentName::Codex);
+        assert_eq!(codex.harness, HarnessName::Codex);
         assert!(!codex.enabled);
 
         let claude = parse_claude_plugin_list(
@@ -1303,7 +1311,7 @@ mod tests {
         )
         .expect("Claude plugin JSON should parse")
         .expect("Claude plugin should be found");
-        assert_eq!(claude.name, AgentName::Claude);
+        assert_eq!(claude.harness, HarnessName::Claude);
         assert_eq!(claude.scope.as_deref(), Some("project"));
     }
 }

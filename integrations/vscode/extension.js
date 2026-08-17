@@ -1315,7 +1315,7 @@ async function setFailureAction(client) {
     [
       {
         label: "Allow",
-        description: "Do not interrupt the agent when Caushell cannot produce a decision.",
+        description: "Allow the Harness action when Caushell cannot produce a decision.",
         value: "allow"
       },
       {
@@ -1331,7 +1331,7 @@ async function setFailureAction(client) {
     ],
     {
       title: "Caushell Failure Action",
-      placeHolder: "Choose how Agent hooks behave when analysis is unavailable"
+      placeHolder: "Choose how Harness hooks behave when analysis is unavailable"
     }
   );
   if (!selected) {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "caushell",
-  "description": "Caushell integrations for pre-execution semantic analysis of AI coding agent shell commands.",
+  "description": "Caushell integrations for pre-execution semantic analysis of Harness shell actions.",
   "owner": {
     "name": "Caushell"
   },
