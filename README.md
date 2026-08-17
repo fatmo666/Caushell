@@ -145,20 +145,25 @@ The smoke test runs one harmless Claude Code Bash action and verifies that Caush
 
 ### DeepSeek Harness
 
-The first DeepSeek Harness integration targets the ordinary non-persistent
-`bash` tool. Install the released integration bundle into the DSH profile:
+Install the integration into each DSH profile you use:
 
 ```bash
-dsh plugin --profile <profile> add https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+# Web
+dsh plugin --profile web add \
+  https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+
+# TUI
+dsh plugin --profile tui add \
+  https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+
+# Headless
+dsh plugin --profile headless add \
+  https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
 ```
 
-The package automatically adds its Cordis patch to the profile. A source
-checkout can be installed with the same command shape by replacing the URL with
-`/absolute/path/to/Caushell/integrations/deepseek-harness`. See [DeepSeek Harness
-integration](integrations/deepseek-harness/README.md) for configuration.
-Persistent Bash is intentionally unsupported: its cross-action shell state is
-not exposed at `tools/pre-execute`, so Caushell refuses that invocation shape
-instead of analyzing it as a fresh shell.
+Persistent Bash is not supported. See the [DeepSeek Harness
+integration](integrations/deepseek-harness/README.md) for source installation
+and configuration.
 
 ### Update an existing installation
 

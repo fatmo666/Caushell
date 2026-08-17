@@ -145,19 +145,24 @@ smoke test 会执行一条无害的 Claude Code Bash action，并确认 Caushell
 
 ### DeepSeek Harness
 
-首个 DeepSeek Harness 集成只支持普通的非持久化 `bash` 工具。把发布的
-集成 bundle 安装到 DSH profile：
+将集成分别安装到需要使用的 DSH profile：
 
 ```bash
-dsh plugin --profile <profile> add https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+# Web
+dsh plugin --profile web add \
+  https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+
+# TUI
+dsh plugin --profile tui add \
+  https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
+
+# Headless
+dsh plugin --profile headless add \
+  https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
 ```
 
-这个包会自动把自己的 Cordis patch 加入 profile。使用源码 checkout 时，
-把 URL 换成 `/absolute/path/to/Caushell/integrations/deepseek-harness` 即可。
-配置说明见 [DeepSeek Harness 集成](integrations/deepseek-harness/README.md)。
-Persistent Bash 会跨 action 保存 shell 状态，但这些状态没有在
-`tools/pre-execute` 暴露；Caushell 会拒绝这种调用形态，不会把它当成
-fresh shell 分析。
+当前不支持 Persistent Bash。源码安装和配置说明见 [DeepSeek Harness
+集成](integrations/deepseek-harness/README.md)。
 
 ### 更新已有安装
 
