@@ -5,7 +5,7 @@ while IFS= read -r line; do
   request_id="$(sed -n 's/.*\"request_id\":\"\([^\"]*\)\".*/\1/p' <<<"${line}")"
   command="$(sed -n 's/.*\"command\":\"\([^\"]*\)\".*/\1/p' <<<"${line}")"
   if [[ "${command}" == delay-command ]]; then
-    sleep 0.1
+    sleep 2
     printf '{"schema_version":1,"request_id":"%s","decision":"allow"}\n' "${request_id}"
   elif [[ "${command}" == crash-command ]]; then
     exit 42

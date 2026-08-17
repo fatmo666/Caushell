@@ -134,13 +134,15 @@ const next = async () => ({ kind: 'allow' })
 
 {
   const harness = createContext()
-  apply(harness.ctx, { adapterPath: adapter, storeRoot: join(root, 'store-timeout'), timeoutMs: 20 })
+  // Leave startup headroom while delay-command sleeps long enough to time out deterministically.
+  const timeoutMs = 500
+  apply(harness.ctx, { adapterPath: adapter, storeRoot: join(root, 'store-timeout'), timeoutMs })
   const pre = harness.pre()
   assert.ok(pre)
 
   const timeout = await pre(baseExec('delay-command'), next)
   assert.equal(timeout.kind, 'ask')
-  assert.match(timeout.reason, /timed out after 20ms/)
+  assert.match(timeout.reason, new RegExp(`timed out after ${timeoutMs}ms`))
 
   // The timed-out sequential adapter generation is terminated. The next
   // action starts a new generation rather than queuing behind stale work.
