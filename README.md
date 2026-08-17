@@ -79,7 +79,7 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Stable releases are published from `v*` tags. The installer downloads the latest stable GitHub release by default. To pin a reproducible build, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.8`.
+Stable releases are published from `v*` tags. The installer downloads the latest stable GitHub release by default. To pin a reproducible build, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.9`.
 
 Prebuilt releases support Linux x86_64 as a static binary, macOS x86_64, and Apple Silicon. Windows and Linux ARM64 do not have prebuilt packages yet.
 
@@ -177,7 +177,7 @@ Useful variants:
 ```bash
 caushell update --check          # check the release manifest without changing files
 caushell update --runtime-only   # update runtime binaries only
-caushell update --version v0.0.8     # pin a stable release tag
+caushell update --version v0.0.9     # pin a stable release tag
 caushell build-info              # show version, commit, release, and target
 ```
 

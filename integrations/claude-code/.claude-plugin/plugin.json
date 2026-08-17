@@ -1,6 +1,6 @@
 {
   "name": "caushell-claude",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Session-aware shell guardrails for Claude Code backed by the Caushell runtime.",
   "author": {
     "name": "Caushell"
