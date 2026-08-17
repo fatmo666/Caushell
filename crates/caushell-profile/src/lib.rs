@@ -34,9 +34,10 @@ pub use materialize::{
     MaterializedRecursivePayloadCandidate, MaterializedShellField, SessionBindings, SessionValue,
     ShellAllPositionalsKind, ShellParameterExpansionOperator, ShellParameterName,
     ShellParameterReference, ValueMaterialization, exact_scalar_shell_parameter_reference_value,
-    exact_scalar_shell_parameter_value, exact_shell_parameter_reference,
+    exact_scalar_shell_parameter_value, exact_shell_parameter_reference, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_projected_invocation,
-    materialize_recursive_payload_candidate, parse_shell_parameter_reference_after_dollar,
+    materialize_recursive_payload_candidate, materialize_shell_assignment_value,
+    parse_shell_parameter_reference_after_dollar,
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use projection::{

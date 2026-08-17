@@ -7,7 +7,8 @@ use crate::{
     BindError, BoundArgumentMaterialization, BoundInvocation, BoundValue, CommandProfile,
     InvocationRuntimeContext, InvocationSelection, MaterializedProjectedInvocation,
     ProfileRegistry, ProjectedInvocation, SessionBindings, ValueMaterialization, bind_invocation,
-    materialize_projected_invocation, project_invocation, select_invocation,
+    materialize_command_name, materialize_projected_invocation, project_invocation,
+    select_invocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,8 +133,11 @@ pub fn resolve_invocation_with_bindings<'a>(
 ) -> ResolveInvocationResult<'a> {
     let recovered_command = recover_ifs_field_split_command(command, bindings);
     let command = recovered_command.as_ref().unwrap_or(command);
+    let materialized_command = materialize_command_word(command, bindings);
+    let command_word_was_materialized = materialized_command.is_some();
+    let command = materialized_command.as_ref().unwrap_or(command);
 
-    if let Some(gap_kind) = dynamic_command_target_gap(command) {
+    if !command_word_was_materialized && let Some(gap_kind) = dynamic_command_target_gap(command) {
         return ResolveInvocationResult::MissingCommandName { gap_kind };
     }
 
@@ -180,6 +184,18 @@ pub fn resolve_invocation_with_bindings<'a>(
             ),
         },
     }
+}
+
+fn materialize_command_word(
+    command: &CommandFact,
+    bindings: &SessionBindings,
+) -> Option<CommandFact> {
+    let command_name = command.command_name.as_deref()?;
+    let materialized = materialize_command_name(command_name, bindings)?;
+
+    let mut command = command.clone();
+    command.command_name = Some(materialized);
+    Some(command)
 }
 
 fn attach_bound_argument_materialization(

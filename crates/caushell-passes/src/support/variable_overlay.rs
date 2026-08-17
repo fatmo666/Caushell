@@ -4,7 +4,7 @@ use caushell_parse::{
 use caushell_profile::{
     MaterializedShellField, SessionBindings, SessionValue, ValueMaterialization,
     exact_scalar_shell_parameter_reference_value, exact_shell_parameter_reference,
-    materialize_exact_shell_parameter_reference_fields,
+    materialize_exact_shell_parameter_reference_fields, materialize_shell_assignment_value,
 };
 use caushell_types::{
     CheckRequest, CommandSequenceNo, SessionSummary, SessionVariableBinding, SessionVariableValue,
@@ -24,9 +24,22 @@ pub(crate) fn visible_variable_bindings_before_span(
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
 ) -> SessionBindings {
-    let bindings =
-        SessionBindings::from_summary_and_shell_state(summary, &request.shell_state_before);
+    let bindings = request_variable_bindings(summary, request);
     apply_visible_variable_bindings_before_span(bindings, parsed, span_start_byte, observed_at)
+}
+
+pub(crate) fn request_variable_bindings(
+    summary: &SessionSummary,
+    request: &CheckRequest,
+) -> SessionBindings {
+    let mut bindings =
+        SessionBindings::from_summary_and_shell_state(summary, &request.shell_state_before);
+    if bindings.get("HOME").is_none()
+        && let Some(home) = request.home.as_deref()
+    {
+        bindings.insert_inherited_exact_scalar("HOME", home);
+    }
+    bindings
 }
 
 pub(crate) fn apply_visible_variable_bindings_before_span(
@@ -75,11 +88,12 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                 }
 
                 for assignment in &declaration.assignments {
+                    let value = classify_assignment_value(&assignment.value, &bindings);
                     apply_binding(
                         &mut bindings,
                         SessionVariableBinding::new(
                             assignment.name.clone(),
-                            classify_assignment_value(&assignment.value),
+                            value,
                             true,
                             observed_at,
                         ),
@@ -92,11 +106,12 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                         continue;
                     }
 
+                    let value = classify_assignment_value(&assignment.value, &bindings);
                     apply_binding(
                         &mut bindings,
                         SessionVariableBinding::new(
                             assignment.name.clone(),
-                            classify_assignment_value(&assignment.value),
+                            value,
                             false,
                             observed_at,
                         ),
@@ -294,7 +309,10 @@ fn exact_set_positional_token_value(
     }
 }
 
-fn classify_assignment_value(value: &caushell_parse::AssignmentValueFact) -> SessionVariableValue {
+fn classify_assignment_value(
+    value: &caushell_parse::AssignmentValueFact,
+    bindings: &SessionBindings,
+) -> SessionVariableValue {
     match value.node_kind.as_str() {
         "empty" => SessionVariableValue::exact_scalar(String::new()),
         "raw_string" | "ansi_c_string" | "number" => {
@@ -306,7 +324,14 @@ fn classify_assignment_value(value: &caushell_parse::AssignmentValueFact) -> Ses
         "word" if is_plain_unquoted_literal(&value.text) => {
             SessionVariableValue::exact_scalar(value.text.clone())
         }
-        _ => SessionVariableValue::opaque_dynamic(value.text.clone()),
+        _ => materialize_shell_assignment_value(
+            &value.text,
+            value.quoted,
+            &value.node_kind,
+            bindings,
+        )
+        .map(SessionVariableValue::exact_scalar)
+        .unwrap_or_else(|| SessionVariableValue::opaque_dynamic(value.text.clone())),
     }
 }
 

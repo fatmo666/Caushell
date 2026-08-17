@@ -1594,8 +1594,8 @@ mod tests {
         assert_eq!(
             response.reasons,
             vec![
-                "command at parsed index 0 is missing command_name and cannot be resolved semantically"
-                    .to_string()
+                "could not resolve shell action \"$USER_CMD --help\": executable token \"$USER_CMD\" depends on variable \"USER_CMD\", whose exact value is not known before execution"
+                    .to_string(),
             ]
         );
     }

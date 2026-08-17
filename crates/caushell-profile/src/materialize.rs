@@ -438,6 +438,133 @@ pub fn exact_scalar_shell_parameter_value(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellWordQuote {
+    None,
+    Single,
+    Double,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellWordMode {
+    CommandName,
+    Assignment,
+}
+
+/// Resolves a shell command word only when it is known to produce one exact field.
+///
+/// This intentionally excludes command substitution, globbing, and unquoted values that would
+/// undergo field splitting. Those forms require runtime information and must remain unresolved.
+pub fn materialize_command_name(text: &str, bindings: &SessionBindings) -> Option<String> {
+    materialize_shell_word(
+        text,
+        bindings,
+        ShellWordMode::CommandName,
+        ShellWordQuote::None,
+    )
+}
+
+pub fn materialize_shell_assignment_value(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    bindings: &SessionBindings,
+) -> Option<String> {
+    if matches!(node_kind, "raw_string" | "ansi_c_string" | "number") {
+        return Some(text.to_string());
+    }
+
+    materialize_shell_word(
+        text,
+        bindings,
+        ShellWordMode::Assignment,
+        if quoted {
+            ShellWordQuote::Double
+        } else {
+            ShellWordQuote::None
+        },
+    )
+}
+
+fn materialize_shell_word(
+    text: &str,
+    bindings: &SessionBindings,
+    mode: ShellWordMode,
+    initial_quote: ShellWordQuote,
+) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut quote = initial_quote;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            ShellWordQuote::Single => {
+                if ch == '\'' {
+                    quote = ShellWordQuote::None;
+                } else {
+                    out.push(ch);
+                }
+            }
+            ShellWordQuote::Double => match ch {
+                '"' if initial_quote == ShellWordQuote::None => quote = ShellWordQuote::None,
+                '\\' => match chars.peek().copied() {
+                    Some(next @ ('$' | '`' | '"' | '\\')) => {
+                        chars.next();
+                        out.push(next);
+                    }
+                    Some('\n') => {
+                        chars.next();
+                    }
+                    Some(_) => out.push('\\'),
+                    None => return None,
+                },
+                '$' => {
+                    let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
+                    let value = exact_scalar_shell_parameter_value(bindings, &reference)?;
+                    if value.contains('\0') {
+                        return None;
+                    }
+                    out.push_str(&value);
+                }
+                '`' => return None,
+                _ => out.push(ch),
+            },
+            ShellWordQuote::None => match ch {
+                '\'' => quote = ShellWordQuote::Single,
+                '"' => quote = ShellWordQuote::Double,
+                '\\' => out.push(chars.next()?),
+                '$' => {
+                    let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
+                    let value = exact_scalar_shell_parameter_value(bindings, &reference)?;
+                    if value.contains('\0')
+                        || (mode == ShellWordMode::CommandName
+                            && !value.is_empty()
+                            && !is_safe_unquoted_scalar(&value))
+                    {
+                        return None;
+                    }
+                    out.push_str(&value);
+                }
+                '`' => return None,
+                '*' | '?' | '[' if mode == ShellWordMode::CommandName => return None,
+                '~' if out.is_empty() && matches!(chars.peek(), None | Some('/')) => {
+                    let home = exact_scalar_shell_parameter_reference_value("$HOME", bindings)?;
+                    if home.contains('\0') {
+                        return None;
+                    }
+                    out.push_str(&home);
+                }
+                '~' if out.is_empty() => return None,
+                _ => out.push(ch),
+            },
+        }
+    }
+
+    let quote_complete = quote == initial_quote;
+    let value_allowed = mode == ShellWordMode::Assignment || !out.is_empty();
+    (quote_complete && value_allowed).then_some(out)
+}
+
 fn exact_scalar_all_positional_parameters(
     bindings: &SessionBindings,
     kind: ShellAllPositionalsKind,

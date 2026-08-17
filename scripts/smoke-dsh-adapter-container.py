@@ -114,9 +114,31 @@ def main() -> None:
             fail(f"invalid adapter response {line!r}: {error}")
 
     check(run("allow", "printf hello"), "allow", "allow")
+    check(
+        run("home-path", '"$HOME/.local/bin/dsh" plugin --help'),
+        "home-path",
+        "allow",
+    )
     # This is intentionally analyzed inside the isolated container. It is
     # never executed by Bash.
     check(run("deny", "rm -rf /etc/*"), "deny", "deny")
+    check(
+        run("dynamic-deny", 'CMD=rm; "$CMD" -rf /etc'),
+        "dynamic-deny",
+        "deny",
+    )
+    unresolved = run("unresolved", '"$USER_CMD" --help')
+    check(unresolved, "unresolved", "ask")
+    reason = str(unresolved.get("reason", ""))
+    for expected_fragment in [
+        'shell action "\\\"$USER_CMD\\\" --help"',
+        'executable token "\\\"$USER_CMD\\\""',
+        'variable "USER_CMD"',
+    ]:
+        if expected_fragment not in reason:
+            fail(
+                f"unresolved command reason is missing {expected_fragment!r}: {reason!r}"
+            )
 
     process.stdin.close()
     return_code = process.wait(timeout=10)

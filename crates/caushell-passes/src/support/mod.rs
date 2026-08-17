@@ -65,5 +65,5 @@ pub(crate) use top_level_units::{
 pub(crate) use variable_overlay::{
     PositionalParameterMutation, apply_positional_parameter_mutation,
     apply_visible_variable_bindings_before_span, positional_parameter_mutation_for_command,
-    visible_variable_bindings_before_span,
+    request_variable_bindings, visible_variable_bindings_before_span,
 };

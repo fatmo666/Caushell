@@ -23,7 +23,7 @@ impl RequestAnalysisPass for ResolvePolicyPass {
                     ResolveInvocationArtifactResult::MissingCommandName { gap_kind } => Some((
                         RuleId::MissingCommandName,
                         policy.action_for_resolve_gap(*gap_kind),
-                        missing_command_name_reason(record),
+                        missing_command_name_reason(ctx, record),
                     )),
                     ResolveInvocationArtifactResult::NoProfile {
                         normalized_command_name,
@@ -134,11 +134,123 @@ fn action_for_no_profile_gap(
         })
 }
 
-fn missing_command_name_reason(record: &caushell_runner::ExecutionUnitResolveRecord) -> String {
+fn missing_command_name_reason(
+    ctx: &RunnerContext,
+    record: &caushell_runner::ExecutionUnitResolveRecord,
+) -> String {
+    let command = record
+        .parsed_scope
+        .commands
+        .get(record.command_ref.command_index);
+    let action = command
+        .map(|command| command.text.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| {
+            (!record.rendered_command_text.trim().is_empty())
+                .then_some(record.rendered_command_text.as_str())
+        })
+        .unwrap_or(ctx.request().command.as_str());
+    let executable = command
+        .and_then(|command| {
+            command
+                .command_name
+                .as_deref()
+                .or_else(|| command.tokens.first().map(|token| token.text.as_str()))
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            let parsed = caushell_parse::parse_command(action, record.shell_kind).ok()?;
+            let command = parsed.commands.first()?;
+            command
+                .command_name
+                .as_deref()
+                .or_else(|| command.tokens.first().map(|token| token.text.as_str()))
+                .map(str::to_string)
+        });
+
+    let executable = executable.as_deref().unwrap_or("<unknown>");
+    let cause = unresolved_executable_cause(executable);
     format!(
-        "command at parsed index {} is missing command_name and cannot be resolved semantically",
-        record.command_ref.command_index
+        "could not resolve shell action {:?}: executable token {:?} {}",
+        concise(action),
+        concise(executable),
+        cause
     )
+}
+
+fn unresolved_executable_cause(executable: &str) -> String {
+    if executable.contains("$(") || executable.contains('`') {
+        return "is produced by command substitution, whose output is not known before execution"
+            .to_string();
+    }
+    if executable.contains("<(") || executable.contains(">(") {
+        return "contains process substitution and does not identify one exact executable before execution"
+            .to_string();
+    }
+    if let Some(variable) = first_shell_variable_name(executable) {
+        return format!(
+            "depends on variable {:?}, whose exact value is not known before execution",
+            variable
+        );
+    }
+    if executable == "<unknown>" {
+        return "could not be identified before execution".to_string();
+    }
+
+    "does not identify one exact executable before execution".to_string()
+}
+
+fn first_shell_variable_name(text: &str) -> Option<String> {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '$' {
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            let name = chars
+                .by_ref()
+                .take_while(|ch| *ch != '}')
+                .collect::<String>();
+            if is_shell_variable_name(&name) {
+                return Some(name);
+            }
+            continue;
+        }
+
+        let mut name = String::new();
+        while chars
+            .peek()
+            .copied()
+            .is_some_and(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        {
+            name.push(chars.next().expect("peeked character must exist"));
+        }
+        if is_shell_variable_name(&name) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn is_shell_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn concise(text: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let normalized = text.trim();
+    if normalized.chars().count() <= MAX_CHARS {
+        return normalized.to_string();
+    }
+
+    let mut value = normalized.chars().take(MAX_CHARS).collect::<String>();
+    value.push_str("...");
+    value
 }
 
 fn unresolved_execution_payload_evidence(
@@ -405,7 +517,29 @@ mod tests {
         );
         assert_eq!(
             ctx.decision_proposals[0].reason,
-            "command at parsed index 2 is missing command_name and cannot be resolved semantically"
+            "could not resolve shell action \"$USER_CMD\": executable token \"$USER_CMD\" depends on variable \"USER_CMD\", whose exact value is not known before execution"
+        );
+    }
+
+    #[test]
+    fn resolve_policy_pass_explains_unresolved_command_substitution() {
+        let ctx = run_pass(
+            PolicyConfig::default(),
+            vec![execution_unit_record(
+                "command:sess-1:1:0",
+                0,
+                ResolveInvocationArtifactResult::MissingCommandName {
+                    gap_kind: ResolveGapKind::DynamicCommandTarget,
+                },
+            )],
+            Vec::new(),
+            Vec::new(),
+            "$(printf tool) --help",
+        );
+
+        assert_eq!(
+            ctx.decision_proposals[0].reason,
+            "could not resolve shell action \"$(printf tool) --help\": executable token \"$(printf tool)\" is produced by command substitution, whose output is not known before execution"
         );
     }
 

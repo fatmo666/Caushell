@@ -37,8 +37,8 @@ use crate::support::{
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
     pipeline_has_upstream, redirection_parent_command_index, redirection_targets_stdin_payload,
-    source_node_id_for_command, static_stdin_payloads_for_scoped_command,
-    static_stdout_payloads_for_process_substitution_text,
+    request_variable_bindings, source_node_id_for_command,
+    static_stdin_payloads_for_scoped_command, static_stdout_payloads_for_process_substitution_text,
     substitute_static_shell_positional_parameters, top_level_unit_for_command,
     top_level_unit_for_span, visible_function_bindings_before_span,
     visible_variable_bindings_before_span,
@@ -210,7 +210,7 @@ fn request_bindings(
     summary: &caushell_types::SessionSummary,
     request: &CheckRequest,
 ) -> SessionBindings {
-    SessionBindings::from_summary_and_shell_state(summary, &request.shell_state_before)
+    request_variable_bindings(summary, request)
 }
 
 fn collect_config_defined_task_recursive_payload_candidates(
@@ -5203,6 +5203,122 @@ mod tests {
                 assert_eq!(first_argument_text(&resolved.bound, "payload"), "echo ok");
             }
             other => panic!("expected resolved invocation result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_materializes_home_in_quoted_command_path() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(
+            &summary,
+            ShellKind::Bash,
+            r#""$HOME/.npm/_npx/cache/node_modules/.bin/dsh" plugin --help"#,
+        );
+
+        match &top_level_record(&ctx, 0).result {
+            ResolveInvocationArtifactResult::NoProfile {
+                normalized_command_name,
+                ..
+            } => assert_eq!(
+                normalized_command_name,
+                "/home/alice/.npm/_npx/cache/node_modules/.bin/dsh"
+            ),
+            other => panic!("expected materialized command path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_materializes_braced_home_and_tilde_command_paths() {
+        let summary = SessionSummary::new();
+
+        for (command, expected) in [
+            (r#""${HOME}/bin/tool" --help"#, "/home/alice/bin/tool"),
+            ("~/.local/bin/tool --help", "/home/alice/.local/bin/tool"),
+        ] {
+            let ctx = run_pass(&summary, ShellKind::Bash, command);
+            match &top_level_record(&ctx, 0).result {
+                ResolveInvocationArtifactResult::NoProfile {
+                    normalized_command_name,
+                    ..
+                } => assert_eq!(normalized_command_name, expected),
+                other => panic!("expected materialized command path, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_materializes_same_action_variable_command_paths() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(
+            &summary,
+            ShellKind::Bash,
+            r#"BIN="$HOME/bin"; "$BIN/tool" --help"#,
+        );
+
+        match &top_level_record(&ctx, 0).result {
+            ResolveInvocationArtifactResult::NoProfile {
+                normalized_command_name,
+                ..
+            } => assert_eq!(normalized_command_name, "/home/alice/bin/tool"),
+            other => panic!("expected materialized command path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_materializes_same_action_dynamic_rm_command() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(&summary, ShellKind::Bash, r#"CMD=rm; "$CMD" -rf ./victim"#);
+
+        match &top_level_record(&ctx, 0).result {
+            ResolveInvocationArtifactResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "rm");
+                assert!(
+                    resolved
+                        .bound
+                        .effects
+                        .iter()
+                        .any(|effect| { effect.kind == caushell_profile::EffectKind::DeletePath })
+                );
+            }
+            other => panic!("expected resolved rm invocation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_materializes_empty_variable_in_command_concatenation() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(&summary, ShellKind::Bash, "EMPTY=; printf$EMPTY hello");
+
+        match &top_level_record(&ctx, 0).result {
+            ResolveInvocationArtifactResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "printf");
+            }
+            other => panic!("expected resolved printf invocation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_keeps_unknown_command_variable_unresolved() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(&summary, ShellKind::Bash, r#""$USER_CMD" --help"#);
+
+        assert!(matches!(
+            top_level_record(&ctx, 0).result,
+            ResolveInvocationArtifactResult::MissingCommandName { .. }
+        ));
+    }
+
+    #[test]
+    fn resolve_invocation_pass_treats_single_quoted_dollar_as_literal_command_text() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(&summary, ShellKind::Bash, r#"'$HOME/bin/tool' --help"#);
+
+        match &top_level_record(&ctx, 0).result {
+            ResolveInvocationArtifactResult::NoProfile {
+                normalized_command_name,
+                ..
+            } => assert_eq!(normalized_command_name, "$HOME/bin/tool"),
+            other => panic!("expected literal command name, got {other:?}"),
         }
     }
 
