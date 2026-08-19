@@ -14,61 +14,61 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#what-caushell-catches">What Caushell catches</a> ·
-  <a href="#why-not-sandbox">Why not sandbox?</a> ·
+  <a href="#working-with-sandboxes">Working with sandboxes</a> ·
   <a href="#how-it-works">How it works</a>
 </p>
 
-Caushell (causal + shell) runs between Harnesses such as Codex and Claude Code and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
+Caushell (causal + shell) runs between a Harness and the local shell. Before a shell action reaches the local shell, Caushell performs pre-execution semantic analysis.
 
-`Shell action → AST → session execution graph → safety analysis passes → decision`
+`Shell action → AST → command modeling → session execution graph → safety analysis → decision`
 
-It preserves command structure, cross-command state flow, paths, variables, working directory state, Git state, and related context, then emits reviewable structured evidence for debugging, policy extension, and audit.
+It preserves command structure, data flow and state changes across commands, and context such as paths, variables, working directory, and Git state. It also emits reviewable structured evidence for debugging, policy extension, and audit.
 
 <p align="center">
   <img src="assets/caushell-overall-flow.png" alt="Caushell overall flow: Harness shell action to AST, semantic execution graph, analysis passes, decision assembly, and final decision" />
 </p>
 
-### What Caushell catches
+## What Caushell catches
 
 Caushell decides based on the actual impact a shell action can have on the local environment. It covers common risk classes such as:
 
-- Blocking deletion or overwrite of catastrophic targets such as system directories, disks, and partitions
+- Blocking catastrophic deletion or overwrite of critical targets such as system directories, disks, and partitions
 - Requiring approval when remote content flows into a shell or interpreter
-- Recognizing dangerous shell actions induced by untrusted context
-- Requiring approval for destructive Git operations that affect the worktree, index, branches, or stash
-- Capturing the real impact of variable expansion, globbing, redirection, pipelines, and working directory changes
+- Recognizing dangerous shell actions generated under the influence of untrusted context
+- Requiring approval for operations that can destroy the Git worktree, index, branches, or stash
+- Recognizing the actual impact of variable expansion, globbing, redirection, pipelines, and working directory changes
 
 The examples below show the default policy. Each check produces exactly one final decision.
 
 | Risk | Harness shell action | Default decision |
 | --- | --- | --- |
-| Normal inspection command | `ls src` | Allow |
-| Remote content execution | `curl https://example.com/install.sh \| bash` | NeedApproval |
-| Git local state discard | `git reset --hard HEAD~1` | NeedApproval |
-| Git untracked file deletion | `git clean -fdx` | NeedApproval |
-| Relative path delete after `cd /` | `cd / && rm -rf etc` | Deny |
-| System path deletion | `rm -rf /etc/*` | Deny |
-| Disk / partition overwrite | `sudo dd if=image.iso of=/dev/sda` | Deny |
+| Normal inspection command | `ls src` | `Allow` |
+| Remote content execution | `curl https://example.com/install.sh \| bash` | `NeedApproval` |
+| Git local state discard | `git reset --hard HEAD~1` | `NeedApproval` |
+| Git untracked file deletion | `git clean -fdx` | `NeedApproval` |
+| Relative path delete after `cd /` | `cd / && rm -rf etc` | `Deny` |
+| System path deletion | `rm -rf /etc/*` | `Deny` |
+| Disk / partition overwrite | `sudo dd if=image.iso of=/dev/sda` | `Deny` |
 
-## Why not sandbox?
+## Working with sandboxes
 
-Caushell and sandboxes are complementary: they cover risks at different stages.
+Caushell handles pre-execution analysis, while a sandbox enforces runtime restrictions. They can be used together.
 
-### 1. Allowed development capabilities can still destroy state
+### 1. Protecting workspace and Git state
 
-Most development workflows require the sandbox to allow workspace reads and writes as well as Git commands, because these are necessary development permissions. Under that configuration, risky commands such as `git reset --hard` can still discard local work, and Caushell can require confirmation or block them before execution.
+Development workflows usually require a sandbox to allow workspace reads and writes as well as Git commands. Under this configuration, `git reset --hard` can still discard local work; Caushell can require confirmation or block the action before execution.
 
-### 2. Finer-grained file-use detection
+### 2. Identifying file use and data flow
 
-A sandbox can control file read and write permissions, but the same file can carry different risks in different contexts: a normal project file, remote downloaded content, input from outside the workspace, startup configuration, sensitive configuration, or content about to be sent to the network should not be treated as the same case.
+A sandbox can control file read and write permissions, but the risk of a file also depends on how it is used. The same read or write creates different risk relationships when it involves a normal project file, remotely downloaded content, input from outside the workspace, startup configuration, or sensitive configuration. Whether the content flows to the network also affects the decision.
 
-A common scenario is that tests or local runs need to read `.env`, while dependency installation or API calls also require network access. Each permission is reasonable on its own; together, they can form an exfiltration chain that reads `.env` and sends it to a remote endpoint. Caushell can use taint analysis to identify these shell-visible data flows.
+Tests or local runs may need to read `.env`, while dependency installation or API calls also require network access. Reading sensitive configuration and sending its contents to a remote endpoint forms an exfiltration chain; Caushell can use taint analysis to identify these shell-visible data flows.
 
-### 3. Some risks should stop before the process starts
+### 3. Making decisions before the process starts
 
-Runtime sandboxing blocks a process after it has started and touched a boundary. Caushell blocks before the shell action actually executes.
+Runtime sandboxing blocks a process after it starts and reaches a restricted boundary. Caushell returns a decision before the shell action executes.
 
-This has two benefits: first, in a combined command, if a high-risk command appears later, the preceding commands still run as usual, causing unnecessary waiting; second, before the final side effect happens, a process may already produce unexpected intermediate behavior, and Caushell's pre-execution blocking can reduce that risk.
+For a combined command, pre-execution analysis can identify a later high-risk operation before the entire action starts, avoiding the execution of earlier commands. It can also require confirmation or block the action before the process produces side effects.
 
 ## Quick start
 
@@ -79,11 +79,11 @@ curl -fsSL https://github.com/fatmo666/Caushell/releases/latest/download/install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Stable releases are published from `v*` tags. The installer downloads the latest stable GitHub release by default. To pin a reproducible build, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.9`.
+Stable releases are published from `v*` tags. The installer downloads the latest stable GitHub release by default. To pin a version, set `CAUSHELL_VERSION`, for example `CAUSHELL_VERSION=v0.0.9`.
 
 Prebuilt releases support Linux x86_64 as a static binary, macOS x86_64, and Apple Silicon. Windows and Linux ARM64 do not have prebuilt packages yet.
 
-Then install the corresponding Harness integration. Codex and Claude Code call these integrations plugins.
+Then install the corresponding Harness integration. In Codex and Claude Code, these integrations are installed as plugins.
 
 ### Codex
 
@@ -194,33 +194,13 @@ For the configuration file location, configuration management commands, and user
 
 ## How it works
 
-### 1. Shell action → AST
-
-Caushell first pins the raw shell action received from the Harness into a stable syntax structure. The AST preserves command boundaries, arguments, pipelines, redirections, command substitutions, variable references, conditional connectors, and multiline script blocks so later analysis runs on the shell's real structure.
-
-<p align="center">
-  <img src="assets/caushell-ast.png" alt="Caushell AST parsing: shell action to structured syntax tree" />
-</p>
-
-### 2. AST → session execution graph
-
-After parsing, Caushell writes commands, derived invocations, path facts, data flow, working directory changes, file reads and writes, network input, and Git state changes into a session-level execution graph. Analysis passes read a configured window: they can focus on the current shell action or use state and evidence already established in the same session.
-
-<p align="center">
-  <img src="assets/caushell-graph.png" alt="Caushell semantic execution graph: command state and data flow" />
-</p>
-
-### 3. Execution graph → safety analysis passes → decision
-
-Safety analysis passes run on the execution graph. Each pass focuses on a verifiable risk signal, such as remote content execution, destructive file operations, path expansion, disk or partition mutation, and local state loss. The final decision assembly aggregates pass outputs and context evidence, then returns Allow, NeedApproval, or Deny.
-
-<p align="center">
-  <img src="assets/caushell-passes.png" alt="Caushell safety analysis passes and decision assembly" />
-</p>
+- [How Caushell works](docs/how-it-works.md): the complete flow from a Harness shell action to the final decision
+- [Semantic model](docs/semantic-model.md): Shell AST, command modeling, variable resolution, and the session execution graph
+- [Security model](docs/security-model.md): risk analysis, Decision Assembly, and the Harness execution boundary
 
 ## Measured behavior
 
-Caushell runs before every shell command, so latency itself is part of the product capability. Current measurements cover the Codex and Claude Code integrations.
+Caushell runs before every shell action, so latency is an important metric. Current measurements cover the Codex and Claude Code integrations.
 
 | Item | Result |
 | --- | --- |
