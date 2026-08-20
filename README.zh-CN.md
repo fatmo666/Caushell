@@ -111,13 +111,11 @@ caushell doctor codex --smoke
 
 日常使用时，如果 Codex 提示确认 hook，请在 `/hooks` 中检查并信任 Caushell hook。
 
-Codex hooks 目前不能直接发起确认。当 Caushell 把一条 shell action 判定为 `NeedApproval` 时，Codex 集成默认会阻断这次执行并打印原因。如果希望 Codex 继续执行 `NeedApproval` action，同时保留 Caushell 决策记录，可以把 Codex 模式切到 `observe`：
+Codex 集成对三态决策的映射以及 `block`、`observe` 模式的行为见 [Harness 集成与执行行为](docs/integrations.zh-CN.md)。如果需要切换到 `observe` 模式：
 
 ```bash
 caushell config set codex.need_approval_mode observe
 ```
-
-`Deny` 决策始终会被阻断。
 
 ### Claude Code
 
@@ -161,7 +159,7 @@ dsh plugin --profile headless add \
   https://github.com/fatmo666/Caushell/releases/latest/download/caushell-dsh-bash.tgz
 ```
 
-当前不支持 Persistent Bash。源码安装和配置说明见 [DeepSeek Harness
+DSH 的决策映射、审批通道和 shell 状态见 [Harness 集成与执行行为](docs/integrations.zh-CN.md)。源码安装和配置说明见 [DeepSeek Harness
 集成](integrations/deepseek-harness/README.md)。
 
 ### 更新已有安装
@@ -197,14 +195,14 @@ caushell build-info              # 查看版本、提交、发布版本和目标
 - [语义模型](docs/semantic-model.zh-CN.md)：Shell AST、命令建模、变量解析与会话执行图
 - [安全模型](docs/security-model.zh-CN.md)：风险分析、Decision Assembly 与 Harness 执行边界
 
+## 集成与实验
+
+- [Harness 集成与执行行为](docs/integrations.zh-CN.md)：三种 Harness 的接入点、决策映射与 shell 状态
+- [实验设计与结果](docs/evaluation.zh-CN.md)：决策对比、延迟测试与 DSH 原生运行时审计
+
 ## 实测表现
 
-Caushell 在每条 shell action 执行前运行，因此延迟也是重要指标。当前测试覆盖 Codex 和 Claude Code 两种集成。
-
-| 项目 | 结果 |
-| --- | --- |
-| 延迟 | 1,000 条命令连续测试：Codex p95 3.10ms，Claude Code p95 3.05ms |
-| 风险覆盖 | 网络内容进入 shell 执行、灾难性路径删除、磁盘/分区改写、xargs 展开、工作目录变化、路径/通配符绕过、破坏性 Git 操作 |
+在 2026-08-09 使用 Caushell `0.0.4` 完成的 38 条命令测试中，22 条 risk 均未被直接放行，16 条 control 均获得 `Allow`。完整决策对比、延迟测试和 DSH 原生审计见[实验设计与结果](docs/evaluation.zh-CN.md)。
 
 ## License
 
