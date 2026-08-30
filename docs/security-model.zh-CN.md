@@ -58,10 +58,10 @@ Caushell 在进程启动前返回最终决策，Harness 集成再按照 hook 或
 | 决策 | 集成行为 |
 | --- | --- |
 | `Allow` | 继续执行 shell action |
-| `NeedApproval` | 通过 Harness 的确认能力或集成配置处理 |
+| `NeedApproval` | 映射为请求确认、阻断或仅记录 |
 | `Deny` | 在进程启动前阻断 |
 
-确认界面和交互流程由 Harness 集成提供。具体映射取决于对应 Harness 的 hook 或工具协议。
+`NeedApproval` 在 Claude Code 中返回 `ask`；在 Codex 中默认阻断，`observe` 模式仅记录并继续；在 DeepSeek Harness 中返回 `ask`，没有审批通道时拒绝执行。完整映射见[Harness 集成与执行行为](integrations.zh-CN.md)。
 
 ## 分析不可用时的回退
 
@@ -77,10 +77,12 @@ Caushell 在进程启动前返回最终决策，Harness 集成再按照 hook 或
 
 ## 与沙箱的关系
 
-Caushell 和沙箱可以同时部署。Caushell 在进程启动前分析 shell action 的语义关系；沙箱在进程运行时限制系统调用、文件访问、网络和其他资源。
+Caushell 在进程启动前分析 shell action 的语义关系；沙箱在进程运行时限制系统调用、文件访问、网络和其他资源。
 
 ## 进一步阅读
 
 - [工作原理总览](how-it-works.zh-CN.md)
 - [语义模型：AST、命令建模与会话执行图](semantic-model.zh-CN.md)
+- [执行前分析与运行时沙箱](pre-execution-and-sandbox.zh-CN.md)
+- [Harness 集成与执行行为](integrations.zh-CN.md)
 - [配置说明](configuration.zh-CN.md)
