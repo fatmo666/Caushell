@@ -46,6 +46,8 @@ __pycache__/
 *.db-wal
 
 # Local research/lab assets not included in the public v0.0.1 snapshot
+/research/
+/local-archive/
 /docs/*
 !/docs/*.md
 /docker/
