@@ -14,10 +14,10 @@ use caushell_passes::{
     ExtractProcessSubstitutionProvenancePass, ExtractRedirectProvenancePass,
     ExtractValueProvenancePass, ExtractVariableBindingIntentPass, ExtractVariableBindingsPass,
     GitDestructiveOperationGuardPass, ImportedPackageExecutionGuardPass,
-    InteractiveEscapeGuardPass, OutsideWorkspaceScriptSourcePass,
-    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProjectTopLevelCommandsPass,
-    ResolveInvocationPass, ResolvePolicyPass, SensitiveDataExfiltrationGuardPass,
-    SequenceIntegrityPass, TaintedExecutionGuardPass,
+    InteractiveEscapeGuardPass, OutsideWorkspaceMutationGuardPass,
+    OutsideWorkspaceScriptSourcePass, OutsideWorkspaceStartupConfigPass, ParseCommandPass,
+    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
+    SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
 use caushell_profile::{BuiltInRegistryError, ProfileRegistry};
 use caushell_query::{
@@ -472,6 +472,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_request_analysis_pass(ResolvePolicyPass);
     runner.register_request_analysis_pass(CwdWorkspaceBoundaryPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
+    runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
@@ -1002,6 +1003,221 @@ mod tests {
         }
     }
 
+    #[test]
+    fn outside_workspace_mutation_guard_covers_direct_file_effects_and_redirections() {
+        let cases = [
+            ("rm /etc/wgetrc", "delete target /etc/wgetrc"),
+            (
+                "cp /tmp/project/input /usr/output",
+                "write target /usr/output",
+            ),
+            (
+                "mv /etc/source /tmp/project/dest",
+                "move source target /etc/source",
+            ),
+            (
+                "chmod 600 /etc/wgetrc",
+                "metadata mutation target /etc/wgetrc",
+            ),
+            ("printf hello > /etc/wgetrc", "write target /etc/wgetrc"),
+            ("printf hello >> /etc/wgetrc", "write target /etc/wgetrc"),
+            ("cat <> /etc/wgetrc", "write target /etc/wgetrc"),
+            ("> /etc/wgetrc", "write target /etc/wgetrc"),
+        ];
+
+        for (index, (command, expected_reason)) in cases.iter().enumerate() {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request(
+                &format!("outside-mutation-{index}"),
+                1,
+                command,
+            ));
+            assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+            assert!(
+                response.decision_trace.findings.iter().any(|finding| {
+                    finding.rule_id == RuleId::OutsideWorkspaceMutation
+                        && finding.message.contains(expected_reason)
+                }),
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+        }
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_keeps_all_distinct_targets() {
+        let mut core = ShellQueryCore::new();
+        let response = core.check(sample_request(
+            "outside-mutation-multiple",
+            1,
+            "rm /etc/first /var/second",
+        ));
+        let reasons: Vec<&str> = response
+            .decision_trace
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation)
+            .map(|finding| finding.message.as_str())
+            .collect();
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert_eq!(reasons.len(), 2, "{reasons:?}");
+        assert!(reasons.iter().any(|reason| reason.contains("/etc/first")));
+        assert!(reasons.iter().any(|reason| reason.contains("/var/second")));
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_does_not_approve_reads_or_inside_writes() {
+        for (index, command) in [
+            "cat /etc/wgetrc",
+            "rm /tmp/project/old",
+            "cp /tmp/project/input /tmp/project/output",
+            "chmod 600 /tmp/project/file",
+            "printf hello > /tmp/project/file",
+            "printf hello > /dev/null",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request(
+                &format!("inside-mutation-{index}"),
+                1,
+                command,
+            ));
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .all(|finding| finding.rule_id != RuleId::OutsideWorkspaceMutation),
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+        }
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_ignores_dev_null_write_sinks() {
+        for (index, command) in [
+            "false | tee /dev/null",
+            "printf hello | tee /dev/null",
+            "printf hello > /dev/null",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let response = ShellQueryCore::new().check(sample_request(
+                &format!("dev-null-write-{index}"),
+                1,
+                command,
+            ));
+            assert_eq!(response.decision, Decision::Allow, "{command}");
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .all(|finding| finding.rule_id != RuleId::OutsideWorkspaceMutation),
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+        }
+
+        let response = ShellQueryCore::new().check(sample_request(
+            "tee-real-outside-write",
+            1,
+            "printf hello | tee /etc/caushell-test",
+        ));
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(response.decision_trace.findings.iter().any(|finding| {
+            finding.rule_id == RuleId::OutsideWorkspaceMutation
+                && finding.message.contains("/etc/caushell-test")
+        }));
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_handles_effective_cwd_and_uncertainty() {
+        let cases = [
+            "cd /etc && rm wgetrc",
+            "rm /tmp/project/../outside",
+            "rm /tmp/project-other/file",
+            "rm \"$UNKNOWN\"",
+        ];
+        for (index, command) in cases.iter().enumerate() {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request(
+                &format!("outside-mutation-resolution-{index}"),
+                1,
+                command,
+            ));
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation),
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+            assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+        }
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_preserves_catastrophic_deny() {
+        let mut core = ShellQueryCore::new();
+        let response = core.check(sample_request("outside-mutation-deny", 1, "rm -rf /"));
+        assert_eq!(response.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_requires_root_for_file_mutations() {
+        let mut request = sample_request("missing-workspace-root", 1, "rm /tmp/project/file");
+        request.workspace_root = None;
+        let response = ShellQueryCore::new().check(request);
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(response.decision_trace.findings.iter().any(|finding| {
+            finding.rule_id == RuleId::OutsideWorkspaceMutation
+                && finding.message.contains("workspace root is unavailable")
+        }));
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_distinguishes_mktemp_targets() {
+        let cases = [
+            ("mktemp /tmp/project/tmp.XXXXXX", false),
+            ("mktemp", true),
+            ("mktemp -p /tmp/project", false),
+            ("mktemp -p /var/tmp", true),
+            ("mktemp -p /tmp/project file.XXXXXX", false),
+            ("mktemp -p /var/tmp file.XXXXXX", true),
+            ("mktemp -u", false),
+            ("mktemp -u /var/tmp/file.XXXXXX", false),
+            ("mktemp -u -p /var/tmp file.XXXXXX", false),
+            ("MAPPER=$(mktemp -up /dev/mapper)", false),
+        ];
+        for (index, (command, expected_outside)) in cases.iter().enumerate() {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request(
+                &format!("mktemp-mutation-{index}"),
+                1,
+                command,
+            ));
+            let outside = response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation);
+            assert_eq!(
+                outside, *expected_outside,
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+            if command.contains("mktemp -u") {
+                assert_eq!(response.decision, Decision::Allow, "{command}");
+            }
+        }
+    }
     #[test]
     fn check_runtime_assigns_monotonic_sequence_numbers_per_session() {
         let mut core = ShellQueryCore::new();
@@ -3510,7 +3726,7 @@ policy:
 
         let first = core.check_runtime(sample_runtime_request(
             "sess-runtime-produced",
-            r#"export TMP_SCRIPT="$(mktemp /tmp/tmp.XXXXXX.sh)""#,
+            r#"export TMP_SCRIPT="$(mktemp /tmp/project/tmp.XXXXXX.sh)""#,
         ));
         assert_eq!(first.decision, Decision::Allow);
 
@@ -3574,7 +3790,7 @@ policy:
 
         let first = core.check_runtime(sample_runtime_request(
             "sess-runtime-produced-plain",
-            r#"TMP_SCRIPT="$(mktemp /tmp/tmp.XXXXXX.sh)""#,
+            r#"TMP_SCRIPT="$(mktemp /tmp/project/tmp.XXXXXX.sh)""#,
         ));
         assert_eq!(first.decision, Decision::Allow);
 
@@ -3639,7 +3855,7 @@ policy:
 
         let first = core.check_runtime(sample_runtime_request(
             "sess-runtime-produced-graph",
-            r#"TMP_SCRIPT="$(mktemp /tmp/tmp.XXXXXX.sh)""#,
+            r#"TMP_SCRIPT="$(mktemp /tmp/project/tmp.XXXXXX.sh)""#,
         ));
         assert_eq!(first.decision, Decision::Allow);
 
@@ -3696,7 +3912,7 @@ policy:
 
         let first = core.check_runtime(sample_runtime_request(
             "sess-runtime-produced-append",
-            r#"TMP_SCRIPT+="$(mktemp /tmp/tmp.XXXXXX.sh)""#,
+            r#"TMP_SCRIPT+="$(mktemp /tmp/project/tmp.XXXXXX.sh)""#,
         ));
         assert_eq!(first.decision, Decision::Allow);
 

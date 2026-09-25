@@ -12960,7 +12960,10 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "mktemp");
-                assert_eq!(resolved.selection.form.id.as_str(), "create_temporary_path");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "create_temporary_path_in_target_directory"
+                );
                 assert_eq!(
                     argument_texts(&resolved.bound, "template_paths"),
                     vec!["template.XXXX"]

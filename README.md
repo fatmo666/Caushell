@@ -43,6 +43,7 @@ The examples below show the default policy. Each check produces exactly one fina
 | Risk | Harness shell action | Default decision |
 | --- | --- | --- |
 | Normal inspection command | `ls src` | `Allow` |
+| File mutation outside the workspace | `rm /tmp/other/file` | `NeedApproval` |
 | Remote content execution | `curl https://example.com/install.sh \| bash` | `NeedApproval` |
 | Git local state discard | `git reset --hard HEAD~1` | `NeedApproval` |
 | Git untracked file deletion | `git clean -fdx` | `NeedApproval` |

@@ -20,15 +20,80 @@ platform:
 forms:
   - id: create_temporary_path
     selector:
-      kind: not
-      item:
-        kind: has_modifier
-        modifier: dry_run
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: dry_run
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+        - kind: has_positional_at
+          index: 0
     parameters:
       - name: template_paths
         semantic:
           kind: path
           role: write
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: template_paths
+
+  - id: create_default_temporary_path
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: dry_run
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 0
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: path_list
+      stderr_mode: opaque
+    effects:
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: /tmp/tmp.*
+          convention: mktemp.default_template
+          purpose: generic_operand
+
+  - id: create_temporary_path_in_target_directory
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: dry_run
+        - kind: has_modifier
+          modifier: target_directory
+    parameters:
+      - name: template_paths
+        semantic:
+          kind: path
+          role: target
           purpose: generic_operand
         binding:
           kind: remaining_positionals
@@ -41,13 +106,7 @@ forms:
       - kind: write_path
         target:
           kind: slot
-          name: template_paths
-      - kind: write_path
-        target:
-          kind: tool_convention_path
-          path: /tmp/tmp.*
-          convention: mktemp.default_template
-          purpose: generic_operand
+          name: target_directory
 
   - id: dry_run_name
     selector:
@@ -92,17 +151,12 @@ modifiers:
       - name: target_directory
         semantic:
           kind: path
-          role: write
+          role: target
           purpose: generic_operand
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: optional_one
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: target_directory
 
 subcommands: null
 extensions:

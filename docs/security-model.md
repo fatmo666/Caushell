@@ -41,6 +41,8 @@ An analysis can produce three types of related results:
 
 Each Finding has an `enforcement_class` field with a value of either `Normal` or `HardDenyFloor`. `HardDenyFloor` locks the final decision at `Deny`.
 
+The `outside_workspace_mutation` rule requires approval for file writes, deletions, moves, and metadata changes whose resolved targets are outside the workspace. It also covers shell output redirections. When a mutation target or its effective working directory cannot be resolved, the rule requires approval rather than assuming the target is inside. Read-only paths do not trigger this rule. There is currently no allowlist or session-created-file exemption.
+
 ## Decision Assembly
 
 After all analysis modules complete, Decision Assembly produces one final decision according to the following priority:

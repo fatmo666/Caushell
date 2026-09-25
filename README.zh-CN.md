@@ -43,6 +43,7 @@ Caushell 根据 shell action 对本地环境的实际影响作出判断。默认
 | 风险类型 | Harness shell action | 默认决策 |
 | --- | --- | --- |
 | 正常查看命令 | `ls src` | `Allow` |
+| 工作区外文件删改 | `rm /tmp/other/file` | `NeedApproval` |
 | 远程内容执行 | `curl https://example.com/install.sh \| bash` | `NeedApproval` |
 | Git 本地状态丢弃 | `git reset --hard HEAD~1` | `NeedApproval` |
 | Git 未跟踪文件删除 | `git clean -fdx` | `NeedApproval` |

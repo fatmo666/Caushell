@@ -3106,7 +3106,8 @@ policy:
         let mut runtime = create_runtime(None, Some(&store_root))
             .expect("expected persisted runtime to initialize");
 
-        let first_request = serialize_check_request(r#"TMP_SCRIPT="$(mktemp /tmp/tmp.XXXXXX.sh)""#);
+        let first_request =
+            serialize_check_request(r#"TMP_SCRIPT="$(mktemp /tmp/project/tmp.XXXXXX.sh)""#);
         let mut second_request = sample_request(r#"bash "$TMP_SCRIPT""#);
         second_request.shell_state_before = second_request
             .shell_state_before
@@ -3720,9 +3721,16 @@ policy:
     #[test]
     fn query_stdio_preserves_unresolved_derived_path_facts_from_persisted_session() {
         let store_root = temp_store_root("query-derived-unresolved-paths");
+        let policy_path = temp_policy_path("query-derived-unresolved-paths");
+        fs::write(
+            &policy_path,
+            "version: 1\npolicy:\n  rules:\n    outside_workspace_mutation: allow\n",
+        )
+        .expect("expected query test policy to be written");
 
         {
-            let mut runtime = create_runtime(None, Some(&store_root))
+            // This test exercises persistence of unresolved facts, not enforcement.
+            let mut runtime = create_runtime(Some(&policy_path), Some(&store_root))
                 .expect("expected persisted runtime to initialize");
             let request = serialize_check_request("tar -x -f archive.tar");
 
@@ -3769,6 +3777,7 @@ policy:
         }
 
         fs::remove_dir_all(store_root).expect("expected temp store root to be removed");
+        fs::remove_file(policy_path).expect("expected temp policy to be removed");
     }
 
     #[test]

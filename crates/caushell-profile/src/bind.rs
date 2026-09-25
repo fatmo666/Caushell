@@ -253,14 +253,16 @@ pub fn bind_invocation(
     let mut parameter_results = vec![None; targets.len()];
     let mut residuals = selection.residuals.clone();
 
-    consume_flag_only_modifiers_for_binding(&selection.modifiers, &mut state);
-
     // Bind flag-attached values first so they are not later mistaken as plain positionals.
     for (index, target) in targets.iter().enumerate() {
         if is_flag_binding(&target.parameter.binding) {
             parameter_results[index] = bind_parameter_target(target, &mut state, &mut residuals);
         }
     }
+
+    // A flag-only option can share a token with an operand-taking final option
+    // (`-up /tmp`). Let that option claim the token and its operand first.
+    consume_flag_only_modifiers_for_binding(&selection.modifiers, &mut state);
 
     for (index, target) in targets.iter().enumerate() {
         if !is_flag_binding(&target.parameter.binding) {
@@ -2733,6 +2735,18 @@ fn flag_token_binding_match<'a>(
         return None;
     }
 
+    // POSIX permits flag-only options before an option whose operand follows
+    // in the next argument (for example `mktemp -up /tmp`). The final flag
+    // must be the operand-taking one; `-pu` is not this pattern.
+    if clustered_short_flag_with_next_arg(
+        token_text,
+        flag_name,
+        all_declared_short_flags,
+        all_short_flags_allowing_attached_operands,
+    ) {
+        return Some(FlagTokenMatch::Exact);
+    }
+
     inline_short_flag_operand(
         token_text,
         flag_name,
@@ -2750,6 +2764,33 @@ fn flag_token_binding_match<'a>(
         )
         .map(FlagTokenMatch::ShortAttachedOperand)
     })
+}
+
+fn clustered_short_flag_with_next_arg(
+    token_text: &str,
+    flag_name: &str,
+    declared_short_flags: &BTreeSet<String>,
+    short_flags_allowing_attached_operands: &BTreeSet<String>,
+) -> bool {
+    let Some(flag_char) = short_flag_char(flag_name) else {
+        return false;
+    };
+    let Some(cluster_text) = token_text.strip_prefix('-') else {
+        return false;
+    };
+    if token_text.starts_with("--") || cluster_text.chars().count() <= 1 {
+        return false;
+    }
+    let Some(prefix) = cluster_text.strip_suffix(flag_char) else {
+        return false;
+    };
+    short_flags_allowing_attached_operands.contains(flag_name)
+        && prefix_is_known_flag_only_short_cluster(
+            prefix,
+            declared_short_flags,
+            short_flags_allowing_attached_operands,
+            false,
+        )
 }
 
 fn inline_long_flag_operand<'a>(token_text: &'a str, flag_name: &str) -> Option<&'a str> {
@@ -2986,13 +3027,18 @@ fn short_flag_cluster_matches_flag_only_modifier(
         return false;
     }
 
-    for candidate in cluster_text.chars() {
+    let last_index = cluster_text.len() - 1;
+    for (index, candidate) in cluster_text.char_indices() {
         let candidate_flag = format!("-{candidate}");
         if !declared_short_flags.contains(&candidate_flag) {
             return false;
         }
         if short_flags_allowing_attached_operands.contains(&candidate_flag) {
-            return false;
+            // Only a final operand-taking flag can be part of this cluster;
+            // its value is supplied by the next argument.
+            if index != last_index {
+                return false;
+            }
         }
     }
 
@@ -3540,6 +3586,30 @@ mod tests {
             argument_texts(find_bound_parameter(&invocation, "endpoints")),
             vec!["https://example.test/payload.sh"]
         );
+    }
+
+    #[test]
+    fn bind_invocation_recognizes_flag_only_prefix_before_next_arg_flag() {
+        let profile = built_in_profile("mktemp");
+        let artifact = parse_command("mktemp -up /dev/mapper", ShellKind::Bash)
+            .expect("expected parse to succeed");
+        let command = artifact.commands.first().expect("expected one command");
+        let projection = project_invocation(command, InvocationRuntimeContext::new());
+        let selection = select_invocation(&profile, &projection).expect("expected dry-run form");
+        let modifier_ids: Vec<&str> = selection
+            .modifiers
+            .iter()
+            .map(|modifier| modifier.id.as_str())
+            .collect();
+        assert_eq!(selection.form.id.as_str(), "dry_run_name");
+        assert_eq!(modifier_ids, vec!["dry_run", "target_directory"]);
+
+        let bound = bind_invocation(&profile, &projection, &selection);
+        assert_eq!(
+            first_argument_text(find_bound_parameter(&bound, "target_directory")),
+            "/dev/mapper"
+        );
+        assert!(bound.effects.is_empty());
     }
 
     #[test]

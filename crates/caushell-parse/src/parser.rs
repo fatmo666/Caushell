@@ -32,6 +32,17 @@ pub fn parse_command(
     let artifact = artifact_from_tree(raw_command, shell_kind, root, source);
 
     if artifact.status == ParseStatus::Partial {
+        if let Some(repair) = read_write_redirection_repair(raw_command, &artifact.diagnostics) {
+            let repaired_tree = parser
+                .parse(repair.as_str(), None)
+                .ok_or(ParseError::ParseCancelled)?;
+            let repaired_artifact =
+                artifact_from_tree(raw_command, shell_kind, repaired_tree.root_node(), source);
+            if repaired_artifact.status == ParseStatus::Complete {
+                return Ok(repaired_artifact);
+            }
+        }
+
         if let Some(repair) = static_brace_command_repair(raw_command) {
             let repaired_tree = parser
                 .parse(repair.source.as_str(), None)
@@ -57,6 +68,27 @@ pub fn parse_command(
     }
 
     Ok(artifact)
+}
+
+fn read_write_redirection_repair(
+    raw_command: &str,
+    diagnostics: &[ParseDiagnostic],
+) -> Option<String> {
+    let mut bytes = raw_command.as_bytes().to_vec();
+    let mut repaired = false;
+    for diagnostic in diagnostics {
+        let index = diagnostic.span.start_byte;
+        if diagnostic.kind == DiagnosticKind::ErrorNode
+            && diagnostic.text == ">"
+            && index > 0
+            && bytes.get(index - 1) == Some(&b'<')
+            && bytes.get(index) == Some(&b'>')
+        {
+            bytes[index] = b' ';
+            repaired = true;
+        }
+    }
+    repaired.then(|| String::from_utf8(bytes).expect("ASCII replacement preserves UTF-8"))
 }
 
 fn artifact_from_tree(
@@ -1163,7 +1195,14 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
                 span: span_for(child),
             });
         } else if !child.is_named() {
-            operator = Some(source_text(child, source));
+            let text = source_text(child, source);
+            operator = Some(
+                if text == "<" && source.get(child.end_byte()) == Some(&b'>') {
+                    "<>".to_string()
+                } else {
+                    text
+                },
+            );
         }
     }
 
@@ -2077,6 +2116,22 @@ mod tests {
         assert_eq!(
             redirection.parent_command_span,
             Some(artifact.commands[0].span.clone())
+        );
+    }
+
+    #[test]
+    fn parse_command_extracts_read_write_file_redirection() {
+        let artifact = parse_command("cat <> /etc/wgetrc", ShellKind::Bash)
+            .expect("expected parse to succeed");
+        assert_eq!(artifact.status, ParseStatus::Complete, "{artifact:?}");
+        assert_eq!(artifact.redirections.len(), 1, "{artifact:?}");
+        assert_eq!(artifact.redirections[0].operator.as_deref(), Some("<>"));
+        assert_eq!(
+            artifact.redirections[0]
+                .target
+                .as_ref()
+                .map(|target| target.text.as_str()),
+            Some("/etc/wgetrc")
         );
     }
 

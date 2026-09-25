@@ -41,6 +41,8 @@ curl -fsSL https://example.com/install.sh \
 
 每个 Finding 都带有 `enforcement_class` 字段，取值为 `Normal` 或 `HardDenyFloor`。`HardDenyFloor` 会把最终决策固定为 `Deny`。
 
+`outside_workspace_mutation` 规则对工作区外的文件写入、删除、移动和元数据修改要求审批，也覆盖 shell 输出重定向。无法解析修改目标或其生效工作目录时，同样要求审批，而不假定目标位于工作区内。只读路径不触发该规则。目前没有特殊名单或“本会话创建文件”的豁免。
+
 ## Decision Assembly
 
 所有分析模块完成后，Decision Assembly 按下面的优先级生成唯一的最终决策：

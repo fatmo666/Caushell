@@ -51,6 +51,135 @@ pub(crate) struct MutationScopeFactCandidate {
     pub operation: ResolvedMutationScopeOperation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MutationTargetCandidate {
+    pub operation: EffectKind,
+    pub slot_name: String,
+    pub resolution: PathResolution,
+}
+
+pub(crate) fn collect_effect_mutation_targets(
+    record: ExecutionResolveRecordRef<'_>,
+    cwd: &str,
+    home: Option<&str>,
+) -> Vec<MutationTargetCandidate> {
+    let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
+        return Vec::new();
+    };
+
+    let mut targets = Vec::new();
+    for (effect_index, effect) in resolved.bound.effects.iter().enumerate() {
+        if !matches!(
+            effect.kind,
+            EffectKind::WritePath
+                | EffectKind::DeletePath
+                | EffectKind::MovePath
+                | EffectKind::ChangeMode
+                | EffectKind::ChangeOwner
+                | EffectKind::ChangeGroup
+                | EffectKind::MetadataMutation
+        ) {
+            continue;
+        }
+
+        // A generic metadata mutation may describe shell state (for example `set`),
+        // not a filesystem target. No path-bearing target means this guard has
+        // nothing to classify.
+        if effect.kind == EffectKind::MetadataMutation
+            && matches!(effect.target, EffectTarget::None)
+        {
+            continue;
+        }
+
+        let start = targets.len();
+        match &effect.target {
+            EffectTarget::Slot(slot) => {
+                if let Some(parameter) = bound_parameter(&resolved.bound, slot.as_str()) {
+                    for value in &parameter.values {
+                        if let BoundValue::Argument {
+                            text,
+                            quoted,
+                            node_kind,
+                            span,
+                            ..
+                        } = value
+                        {
+                            targets.push(MutationTargetCandidate {
+                                operation: effect.kind,
+                                slot_name: slot.as_str().to_string(),
+                                resolution: resolve_path_resolution(
+                                    text,
+                                    *quoted,
+                                    node_kind,
+                                    cwd,
+                                    home,
+                                    arg_materialization_for_span(resolved, span),
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            EffectTarget::ToolConventionPath(target) => {
+                targets.push(MutationTargetCandidate {
+                    operation: effect.kind,
+                    slot_name: tool_convention_slot_name(effect_index, &target.convention),
+                    resolution: resolve_tool_convention_path(target, cwd),
+                });
+            }
+            EffectTarget::DerivedPath(target) => {
+                let mut derived = Vec::new();
+                collect_derived_target_path_facts(
+                    record,
+                    &resolved.normalized_command_name,
+                    &resolved.bound,
+                    Some(resolved),
+                    effect_index,
+                    target,
+                    PathRole::Target,
+                    cwd,
+                    home,
+                    &mut derived,
+                );
+                targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
+                    operation: effect.kind,
+                    slot_name: path.slot_name,
+                    resolution: path.resolution,
+                }));
+            }
+            EffectTarget::MutationScope(scope) => {
+                let (slot_name, scope) =
+                    resolve_mutation_scope_target(scope, &resolved.bound, cwd, home);
+                let resolution = match scope {
+                    MutationScopeResolution::RepositoryWorktree { root, scope, .. } => {
+                        match scope {
+                            RepositoryWorktreeScopeResolution::WholeWorktree => root,
+                            RepositoryWorktreeScopeResolution::Subtree { path } => path,
+                        }
+                    }
+                };
+                targets.push(MutationTargetCandidate {
+                    operation: effect.kind,
+                    slot_name,
+                    resolution,
+                });
+            }
+            EffectTarget::ImplicitInput(_) | EffectTarget::Dispatch(_) | EffectTarget::None => {}
+        }
+
+        if targets.len() == start {
+            targets.push(MutationTargetCandidate {
+                operation: effect.kind,
+                slot_name: format!("effect_{effect_index}"),
+                resolution: PathResolution::UnsupportedDynamicText {
+                    text: format!("unresolved mutation target for {:?}", effect.kind),
+                },
+            });
+        }
+    }
+    targets
+}
+
 pub(crate) fn collect_path_facts(
     records: &[ExecutionResolveRecordRef<'_>],
     cwd: &str,
