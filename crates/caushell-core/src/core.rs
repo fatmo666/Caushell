@@ -1218,6 +1218,31 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn multiple_process_substitutions_commit_without_node_id_conflicts() {
+        let commands = [
+            r#"comm -23 <(sort /testbed/dir3/subdir1/subsubdir1/textfile3.txt | uniq) <(sort /testbed/dir2/subdir1/textfile2.txt | uniq) | head -1 | grep -q '.' && echo "False" || echo "True""#,
+            r#"comm -23 <(find /testbed/dir1 | sed 's#/testbed/dir1/##' | sort) <(find /testbed/dir2 | sed 's#/testbed/dir2/##' | sort) | sed 's#^#/testbed/dir1/#'"#,
+            "diff <(ls /workspace/dir1) <(ls /workspace/dir2)",
+            "paste <(nl /testbed/dir3/subdir1/subsubdir1/textfile3.txt) <(nl /testbed/dir1/subdir1/textfile4.txt)",
+            r#"QUEUE_PIDS=$(comm -23 <(echo "$NEW_PIDS" | sort -u) <(echo "$LIMITED_PIDS" | sort -u) | grep -v '^$')"#,
+            "comm -23 <(sort -u A.txt) <(sort B.txt)",
+            "bash -c 'diff <(ls dir1) <(ls dir2)'",
+        ];
+
+        for (index, command) in commands.iter().enumerate() {
+            let outcome = ShellQueryCore::new()
+                .try_check_with_outcome(sample_request(
+                    &format!("multi-procsub-{index}"),
+                    1,
+                    command,
+                ))
+                .unwrap_or_else(|error| panic!("{command}: {error}"));
+            assert_eq!(outcome.response.decision, Decision::Allow, "{command}");
+        }
+    }
+
     #[test]
     fn check_runtime_assigns_monotonic_sequence_numbers_per_session() {
         let mut core = ShellQueryCore::new();

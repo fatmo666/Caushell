@@ -1961,7 +1961,9 @@ fn expanded_process_substitution_body_children(
                         source_node_id: expanded_virtual_node_id_with_suffix(
                             "procsub-body",
                             &entry.source_node_id,
-                            &format!("arg:{token_index}:0:{substitution_index}:{command_index}"),
+                            &format!(
+                                "arg-token:{token_index}:0:{substitution_index}:{command_index}"
+                            ),
                         ),
                         command_ref: ParsedCommandRef::new(
                             command_index,
@@ -2065,7 +2067,9 @@ fn expanded_process_substitution_body_children(
                         source_node_id: expanded_virtual_node_id_with_suffix(
                             "procsub-body",
                             &entry.source_node_id,
-                            &format!("arg:{parameter_index}:{substitution_index}:{command_index}"),
+                            &format!(
+                                "arg:{parameter_index}:{value_index}:{substitution_index}:{command_index}"
+                            ),
                         ),
                         command_ref: ParsedCommandRef::new(
                             command_index,
@@ -4967,6 +4971,7 @@ fn collect_child_frontier_entries(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
@@ -5443,6 +5448,26 @@ mod tests {
             }
             other => panic!("expected resolved invocation result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_invocation_pass_gives_sibling_process_substitutions_distinct_node_ids() {
+        let summary = SessionSummary::new();
+        let ctx = run_pass(&summary, ShellKind::Bash, "diff <(ls dir1) <(ls dir2)");
+        let records: Vec<_> = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .filter(|record| record.origin_kind == ExecutionUnitOriginKind::ProcessSubstitutionBody)
+            .collect();
+        assert_eq!(records.len(), 2);
+
+        let ids: BTreeSet<_> = records
+            .iter()
+            .map(|record| record.source_node_id.0.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("expanded-procsub-body:command:sess-1:2:0:arg:0:0:0:0"));
+        assert!(ids.contains("expanded-procsub-body:command:sess-1:2:0:arg:0:1:0:0"));
     }
 
     #[test]
@@ -7330,7 +7355,7 @@ mod tests {
                 relation_from_parent,
                 ..
             } if node_id.0
-                == "expanded-procsub-body:expanded-shell-payload:expanded-xargs:pipeline-segment:sess-1:2:1:0:0:arg:0:0:0"
+                == "expanded-procsub-body:expanded-shell-payload:expanded-xargs:pipeline-segment:sess-1:2:1:0:0:arg:0:0:0:0"
                 && *origin == DerivedInvocationOrigin::ProcessSubstitutionBody {
                     parent_node_id:
                         "expanded-shell-payload:expanded-xargs:pipeline-segment:sess-1:2:1:0:0"

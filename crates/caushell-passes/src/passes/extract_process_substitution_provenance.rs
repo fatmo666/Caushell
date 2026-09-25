@@ -543,7 +543,7 @@ mod tests {
             ctx.pending_mutations()
                 .contains(&PendingMutation::AddProvenanceArtifact {
                     source_node_id: NodeId::new(
-                        "expanded-procsub-body:command:sess-1:6:0:arg:0:0:0"
+                        "expanded-procsub-body:command:sess-1:6:0:arg:0:0:0:0"
                     ),
                     node_id: artifact_node_id.clone(),
                     artifact: ProvenanceArtifact::ProcessSubstitutionChannel {
