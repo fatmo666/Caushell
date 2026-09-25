@@ -27,6 +27,14 @@ impl<'a> ExecutionResolveRecordRef<'a> {
     pub(crate) fn bindings(&self) -> &'a caushell_profile::SessionBindings {
         &self.0.bindings
     }
+
+    pub(crate) fn inherited_scope(&self) -> &'a caushell_runner::ExecutionUnitInheritedScope {
+        &self.0.inherited_scope
+    }
+
+    pub(crate) fn origin_kind(&self) -> caushell_runner::ExecutionUnitOriginKind {
+        self.0.origin_kind
+    }
 }
 
 pub(crate) fn graph_backed_execution_resolve_records(

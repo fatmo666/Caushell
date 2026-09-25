@@ -132,6 +132,10 @@ pub struct BlockDeviceSearchScope {
 pub struct ExecutionUnitInheritedScope {
     pub catastrophic_search_roots: Vec<CatastrophicSearchRootScope>,
     pub block_device_search_scopes: Vec<BlockDeviceSearchScope>,
+    pub find_result_roots: Vec<String>,
+    pub find_result_may_escape_roots: bool,
+    pub find_execdir_cwd: bool,
+    pub dynamic_xargs_input: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +226,9 @@ pub struct ExecutionUnitResolveRecord {
 pub enum ExecutionUnitOriginLocator {
     #[default]
     None,
+    FindAction {
+        action_index: usize,
+    },
     CommandSubstitutionBody {
         token_index: usize,
         substitution_index: usize,

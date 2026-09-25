@@ -27,7 +27,7 @@ use caushell_types::{
 };
 use serde_json::Value as JsonValue;
 
-use crate::path::resolve_path_operand;
+use crate::path::{DYNAMIC_XARGS_ITEM, resolve_path_operand};
 use crate::support::{
     AliasExpansionHop, HostTargetOperand, apply_alias_command,
     apply_visible_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
@@ -1477,15 +1477,30 @@ fn expanded_dispatch_children(
     }
 
     let mut children = Vec::new();
-    let inherited_scope = inherited_scope_for_dispatch(
+    let mut inherited_scope = inherited_scope_for_dispatch(
         resolved,
         &entry.inherited_scope,
         request.shell_state_before.cwd(),
         request.home.as_deref(),
     );
+    if resolved.normalized_command_name.as_str() == "find"
+        && entry
+            .parsed_scope
+            .commands
+            .get(entry.command_ref.command_index)
+            .is_some_and(find_follows_symlinks)
+    {
+        inherited_scope.find_result_may_escape_roots = true;
+    }
 
     for child in collect_dispatch_command_projection(&resolved.bound).resolved {
         let child_bindings = dispatch_child_bindings(&entry.bindings, &child.environment);
+        let mut child_scope = inherited_scope.clone();
+        if resolved.normalized_command_name.as_str() == "find"
+            && child.command.slot.as_str() == "execdir_command"
+        {
+            child_scope.find_execdir_cwd = true;
+        }
         let command = materialized_dispatch_child_command_fact(resolved, &child);
         let Ok(parsed_scope) = caushell_parse::parse_command(&command.text, entry.shell_kind)
         else {
@@ -1525,11 +1540,118 @@ fn expanded_dispatch_children(
             origin_kind: ExecutionUnitOriginKind::Dispatch,
             origin_index: child.dispatch_index,
             origin_locator: ExecutionUnitOriginLocator::None,
-            inherited_scope: inherited_scope.clone(),
+            inherited_scope: child_scope,
         });
     }
 
+    if resolved.normalized_command_name.as_str() == "find" {
+        for (action_index, (action_text, execdir)) in
+            find_additional_exec_actions(entry, &resolved.bound)
+                .into_iter()
+                .enumerate()
+        {
+            let Ok(parsed_scope) = caushell_parse::parse_command(&action_text, entry.shell_kind)
+            else {
+                continue;
+            };
+            let Some(command) = parsed_scope.commands.first() else {
+                continue;
+            };
+            children.push(ExpandedFrontierEntry {
+                source_node_id: expanded_virtual_node_id(
+                    "find-action",
+                    &entry.source_node_id,
+                    action_index,
+                ),
+                command_ref: ParsedCommandRef::new(0, command.span.clone()),
+                parsed_scope: parsed_scope.clone(),
+                rendered_command_text: command.text.clone(),
+                result: resolve_invocation_artifact_with_bindings(
+                    registry,
+                    command,
+                    runtime_context_for_parsed_command(&parsed_scope, 0, command),
+                    &entry.bindings,
+                ),
+                shell_kind: entry.shell_kind,
+                root_command_index: entry.root_command_index,
+                depth: entry.depth.saturating_add(1),
+                parent_execution_node_id: entry.source_node_id.clone(),
+                bindings: entry.bindings.clone(),
+                static_payload_scope: entry.static_payload_scope.clone(),
+                history_anchor_node_id: entry.history_anchor_node_id.clone(),
+                origin_kind: ExecutionUnitOriginKind::Dispatch,
+                origin_index: action_index.saturating_add(1),
+                origin_locator: ExecutionUnitOriginLocator::FindAction {
+                    action_index: action_index.saturating_add(1),
+                },
+                inherited_scope: ExecutionUnitInheritedScope {
+                    find_execdir_cwd: execdir,
+                    ..inherited_scope.clone()
+                },
+            });
+        }
+    }
+
     children
+}
+
+fn find_additional_exec_actions(
+    entry: &ExpandedFrontierEntry,
+    bound: &caushell_profile::BoundInvocation,
+) -> Vec<(String, bool)> {
+    let Some(parent) = entry
+        .parsed_scope
+        .commands
+        .get(entry.command_ref.command_index)
+    else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+    let mut index = 0;
+    while index < parent.tokens.len() {
+        if !matches!(parent.tokens[index].text.as_str(), "-exec" | "-execdir") {
+            index += 1;
+            continue;
+        }
+        let execdir = parent.tokens[index].text == "-execdir";
+        index += 1;
+        let mut args = Vec::new();
+        while index < parent.tokens.len()
+            && !matches!(parent.tokens[index].text.as_str(), ";" | r"\;" | "+")
+        {
+            args.push(&parent.tokens[index]);
+            index += 1;
+        }
+        index += 1;
+        if args.is_empty() {
+            continue;
+        }
+        let shell_child = matches!(args[0].text.as_str(), "sh" | "bash");
+        let replacement = shell_child
+            .then(|| find_dispatch_placeholder_replacement(bound))
+            .flatten();
+        actions.push((
+            args.into_iter()
+                .map(|arg| {
+                    let text = if arg.text == "{}" {
+                        replacement.as_deref().unwrap_or(&arg.text)
+                    } else {
+                        &arg.text
+                    };
+                    if arg.node_kind == "string" && (text.contains('$') || text.contains('`')) {
+                        format!("\"{}\"", text.replace('"', "\\\""))
+                    } else if arg.quoted || text.contains(char::is_whitespace) {
+                        shell_quote_arg(text)
+                    } else {
+                        text.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            execdir,
+        ));
+    }
+    actions.into_iter().skip(1).collect()
 }
 
 fn expanded_shell_payload_children(
@@ -2266,7 +2388,25 @@ fn expanded_static_xargs_children(
         &resolved.bound,
         max_nested_parse_depth,
     );
-    let config = xargs_static_expansion_config(&resolved.bound);
+    let mut config = xargs_static_expansion_config(&resolved.bound);
+    if config.requires_confirmation {
+        return Vec::new();
+    }
+    let dynamic_input = payloads.is_empty();
+    let payloads = if dynamic_input {
+        // The absence of a statically recoverable payload is not evidence of
+        // empty stdin. Preserve a possible child invocation for policy checks.
+        config.run_if_empty = true;
+        vec![DYNAMIC_XARGS_ITEM.to_string()]
+    } else {
+        payloads
+    };
+    let mut inherited_scope = entry.inherited_scope.clone();
+    if dynamic_input {
+        // A search root is not a safe bound for xargs' arguments: whitespace
+        // splitting or a producer's own formatting may create different paths.
+        inherited_scope.dynamic_xargs_input = true;
+    }
 
     static_xargs_child_commands(wrapped_command, &wrapped_args, &payloads, &config)
         .into_iter()
@@ -2304,10 +2444,17 @@ fn expanded_static_xargs_children(
                 origin_kind: ExecutionUnitOriginKind::StaticXargs,
                 origin_index: command_index,
                 origin_locator: ExecutionUnitOriginLocator::None,
-                inherited_scope: entry.inherited_scope.clone(),
+                inherited_scope: inherited_scope.clone(),
             })
         })
         .collect()
+}
+
+fn find_follows_symlinks(command: &caushell_parse::CommandFact) -> bool {
+    command
+        .tokens
+        .iter()
+        .any(|token| matches!(token.text.as_str(), "-L" | "-H" | "-follow"))
 }
 
 fn inherited_scope_for_dispatch(
@@ -2318,6 +2465,15 @@ fn inherited_scope_for_dispatch(
 ) -> ExecutionUnitInheritedScope {
     let mut scope = inherited_scope.clone();
     let via_command_name = resolved.normalized_command_name.to_string();
+
+    if via_command_name == "find" {
+        let roots = bound_argument_texts_for_slot(&resolved.bound, "search_roots");
+        scope.find_result_roots = if roots.is_empty() {
+            vec![".".to_string()]
+        } else {
+            roots.into_iter().map(str::to_string).collect()
+        };
+    }
 
     for root in bound_argument_operands_for_slot(&resolved.bound, "search_roots")
         .into_iter()
@@ -3281,6 +3437,9 @@ fn project_execution_unit_derived_invocation_mutations(
 
     let mut mutations = Vec::new();
     for record in records {
+        if known_execution_unit_node_ids.contains(&record.source_node_id) {
+            continue;
+        }
         if !known_execution_unit_node_ids.contains(&record.parent_execution_node_id) {
             continue;
         }
@@ -3300,6 +3459,20 @@ fn project_execution_unit_derived_invocation_mutation(
     record: &ExecutionUnitResolveRecord,
 ) -> Option<PendingMutation> {
     let (origin, relation_from_parent) = match record.origin_kind {
+        ExecutionUnitOriginKind::Dispatch => {
+            let ExecutionUnitOriginLocator::FindAction { action_index } = &record.origin_locator
+            else {
+                return None;
+            };
+            (
+                DerivedInvocationOrigin::Dispatch {
+                    source_command_index: record.root_command_index,
+                    dispatch_index: *action_index,
+                    command_slot: "find_exec_action".to_string(),
+                },
+                caushell_graph::EdgeKind::Dispatches,
+            )
+        }
         ExecutionUnitOriginKind::ShellCommandStringPayload => (
             DerivedInvocationOrigin::ShellCommandStringPayload {
                 command_index: record.origin_index,

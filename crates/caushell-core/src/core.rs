@@ -1066,6 +1066,62 @@ mod tests {
     }
 
     #[test]
+    fn outside_workspace_mutation_guard_covers_indirect_file_mutations() {
+        let cases = [
+            ("find /var/tmp -type f -exec rm {} \\;", true),
+            ("find /system -type f -exec rm {} +", true),
+            (
+                "find /system/folder1 -name '*.doc' -exec rm \"{}\" \\;",
+                true,
+            ),
+            (
+                "find /system/folder3/temp -type d -empty -exec rmdir -vp --ignore-fail-on-non-empty {} +",
+                true,
+            ),
+            ("find /var/tmp -type f -exec rm {} +", true),
+            ("find /var/tmp -type f -exec chmod 600 {} \\;", true),
+            ("find /tmp/project /var/tmp -type f -exec rm {} \\;", true),
+            ("find /tmp/project -type f -exec rm {} \\;", false),
+            ("find -L /tmp/project -type f -exec rm {} \\;", true),
+            ("find /var/tmp -execdir rm target \\;", true),
+            ("find /tmp/project -execdir rm target \\;", true),
+            ("find /tmp/project -execdir rm ../target \\;", true),
+            ("find /var/tmp -type f -exec echo {} \\;", false),
+            ("find /var/tmp -exec echo {} \\; -exec rm {} \\;", true),
+            (
+                "find /tmp/project -exec echo {} \\; -exec rm \"$UNKNOWN_TARGET\" \\;",
+                true,
+            ),
+            ("find /var/tmp -type f | xargs rm", true),
+            ("find /system -name '*.txt' -maxdepth 1 | xargs rm", true),
+            ("find /tmp/project -type f | xargs rm", true),
+            ("find /var/tmp -type f | xargs -I{} rm '{}'", true),
+            ("compaudit | xargs chmod g-w", true),
+            ("printf '/var/tmp/item\\n' | xargs rm", true),
+            ("printf '/tmp/project/item\\n' | xargs rm", false),
+            ("printf '' | xargs -r rm", false),
+            ("printf '/var/tmp/item\\n' | xargs echo", false),
+        ];
+        for (index, (command, expected_outside)) in cases.iter().enumerate() {
+            let response = ShellQueryCore::new().check(sample_request(
+                &format!("indirect-mutation-{index}"),
+                1,
+                command,
+            ));
+            let outside = response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation);
+            assert_eq!(
+                outside, *expected_outside,
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+        }
+    }
+
+    #[test]
     fn outside_workspace_mutation_guard_does_not_approve_reads_or_inside_writes() {
         for (index, command) in [
             "cat /etc/wgetrc",

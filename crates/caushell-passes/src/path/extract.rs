@@ -6,6 +6,7 @@ use caushell_profile::{
     ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SemanticType, SlotName,
     StructuredValueContext, ToolConventionPathTarget, ValueMaterialization, parse_owner_group_spec,
 };
+use caushell_runner::ExecutionUnitOriginKind;
 use caushell_types::{
     DerivedPathBasis, DerivedPathRule, DerivedPathUnresolvedReason, InProcessCodeLoadKind,
     MutationScopeResolution, OwnerGroupSpec, PathMetadataMutation, PathMetadataMutationKind,
@@ -14,6 +15,7 @@ use caushell_types::{
     ResolvedMutationScopeOperation, ResolvedPathPurpose, ResolvedPathRole,
 };
 
+use super::DYNAMIC_XARGS_ITEM;
 use super::normalize::{
     join_shell_path, normalize_shell_path, path_is_within_root, resolve_path_operand,
 };
@@ -104,6 +106,72 @@ pub(crate) fn collect_effect_mutation_targets(
                             ..
                         } = value
                         {
+                            if record.inherited_scope().dynamic_xargs_input
+                                && text.contains(DYNAMIC_XARGS_ITEM)
+                            {
+                                targets.push(MutationTargetCandidate {
+                                    operation: effect.kind,
+                                    slot_name: slot.as_str().to_string(),
+                                    resolution: PathResolution::UnsupportedDynamicText {
+                                        text: text.clone(),
+                                    },
+                                });
+                                continue;
+                            }
+                            if text == "{}" && record.inherited_scope().find_result_may_escape_roots
+                            {
+                                targets.push(MutationTargetCandidate {
+                                    operation: effect.kind,
+                                    slot_name: slot.as_str().to_string(),
+                                    resolution: PathResolution::UnsupportedDynamicText {
+                                        text:
+                                            "find result may escape search roots through symlinks"
+                                                .to_string(),
+                                    },
+                                });
+                                continue;
+                            }
+                            if text == "{}"
+                                && !record.inherited_scope().find_result_roots.is_empty()
+                                && record.origin_kind() != ExecutionUnitOriginKind::Dispatch
+                            {
+                                targets.push(MutationTargetCandidate {
+                                    operation: effect.kind,
+                                    slot_name: slot.as_str().to_string(),
+                                    resolution: PathResolution::UnsupportedDynamicText {
+                                        text: "find placeholder in nested command".to_string(),
+                                    },
+                                });
+                                continue;
+                            }
+                            if record.inherited_scope().find_execdir_cwd
+                                && !text.starts_with('/')
+                                && !text.starts_with('~')
+                                && text != "{}"
+                            {
+                                targets.push(MutationTargetCandidate {
+                                    operation: effect.kind,
+                                    slot_name: slot.as_str().to_string(),
+                                    resolution: PathResolution::UnsupportedDynamicText {
+                                        text: format!("find -execdir relative target {text} has a dynamic working directory"),
+                                    },
+                                });
+                                continue;
+                            }
+                            if text == "{}"
+                                && !record.inherited_scope().find_result_roots.is_empty()
+                            {
+                                for root in &record.inherited_scope().find_result_roots {
+                                    targets.push(MutationTargetCandidate {
+                                        operation: effect.kind,
+                                        slot_name: slot.as_str().to_string(),
+                                        resolution: resolve_path_resolution(
+                                            root, false, "word", cwd, home, None,
+                                        ),
+                                    });
+                                }
+                                continue;
+                            }
                             targets.push(MutationTargetCandidate {
                                 operation: effect.kind,
                                 slot_name: slot.as_str().to_string(),
@@ -293,14 +361,20 @@ fn collect_resolved_record_path_facts(
                 command_index: record.command_index(),
                 slot_name: parameter.name.as_str().to_string(),
                 normalized_command_name: resolved.normalized_command_name.clone(),
-                resolution: resolve_path_resolution(
-                    text,
-                    *quoted,
-                    node_kind,
-                    cwd,
-                    home,
-                    arg_materialization_for_span(resolved, span),
-                ),
+                resolution: if record.inherited_scope().dynamic_xargs_input
+                    && text.contains(DYNAMIC_XARGS_ITEM)
+                {
+                    PathResolution::UnsupportedDynamicText { text: text.clone() }
+                } else {
+                    resolve_path_resolution(
+                        text,
+                        *quoted,
+                        node_kind,
+                        cwd,
+                        home,
+                        arg_materialization_for_span(resolved, span),
+                    )
+                },
                 role,
                 purpose,
                 metadata_mutation: metadata_mutation_for_path_slot(
