@@ -11,4 +11,7 @@ pub use artifact::{
     UnsetCommandFact, VariableAssignmentFact,
 };
 pub use error::ParseError;
-pub use parser::{parse_command, parse_command_substitutions, parse_process_substitutions};
+pub use parser::{
+    decode_static_shell_argument, parse_command, parse_command_substitutions,
+    parse_process_substitutions,
+};

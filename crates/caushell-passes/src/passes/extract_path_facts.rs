@@ -3244,39 +3244,47 @@ extensions: {}
     fn extract_path_facts_stages_path_mutation_for_derived_invocation_operand() {
         let ctx = run_pass(r#"bash -c 'bash ../shared/build.sh'"#, Some("/home/alice"));
 
-        assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
-            mutation,
-            PendingMutation::AddPathFact {
-                source_node_id,
-                node_id,
-                resolution: PathResolution::Concrete { path },
-                relation,
-                ..
-            } if source_node_id.0 == "derived:sess-1:2:0:0"
-                && node_id.0 == "resolved-path:derived:sess-1:2:0:0:0:script_path:/tmp/shared/build.sh"
-                && path == "/tmp/shared/build.sh"
-                && *relation == EdgeKind::Reads
-        )));
-
-        assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
-            mutation,
-            PendingMutation::AddProvenanceArtifact {
-                source_node_id,
-                node_id,
-                artifact: ProvenanceArtifact::PathContent { path, version: None },
-                relation,
-                semantics: ProvenanceEdgeSemantics::Consume {
-                    consume_kind: ProvenanceConsumeKind::ScriptSource,
-                    slot_name,
-                    normalized_command_name,
+        let source_node_ids: Vec<_> = ctx
+            .pending_mutations()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                PendingMutation::AddPathFact {
+                    source_node_id,
+                    resolution: PathResolution::Concrete { path },
+                    relation,
                     ..
-                },
-            } if source_node_id.0 == "derived:sess-1:2:0:0"
-                && node_id.0 == "artifact:path-content:/tmp/shared/build.sh"
-                && path == "/tmp/shared/build.sh"
-                && *relation == EdgeKind::Consumes
-                && slot_name.as_deref() == Some("script_path")
-                && normalized_command_name.as_deref() == Some("bash")
-        )));
+                } if path == "/tmp/shared/build.sh" && *relation == EdgeKind::Reads => {
+                    Some(source_node_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            source_node_ids.iter().any(|source_node_id| {
+                ctx.pending_mutations().iter().any(|mutation| {
+                    matches!(
+                        mutation,
+                        PendingMutation::AddProvenanceArtifact {
+                            source_node_id: artifact_source_node_id,
+                            artifact: ProvenanceArtifact::PathContent { path, version: None },
+                            relation,
+                            semantics: ProvenanceEdgeSemantics::Consume {
+                                consume_kind: ProvenanceConsumeKind::ScriptSource,
+                                slot_name,
+                                normalized_command_name,
+                                ..
+                            },
+                            ..
+                        } if artifact_source_node_id == source_node_id
+                            && path == "/tmp/shared/build.sh"
+                            && *relation == EdgeKind::Consumes
+                            && slot_name.as_deref() == Some("script_path")
+                            && normalized_command_name.as_deref() == Some("bash")
+                    )
+                })
+            }),
+            "expected the derived bash invocation to read and consume /tmp/shared/build.sh"
+        );
     }
 }

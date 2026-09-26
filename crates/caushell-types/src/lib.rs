@@ -58,7 +58,7 @@ pub use provenance::{
     ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceDomainLabel, ProvenanceEdgeSemantics,
     ProvenanceEndpointKind, ProvenanceEndpointUsage, ProvenanceMaterializedValueState,
     ProvenanceProduceKind, ProvenanceTransformKind, ProvenanceVariableValueState,
-    RuntimeInputCapture, RuntimeInputSource,
+    RuntimeArgumentDomain, RuntimeInputCapture, RuntimeInputSource,
 };
 pub use query::{
     AliasHistoryAction, AliasHistoryEntry, AliasHistoryQueryRequest, AliasHistoryQueryResponse,

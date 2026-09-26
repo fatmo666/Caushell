@@ -116,18 +116,21 @@ fn path_resolution_sort_key(resolution: &PathResolution) -> (u8, String) {
         PathResolution::DerivedConcrete { path, basis, rule } => {
             (2, format!("{path}:{basis:?}:{rule:?}"))
         }
+        PathResolution::BoundedPathSet { roots, may_escape } => {
+            (3, format!("{roots:?}:{may_escape}"))
+        }
         PathResolution::DerivedUnresolved {
             basis,
             rule,
             reason,
-        } => (3, format!("{basis:?}:{rule:?}:{reason:?}")),
-        PathResolution::MissingBinding { variable_name } => (4, variable_name.clone()),
+        } => (4, format!("{basis:?}:{rule:?}:{reason:?}")),
+        PathResolution::MissingBinding { variable_name } => (5, variable_name.clone()),
         PathResolution::UnsupportedDynamicBinding {
             variable_name,
             repr,
-        } => (5, format!("{variable_name}:{repr}")),
-        PathResolution::UnsupportedDynamicText { text } => (6, text.clone()),
-        PathResolution::HomeUnavailable { text } => (7, text.clone()),
+        } => (6, format!("{variable_name}:{repr}")),
+        PathResolution::UnsupportedDynamicText { text } => (7, text.clone()),
+        PathResolution::HomeUnavailable { text } => (8, text.clone()),
     }
 }
 

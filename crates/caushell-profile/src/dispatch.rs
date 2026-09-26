@@ -1,14 +1,17 @@
 use caushell_parse::{CommandFact, CommandToken, CommandTokenKind, SourceSpan};
 
 use crate::{
-    ArgumentBindingSource, BoundInvocation, BoundParameter, BoundValue, EffectKind, EffectTarget,
-    SlotName,
+    ArgumentBindingSource, BoundArgumentMaterialization, BoundInvocation, BoundParameter,
+    BoundValue, EffectKind, EffectTarget, SlotName,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchArgument {
     pub slot: SlotName,
     pub text: String,
+    pub implicit_input_source: Option<caushell_types::ImplicitInputSource>,
+    pub runtime_argument_domain: Option<caushell_types::RuntimeArgumentDomain>,
+    pub runtime_data: bool,
     pub quoted: bool,
     pub node_kind: String,
     pub span: SourceSpan,
@@ -21,6 +24,7 @@ pub struct DispatchCommandCandidate {
     pub command: DispatchArgument,
     pub argv: Vec<DispatchArgument>,
     pub environment: Vec<DispatchArgument>,
+    pub execution_cwd_unknown: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +50,9 @@ impl DispatchCommandCandidate {
 
                 CommandToken {
                     text: argument.text.clone(),
+                    implicit_input_source: argument.implicit_input_source,
+                    runtime_argument_domain: argument.runtime_argument_domain.clone(),
+                    runtime_data: argument.runtime_data,
                     kind,
                     quoted: argument.quoted,
                     node_kind: argument.node_kind.clone(),
@@ -74,7 +81,12 @@ impl DispatchCommandCandidate {
 
     pub fn render_text(&self) -> String {
         std::iter::once(self.command.text.as_str())
-            .chain(self.argv.iter().map(|argument| argument.text.as_str()))
+            .chain(
+                self.argv
+                    .iter()
+                    .filter(|argument| argument.implicit_input_source.is_none())
+                    .map(|argument| argument.text.as_str()),
+            )
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -117,11 +129,20 @@ pub fn collect_dispatch_command_projection(
             continue;
         };
 
+        let mut next_synthetic_span_byte = maximum_bound_source_span_end(invocation)
+            .saturating_add(1)
+            .saturating_add(current_dispatch_index);
+
         resolved.push(DispatchCommandCandidate {
             dispatch_index: current_dispatch_index,
             command,
-            argv: arguments_for_slots(invocation, &target.argv),
-            environment: arguments_for_slots(invocation, &target.environment),
+            argv: arguments_for_slots(invocation, &target.argv, &mut next_synthetic_span_byte),
+            environment: arguments_for_slots(
+                invocation,
+                &target.environment,
+                &mut next_synthetic_span_byte,
+            ),
+            execution_cwd_unknown: false,
         });
     }
 
@@ -139,10 +160,14 @@ fn single_argument_for_parameter(
         return None;
     }
 
-    argument_from_bound_value(slot, &parameter.values[0])
+    argument_from_bound_value(slot, &parameter.values[0], &mut 1)
 }
 
-fn arguments_for_slots(invocation: &BoundInvocation, slots: &[SlotName]) -> Vec<DispatchArgument> {
+fn arguments_for_slots(
+    invocation: &BoundInvocation,
+    slots: &[SlotName],
+    next_synthetic_span_byte: &mut usize,
+) -> Vec<DispatchArgument> {
     let mut arguments = Vec::new();
 
     for slot in slots {
@@ -151,7 +176,8 @@ fn arguments_for_slots(invocation: &BoundInvocation, slots: &[SlotName]) -> Vec<
         };
 
         for value in &parameter.values {
-            if let Some(argument) = argument_from_bound_value(slot, value) {
+            if let Some(argument) = argument_from_bound_value(slot, value, next_synthetic_span_byte)
+            {
                 arguments.push(argument);
             }
         }
@@ -170,7 +196,11 @@ fn parameter_for_slot<'a>(
         .find(|parameter| parameter.name == *slot)
 }
 
-fn argument_from_bound_value(slot: &SlotName, value: &BoundValue) -> Option<DispatchArgument> {
+fn argument_from_bound_value(
+    slot: &SlotName,
+    value: &BoundValue,
+    next_synthetic_span_byte: &mut usize,
+) -> Option<DispatchArgument> {
     match value {
         BoundValue::Argument {
             text,
@@ -178,17 +208,54 @@ fn argument_from_bound_value(slot: &SlotName, value: &BoundValue) -> Option<Disp
             node_kind,
             span,
             binding_source,
-            ..
+            materialization,
         } => Some(DispatchArgument {
             slot: slot.clone(),
             text: text.clone(),
+            implicit_input_source: None,
+            runtime_argument_domain: None,
+            runtime_data: !matches!(materialization, BoundArgumentMaterialization::Literal),
             quoted: *quoted,
             node_kind: node_kind.clone(),
             span: span.clone(),
             binding_source: binding_source.clone(),
         }),
-        BoundValue::ImplicitInput { .. } => None,
+        BoundValue::ImplicitInput { source, domain } => Some(DispatchArgument {
+            span: {
+                let start_byte = *next_synthetic_span_byte;
+                *next_synthetic_span_byte = next_synthetic_span_byte.saturating_add(1);
+                SourceSpan {
+                    start_byte,
+                    end_byte: start_byte,
+                    start_row: 0,
+                    start_column: start_byte,
+                    end_row: 0,
+                    end_column: start_byte,
+                }
+            },
+            slot: slot.clone(),
+            text: String::new(),
+            implicit_input_source: Some(source.to_caushell_types_implicit_input_source()),
+            runtime_argument_domain: domain.clone(),
+            runtime_data: false,
+            quoted: false,
+            node_kind: "runtime_input".to_string(),
+            binding_source: ArgumentBindingSource::RemainingArg,
+        }),
     }
+}
+
+fn maximum_bound_source_span_end(invocation: &BoundInvocation) -> usize {
+    invocation
+        .bound_parameters
+        .iter()
+        .flat_map(|parameter| parameter.values.iter())
+        .filter_map(|value| match value {
+            BoundValue::Argument { span, .. } => Some(span.end_byte),
+            BoundValue::ImplicitInput { .. } => None,
+        })
+        .max()
+        .unwrap_or_default()
 }
 
 fn command_token_kind(text: &str, dashdash_seen: &mut bool) -> CommandTokenKind {
@@ -230,16 +297,19 @@ fn span_covering_dispatch(candidate: &DispatchCommandCandidate) -> SourceSpan {
 mod tests {
     use std::path::PathBuf;
 
-    use caushell_parse::{CommandTokenKind, parse_command};
+    use caushell_parse::{CommandTokenKind, SourceSpan, parse_command};
     use caushell_types::ShellKind;
 
     use super::{collect_dispatch_command_candidates, collect_dispatch_command_projection};
     use crate::{
-        ArgumentBindingSource, BoundInvocation, BoundValue, CommandProfile, DispatchTarget, Effect,
-        EffectKind, EffectTarget, InvocationRuntimeContext, ProfileRegistry,
-        ResolveInvocationResult, SemanticType, SlotName, bind_invocation,
-        load_command_profile_from_path, project_invocation, resolve_invocation, select_invocation,
+        ArgumentBindingSource, BoundArgumentMaterialization, BoundInvocation, BoundParameter,
+        BoundValue, CommandName, CommandProfile, DispatchTarget, Effect, EffectKind, EffectTarget,
+        FormId, InvocationRuntimeContext, ProfileRegistry, ResolveInvocationResult, SemanticType,
+        SessionBindings, SlotName, bind_invocation, load_command_profile_from_path,
+        materialize_projected_invocation, project_invocation, resolve_invocation,
+        select_invocation,
     };
+    use caushell_types::{ImplicitInputSource, RuntimeArgumentDomain};
 
     fn built_in_profile(name: &str) -> CommandProfile {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -290,6 +360,187 @@ mod tests {
             select_invocation(profile, &projection).expect("expected invocation selection");
 
         bind_invocation(profile, &projection, &selection)
+    }
+
+    #[test]
+    fn dispatch_candidate_preserves_materialized_argv_as_literal_runtime_data() {
+        let source_span = SourceSpan {
+            start_byte: 0,
+            end_byte: 3,
+            start_row: 0,
+            start_column: 0,
+            end_row: 0,
+            end_column: 3,
+        };
+        let invocation = BoundInvocation::new(CommandName::new("sudo"), FormId::new("wrapped"))
+            .with_bound_parameter(
+                BoundParameter::new(SlotName::new("wrapped_command"), SemanticType::PlainValue)
+                    .with_value(BoundValue::argument(
+                        "printf",
+                        false,
+                        source_span.clone(),
+                        ArgumentBindingSource::RemainingArg,
+                    )),
+            )
+            .with_bound_parameter(
+                BoundParameter::new(SlotName::new("wrapped_args"), SemanticType::PlainValue)
+                    .with_value(
+                        BoundValue::argument_with_node_kind(
+                            ";$UNKNOWN",
+                            true,
+                            "string",
+                            SourceSpan {
+                                start_byte: 4,
+                                end_byte: 14,
+                                start_row: 0,
+                                start_column: 4,
+                                end_row: 0,
+                                end_column: 14,
+                            },
+                            ArgumentBindingSource::RemainingArg,
+                        )
+                        .with_materialization(
+                            BoundArgumentMaterialization::ResolvedExactScalar {
+                                variable_name: "DATA".to_string(),
+                            },
+                        ),
+                    )
+                    .with_value(
+                        BoundValue::argument_with_node_kind(
+                            "$FROM_RUNTIME",
+                            true,
+                            "string",
+                            SourceSpan {
+                                start_byte: 15,
+                                end_byte: 28,
+                                start_row: 0,
+                                start_column: 15,
+                                end_row: 0,
+                                end_column: 28,
+                            },
+                            ArgumentBindingSource::RemainingArg,
+                        )
+                        .with_materialization(
+                            BoundArgumentMaterialization::ResolvedRuntimeProduced {
+                                variable_name: "COMMAND_OUTPUT".to_string(),
+                            },
+                        ),
+                    ),
+            )
+            .with_effect(dispatch_effect("wrapped_command", &["wrapped_args"], &[]));
+
+        let candidates = collect_dispatch_command_candidates(&invocation);
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            candidates[0]
+                .argv
+                .iter()
+                .all(|argument| argument.runtime_data)
+        );
+
+        let child = candidates[0].to_command_fact();
+        let projection = project_invocation(&child, InvocationRuntimeContext::new());
+        let bindings = SessionBindings::new()
+            .with_exact_scalar("UNKNOWN", "expanded")
+            .with_exact_scalar("FROM_RUNTIME", "also expanded");
+        let materialized = materialize_projected_invocation(&projection, &bindings);
+        assert_eq!(materialized.invocation.args[0].text, ";$UNKNOWN");
+        assert_eq!(materialized.invocation.args[1].text, "$FROM_RUNTIME");
+        assert_eq!(
+            materialized.arg_resolutions[0],
+            crate::ValueMaterialization::Static
+        );
+        assert_eq!(
+            materialized.arg_resolutions[1],
+            crate::ValueMaterialization::Static
+        );
+    }
+
+    #[test]
+    fn dispatch_implicit_arguments_keep_distinct_sources_and_domains() {
+        let invocation = BoundInvocation::new(CommandName::new("sudo"), FormId::new("wrapped"))
+            .with_bound_parameter(
+                BoundParameter::new(SlotName::new("wrapped_command"), SemanticType::PlainValue)
+                    .with_value(BoundValue::argument(
+                        "rm",
+                        false,
+                        SourceSpan {
+                            start_byte: 0,
+                            end_byte: 2,
+                            start_row: 0,
+                            start_column: 0,
+                            end_row: 0,
+                            end_column: 2,
+                        },
+                        ArgumentBindingSource::RemainingArg,
+                    )),
+            )
+            .with_bound_parameter(
+                BoundParameter::new(SlotName::new("wrapped_args"), SemanticType::PlainValue)
+                    .with_value(BoundValue::ImplicitInput {
+                        source: crate::ImplicitInputSource::StdinData,
+                        domain: Some(RuntimeArgumentDomain::PathSet {
+                            roots: vec!["/tmp/root".to_string()],
+                            may_escape: false,
+                        }),
+                    })
+                    .with_value(BoundValue::ImplicitInput {
+                        source: crate::ImplicitInputSource::DispatchOutput,
+                        domain: Some(RuntimeArgumentDomain::Unbounded),
+                    }),
+            )
+            .with_effect(dispatch_effect("wrapped_command", &["wrapped_args"], &[]));
+
+        let candidate = collect_dispatch_command_candidates(&invocation)
+            .into_iter()
+            .next()
+            .expect("expected dispatch candidate");
+        assert_ne!(candidate.argv[0].span, candidate.argv[1].span);
+
+        let child = candidate.to_command_fact();
+        assert_eq!(
+            child.tokens[0].implicit_input_source,
+            Some(ImplicitInputSource::StdinData)
+        );
+        assert_eq!(
+            child.tokens[0].runtime_argument_domain,
+            Some(RuntimeArgumentDomain::PathSet {
+                roots: vec!["/tmp/root".to_string()],
+                may_escape: false,
+            })
+        );
+        assert_eq!(
+            child.tokens[1].implicit_input_source,
+            Some(ImplicitInputSource::DispatchOutput)
+        );
+        assert_eq!(
+            child.tokens[1].runtime_argument_domain,
+            Some(RuntimeArgumentDomain::Unbounded)
+        );
+
+        let profile = built_in_profile("rm");
+        let projection = project_invocation(&child, InvocationRuntimeContext::new());
+        let selection = select_invocation(&profile, &projection).expect("expected rm form");
+        let bound = bind_invocation(&profile, &projection, &selection);
+        let path_targets = bound
+            .bound_parameters
+            .iter()
+            .find(|parameter| parameter.name.as_str() == "path_targets")
+            .expect("expected child path binding");
+        assert!(matches!(
+            &path_targets.values[0],
+            BoundValue::ImplicitInput {
+                source: crate::ImplicitInputSource::StdinData,
+                domain: Some(RuntimeArgumentDomain::PathSet { .. })
+            }
+        ));
+        assert!(matches!(
+            &path_targets.values[1],
+            BoundValue::ImplicitInput {
+                source: crate::ImplicitInputSource::DispatchOutput,
+                domain: Some(RuntimeArgumentDomain::Unbounded)
+            }
+        ));
     }
 
     #[test]

@@ -193,5 +193,6 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - The current profile models -exec and -execdir with semicolon termination. Plus-terminated batching is recognized as an argument value but is not yet a separate dispatch cardinality model.
-    - Search expressions are partially typed; uncommon predicates are left as residual operands rather than command-specific runtime behavior.
+    - Dispatch arguments and bounded search-root domains are modeled for common -exec and -execdir forms, but this is not a full find expression evaluator; uncommon predicates remain residual operands.
+    - Semicolon and plus terminators are recognized for dispatch, but batched execution cardinality and all platform-specific find behavior are not modeled exactly.
+    - Symlink traversal and execution-directory context that cannot be established conservatively widen or leave the argument domain unknown.

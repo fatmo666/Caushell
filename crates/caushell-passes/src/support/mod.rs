@@ -52,11 +52,11 @@ pub(crate) use shell_sink_hard_deny::{
     is_file_write_redirection_operator,
 };
 pub(crate) use static_payload::{
-    known_literal_path_content_before_execution_unit,
+    StaticInputEvidence, known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command, known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
-    static_stdin_payloads_for_scoped_command, static_stdout_payloads_for_process_substitution_text,
-    substitute_static_shell_positional_parameters,
+    static_stdin_evidence_for_scoped_command, static_stdin_payloads_for_scoped_command,
+    static_stdout_payloads_for_process_substitution_text,
 };
 pub(crate) use top_level_units::{
     collect_top_level_units, top_level_node_id_for_command, top_level_node_id_for_span,

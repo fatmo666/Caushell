@@ -34,6 +34,9 @@ pub enum ProjectedArgKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedArg {
     pub text: String,
+    pub implicit_input_source: Option<caushell_types::ImplicitInputSource>,
+    pub runtime_argument_domain: Option<caushell_types::RuntimeArgumentDomain>,
+    pub runtime_data: bool,
     pub kind: ProjectedArgKind,
     pub quoted: bool,
     pub node_kind: String,
@@ -86,6 +89,9 @@ pub fn project_invocation(
         .iter()
         .map(|token| ProjectedArg {
             text: token.text.clone(),
+            implicit_input_source: token.implicit_input_source,
+            runtime_argument_domain: token.runtime_argument_domain.clone(),
+            runtime_data: token.runtime_data,
             kind: project_arg_kind(&token.kind),
             quoted: token.quoted,
             node_kind: token.node_kind.clone(),

@@ -439,7 +439,11 @@ mod tests {
 
         assert!(ctx.evidence.iter().any(|evidence| match &evidence.kind {
             EvidenceKind::ImportedPackageExecution(imported) => {
-                imported.sink.command == "pip install \"requests\"" && imported.sink.depth == 2
+                imported.sink.depth == 2
+                    && imported.sink.package_manager == caushell_types::PackageManagerKind::Pip
+                    && imported.sink.locator == "requests"
+                    && imported.sink.locator_kind == caushell_types::PackageLocatorKind::RegistryRef
+                    && imported.sink.command.contains("install")
             }
             _ => false,
         }));

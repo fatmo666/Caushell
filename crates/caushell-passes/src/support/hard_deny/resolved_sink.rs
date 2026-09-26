@@ -15,7 +15,14 @@ pub(crate) enum ResolvedHostRiskSemanticClass {
 pub(crate) struct ResolvedHostRiskSink<'a> {
     pub semantic_class: ResolvedHostRiskSemanticClass,
     pub target_operands: Vec<HostTargetOperand<'a>>,
+    pub runtime_targets: Vec<ResolvedRuntimeHostTarget>,
     pub normalized_command_name: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedRuntimeHostTarget {
+    pub source: caushell_profile::ImplicitInputSource,
+    pub domain: Option<caushell_types::RuntimeArgumentDomain>,
 }
 
 pub(crate) fn each_resolved_host_risk_sink<'a, F>(
@@ -37,7 +44,8 @@ pub(crate) fn each_resolved_host_risk_sink<'a, F>(
             continue;
         }
         let target_operands = bound_argument_operands_for_slot(&resolved.bound, slot_name);
-        if target_operands.is_empty() {
+        let runtime_targets = bound_runtime_targets_for_slot(&resolved.bound, slot_name);
+        if target_operands.is_empty() && runtime_targets.is_empty() {
             continue;
         }
         if emitted.iter().any(|(seen_class, seen_slot_name)| {
@@ -50,9 +58,29 @@ pub(crate) fn each_resolved_host_risk_sink<'a, F>(
         visit(ResolvedHostRiskSink {
             semantic_class,
             target_operands,
+            runtime_targets,
             normalized_command_name: resolved.normalized_command_name.as_str(),
         });
     }
+}
+
+fn bound_runtime_targets_for_slot(
+    bound: &BoundInvocation,
+    slot_name: &str,
+) -> Vec<ResolvedRuntimeHostTarget> {
+    bound
+        .bound_parameters
+        .iter()
+        .filter(|parameter| parameter.name.as_str() == slot_name)
+        .flat_map(|parameter| parameter.values.iter())
+        .filter_map(|value| match value {
+            BoundValue::Argument { .. } => None,
+            BoundValue::ImplicitInput { source, domain } => Some(ResolvedRuntimeHostTarget {
+                source: source.clone(),
+                domain: domain.clone(),
+            }),
+        })
+        .collect()
 }
 
 fn slot_name_from_effect_target(target: &EffectTarget) -> Option<&str> {
@@ -123,4 +151,52 @@ fn bound_argument_operands_for_slot<'a>(
             BoundValue::ImplicitInput { .. } => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bound_argument_operands_for_slot, bound_runtime_targets_for_slot};
+    use caushell_profile::{
+        ArgumentBindingSource, BoundInvocation, BoundParameter, BoundValue, CommandName, FormId,
+        ImplicitInputSource, SemanticType, SlotName,
+    };
+
+    #[test]
+    fn target_projection_keeps_runtime_source_distinct_from_literal_arguments() {
+        let literal = BoundValue::argument(
+            "/dev/sda",
+            false,
+            caushell_parse::SourceSpan {
+                start_byte: 0,
+                end_byte: 8,
+                start_row: 0,
+                start_column: 0,
+                end_row: 0,
+                end_column: 8,
+            },
+            ArgumentBindingSource::RemainingArg,
+        );
+        let runtime = BoundValue::ImplicitInput {
+            source: ImplicitInputSource::StdinData,
+            domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded),
+        };
+        let bound = BoundInvocation::new(CommandName::new("dd"), FormId::new("write"))
+            .with_bound_parameter(
+                BoundParameter::new(SlotName::new("target"), SemanticType::PlainValue)
+                    .with_value(literal)
+                    .with_value(runtime),
+            );
+
+        let operands = bound_argument_operands_for_slot(&bound, "target");
+        assert_eq!(operands.len(), 1);
+        assert_eq!(operands[0].text, "/dev/sda");
+
+        let runtime_targets = bound_runtime_targets_for_slot(&bound, "target");
+        assert_eq!(runtime_targets.len(), 1);
+        assert_eq!(runtime_targets[0].source, ImplicitInputSource::StdinData);
+        assert_eq!(
+            runtime_targets[0].domain,
+            Some(caushell_types::RuntimeArgumentDomain::Unbounded)
+        );
+    }
 }

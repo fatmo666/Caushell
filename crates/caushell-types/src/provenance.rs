@@ -82,7 +82,18 @@ pub enum ImplicitInputSource {
     StdinPayload,
     StdinData,
     InteractiveSession,
+    DispatchOutput,
     InheritedEnvironment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeArgumentDomain {
+    Unbounded,
+    PathSet {
+        roots: Vec<String>,
+        may_escape: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

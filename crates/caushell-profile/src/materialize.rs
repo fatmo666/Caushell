@@ -864,6 +864,9 @@ pub fn materialize_projected_invocation(
         for materialized in materialize_argument_fields(arg, bindings) {
             args.push(ProjectedArg {
                 text: materialized.text,
+                implicit_input_source: arg.implicit_input_source,
+                runtime_argument_domain: arg.runtime_argument_domain.clone(),
+                runtime_data: arg.runtime_data,
                 kind: arg.kind,
                 quoted: arg.quoted,
                 node_kind: arg.node_kind.clone(),
@@ -922,16 +925,18 @@ pub fn materialize_recursive_payload_candidate(
                 fragment_resolutions,
             }
         }
-        RecursivePayloadInput::ImplicitInput { source } => MaterializedRecursivePayloadCandidate {
-            candidate: candidate.clone(),
-            resolution: ValueMaterialization::RequiresRuntimeInput {
-                source: *source,
-                capture: None,
-                variable_name: None,
-                origin: None,
-            },
-            fragment_resolutions: Vec::new(),
-        },
+        RecursivePayloadInput::ImplicitInput { source, .. } => {
+            MaterializedRecursivePayloadCandidate {
+                candidate: candidate.clone(),
+                resolution: ValueMaterialization::RequiresRuntimeInput {
+                    source: *source,
+                    capture: None,
+                    variable_name: None,
+                    origin: None,
+                },
+                fragment_resolutions: Vec::new(),
+            }
+        }
         RecursivePayloadInput::LiteralText { .. } => MaterializedRecursivePayloadCandidate {
             candidate: candidate.clone(),
             resolution: ValueMaterialization::Static,
@@ -945,6 +950,12 @@ fn materialize_recursive_fragment_text(
     bindings: &SessionBindings,
 ) -> MaterializedText {
     match &fragment.materialization {
+        RecursivePayloadFragmentMaterialization::RuntimeData => {
+            return MaterializedText {
+                text: fragment.text.clone(),
+                resolution: ValueMaterialization::Static,
+            };
+        }
         RecursivePayloadFragmentMaterialization::ResolvedExactScalar { variable_name } => {
             return MaterializedText {
                 text: fragment.text.clone(),
@@ -1020,6 +1031,12 @@ fn materialize_argument_fields(
     arg: &ProjectedArg,
     bindings: &SessionBindings,
 ) -> Vec<MaterializedText> {
+    if arg.runtime_data {
+        return vec![MaterializedText {
+            text: arg.text.clone(),
+            resolution: ValueMaterialization::Static,
+        }];
+    }
     if !matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string")
         && matches!(
             exact_shell_parameter_reference(&arg.text),
@@ -2272,6 +2289,7 @@ mod tests {
             origin: RecursivePayloadOrigin::FormImplicitInput,
             input: RecursivePayloadInput::ImplicitInput {
                 source: ImplicitInputSource::StdinPayload,
+                domain: None,
             },
         };
 

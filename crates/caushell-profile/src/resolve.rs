@@ -226,8 +226,12 @@ fn attach_bound_argument_materialization(
                 .zip(materialized_projection.arg_resolutions.iter())
                 .find(|(arg, _)| {
                     arg.text == *text && arg.node_kind == *node_kind && arg.span == *span
-                })
-                .map(|(_, resolution)| resolution);
+                });
+            if resolution.is_some_and(|(arg, _)| arg.runtime_data) {
+                *materialization = BoundArgumentMaterialization::RuntimeData;
+                continue;
+            }
+            let resolution = resolution.map(|(_, resolution)| resolution);
             let bound_resolution = materialized_bound_value.resolution;
             let effective_resolution = match resolution {
                 Some(
@@ -398,6 +402,9 @@ fn recovered_field_token(
     CommandToken {
         kind: classify_recovered_arg_kind(&text, dashdash_seen),
         text,
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: false,
         quoted: false,
         node_kind: "ifs_field_split".to_string(),
         span: span.clone(),
@@ -15206,6 +15213,46 @@ mod tests {
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_invocation_preserves_previously_materialized_runtime_argv_data() {
+        let registry = built_in_registry();
+        let artifact = parse_command(r#"sudo echo "$DATA""#, ShellKind::Bash)
+            .expect("expected parse to succeed");
+        let mut command = artifact.commands.first().expect("expected command").clone();
+        let argument = command
+            .tokens
+            .iter_mut()
+            .find(|token| token.text == "$DATA")
+            .expect("expected wrapped argv token");
+        argument.runtime_data = true;
+        let bindings = SessionBindings::new().with_exact_scalar("DATA", "expanded value");
+
+        let result = resolve_invocation_artifact_with_bindings(
+            &registry,
+            &command,
+            InvocationRuntimeContext::new(),
+            &bindings,
+        );
+
+        let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
+            panic!("expected wrapper invocation to resolve");
+        };
+        assert_eq!(
+            first_argument_text(&resolved.bound, "wrapped_args"),
+            "$DATA"
+        );
+        assert_eq!(
+            first_argument_materialization(&resolved.bound, "wrapped_args"),
+            &crate::BoundArgumentMaterialization::RuntimeData
+        );
+        let candidate = collect_dispatch_command_candidates(&resolved.bound)
+            .into_iter()
+            .next()
+            .expect("expected wrapped command candidate");
+        assert!(candidate.argv[0].runtime_data);
+        assert_eq!(candidate.argv[0].text, "$DATA");
     }
 
     #[test]

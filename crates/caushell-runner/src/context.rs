@@ -132,6 +132,7 @@ pub struct BlockDeviceSearchScope {
 pub struct ExecutionUnitInheritedScope {
     pub catastrophic_search_roots: Vec<CatastrophicSearchRootScope>,
     pub block_device_search_scopes: Vec<BlockDeviceSearchScope>,
+    pub dispatch_working_directory: Option<EffectiveCwd>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

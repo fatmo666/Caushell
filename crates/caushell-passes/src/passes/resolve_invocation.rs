@@ -4,13 +4,13 @@ use caushell_profile::{
     ArgumentBindingSource, BoundParameter, BoundValue, EffectKind, EffectTarget,
     InvocationRuntimeContext, PathPurpose, PathRole, PayloadLanguage, PayloadSource,
     ProfileRegistry, RecursivePayloadCandidate, RecursivePayloadInput, RecursivePayloadOrigin,
-    ResolveInvocationArtifactResult, SemanticType, SessionBindings, SlotName, ValueMaterialization,
-    collect_dispatch_command_projection, collect_recursive_payload_candidates,
-    materialize_recursive_payload_candidate, parse_recursive_payload_candidate,
-    resolve_invocation_artifact_with_bindings,
+    ResolveInvocationArtifactResult, SemanticType, SessionBindings, SessionValue, SlotName,
+    ValueMaterialization, collect_dispatch_command_projection,
+    collect_recursive_payload_candidates, materialize_recursive_payload_candidate,
+    parse_recursive_payload_candidate, resolve_invocation_artifact_with_bindings,
 };
 use caushell_runner::{
-    BlockDeviceSearchScope, CatastrophicSearchRootScope, ExecutionUnitInheritedScope,
+    BlockDeviceSearchScope, CatastrophicSearchRootScope, EffectiveCwd, ExecutionUnitInheritedScope,
     ExecutionUnitOriginKind, ExecutionUnitOriginLocator, ExecutionUnitResolveRecord,
     NestedPayloadParentRef, NestedPayloadRecord, NestedPayloadRecordId, NestedPayloadResolution,
     ParsedCommandRef, ParsedCommandScope, PendingMutation, ProcessSubstitutionLocationKind,
@@ -29,7 +29,7 @@ use serde_json::Value as JsonValue;
 
 use crate::path::resolve_path_operand;
 use crate::support::{
-    AliasExpansionHop, HostTargetOperand, apply_alias_command,
+    AliasExpansionHop, HostTargetOperand, StaticInputEvidence, apply_alias_command,
     apply_visible_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
     catastrophic_delete_target_for_arg, expand_alias_chain,
     known_literal_path_content_before_execution_unit as static_known_literal_path_content_before_execution_unit,
@@ -38,8 +38,8 @@ use crate::support::{
     materialize_static_token_command_substitutions, materialize_static_token_text,
     pipeline_has_upstream, redirection_parent_command_index, redirection_targets_stdin_payload,
     request_variable_bindings, source_node_id_for_command,
-    static_stdin_payloads_for_scoped_command, static_stdout_payloads_for_process_substitution_text,
-    substitute_static_shell_positional_parameters, top_level_unit_for_command,
+    static_stdin_evidence_for_scoped_command, static_stdin_payloads_for_scoped_command,
+    static_stdout_payloads_for_process_substitution_text, top_level_unit_for_command,
     top_level_unit_for_span, visible_function_bindings_before_span,
     visible_variable_bindings_before_span,
 };
@@ -117,7 +117,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             ctx.request(),
             &nested_payload_records,
         );
-        let mut derived_records = dispatch_derived_records;
+        let mut derived_records = dispatch_derived_records.clone();
         derived_records.extend(function_derived_records.clone());
         derived_records.extend(nested_derived_records);
         let execution_unit_resolve_records = collect_execution_unit_resolve_records(
@@ -128,6 +128,8 @@ impl SessionTransformPass for ResolveInvocationPass {
             &records,
             &function_derived_commands,
             &function_derived_records,
+            &dispatch_derived_commands,
+            &dispatch_derived_records,
             &nested_payload_records,
             ctx.policy().semantic_expansion.max_nested_parse_depth,
         );
@@ -142,14 +144,6 @@ impl SessionTransformPass for ResolveInvocationPass {
             &nested_payload_records,
             ctx.execution_unit_resolve_records(),
         ));
-        for mutation in project_execution_unit_derived_invocation_mutations(
-            ctx.request(),
-            ctx.pending_mutations(),
-            ctx.execution_unit_resolve_records(),
-        ) {
-            ctx.stage_mutation(mutation);
-        }
-
         for command in &alias_derived_commands {
             ctx.stage_mutation(project_alias_derived_invocation_mutation(
                 ctx.request(),
@@ -179,6 +173,14 @@ impl SessionTransformPass for ResolveInvocationPass {
             if let Some(evidence) = project_nested_payload_evidence(record, &parsed) {
                 ctx.add_evidence(evidence);
             }
+        }
+
+        for mutation in project_execution_unit_derived_invocation_mutations(
+            ctx.request(),
+            ctx.pending_mutations(),
+            ctx.execution_unit_resolve_records(),
+        ) {
+            ctx.stage_mutation(mutation);
         }
 
         ctx.set_nested_payload_records(nested_payload_records);
@@ -746,7 +748,11 @@ fn collect_top_level_dispatch_derived_commands(
             continue;
         }
 
-        let projection = collect_dispatch_command_projection(&resolved.bound);
+        let projection = dispatch_candidates_for_resolved(
+            resolved,
+            request.shell_state_before.cwd(),
+            request.home.as_deref(),
+        );
         let parent_bindings = visible_variable_bindings_before_span(
             summary,
             request,
@@ -756,8 +762,9 @@ fn collect_top_level_dispatch_derived_commands(
         );
 
         for candidate in projection.resolved {
-            let child_bindings = dispatch_child_bindings(&parent_bindings, &candidate.environment);
             let command = materialized_dispatch_child_command_fact(resolved, &candidate);
+            let child_bindings =
+                dispatch_child_session_bindings(&parent_bindings, &candidate.environment, &command);
             commands.push(TopLevelDispatchDerivedCommand {
                 source_command_index: record.command_ref.command_index,
                 dispatch_index: candidate.dispatch_index,
@@ -793,48 +800,235 @@ fn materialized_dispatch_child_command_fact(
     parent: &caushell_profile::ResolvedInvocationArtifact,
     candidate: &caushell_profile::DispatchCommandCandidate,
 ) -> caushell_parse::CommandFact {
-    let mut candidate = candidate.clone();
-    materialize_find_dispatch_placeholder_args(parent, &mut candidate);
+    let _ = parent;
     candidate.to_command_fact()
 }
 
-fn materialize_find_dispatch_placeholder_args(
-    parent: &caushell_profile::ResolvedInvocationArtifact,
-    candidate: &mut caushell_profile::DispatchCommandCandidate,
-) {
-    if parent.normalized_command_name.as_str() != "find" {
-        return;
-    }
-    if !matches!(candidate.command.text.as_str(), "sh" | "bash") {
-        return;
-    }
-    if !candidate.argv.iter().any(|argument| argument.text == "{}") {
-        return;
-    }
-
-    let Some(replacement) = find_dispatch_placeholder_replacement(&parent.bound) else {
-        return;
+fn parsed_dispatch_scope(
+    command: caushell_parse::CommandFact,
+    shell_kind: caushell_types::ShellKind,
+) -> Option<(
+    caushell_parse::ParsedCommandArtifact,
+    caushell_parse::CommandFact,
+)> {
+    let parsed = caushell_parse::ParsedCommandArtifact {
+        raw_command: command.text.clone(),
+        shell_kind,
+        status: caushell_parse::ParseStatus::Complete,
+        commands: vec![command.clone()],
+        declaration_commands: Vec::new(),
+        assignment_commands: Vec::new(),
+        unset_commands: Vec::new(),
+        function_definitions: Vec::new(),
+        redirections: Vec::new(),
+        diagnostics: Vec::new(),
     };
-
-    for argument in &mut candidate.argv {
-        if argument.text == "{}" {
-            argument.text = replacement.clone();
-        }
-    }
+    Some((parsed, command))
 }
 
-fn find_dispatch_placeholder_replacement(
-    bound: &caushell_profile::BoundInvocation,
-) -> Option<String> {
-    for root in bound_argument_texts_for_slot(bound, "search_roots") {
-        if let Some(candidate) = find_search_target_candidates_for_root(bound, root)
-            .into_iter()
-            .next()
-        {
-            return Some(candidate);
-        }
+fn dispatch_candidates_for_resolved(
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    cwd: &str,
+    home: Option<&str>,
+) -> caushell_profile::DispatchCommandProjection {
+    if resolved.normalized_command_name.as_str() == "find" {
+        return caushell_profile::DispatchCommandProjection {
+            resolved: find_dispatch_candidates(resolved, cwd, home),
+            unresolved: collect_dispatch_command_projection(&resolved.bound).unresolved,
+        };
     }
 
+    collect_dispatch_command_projection(&resolved.bound)
+}
+
+fn find_dispatch_candidates(
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    cwd: &str,
+    home: Option<&str>,
+) -> Vec<caushell_profile::DispatchCommandCandidate> {
+    use caushell_profile::{ArgumentBindingSource, DispatchArgument, DispatchCommandCandidate};
+
+    let tokens = &resolved.materialized_projection.invocation.args;
+    let decoded = tokens
+        .iter()
+        .zip(&resolved.materialized_projection.arg_resolutions)
+        .map(|(token, resolution)| decoded_find_argv_value(token, resolution))
+        .collect::<Vec<_>>();
+    let root_values = resolved
+        .bound
+        .bound_parameters
+        .iter()
+        .filter(|parameter| parameter.name.as_str() == "search_roots")
+        .flat_map(|parameter| parameter.values.iter())
+        .collect::<Vec<_>>();
+    let mut roots_unknown = root_values
+        .iter()
+        .any(|value| matches!(value, BoundValue::ImplicitInput { .. }));
+    let roots = if root_values.is_empty() {
+        vec![".".to_string()]
+    } else {
+        root_values
+            .iter()
+            .filter_map(|value| match value {
+                BoundValue::Argument {
+                    text,
+                    quoted,
+                    node_kind,
+                    materialization,
+                    ..
+                } => {
+                    let runtime_data = matches!(
+                        materialization,
+                        caushell_profile::BoundArgumentMaterialization::RuntimeData
+                            | caushell_profile::BoundArgumentMaterialization::ResolvedExactScalar { .. }
+                            | caushell_profile::BoundArgumentMaterialization::ResolvedRuntimeProduced { .. }
+                    );
+                    let decoded_root = if runtime_data {
+                        Some(text.clone())
+                    } else {
+                        caushell_parse::decode_static_shell_argument(text, *quoted, node_kind)
+                    };
+                    let Some(root) = decoded_root else {
+                        roots_unknown = true;
+                        return None;
+                    };
+                    let Some(resolved_root) =
+                        resolve_path_operand(&root, *quoted, node_kind, cwd, home)
+                    else {
+                        roots_unknown = true;
+                        return None;
+                    };
+                    let tilde_expanded =
+                        !runtime_data && !quoted && (root == "~" || root.starts_with("~/"));
+                    if root.starts_with('/') || tilde_expanded {
+                        Some(resolved_root)
+                    } else {
+                        Some(root)
+                    }
+                }
+                BoundValue::ImplicitInput { .. } => None,
+            })
+            .collect()
+    };
+    let follows_symlinks = tokens
+        .iter()
+        .zip(decoded.iter())
+        .any(|(_, token)| matches!(token.as_deref(), Some("-L" | "-H" | "-follow")));
+    let mut candidates = Vec::new();
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let action = match decoded[index].as_deref() {
+            Some("-exec") => Some(("exec_command", false)),
+            Some("-execdir") => Some(("execdir_command", true)),
+            _ => None,
+        };
+        let Some((command_slot, execdir)) = action else {
+            index += 1;
+            continue;
+        };
+
+        let Some(command_token) = tokens.get(index + 1) else {
+            break;
+        };
+        let mut end = index + 2;
+        while end < tokens.len() && !matches!(decoded[end].as_deref(), Some(";" | "+")) {
+            end += 1;
+        }
+        let Some(_terminator) = tokens.get(end) else {
+            break;
+        };
+
+        let make_argument = |slot: &str,
+                             token: &caushell_profile::ProjectedArg,
+                             value: Option<&str>,
+                             force_placeholder: bool| {
+            let is_placeholder = value == Some("{}");
+            let dynamic_placeholder = force_placeholder
+                || value.is_some_and(|value| value.contains("{}") && value != "{}");
+            let unknown = value.is_none();
+            let domain = (is_placeholder && !execdir).then(|| {
+                caushell_types::RuntimeArgumentDomain::PathSet {
+                    roots: roots.clone(),
+                    may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
+                }
+            });
+            DispatchArgument {
+                slot: caushell_profile::SlotName::new(slot),
+                text: if dynamic_placeholder || is_placeholder {
+                    String::new()
+                } else if let Some(value) = value {
+                    value.to_string()
+                } else {
+                    token.text.clone()
+                },
+                // Only find's actual placeholder denotes an enumerated path.
+                // Other unresolved shell expansions retain their original
+                // token so normal materialization can preserve the unknown.
+                implicit_input_source: (dynamic_placeholder || is_placeholder)
+                    .then_some(caushell_types::ImplicitInputSource::DispatchOutput),
+                runtime_argument_domain: domain,
+                runtime_data: !unknown && !dynamic_placeholder && !is_placeholder,
+                quoted: token.quoted,
+                node_kind: token.node_kind.clone(),
+                span: token.span.clone(),
+                binding_source: ArgumentBindingSource::RemainingArg,
+            }
+        };
+
+        let command_value = decoded.get(index + 1).and_then(|value| value.as_deref());
+        let command = make_argument(command_slot, command_token, command_value, false);
+        let argv = tokens[index + 2..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, token)| {
+                let value = decoded
+                    .get(index + 2 + offset)
+                    .and_then(|value| value.as_deref());
+                let find_substitution = value.is_some_and(|value| value.contains("{}"));
+                make_argument("exec_args", token, value, find_substitution)
+            })
+            .collect();
+
+        candidates.push(DispatchCommandCandidate {
+            dispatch_index: candidates.len(),
+            command,
+            argv,
+            environment: Vec::new(),
+            execution_cwd_unknown: execdir,
+        });
+        index = end + 1;
+    }
+
+    candidates
+}
+
+fn decoded_find_argv_value(
+    token: &caushell_profile::ProjectedArg,
+    resolution: &ValueMaterialization,
+) -> Option<String> {
+    if token.runtime_data
+        || matches!(
+            resolution,
+            ValueMaterialization::ResolvedExactScalar { .. }
+                | ValueMaterialization::ResolvedRuntimeProduced { .. }
+        )
+    {
+        // The value is already the materialized argv byte string. Do not run
+        // shell expansion/quoting logic over data which may itself contain '$'.
+        return Some(token.text.clone());
+    }
+
+    if matches!(resolution, ValueMaterialization::Static) {
+        return caushell_parse::decode_static_shell_argument(
+            &token.text,
+            token.quoted,
+            &token.node_kind,
+        );
+    }
+
+    // Missing or runtime-dependent values must stay unresolved. In
+    // particular, never fall back to the source spelling as known argv data.
     None
 }
 
@@ -852,7 +1046,9 @@ fn dispatch_child_bindings(
             continue;
         }
 
-        if let Some(value) = materialize_environment_assignment_value(value, base) {
+        if let Some(value) =
+            materialize_environment_assignment_value(value, base, assignment.runtime_data)
+        {
             bindings.insert_inherited_exact_scalar(name, value);
         }
     }
@@ -860,10 +1056,50 @@ fn dispatch_child_bindings(
     bindings
 }
 
+fn dispatch_child_session_bindings(
+    base: &SessionBindings,
+    environment: &[caushell_profile::DispatchArgument],
+    command: &caushell_parse::CommandFact,
+) -> SessionBindings {
+    let bindings = dispatch_child_bindings(base, environment);
+    let Some(positional_args) = shell_dispatch_positional_arguments(command) else {
+        return bindings;
+    };
+    shell_payload_session_bindings(&bindings, &positional_args)
+}
+
+fn shell_dispatch_positional_arguments(
+    command: &caushell_parse::CommandFact,
+) -> Option<Vec<caushell_profile::ProjectedArg>> {
+    if !matches!(command.command_name.as_deref(), Some("sh" | "bash")) {
+        return None;
+    }
+    let projection = caushell_profile::project_invocation(command, InvocationRuntimeContext::new());
+    let Some(c_flag_index) = projection
+        .args
+        .iter()
+        .position(|argument| argument.text == "-c")
+    else {
+        return None;
+    };
+    let script_index = c_flag_index.saturating_add(1);
+    if script_index >= projection.args.len() {
+        return None;
+    }
+    Some(projection.args[script_index + 1..].to_vec())
+}
+
 fn materialize_environment_assignment_value(
     value: &str,
     bindings: &SessionBindings,
+    runtime_data: bool,
 ) -> Option<String> {
+    // Arguments known to have come from another command are data, not fresh
+    // shell source. In particular, `$`, `;`, and whitespace must stay literal.
+    if runtime_data {
+        return Some(value.to_string());
+    }
+
     if let Some(variable_name) = exact_variable_reference(value) {
         return bindings
             .get(variable_name)
@@ -1042,6 +1278,8 @@ fn collect_execution_unit_resolve_records(
     top_level_records: &[ResolvedCommandSeed],
     function_derived_commands: &[TopLevelFunctionDerivedCommand],
     function_derived_records: &[ResolvedCommandSeed],
+    dispatch_derived_commands: &[TopLevelDispatchDerivedCommand],
+    dispatch_derived_records: &[ResolvedCommandSeed],
     nested_payload_records: &[NestedPayloadRecord],
     max_nested_parse_depth: u8,
 ) -> Vec<ExecutionUnitResolveRecord> {
@@ -1123,6 +1361,21 @@ fn collect_execution_unit_resolve_records(
     }
 
     for record in nested_payload_records {
+        if nested_payload_is_inline_shell_child(
+            registry,
+            session,
+            request,
+            record,
+            parsed_request,
+            top_level_records,
+            function_derived_commands,
+            function_derived_records,
+            dispatch_derived_commands,
+            dispatch_derived_records,
+            nested_payload_records,
+        ) {
+            continue;
+        }
         let NestedPayloadResolution::Parsed { shell_kind, parsed } = &record.resolution else {
             continue;
         };
@@ -1189,6 +1442,8 @@ fn collect_execution_unit_resolve_records(
     let mut visited = std::collections::BTreeSet::new();
     while let Some(entry) = frontier.pop() {
         let visit_key = (
+            entry.source_node_id.clone(),
+            entry.origin_index,
             entry.parent_execution_node_id.clone(),
             entry.origin_kind,
             entry.origin_locator.clone(),
@@ -1484,11 +1739,20 @@ fn expanded_dispatch_children(
         request.home.as_deref(),
     );
 
-    for child in collect_dispatch_command_projection(&resolved.bound).resolved {
-        let child_bindings = dispatch_child_bindings(&entry.bindings, &child.environment);
+    for child in dispatch_candidates_for_resolved(
+        resolved,
+        request.shell_state_before.cwd(),
+        request.home.as_deref(),
+    )
+    .resolved
+    {
+        let mut child_inherited_scope = inherited_scope.clone();
+        child_inherited_scope.dispatch_working_directory =
+            child.execution_cwd_unknown.then_some(EffectiveCwd::Unknown);
         let command = materialized_dispatch_child_command_fact(resolved, &child);
-        let Ok(parsed_scope) = caushell_parse::parse_command(&command.text, entry.shell_kind)
-        else {
+        let child_bindings =
+            dispatch_child_session_bindings(&entry.bindings, &child.environment, &command);
+        let Some((parsed_scope, command)) = parsed_dispatch_scope(command, entry.shell_kind) else {
             continue;
         };
         let resolved_child = resolve_invocation_artifact_with_bindings(
@@ -1525,7 +1789,7 @@ fn expanded_dispatch_children(
             origin_kind: ExecutionUnitOriginKind::Dispatch,
             origin_index: child.dispatch_index,
             origin_locator: ExecutionUnitOriginLocator::None,
-            inherited_scope: inherited_scope.clone(),
+            inherited_scope: child_inherited_scope,
         });
     }
 
@@ -1538,7 +1802,9 @@ fn expanded_shell_payload_children(
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> Vec<ExpandedFrontierEntry> {
-    let Some(shell_payload) = shell_payload_from_bound_invocation(resolved) else {
+    let Some((shell_payload, _payload_span, positional_args)) =
+        shell_payload_from_bound_invocation(resolved)
+    else {
         return Vec::new();
     };
     let shell_kind = match resolved.normalized_command_name.as_str() {
@@ -1546,9 +1812,11 @@ fn expanded_shell_payload_children(
         "sh" => caushell_types::ShellKind::Sh,
         _ => return Vec::new(),
     };
-    let Ok(parsed_payload) = caushell_parse::parse_command(&shell_payload, shell_kind) else {
+    let Ok(mut parsed_payload) = caushell_parse::parse_command(&shell_payload, shell_kind) else {
         return Vec::new();
     };
+    bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
+    let shell_bindings = shell_payload_session_bindings(&entry.bindings, &positional_args);
 
     let mut children: Vec<ExpandedFrontierEntry> = parsed_payload
         .commands
@@ -1556,7 +1824,7 @@ fn expanded_shell_payload_children(
         .enumerate()
         .map(|(command_index, command)| {
             let command_bindings = apply_visible_variable_bindings_before_span(
-                entry.bindings.clone(),
+                shell_bindings.clone(),
                 &parsed_payload,
                 command.span.start_byte,
                 request.sequence_no,
@@ -2252,62 +2520,307 @@ fn expanded_static_xargs_children(
         return Vec::new();
     }
 
-    let Some(wrapped_command) = bound_argument_texts_for_slot(&resolved.bound, "wrapped_command")
-        .first()
-        .copied()
-    else {
+    let mut candidates = collect_dispatch_command_projection(&resolved.bound).resolved;
+    let Some(candidate) = candidates.pop() else {
         return Vec::new();
     };
-    let wrapped_args = bound_argument_texts_for_slot(&resolved.bound, "wrapped_args");
-    let payloads = static_input_payloads_for_xargs_scope(
-        request,
-        session,
-        entry,
-        &resolved.bound,
-        max_nested_parse_depth,
-    );
     let config = xargs_static_expansion_config(&resolved.bound);
+    if config.requires_confirmation {
+        return Vec::new();
+    }
 
-    static_xargs_child_commands(wrapped_command, &wrapped_args, &payloads, &config)
+    let evidence = if has_applied_modifier(&resolved.bound, "arg_file") {
+        static_arg_file_evidence_for_xargs_scope(request, session, entry, &resolved.bound)
+    } else {
+        static_stdin_evidence_for_scoped_command(
+            caushell_query::QuerySession::from_session(&session),
+            &entry.static_payload_scope.parsed_scope,
+            entry.static_payload_scope.command_index,
+            request.sequence_no,
+            &entry.static_payload_scope.bindings,
+            &entry.static_payload_scope.scope_base_bindings,
+            request.shell_state_before.cwd(),
+            !entry
+                .inherited_scope
+                .dispatch_working_directory
+                .as_ref()
+                .is_some_and(|cwd| matches!(cwd, EffectiveCwd::Unknown)),
+            request.home.as_deref(),
+            max_nested_parse_depth.saturating_sub(entry.depth),
+        )
+    };
+    // Partial fragments have no guaranteed offset: unknown bytes may precede
+    // them, join their quoting, or shift every positional argument. Keep them
+    // as advisory evidence, never as a proven argv prefix.
+    let payloads = if evidence.complete {
+        evidence.known_fragments.as_slice()
+    } else {
+        &[]
+    };
+    let items =
+        xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref())
+            .unwrap_or_default()
+            .into_iter()
+            .map(XargsItem::Known)
+            .collect::<Vec<_>>();
+    if evidence.complete && items.is_empty() && !config.run_if_empty {
+        return Vec::new();
+    }
+
+    let command_span = candidate.command.span.clone();
+    let mut groups: Vec<Vec<XargsItem>> = match &config.dispatch_mode {
+        XargsDispatchMode::AppendAll => vec![items],
+        XargsDispatchMode::ReplaceToken { .. } => {
+            items.into_iter().map(|item| vec![item]).collect()
+        }
+        XargsDispatchMode::MaxArgs { max_args } if *max_args > 0 => items
+            .chunks(*max_args)
+            .map(|chunk| chunk.to_vec())
+            .collect(),
+        XargsDispatchMode::MaxLines { max_lines } if *max_lines > 0 => xargs_grouped_lines(
+            payloads,
+            &config.item_mode,
+            *max_lines,
+            config.eof_marker.as_deref(),
+        )
+        .unwrap_or_default()
         .into_iter()
-        .enumerate()
-        .filter_map(|(command_index, rendered)| {
-            let parsed_child = caushell_parse::parse_command(&rendered, entry.shell_kind).ok()?;
-            let command = parsed_child.commands.first()?.clone();
-            Some(ExpandedFrontierEntry {
-                source_node_id: expanded_virtual_node_id(
-                    "xargs",
-                    &entry.source_node_id,
-                    command_index,
-                ),
-                command_ref: ParsedCommandRef::new(0, command.span.clone()),
-                parsed_scope: parsed_child.clone(),
-                rendered_command_text: command.text.clone(),
-                result: resolve_invocation_artifact_with_bindings(
-                    registry,
-                    &command,
-                    runtime_context_for_parsed_command(&parsed_child, 0, &command),
-                    &entry.bindings,
-                ),
-                shell_kind: entry.shell_kind,
-                root_command_index: entry.root_command_index,
-                depth: entry.depth.saturating_add(1),
-                parent_execution_node_id: entry.source_node_id.clone(),
+        .map(|group| group.into_iter().map(XargsItem::Known).collect())
+        .collect(),
+        _ => return Vec::new(),
+    };
+    if groups.is_empty() && evidence.complete && config.run_if_empty {
+        groups.push(Vec::new());
+    }
+    if !evidence.complete {
+        if groups.is_empty() {
+            groups.push(Vec::new());
+        }
+        // The unresolved portion may contain any number of argv items.
+        // One typed tail marker keeps the child incomplete without claiming a
+        // precise arity or turning input bytes into shell source.
+        if matches!(config.dispatch_mode, XargsDispatchMode::AppendAll) {
+            groups[0].push(XargsItem::UnknownTail);
+        } else {
+            groups.push(vec![XargsItem::UnknownTail]);
+        }
+    }
+
+    let replace_token = match config.dispatch_mode {
+        XargsDispatchMode::ReplaceToken { ref token } => Some(token.as_str()),
+        _ => None,
+    };
+    let mut children = Vec::new();
+    for (command_index, group) in groups.into_iter().enumerate() {
+        let mut child_candidate = candidate.clone();
+        let mut next_byte = child_candidate
+            .argv
+            .iter()
+            .map(|argument| argument.span.end_byte)
+            .max()
+            .unwrap_or(command_span.end_byte)
+            .saturating_add(1);
+        if let Some(replace_token) = replace_token {
+            let item = group.first();
+            let unresolved = matches!(item, Some(XargsItem::UnknownTail));
+            let mut replaced_any = false;
+            for argument in &mut child_candidate.argv {
+                if !argument.text.contains(replace_token) {
+                    continue;
+                }
+                replaced_any = true;
+                if unresolved {
+                    argument.text.clear();
+                    argument.runtime_data = false;
+                    argument.implicit_input_source =
+                        Some(caushell_types::ImplicitInputSource::StdinData);
+                    argument.runtime_argument_domain =
+                        Some(caushell_types::RuntimeArgumentDomain::Unbounded);
+                } else {
+                    let Some(XargsItem::Known(item)) = item else {
+                        continue;
+                    };
+                    argument.text = argument.text.replace(replace_token, item);
+                    argument.runtime_data = true;
+                }
+            }
+            if !replaced_any && !unresolved {
+                if let Some(XargsItem::Known(item)) = item {
+                    append_xargs_data_argument(&mut child_candidate, item.clone(), None, next_byte);
+                }
+                next_byte = next_byte.saturating_add(1);
+            }
+        } else {
+            for item in group {
+                match item {
+                    XargsItem::Known(item) => {
+                        append_xargs_data_argument(&mut child_candidate, item, None, next_byte)
+                    }
+                    XargsItem::UnknownTail => append_xargs_data_argument(
+                        &mut child_candidate,
+                        String::new(),
+                        Some(caushell_types::ImplicitInputSource::StdinData),
+                        next_byte,
+                    ),
+                }
+                next_byte = next_byte.saturating_add(1);
+            }
+        }
+
+        let command = child_candidate.to_command_fact();
+        let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
+        let resolved_child = resolve_invocation_artifact_with_bindings(
+            registry,
+            &command,
+            InvocationRuntimeContext::new(),
+            &entry.bindings,
+        );
+        children.push(ExpandedFrontierEntry {
+            source_node_id: expanded_virtual_node_id("xargs", &entry.source_node_id, command_index),
+            command_ref: ParsedCommandRef::new(0, command.span.clone()),
+            parsed_scope: parsed_child.clone(),
+            rendered_command_text: command.text.clone(),
+            result: resolved_child,
+            shell_kind: entry.shell_kind,
+            root_command_index: entry.root_command_index,
+            depth: entry.depth.saturating_add(1),
+            parent_execution_node_id: entry.source_node_id.clone(),
+            bindings: entry.bindings.clone(),
+            static_payload_scope: StaticPayloadLookupScope {
+                parsed_scope: parsed_child,
+                command_index: 0,
                 bindings: entry.bindings.clone(),
-                static_payload_scope: StaticPayloadLookupScope {
-                    parsed_scope: parsed_child.clone(),
-                    command_index: 0,
-                    bindings: entry.bindings.clone(),
-                    scope_base_bindings: entry.bindings.clone(),
-                },
-                history_anchor_node_id: entry.history_anchor_node_id.clone(),
-                origin_kind: ExecutionUnitOriginKind::StaticXargs,
-                origin_index: command_index,
-                origin_locator: ExecutionUnitOriginLocator::None,
-                inherited_scope: entry.inherited_scope.clone(),
-            })
-        })
-        .collect()
+                scope_base_bindings: entry.bindings.clone(),
+            },
+            history_anchor_node_id: entry.history_anchor_node_id.clone(),
+            origin_kind: ExecutionUnitOriginKind::StaticXargs,
+            origin_index: command_index,
+            origin_locator: ExecutionUnitOriginLocator::None,
+            inherited_scope: entry.inherited_scope.clone(),
+        });
+    }
+    children
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum XargsItem {
+    Known(String),
+    UnknownTail,
+}
+
+fn static_arg_file_evidence_for_xargs_scope(
+    request: &CheckRequest,
+    session: SessionView<'_>,
+    entry: &ExpandedFrontierEntry,
+    bound: &caushell_profile::BoundInvocation,
+) -> StaticInputEvidence {
+    let paths = bound_argument_texts_for_slot(bound, "arg_file");
+    if paths.len() != 1 {
+        return StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: false,
+        };
+    }
+    let raw_path = paths[0];
+    let materialized_path = materialize_static_token_text(raw_path, &entry.bindings);
+    let absolute_path = Path::new(&materialized_path).is_absolute();
+    if !absolute_path
+        && (entry
+            .inherited_scope
+            .dispatch_working_directory
+            .as_ref()
+            .is_some_and(|cwd| matches!(cwd, EffectiveCwd::Unknown))
+            || entry
+                .parsed_scope
+                .commands
+                .iter()
+                .take(entry.command_ref.command_index)
+                .any(|command| {
+                    matches!(
+                        command.command_name.as_deref(),
+                        Some("cd" | "pushd" | "popd")
+                    )
+                }))
+    {
+        // ResolveInvocationPass cannot prove which file a relative -a names
+        // after a directory transition (or an execdir-style unknown cwd).
+        return StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: false,
+        };
+    }
+    let Some(resolved_path) = resolve_path_operand(
+        &materialized_path,
+        false,
+        "word",
+        request.shell_state_before.cwd(),
+        request.home.as_deref(),
+    ) else {
+        return StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: false,
+        };
+    };
+    match static_known_literal_path_content_before_sequence(
+        caushell_query::QuerySession::from_session(&session),
+        &resolved_path,
+        request.sequence_no,
+        request.shell_state_before.cwd(),
+        request.home.as_deref(),
+    ) {
+        Some(content) => StaticInputEvidence {
+            known_fragments: vec![content],
+            complete: true,
+        },
+        None => StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: false,
+        },
+    }
+}
+
+fn empty_dispatch_scope(
+    command: caushell_parse::CommandFact,
+    shell_kind: caushell_types::ShellKind,
+) -> caushell_parse::ParsedCommandArtifact {
+    caushell_parse::ParsedCommandArtifact {
+        raw_command: command.text.clone(),
+        shell_kind,
+        status: caushell_parse::ParseStatus::Complete,
+        commands: vec![command],
+        declaration_commands: Vec::new(),
+        assignment_commands: Vec::new(),
+        unset_commands: Vec::new(),
+        function_definitions: Vec::new(),
+        redirections: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn append_xargs_data_argument(
+    candidate: &mut caushell_profile::DispatchCommandCandidate,
+    text: String,
+    source: Option<caushell_types::ImplicitInputSource>,
+    byte: usize,
+) {
+    candidate.argv.push(caushell_profile::DispatchArgument {
+        slot: caushell_profile::SlotName::new("wrapped_args"),
+        text,
+        implicit_input_source: source,
+        runtime_argument_domain: source.map(|_| caushell_types::RuntimeArgumentDomain::Unbounded),
+        runtime_data: source.is_none(),
+        quoted: true,
+        node_kind: "xargs_input_item".to_string(),
+        span: caushell_parse::SourceSpan {
+            start_byte: byte,
+            end_byte: byte.saturating_add(1),
+            start_row: 0,
+            start_column: byte,
+            end_row: 0,
+            end_column: byte.saturating_add(1),
+        },
+        binding_source: caushell_profile::ArgumentBindingSource::RemainingArg,
+    });
 }
 
 fn inherited_scope_for_dispatch(
@@ -2483,7 +2996,11 @@ fn bound_argument_texts_for_slot<'a>(
 
 fn shell_payload_from_bound_invocation(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
-) -> Option<String> {
+) -> Option<(
+    String,
+    caushell_parse::SourceSpan,
+    Vec<caushell_profile::ProjectedArg>,
+)> {
     let payload_slot = resolved.bound.effects.iter().find_map(|effect| {
         if effect.kind != EffectKind::ExecutePayload {
             return None;
@@ -2519,17 +3036,13 @@ fn shell_payload_from_bound_invocation(
         &resolved.materialized_projection.invocation,
         &payload_value.1,
     )?;
-
-    Some(substitute_static_shell_positional_parameters(
-        payload_value.0,
-        &trailing_args,
-    ))
+    Some((payload_value.0.to_string(), payload_value.1, trailing_args))
 }
 
 fn trailing_shell_args_after_span(
     projection: &caushell_profile::ProjectedInvocation,
     payload_span: &caushell_parse::SourceSpan,
-) -> Option<Vec<String>> {
+) -> Option<Vec<caushell_profile::ProjectedArg>> {
     let payload_index = projection
         .args
         .iter()
@@ -2540,29 +3053,87 @@ fn trailing_shell_args_after_span(
             .args
             .iter()
             .skip(payload_index + 1)
-            .filter(|arg| arg.kind != caushell_profile::ProjectedArgKind::DashDash)
-            .map(|arg| arg.text.clone())
+            .cloned()
             .collect(),
     )
 }
 
-fn static_stdin_payloads_for_xargs_scope(
-    request: &CheckRequest,
-    session: SessionView<'_>,
-    entry: &ExpandedFrontierEntry,
-    max_nested_parse_depth: u8,
-) -> Vec<String> {
-    static_stdin_payloads_for_scoped_command(
-        caushell_query::QuerySession::from_session(&session),
-        &entry.static_payload_scope.parsed_scope,
-        entry.static_payload_scope.command_index,
-        request.sequence_no,
-        &entry.static_payload_scope.bindings,
-        &entry.static_payload_scope.scope_base_bindings,
-        request.shell_state_before.cwd(),
-        request.home.as_deref(),
-        max_nested_parse_depth.saturating_sub(entry.depth),
-    )
+fn bind_shell_positional_arguments(
+    parsed: &mut caushell_parse::ParsedCommandArtifact,
+    positional_args: &[caushell_profile::ProjectedArg],
+) {
+    for command in &mut parsed.commands {
+        for token in &mut command.tokens {
+            let Some(position) = exact_shell_positional_reference(&token.text, &token.node_kind)
+            else {
+                continue;
+            };
+            let Some(argument) = positional_args.get(position) else {
+                let first_unknown = positional_args
+                    .iter()
+                    .position(|argument| argument.implicit_input_source.is_some());
+                if first_unknown.is_some_and(|first_unknown| position >= first_unknown) {
+                    let argument = &positional_args[first_unknown.unwrap()];
+                    let unknown_source = argument.implicit_input_source.unwrap();
+                    token.text.clear();
+                    token.implicit_input_source = Some(unknown_source);
+                    token.runtime_argument_domain = argument.runtime_argument_domain.clone();
+                    token.runtime_data = false;
+                } else {
+                    token.text.clear();
+                    token.implicit_input_source = None;
+                    token.runtime_argument_domain = None;
+                    token.runtime_data = true;
+                }
+                continue;
+            };
+
+            token.text = argument.text.clone();
+            token.implicit_input_source = argument.implicit_input_source;
+            token.runtime_argument_domain = argument.runtime_argument_domain.clone();
+            token.runtime_data = argument.runtime_data || argument.implicit_input_source.is_some();
+        }
+    }
+}
+
+fn shell_payload_session_bindings(
+    base: &SessionBindings,
+    positional_args: &[caushell_profile::ProjectedArg],
+) -> SessionBindings {
+    let mut bindings = base.clone();
+    let values = positional_args
+        .iter()
+        .skip(1) // The first argument after SCRIPT becomes $0, not a positional parameter.
+        .map(|argument| {
+            if argument.implicit_input_source.is_some() {
+                return SessionValue::opaque_dynamic("runtime shell positional argument");
+            }
+            if argument.runtime_data {
+                return SessionValue::exact_scalar(argument.text.clone());
+            }
+            caushell_parse::decode_static_shell_argument(
+                &argument.text,
+                argument.quoted,
+                &argument.node_kind,
+            )
+            .map(SessionValue::exact_scalar)
+            .unwrap_or_else(|| SessionValue::opaque_dynamic("dynamic shell positional argument"))
+        })
+        .collect::<Vec<_>>();
+    bindings.replace_positional_parameters(values);
+    bindings
+}
+
+fn exact_shell_positional_reference(text: &str, node_kind: &str) -> Option<usize> {
+    if node_kind == "raw_string" {
+        return None;
+    }
+    let digits = text
+        .strip_prefix("${")
+        .and_then(|body| body.strip_suffix('}'))
+        .or_else(|| text.strip_prefix('$'))?;
+    (!digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit()))
+        .then(|| digits.parse().ok())?
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2624,48 +3195,6 @@ fn xargs_static_expansion_config(
     }
 }
 
-fn static_input_payloads_for_xargs_scope(
-    request: &CheckRequest,
-    session: SessionView<'_>,
-    entry: &ExpandedFrontierEntry,
-    bound: &caushell_profile::BoundInvocation,
-    max_nested_parse_depth: u8,
-) -> Vec<String> {
-    if has_applied_modifier(bound, "arg_file") {
-        return static_arg_file_payloads_for_xargs_scope(request, session, entry, bound);
-    }
-
-    static_stdin_payloads_for_xargs_scope(request, session, entry, max_nested_parse_depth)
-}
-
-fn static_arg_file_payloads_for_xargs_scope(
-    request: &CheckRequest,
-    session: SessionView<'_>,
-    entry: &ExpandedFrontierEntry,
-    bound: &caushell_profile::BoundInvocation,
-) -> Vec<String> {
-    bound_argument_texts_for_slot(bound, "arg_file")
-        .into_iter()
-        .filter_map(|raw_path| {
-            let materialized_path = materialize_static_token_text(raw_path, &entry.bindings);
-            let resolved_path = resolve_path_operand(
-                &materialized_path,
-                false,
-                "word",
-                request.shell_state_before.cwd(),
-                request.home.as_deref(),
-            )?;
-            static_known_literal_path_content_before_sequence(
-                caushell_query::QuerySession::from_session(&session),
-                &resolved_path,
-                request.sequence_no,
-                request.shell_state_before.cwd(),
-                request.home.as_deref(),
-            )
-        })
-        .collect()
-}
-
 fn xargs_dispatch_mode(bound: &caushell_profile::BoundInvocation) -> XargsDispatchMode {
     let mut mode = XargsDispatchMode::AppendAll;
 
@@ -2717,75 +3246,6 @@ fn xargs_eof_marker(bound: &caushell_profile::BoundInvocation) -> Option<String>
         .copied()
         .map(decode_xargs_scalar_operand)
         .filter(|marker| !marker.is_empty())
-}
-
-fn static_xargs_child_commands(
-    wrapped_command: &str,
-    wrapped_args: &[&str],
-    payloads: &[String],
-    config: &XargsStaticExpansionConfig,
-) -> Vec<String> {
-    if config.requires_confirmation {
-        return Vec::new();
-    }
-
-    let Some(items) =
-        xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref())
-    else {
-        return Vec::new();
-    };
-    if items.is_empty() {
-        return match &config.dispatch_mode {
-            XargsDispatchMode::AppendAll if config.run_if_empty => {
-                vec![render_xargs_child_command(
-                    wrapped_command,
-                    wrapped_args,
-                    &[],
-                )]
-            }
-            _ => Vec::new(),
-        };
-    }
-
-    match &config.dispatch_mode {
-        XargsDispatchMode::AppendAll => vec![render_xargs_child_command(
-            wrapped_command,
-            wrapped_args,
-            &items,
-        )],
-        XargsDispatchMode::ReplaceToken { token } => items
-            .into_iter()
-            .map(|item| {
-                render_xargs_replace_child_command(wrapped_command, wrapped_args, token, &item)
-            })
-            .collect(),
-        XargsDispatchMode::MaxArgs { max_args } => {
-            if *max_args == 0 {
-                return Vec::new();
-            }
-            items
-                .chunks(*max_args)
-                .map(|chunk| render_xargs_child_command(wrapped_command, wrapped_args, chunk))
-                .collect()
-        }
-        XargsDispatchMode::MaxLines { max_lines } => {
-            if *max_lines == 0 {
-                return Vec::new();
-            }
-            match xargs_grouped_lines(
-                payloads,
-                &config.item_mode,
-                *max_lines,
-                config.eof_marker.as_deref(),
-            ) {
-                Some(groups) => groups
-                    .into_iter()
-                    .map(|chunk| render_xargs_child_command(wrapped_command, wrapped_args, &chunk))
-                    .collect(),
-                None => Vec::new(),
-            }
-        }
-    }
 }
 
 fn has_applied_modifier(bound: &caushell_profile::BoundInvocation, modifier_id: &str) -> bool {
@@ -3006,44 +3466,6 @@ fn decode_xargs_scalar_operand(raw: &str) -> String {
         r"\f" => "\u{000c}".to_string(),
         _ => unquoted.to_string(),
     }
-}
-
-fn render_xargs_child_command(
-    wrapped_command: &str,
-    wrapped_args: &[&str],
-    items: &[String],
-) -> String {
-    std::iter::once(wrapped_command)
-        .map(str::to_string)
-        .chain(wrapped_args.iter().copied().map(shell_quote_arg))
-        .chain(items.iter().map(shell_quote_arg))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn render_xargs_replace_child_command(
-    wrapped_command: &str,
-    wrapped_args: &[&str],
-    token: &str,
-    item: &str,
-) -> String {
-    let mut parts = vec![wrapped_command.to_string()];
-    let mut replaced_any = false;
-
-    for arg in wrapped_args {
-        if arg.contains(token) {
-            replaced_any = true;
-            parts.push(shell_quote_arg(arg.replace(token, item)));
-        } else {
-            parts.push(shell_quote_arg(arg));
-        }
-    }
-
-    if !replaced_any {
-        parts.push(shell_quote_arg(item));
-    }
-
-    parts.join(" ")
 }
 
 fn render_command_with_static_substitution_outputs(
@@ -3281,7 +3703,9 @@ fn project_execution_unit_derived_invocation_mutations(
 
     let mut mutations = Vec::new();
     for record in records {
-        if !known_execution_unit_node_ids.contains(&record.parent_execution_node_id) {
+        if !known_execution_unit_node_ids.contains(&record.parent_execution_node_id)
+            || known_execution_unit_node_ids.contains(&record.source_node_id)
+        {
             continue;
         }
         let Some(mutation) = project_execution_unit_derived_invocation_mutation(request, record)
@@ -3300,6 +3724,14 @@ fn project_execution_unit_derived_invocation_mutation(
     record: &ExecutionUnitResolveRecord,
 ) -> Option<PendingMutation> {
     let (origin, relation_from_parent) = match record.origin_kind {
+        ExecutionUnitOriginKind::Dispatch => (
+            DerivedInvocationOrigin::Dispatch {
+                source_command_index: record.root_command_index,
+                dispatch_index: record.origin_index,
+                command_slot: "nested_dispatch".to_string(),
+            },
+            caushell_graph::EdgeKind::ExpandsTo,
+        ),
         ExecutionUnitOriginKind::ShellCommandStringPayload => (
             DerivedInvocationOrigin::ShellCommandStringPayload {
                 command_index: record.origin_index,
@@ -3856,7 +4288,7 @@ fn nested_input_evidence(
                     .collect(),
             }
         }
-        caushell_profile::RecursivePayloadInput::ImplicitInput { source } => {
+        caushell_profile::RecursivePayloadInput::ImplicitInput { source, .. } => {
             NestedPayloadInputEvidence::ImplicitInput {
                 source: source.to_caushell_types_implicit_input_source(),
             }
@@ -3908,7 +4340,7 @@ fn nested_input_source(
 ) -> Option<TypedImplicitInputSource> {
     match input {
         caushell_profile::RecursivePayloadInput::ArgumentFragments { .. } => None,
-        caushell_profile::RecursivePayloadInput::ImplicitInput { source } => {
+        caushell_profile::RecursivePayloadInput::ImplicitInput { source, .. } => {
             Some(source.to_caushell_types_implicit_input_source())
         }
         caushell_profile::RecursivePayloadInput::LiteralText { .. } => None,
@@ -4106,6 +4538,10 @@ fn collect_nested_payload_records(
             record.command_ref.span.start_byte,
             request.sequence_no,
         );
+        let positional_args = parsed_request
+            .commands
+            .get(record.command_ref.command_index)
+            .and_then(shell_dispatch_positional_arguments);
         for candidate in top_level_recursive_payload_candidates(
             session,
             request,
@@ -4129,6 +4565,7 @@ fn collect_nested_payload_records(
                 depth: 1,
                 candidate,
                 bindings: top_level_bindings.clone(),
+                positional_args: positional_args.clone(),
             });
         }
 
@@ -4162,6 +4599,7 @@ fn collect_nested_payload_records(
                 depth: 1,
                 candidate,
                 bindings: top_level_bindings.clone(),
+                positional_args: positional_args.clone(),
             });
         }
 
@@ -4179,6 +4617,7 @@ fn collect_nested_payload_records(
                 depth: 1,
                 candidate,
                 bindings: bindings.clone(),
+                positional_args: None,
             });
         }
     }
@@ -4214,6 +4653,7 @@ fn collect_nested_payload_records(
                 depth: 1,
                 candidate,
                 bindings: command.bindings.clone(),
+                positional_args: shell_dispatch_positional_arguments(&command.command),
             });
         }
     }
@@ -4262,6 +4702,7 @@ fn collect_nested_payload_records(
                 depth: 1,
                 candidate,
                 bindings: command.bindings.clone(),
+                positional_args: shell_dispatch_positional_arguments(&command.command),
             });
         }
     }
@@ -4277,23 +4718,31 @@ fn collect_nested_payload_records(
             | ValueMaterialization::ResolvedExactScalar { .. }
             | ValueMaterialization::ResolvedRuntimeProduced { .. } => {
                 let parse_result = parse_recursive_payload_candidate(&materialized.candidate);
-                let record = NestedPayloadRecord::from_parse_result(
+                let record_bindings = entry
+                    .positional_args
+                    .as_deref()
+                    .map(|args| shell_payload_session_bindings(&entry.bindings, args))
+                    .unwrap_or_else(|| entry.bindings.clone());
+                let mut record = NestedPayloadRecord::from_parse_result(
                     record_id,
                     entry.parent_ref,
                     entry.root_command_index,
                     entry.depth,
-                    entry.bindings.clone(),
+                    record_bindings,
                     materialized.clone(),
                     parse_result,
                 );
 
-                if let NestedPayloadResolution::Parsed { parsed, .. } = &record.resolution {
+                if let NestedPayloadResolution::Parsed { parsed, .. } = &mut record.resolution {
+                    if let Some(positional_args) = entry.positional_args.as_deref() {
+                        bind_shell_positional_arguments(parsed, positional_args);
+                    }
                     let child_entries = collect_child_frontier_entries(
                         registry,
                         session,
                         request,
                         parsed,
-                        &entry.bindings,
+                        &record.bindings,
                         record_id,
                         entry.root_command_index,
                         entry.depth + 1,
@@ -4396,6 +4845,163 @@ fn collect_nested_payload_records(
 
     nested_records.sort_by_key(|record| record.record_id.0);
     nested_records
+}
+
+fn nested_payload_is_inline_shell_child(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    payload: &NestedPayloadRecord,
+    parsed_request: &caushell_parse::ParsedCommandArtifact,
+    top_level_records: &[ResolvedCommandSeed],
+    function_commands: &[TopLevelFunctionDerivedCommand],
+    function_records: &[ResolvedCommandSeed],
+    dispatch_commands: &[TopLevelDispatchDerivedCommand],
+    dispatch_records: &[ResolvedCommandSeed],
+    nested_records: &[NestedPayloadRecord],
+) -> bool {
+    let candidate = &payload.candidate.candidate;
+    if !matches!(
+        candidate.language,
+        PayloadLanguage::Sh | PayloadLanguage::Bash
+    ) || candidate.source != PayloadSource::InlineString
+    {
+        return false;
+    }
+
+    let expected = &payload.candidate;
+    let matches_canonical_shell =
+        |resolved: &caushell_profile::ResolvedInvocationArtifact,
+         bindings: &SessionBindings,
+         parent_command: &caushell_parse::CommandFact| {
+            if !matches!(resolved.normalized_command_name.as_str(), "sh" | "bash") {
+                return false;
+            }
+            let Some((script, _, _)) = shell_payload_from_bound_invocation(resolved) else {
+                return false;
+            };
+            let Ok(mut canonical_parse) = caushell_parse::parse_command(
+                &script,
+                if resolved.normalized_command_name.as_str() == "bash" {
+                    caushell_types::ShellKind::Bash
+                } else {
+                    caushell_types::ShellKind::Sh
+                },
+            ) else {
+                return false;
+            };
+            let positional_args =
+                shell_dispatch_positional_arguments(parent_command).unwrap_or_default();
+            bind_shell_positional_arguments(&mut canonical_parse, &positional_args);
+
+            // Suppress a historical NestedPayload seed only when regenerating the
+            // shell's typed payload from its resolved parent yields the same
+            // candidate and parsed body that canonical frontier expansion uses.
+            collect_recursive_payload_candidates(&resolved.bound)
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.language == expected.candidate.language
+                        && candidate.source == PayloadSource::InlineString
+                })
+                .any(|candidate| {
+                    let materialized =
+                        materialize_recursive_payload_candidate(&candidate, bindings);
+                    if materialized.candidate != expected.candidate
+                        || materialized.resolution != expected.resolution
+                    {
+                        return false;
+                    }
+                    let caushell_profile::RecursivePayloadParseResult::Parsed(mut parsed) =
+                        parse_recursive_payload_candidate(&materialized.candidate)
+                    else {
+                        return false;
+                    };
+                    bind_shell_positional_arguments(&mut parsed.artifact, &positional_args);
+                    parsed.artifact == canonical_parse
+                        && matches!(
+                            &payload.resolution,
+                            NestedPayloadResolution::Parsed { parsed, .. }
+                                if parsed == &canonical_parse
+                        )
+                })
+        };
+
+    match &payload.parent_ref {
+        NestedPayloadParentRef::RootCommand { command_index } => {
+            let Some(seed) = top_level_records
+                .iter()
+                .find(|seed| seed.command_ref.command_index == *command_index)
+            else {
+                return false;
+            };
+            let ResolveInvocationArtifactResult::Resolved(resolved) = &seed.result else {
+                return false;
+            };
+            let Some(command) = parsed_request.commands.get(*command_index) else {
+                return false;
+            };
+            let bindings = visible_variable_bindings_before_span(
+                session.summary(),
+                request,
+                parsed_request,
+                command.span.start_byte,
+                request.sequence_no,
+            );
+            matches_canonical_shell(resolved, &bindings, command)
+        }
+        NestedPayloadParentRef::DerivedInvocation { node_id } => {
+            if let Some((command, seed)) = dispatch_commands
+                .iter()
+                .zip(dispatch_records.iter())
+                .find(|(_, seed)| seed.source_node_id == *node_id)
+            {
+                if let ResolveInvocationArtifactResult::Resolved(resolved) = &seed.result {
+                    return matches_canonical_shell(resolved, &command.bindings, &command.command);
+                }
+                return false;
+            }
+            if let Some((command, seed)) = function_commands
+                .iter()
+                .zip(function_records.iter())
+                .find(|(_, seed)| seed.source_node_id == *node_id)
+            {
+                if let ResolveInvocationArtifactResult::Resolved(resolved) = &seed.result {
+                    return matches_canonical_shell(resolved, &command.bindings, &command.command);
+                }
+                return false;
+            }
+
+            for parent in nested_records {
+                let NestedPayloadResolution::Parsed { shell_kind, parsed } = &parent.resolution
+                else {
+                    continue;
+                };
+                for (command_index, command) in parsed.commands.iter().enumerate() {
+                    if derived_invocation_node_id(
+                        &request.session_id,
+                        request.sequence_no,
+                        parent.record_id.0,
+                        command_index,
+                    ) != *node_id
+                    {
+                        continue;
+                    }
+                    let resolved = resolve_invocation_artifact_with_bindings(
+                        registry,
+                        command,
+                        runtime_context_for_parsed_command(parsed, command_index, command),
+                        &parent.bindings,
+                    );
+                    if let ResolveInvocationArtifactResult::Resolved(resolved) = resolved {
+                        let _ = shell_kind;
+                        return matches_canonical_shell(&resolved, &parent.bindings, command);
+                    }
+                    return false;
+                }
+            }
+            false
+        }
+    }
 }
 
 fn top_level_recursive_payload_candidates(
@@ -4650,6 +5256,9 @@ fn resolved_parameter_path(
             caushell_profile::BoundArgumentMaterialization::Literal => {
                 (text.as_str(), node_kind.as_str())
             }
+            caushell_profile::BoundArgumentMaterialization::RuntimeData => {
+                (text.as_str(), "raw_string")
+            }
         };
 
         if let Some(path) = resolve_path_operand(text, *quoted, node_kind, cwd, home) {
@@ -4886,7 +5495,8 @@ fn rewrite_static_stdin_payload_candidates(
     let text = payloads.join("");
 
     for candidate in candidates.iter_mut() {
-        let caushell_profile::RecursivePayloadInput::ImplicitInput { source } = &candidate.input
+        let caushell_profile::RecursivePayloadInput::ImplicitInput { source, .. } =
+            &candidate.input
         else {
             continue;
         };
@@ -4905,6 +5515,7 @@ struct FrontierEntry {
     depth: u8,
     candidate: caushell_profile::RecursivePayloadCandidate,
     bindings: SessionBindings,
+    positional_args: Option<Vec<caushell_profile::ProjectedArg>>,
 }
 
 fn collect_child_frontier_entries(
@@ -4961,6 +5572,7 @@ fn collect_child_frontier_entries(
                 depth,
                 candidate: child_candidate,
                 bindings: command_bindings.clone(),
+                positional_args: shell_dispatch_positional_arguments(command),
             });
         }
     }
@@ -5048,6 +5660,85 @@ mod tests {
                     && record.command_ref.command_index == command_index
             })
             .expect("expected top-level resolve record")
+    }
+
+    fn execution_record_matches_fixture(
+        record: &caushell_runner::ExecutionUnitResolveRecord,
+        fixture: &str,
+    ) -> bool {
+        let parsed = caushell_parse::parse_command(fixture, ShellKind::Sh).unwrap();
+        assert_eq!(parsed.commands.len(), 1);
+        let command = &parsed.commands[0];
+        let arguments = command
+            .tokens
+            .iter()
+            .map(|token| {
+                caushell_parse::decode_static_shell_argument(
+                    &token.text,
+                    token.quoted,
+                    &token.node_kind,
+                )
+                .expect("fixture argv must be statically decoded")
+            })
+            .collect::<Vec<_>>();
+        execution_record_has_argv(
+            record,
+            command.command_name.as_deref().unwrap(),
+            &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+    }
+
+    fn execution_record_has_argv(
+        record: &caushell_runner::ExecutionUnitResolveRecord,
+        command_name: &str,
+        arguments: &[&str],
+    ) -> bool {
+        let Some(command) = record
+            .parsed_scope
+            .commands
+            .get(record.command_ref.command_index)
+        else {
+            return false;
+        };
+        command.command_name.as_deref() == Some(command_name)
+            && command.tokens.len() == arguments.len()
+            && command
+                .tokens
+                .iter()
+                .zip(arguments)
+                .all(|(token, expected)| token.text == *expected)
+    }
+
+    fn execution_record_has_runtime_path(
+        record: &caushell_runner::ExecutionUnitResolveRecord,
+        command_name: &str,
+        argument_index: usize,
+        roots: &[&str],
+    ) -> bool {
+        let command = &record.parsed_scope.commands[record.command_ref.command_index];
+        let expected = caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: roots.iter().map(|root| root.to_string()).collect(),
+            may_escape: false,
+        };
+        command.command_name.as_deref() == Some(command_name)
+            && command.tokens.get(argument_index).is_some_and(|token| {
+                token.implicit_input_source
+                    == Some(caushell_types::ImplicitInputSource::DispatchOutput)
+                    && token.runtime_argument_domain.as_ref() == Some(&expected)
+            })
+    }
+
+    fn execution_record_binds_runtime_path(
+        record: &caushell_runner::ExecutionUnitResolveRecord,
+        roots: &[&str],
+    ) -> bool {
+        let expected = caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: roots.iter().map(|root| root.to_string()).collect(),
+            may_escape: false,
+        };
+        matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
+            if resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
+                .any(|value| matches!(value, BoundValue::ImplicitInput { source: caushell_profile::ImplicitInputSource::DispatchOutput, domain: Some(domain) } if domain == &expected)))
     }
 
     fn run_pass(summary: &SessionSummary, shell_kind: ShellKind, command: &str) -> RunnerContext {
@@ -6422,6 +7113,31 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_xargs_input_does_not_prove_a_shell_positional_argument() {
+        let summary = SessionSummary::new();
+        let graph = graph_with_known_payload_file(
+            "/tmp/project/payload.txt",
+            "printf 'safe\\n' > payload.txt",
+            CommandSequenceNo::new(1),
+        );
+        for files in ["missing.txt payload.txt", "payload.txt missing.txt"] {
+            let ctx = run_pass_with_session(
+                graph.clone(),
+                &summary,
+                ShellKind::Bash,
+                &format!("cat {files} | xargs sh -c 'rm \"$1\"' _"),
+            );
+            assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
+                record.origin_kind == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
+                    && matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
+                        if resolved.normalized_command_name.as_str() == "rm"
+                            && resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
+                                .any(|value| matches!(value, BoundValue::ImplicitInput { source: caushell_profile::ImplicitInputSource::StdinData, domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded) })))
+            }), "partial input must not prove $1: {files}");
+        }
+    }
+
+    #[test]
     fn resolve_invocation_pass_records_static_xargs_shell_child_in_unified_records() {
         let summary = SessionSummary::new();
         let ctx = run_pass(
@@ -6435,7 +7151,7 @@ mod tests {
             .iter()
             .find(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                    && record.rendered_command_text == "bash '-lc' 'rm -rf \"$0\"' '/'"
+                    && execution_record_matches_fixture(record, "bash '-lc' 'rm -rf \"$0\"' '/'")
             })
             .expect("expected static xargs child");
 
@@ -6444,7 +7160,7 @@ mod tests {
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind
                 == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
-                && record.rendered_command_text == "rm -rf \"/\""
+                && execution_record_matches_fixture(record, "rm -rf \"/\"")
                 && record.parent_execution_node_id == xargs_child.source_node_id
         }));
     }
@@ -6456,7 +7172,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6471,7 +7187,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6486,7 +7202,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6501,7 +7217,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' 'safe' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' 'safe' '/'")
         }));
     }
 
@@ -6517,7 +7233,7 @@ mod tests {
             assert!(
                 ctx.execution_unit_resolve_records().iter().any(|record| {
                     record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                        && record.rendered_command_text == "rm '-rf' 'safe' '/'"
+                        && execution_record_matches_fixture(record, "rm '-rf' 'safe' '/'")
                 }),
                 "expected static xargs child for {command}"
             );
@@ -6542,7 +7258,7 @@ mod tests {
             assert!(
                 ctx.execution_unit_resolve_records().iter().any(|record| {
                     record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                        && record.rendered_command_text == "rm '-rf' '/'"
+                        && execution_record_matches_fixture(record, "rm '-rf' '/'")
                 }),
                 "expected static xargs child for {command}"
             );
@@ -6563,7 +7279,10 @@ mod tests {
             assert!(
                 !ctx.execution_unit_resolve_records().iter().any(|record| {
                     record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                        && record.rendered_command_text.contains("'/'")
+                        && record.parsed_scope.commands[record.command_ref.command_index]
+                            .tokens
+                            .iter()
+                            .any(|token| token.text == "/")
                 }),
                 "expected eof marker to stop xargs expansion before / for {command}"
             );
@@ -6584,14 +7303,17 @@ mod tests {
             .iter()
             .find(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                    && record.rendered_command_text == "bash '-lc' 'rm -rf \"$1\"' '_' '/'"
+                    && execution_record_matches_fixture(
+                        record,
+                        "bash '-lc' 'rm -rf \"$1\"' '_' '/'",
+                    )
             })
             .expect("expected replace-token static xargs child");
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind
                 == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
-                && record.rendered_command_text == "rm -rf \"/\""
+                && execution_record_matches_fixture(record, "rm -rf \"/\"")
                 && record.parent_execution_node_id == xargs_child.source_node_id
         }));
     }
@@ -6610,15 +7332,17 @@ mod tests {
             .iter()
             .find(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                    && record.rendered_command_text
-                        == "sh '-c' 'rm -rf --no-preserve-root \"$1\"' '_' '/'"
+                    && execution_record_matches_fixture(
+                        record,
+                        "sh '-c' 'rm -rf --no-preserve-root \"$1\"' '_' '/'",
+                    )
             })
             .expect("expected replace-token static xargs sh child");
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind
                 == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
-                && record.rendered_command_text == "rm -rf --no-preserve-root \"/\""
+                && execution_record_matches_fixture(record, "rm -rf --no-preserve-root \"/\"")
                 && record.parent_execution_node_id == xargs_child.source_node_id
         }));
     }
@@ -6637,15 +7361,30 @@ mod tests {
             .iter()
             .find(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
-                    && record.rendered_command_text
-                        == "sh -c rm -f \"$1\" sh victim/important.txt \\;"
+                    && execution_record_has_runtime_path(record, "sh", 3, &["victim"])
             })
-            .expect("expected find -exec shell child with materialized placeholder");
+            .unwrap_or_else(|| {
+                panic!(
+                    "find argv: {:#?}",
+                    ctx.execution_unit_resolve_records()
+                        .iter()
+                        .map(|record| (
+                            record.origin_kind,
+                            &record.parsed_scope.commands[record.command_ref.command_index].tokens
+                        ))
+                        .collect::<Vec<_>>()
+                )
+            });
+
+        let shell = &find_child.parsed_scope.commands[find_child.command_ref.command_index];
+        assert_eq!(shell.tokens.len(), 4);
+        assert_eq!(shell.tokens[1].text, "rm -f \"$1\"");
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind
                 == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
-                && record.rendered_command_text == "rm -f \"victim/important.txt\""
+                && execution_record_has_runtime_path(record, "rm", 1, &["victim"])
+                && execution_record_binds_runtime_path(record, &["victim"])
                 && record.parent_execution_node_id == find_child.source_node_id
         }));
     }
@@ -6659,17 +7398,25 @@ mod tests {
             r#"printf 'safe\n/\n' | xargs -n 1 bash -lc 'rm -rf "$0"'"#,
         );
 
-        let rendered: Vec<&str> = ctx
+        let children: Vec<_> = ctx
             .execution_unit_resolve_records()
             .iter()
             .filter(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
             })
-            .map(|record| record.rendered_command_text.as_str())
             .collect();
 
-        assert!(rendered.contains(&"bash '-lc' 'rm -rf \"$0\"' 'safe'"));
-        assert!(rendered.contains(&"bash '-lc' 'rm -rf \"$0\"' '/'"));
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().any(|record| execution_record_has_argv(
+            record,
+            "bash",
+            &["-lc", "rm -rf \"$0\"", "safe"]
+        )));
+        assert!(children.iter().any(|record| execution_record_has_argv(
+            record,
+            "bash",
+            &["-lc", "rm -rf \"$0\"", "/"]
+        )));
     }
 
     #[test]
@@ -6681,17 +7428,25 @@ mod tests {
             r#"printf 'safe\n/\n' | xargs -L 1 bash -lc 'rm -rf "$0"'"#,
         );
 
-        let rendered: Vec<&str> = ctx
+        let children: Vec<_> = ctx
             .execution_unit_resolve_records()
             .iter()
             .filter(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
             })
-            .map(|record| record.rendered_command_text.as_str())
             .collect();
 
-        assert!(rendered.contains(&"bash '-lc' 'rm -rf \"$0\"' 'safe'"));
-        assert!(rendered.contains(&"bash '-lc' 'rm -rf \"$0\"' '/'"));
+        assert_eq!(children.len(), 2);
+        assert!(children.iter().any(|record| execution_record_has_argv(
+            record,
+            "bash",
+            &["-lc", "rm -rf \"$0\"", "safe"]
+        )));
+        assert!(children.iter().any(|record| execution_record_has_argv(
+            record,
+            "bash",
+            &["-lc", "rm -rf \"$0\"", "/"]
+        )));
     }
 
     #[test]
@@ -6705,7 +7460,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6716,7 +7471,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6762,7 +7517,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6783,7 +7538,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -6913,7 +7668,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::RecursivePayload
-                && record.rendered_command_text == "echo materialized"
+                && execution_record_matches_fixture(record, "echo materialized")
         }));
     }
 
@@ -6928,7 +7683,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::RecursivePayload
-                && record.rendered_command_text == "echo materialized"
+                && execution_record_matches_fixture(record, "echo materialized")
         }));
     }
 
@@ -6944,7 +7699,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::RecursivePayload
-                && record.rendered_command_text == "echo materialized"
+                && execution_record_matches_fixture(record, "echo materialized")
         }));
     }
 
@@ -7006,7 +7761,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::RecursivePayload
-                && record.rendered_command_text == "echo materialized"
+                && execution_record_matches_fixture(record, "echo materialized")
         }));
     }
 
@@ -7022,7 +7777,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7038,7 +7793,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7054,7 +7809,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7070,7 +7825,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7086,7 +7841,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7102,7 +7857,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7118,7 +7873,7 @@ mod tests {
         assert!(
             ctx.execution_unit_resolve_records()
                 .iter()
-                .any(|record| { record.rendered_command_text == "echo materialized" })
+                .any(|record| { execution_record_matches_fixture(record, "echo materialized") })
         );
     }
 
@@ -7133,9 +7888,9 @@ mod tests {
             let ctx = run_pass(&summary, ShellKind::Bash, command);
 
             assert!(
-                ctx.execution_unit_resolve_records()
-                    .iter()
-                    .any(|record| { record.rendered_command_text == "echo materialized" }),
+                ctx.execution_unit_resolve_records().iter().any(|record| {
+                    execution_record_matches_fixture(record, "echo materialized")
+                }),
                 "expected materialized here-string payload for {command}"
             );
         }
@@ -7201,7 +7956,7 @@ mod tests {
 
         assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -7220,7 +7975,7 @@ mod tests {
         }));
         assert!(!ctx.execution_unit_resolve_records().iter().any(|record| {
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
-                && record.rendered_command_text == "rm '-rf' '/'"
+                && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
     }
 
@@ -7240,7 +7995,7 @@ mod tests {
             .find(|record| {
                 record.origin_kind
                     == caushell_runner::ExecutionUnitOriginKind::ProcessSubstitutionBody
-                    && record.rendered_command_text == "printf 'echo nested'"
+                    && execution_record_matches_fixture(record, "printf 'echo nested'")
             })
             .expect("expected process substitution body child");
 
@@ -7266,9 +8021,14 @@ mod tests {
             .find(|record| {
                 record.origin_kind
                     == caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
-                    && record.rendered_command_text == "mv \"/*\" /tmp/trash"
+                    && execution_record_has_runtime_path(record, "mv", 0, &["/"])
             })
             .expect("expected shell payload relocation child");
+
+        let command = &relocation.parsed_scope.commands[relocation.command_ref.command_index];
+        assert_eq!(command.tokens.len(), 2);
+        assert_eq!(command.tokens[1].text, "/tmp/trash");
+        assert!(execution_record_binds_runtime_path(relocation, &["/"]));
 
         assert_eq!(relocation.root_command_index, 0);
         assert!(

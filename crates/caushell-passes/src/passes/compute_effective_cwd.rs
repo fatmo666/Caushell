@@ -839,6 +839,10 @@ fn base_cwd_for_record(
         return parent_state;
     }
 
+    if let Some(dispatch_cwd) = &record.inherited_scope.dispatch_working_directory {
+        return CwdState::from(dispatch_cwd);
+    }
+
     let Some(parent_record) = records_by_node.get(&record.parent_execution_node_id) else {
         return parent_state;
     };
@@ -1171,6 +1175,7 @@ fn resolve_bound_path_value(value: &BoundValue, cwd: &CwdState, home: Option<&st
         BoundArgumentMaterialization::Literal => (*quoted, node_kind.as_str()),
         BoundArgumentMaterialization::ResolvedExactScalar { .. }
         | BoundArgumentMaterialization::ResolvedRuntimeProduced { .. } => (true, "string"),
+        BoundArgumentMaterialization::RuntimeData => (true, "raw_string"),
     };
 
     resolve_cwd_operand(text, effective_quoted, effective_node_kind, cwd, home)

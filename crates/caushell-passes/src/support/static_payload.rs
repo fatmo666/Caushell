@@ -19,6 +19,27 @@ use crate::{
 
 const MAX_LITERAL_CONTENT_TRACE_HOPS: usize = 8;
 
+/// Static evidence about bytes delivered to a command's standard input.
+///
+/// `complete` is deliberately independent of `known_fragments`: a complete
+/// empty stream has no fragments, while an unknown stream may also have no
+/// known fragments (or may contain some known fragments alongside unknown
+/// input).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StaticInputEvidence {
+    pub(crate) known_fragments: Vec<String>,
+    pub(crate) complete: bool,
+}
+
+impl StaticInputEvidence {
+    fn unknown() -> Self {
+        Self {
+            known_fragments: Vec::new(),
+            complete: false,
+        }
+    }
+}
+
 pub(crate) fn static_stdout_payloads_for_command(
     session: QuerySession<'_>,
     command: &CommandFact,
@@ -334,6 +355,523 @@ pub(crate) fn static_stdin_payloads_for_scoped_command(
     payloads
 }
 
+/// Return known bytes and whether they describe the command's entire stdin.
+///
+/// Unlike the older payload helper, this selects the effective stdin source:
+/// an explicit stdin redirection takes precedence over pipeline input, and
+/// when there are multiple stdin redirections the last one is effective.
+pub(crate) fn static_stdin_evidence_for_scoped_command(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence_no: CommandSequenceNo,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
+    let Some(_) = parsed.commands.get(command_index) else {
+        return StaticInputEvidence::unknown();
+    };
+    let cwd_reliable = cwd_reliable && !scope_has_prior_directory_transition(parsed, command_index);
+
+    let effective_redirection = parsed
+        .redirections
+        .iter()
+        .filter(|redirection| {
+            redirection_parent_command_index(parsed, redirection) == Some(command_index)
+                && redirection_targets_stdin_payload(redirection)
+        })
+        .last();
+
+    if let Some(redirection) = effective_redirection {
+        if redirection.operator.as_deref() == Some("<&") {
+            // Descriptor duplication or closure is not a file-content source.
+            return StaticInputEvidence::unknown();
+        }
+        return match redirection.kind {
+            RedirectionKind::HereDoc | RedirectionKind::HereString => {
+                match static_inline_stdin_payload(
+                    session,
+                    parsed.shell_kind,
+                    redirection,
+                    sequence_no,
+                    bindings,
+                    cwd,
+                    home,
+                    remaining_depth,
+                ) {
+                    Some(payload) => StaticInputEvidence {
+                        known_fragments: vec![if redirection.kind == RedirectionKind::HereString {
+                            format!("{payload}\n")
+                        } else {
+                            payload
+                        }],
+                        complete: true,
+                    },
+                    None => StaticInputEvidence::unknown(),
+                }
+            }
+            RedirectionKind::File => {
+                let Some(target) = redirection.target.as_ref() else {
+                    return StaticInputEvidence::unknown();
+                };
+                if target.node_kind == "process_substitution" {
+                    return process_substitution_evidence(
+                        session,
+                        &target.text,
+                        parsed.shell_kind,
+                        sequence_no,
+                        bindings,
+                        cwd,
+                        cwd_reliable,
+                        home,
+                        remaining_depth,
+                    );
+                }
+                let materialized_target = materialize_token_text(&target.text, bindings);
+                if !cwd_reliable && !std::path::Path::new(&materialized_target).is_absolute() {
+                    return StaticInputEvidence::unknown();
+                }
+                let Some(path) = resolve_materialized_path_operand(
+                    &target.text,
+                    target.quoted,
+                    &target.node_kind,
+                    cwd,
+                    home,
+                    bindings,
+                ) else {
+                    return StaticInputEvidence::unknown();
+                };
+                match known_literal_path_content_before_scoped_command_with_depth(
+                    session,
+                    parsed,
+                    command_index,
+                    &path,
+                    sequence_no,
+                    scope_base_bindings,
+                    cwd,
+                    home,
+                    0,
+                )
+                .or_else(|| {
+                    known_literal_path_content_before_sequence(
+                        session,
+                        &path,
+                        sequence_no,
+                        cwd,
+                        home,
+                    )
+                }) {
+                    Some(content) => StaticInputEvidence {
+                        known_fragments: vec![content],
+                        complete: true,
+                    },
+                    None => StaticInputEvidence::unknown(),
+                }
+            }
+        };
+    }
+
+    let Some(upstream_index) = pipeline_upstream_by_consumer(parsed)
+        .get(&command_index)
+        .copied()
+    else {
+        // A command outside a pipeline may inherit interactive or otherwise
+        // ambient stdin, which is not evidence of an empty stream.
+        return StaticInputEvidence::unknown();
+    };
+    if remaining_depth == 0 {
+        return StaticInputEvidence::unknown();
+    }
+    scoped_stdout_evidence(
+        session,
+        parsed,
+        upstream_index,
+        sequence_no,
+        bindings,
+        scope_base_bindings,
+        cwd,
+        cwd_reliable,
+        home,
+        remaining_depth.saturating_sub(1),
+    )
+}
+
+fn scoped_stdout_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence_no: CommandSequenceNo,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
+    let Some(command) = parsed.commands.get(command_index) else {
+        return StaticInputEvidence::unknown();
+    };
+    let cwd_reliable = cwd_reliable && !scope_has_prior_directory_transition(parsed, command_index);
+    if command.control_flow_span.is_some()
+        || command.guarded
+        || parsed.redirections.iter().any(|redirection| {
+            redirection_parent_command_index(parsed, redirection) == Some(command_index)
+                && !redirection_targets_stdin_payload(redirection)
+        })
+    {
+        return StaticInputEvidence::unknown();
+    }
+
+    match command.command_name.as_deref() {
+        Some("printf" | "echo") => {
+            if command.tokens.iter().any(|token| {
+                token.implicit_input_source.is_some()
+                    || token.runtime_argument_domain.is_some()
+                    || token_has_unresolved_expansion(token, bindings)
+            }) {
+                return StaticInputEvidence::unknown();
+            }
+            if command.command_name.as_deref() == Some("printf")
+                && command
+                    .tokens
+                    .iter()
+                    .any(|token| token.kind == CommandTokenKind::Flag)
+            {
+                return StaticInputEvidence::unknown();
+            }
+            let payloads = static_literal_stdout_payloads_for_command(command, bindings);
+            if payloads.is_empty() {
+                // `printf` without a format emits no bytes. `echo` without
+                // operands emits one newline (unless -n is present).
+                if command.command_name.as_deref() == Some("printf")
+                    && arg_tokens(command).is_empty()
+                {
+                    return StaticInputEvidence {
+                        known_fragments: Vec::new(),
+                        complete: true,
+                    };
+                }
+                if command.command_name.as_deref() == Some("echo")
+                    && arg_tokens(command).is_empty()
+                    && command.tokens.iter().all(|token| {
+                        token.kind == CommandTokenKind::Flag
+                            && matches!(token.text.as_str(), "-n" | "-E" | "-e")
+                    })
+                {
+                    return StaticInputEvidence {
+                        known_fragments: vec![if command
+                            .tokens
+                            .iter()
+                            .any(|token| token.text == "-n")
+                        {
+                            String::new()
+                        } else {
+                            "\n".to_string()
+                        }],
+                        complete: true,
+                    };
+                }
+                return StaticInputEvidence::unknown();
+            }
+            let payloads = if command.command_name.as_deref() == Some("echo")
+                && !command
+                    .tokens
+                    .iter()
+                    .any(|token| token.kind == CommandTokenKind::Flag && token.text == "-n")
+            {
+                payloads
+                    .into_iter()
+                    .map(|mut payload| {
+                        payload.push('\n');
+                        payload
+                    })
+                    .collect()
+            } else {
+                payloads
+            };
+            StaticInputEvidence {
+                known_fragments: payloads,
+                complete: true,
+            }
+        }
+        Some("cat") => cat_scoped_stdout_evidence(
+            session,
+            parsed,
+            command_index,
+            sequence_no,
+            bindings,
+            scope_base_bindings,
+            cwd,
+            cwd_reliable,
+            home,
+            remaining_depth,
+        ),
+        Some("bash" | "sh") if remaining_depth > 0 => {
+            let Some((payload, script_bindings)) =
+                static_shell_payload_and_bindings(command, bindings)
+            else {
+                return StaticInputEvidence::unknown();
+            };
+            let shell_kind = if command.command_name.as_deref() == Some("bash") {
+                caushell_types::ShellKind::Bash
+            } else {
+                caushell_types::ShellKind::Sh
+            };
+            let Ok(child_parsed) = caushell_parse::parse_command(&payload, shell_kind) else {
+                return StaticInputEvidence::unknown();
+            };
+            if child_parsed.commands.is_empty() {
+                return StaticInputEvidence {
+                    known_fragments: Vec::new(),
+                    complete: true,
+                };
+            }
+            if !is_linear_static_output_sequence(&child_parsed) {
+                return StaticInputEvidence::unknown();
+            }
+            let mut evidence = StaticInputEvidence {
+                known_fragments: Vec::new(),
+                complete: true,
+            };
+            for child_index in 0..child_parsed.commands.len() {
+                let child = scoped_stdout_evidence(
+                    session,
+                    &child_parsed,
+                    child_index,
+                    sequence_no,
+                    &script_bindings,
+                    &script_bindings,
+                    cwd,
+                    cwd_reliable,
+                    home,
+                    remaining_depth.saturating_sub(1),
+                );
+                evidence.known_fragments.extend(child.known_fragments);
+                evidence.complete &= child.complete;
+            }
+            evidence
+        }
+        _ => StaticInputEvidence::unknown(),
+    }
+}
+
+fn cat_scoped_stdout_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence_no: CommandSequenceNo,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
+    let Some(command) = parsed.commands.get(command_index) else {
+        return StaticInputEvidence::unknown();
+    };
+    if command
+        .tokens
+        .iter()
+        .any(|token| token.kind == CommandTokenKind::Flag)
+    {
+        // Options such as -n, -b, and -s alter cat's output bytes.
+        return StaticInputEvidence::unknown();
+    }
+    let args = arg_tokens(command);
+    if args.is_empty() {
+        return static_stdin_evidence_for_scoped_command(
+            session,
+            parsed,
+            command_index,
+            sequence_no,
+            bindings,
+            scope_base_bindings,
+            cwd,
+            cwd_reliable,
+            home,
+            remaining_depth,
+        );
+    }
+
+    let mut evidence = StaticInputEvidence {
+        known_fragments: Vec::new(),
+        complete: true,
+    };
+    for arg in args {
+        let part = if arg.node_kind == "process_substitution" {
+            process_substitution_evidence(
+                session,
+                &arg.text,
+                parsed.shell_kind,
+                sequence_no,
+                bindings,
+                cwd,
+                cwd_reliable,
+                home,
+                remaining_depth,
+            )
+        } else if let Some(path) = resolve_materialized_path_operand(
+            &arg.text,
+            arg.quoted,
+            &arg.node_kind,
+            cwd,
+            home,
+            bindings,
+        ) {
+            if !cwd_reliable
+                && !std::path::Path::new(&materialize_token_text(&arg.text, bindings)).is_absolute()
+            {
+                StaticInputEvidence::unknown()
+            } else {
+                match known_literal_path_content_before_sequence(
+                    session,
+                    &path,
+                    sequence_no,
+                    cwd,
+                    home,
+                ) {
+                    Some(content) => StaticInputEvidence {
+                        known_fragments: vec![content],
+                        complete: true,
+                    },
+                    None => StaticInputEvidence::unknown(),
+                }
+            }
+        } else {
+            StaticInputEvidence::unknown()
+        };
+        evidence.known_fragments.extend(part.known_fragments);
+        evidence.complete &= part.complete;
+    }
+    evidence
+}
+
+fn process_substitution_evidence(
+    session: QuerySession<'_>,
+    text: &str,
+    shell_kind: caushell_types::ShellKind,
+    sequence_no: CommandSequenceNo,
+    bindings: &SessionBindings,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
+    let Some(inner) = text
+        .strip_prefix("<(")
+        .and_then(|inner| inner.strip_suffix(')'))
+    else {
+        return StaticInputEvidence::unknown();
+    };
+    let Ok(inner_parsed) = caushell_parse::parse_command(inner, shell_kind) else {
+        return StaticInputEvidence::unknown();
+    };
+    if inner_parsed.commands.is_empty() || remaining_depth == 0 {
+        return StaticInputEvidence::unknown();
+    }
+    if !is_linear_static_output_sequence(&inner_parsed) {
+        return StaticInputEvidence::unknown();
+    }
+    let mut evidence = StaticInputEvidence {
+        known_fragments: Vec::new(),
+        complete: true,
+    };
+    for index in 0..inner_parsed.commands.len() {
+        let part = scoped_stdout_evidence(
+            session,
+            &inner_parsed,
+            index,
+            sequence_no,
+            bindings,
+            bindings,
+            cwd,
+            cwd_reliable,
+            home,
+            remaining_depth.saturating_sub(1),
+        );
+        evidence.known_fragments.extend(part.known_fragments);
+        evidence.complete &= part.complete;
+    }
+    evidence
+}
+
+fn token_has_unresolved_expansion(
+    token: &caushell_parse::CommandToken,
+    bindings: &SessionBindings,
+) -> bool {
+    if matches!(token.node_kind.as_str(), "raw_string" | "ansi_c_string") {
+        return false;
+    }
+    let text = token.text.as_str();
+    if text.contains('$') || text.contains('`') {
+        // Only an exact scalar reference is proven by the legacy materializer.
+        // Mixed text can contain a resolved reference followed by an unknown
+        // one, so leave it incomplete until it has richer fragment evidence.
+        return exact_scalar_shell_parameter_reference_value(text, bindings).is_none();
+    }
+    false
+}
+
+fn is_linear_static_output_sequence(parsed: &ParsedCommandArtifact) -> bool {
+    parsed.redirections.is_empty()
+        && parsed.commands.iter().all(|command| {
+            !command.in_pipeline && !command.guarded && command.control_flow_span.is_none()
+        })
+}
+
+fn static_shell_payload_and_bindings(
+    command: &CommandFact,
+    bindings: &SessionBindings,
+) -> Option<(String, SessionBindings)> {
+    if !matches!(command.command_name.as_deref(), Some("bash" | "sh")) {
+        return None;
+    }
+    if command
+        .tokens
+        .iter()
+        .any(|token| token.kind == CommandTokenKind::DashDash)
+    {
+        return None;
+    }
+
+    let tokens = command
+        .tokens
+        .iter()
+        .filter(|token| token.kind != CommandTokenKind::DashDash)
+        .collect::<Vec<_>>();
+    if tokens.iter().any(|token| {
+        token.implicit_input_source.is_some() || token.runtime_argument_domain.is_some()
+    }) {
+        return None;
+    }
+    let decoded = tokens
+        .iter()
+        .map(|token| {
+            caushell_parse::decode_static_shell_argument(
+                &token.text,
+                token.quoted,
+                &token.node_kind,
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let script_index = shell_command_payload_arg_index(&decoded)?;
+    let script = decoded.get(script_index)?.clone();
+
+    // For `sh -c SCRIPT ARG0 ARG1 ...`, ARG0 becomes $0, and SCRIPT's $1
+    // starts with ARG1. Do not splice argv into the script text: even metachar-
+    // acters in a static argument remain data when the shell expands "$1".
+    let mut script_bindings = bindings.clone();
+    script_bindings.replace_positional_parameters_with_exact_scalars(
+        decoded.iter().skip(script_index + 2).cloned(),
+    );
+    Some((script, script_bindings))
+}
+
 pub(crate) fn static_literal_stdout_payloads_for_command(
     command: &CommandFact,
     bindings: &SessionBindings,
@@ -345,6 +883,18 @@ pub(crate) fn static_literal_stdout_payloads_for_command(
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn scope_has_prior_directory_transition(
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+) -> bool {
+    parsed.commands.iter().take(command_index).any(|command| {
+        matches!(
+            command.command_name.as_deref(),
+            Some("cd" | "pushd" | "popd")
+        )
+    })
 }
 
 pub(crate) fn materialize_static_token_text(text: &str, bindings: &SessionBindings) -> String {
@@ -480,14 +1030,6 @@ pub(crate) fn static_shell_payload_from_args(args: &[String]) -> Option<String> 
         &unquote_static_shell_arg(&payload).unwrap_or(payload),
         &trailing_args,
     ))
-}
-
-pub(crate) fn substitute_static_shell_positional_parameters(
-    payload: &str,
-    trailing_args: &[String],
-) -> String {
-    let payload = unquote_static_shell_arg(payload).unwrap_or_else(|| payload.to_string());
-    substitute_shell_positional_parameters(&payload, trailing_args)
 }
 
 fn cat_static_payloads(
@@ -2300,6 +2842,306 @@ fn push_u8(decoded: &mut String, value: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stdin_evidence_for(raw_command: &str, target_index: usize) -> StaticInputEvidence {
+        stdin_evidence_for_with_cwd_reliability(raw_command, target_index, true)
+    }
+
+    fn stdin_evidence_for_with_bindings(
+        raw_command: &str,
+        target_index: usize,
+        bindings: &SessionBindings,
+    ) -> StaticInputEvidence {
+        stdin_evidence_for_with_bindings_and_cwd_reliability(
+            raw_command,
+            target_index,
+            bindings,
+            true,
+        )
+    }
+
+    fn stdin_evidence_for_with_cwd_reliability(
+        raw_command: &str,
+        target_index: usize,
+        cwd_reliable: bool,
+    ) -> StaticInputEvidence {
+        stdin_evidence_for_with_bindings_and_cwd_reliability(
+            raw_command,
+            target_index,
+            &SessionBindings::new(),
+            cwd_reliable,
+        )
+    }
+
+    fn stdin_evidence_for_with_bindings_and_cwd_reliability(
+        raw_command: &str,
+        target_index: usize,
+        bindings: &SessionBindings,
+        cwd_reliable: bool,
+    ) -> StaticInputEvidence {
+        let parsed = caushell_parse::parse_command(raw_command, caushell_types::ShellKind::Bash)
+            .expect("command should parse");
+        let graph = caushell_graph::SessionGraph::new();
+        let summary = caushell_types::SessionSummary::new();
+        let session = QuerySession::new(&graph, &summary);
+        static_stdin_evidence_for_scoped_command(
+            session,
+            &parsed,
+            target_index,
+            CommandSequenceNo::new(0),
+            &bindings,
+            &bindings,
+            "/",
+            cwd_reliable,
+            None,
+            4,
+        )
+    }
+
+    fn graph_with_known_items_file(path: &str) -> caushell_graph::SessionGraph {
+        use caushell_graph::{Edge, EdgeKind, GraphNode, NodeId, SessionGraph};
+        use caushell_types::{
+            ProvenanceArtifact, ProvenanceDomainLabel, ProvenanceEdgeSemantics,
+            ProvenanceProduceKind, ResolvedPathPurpose, ResolvedPathRole, SessionId,
+        };
+
+        let mut graph = SessionGraph::new();
+        let command_node_id = NodeId::new("command:sess-1:1");
+        let artifact_node_id = NodeId::new(format!("artifact:path-content:{path}"));
+        let _ = graph.add_command_invocation(
+            command_node_id.clone(),
+            SessionId::new("sess-1"),
+            CommandSequenceNo::new(1),
+            "printf 'safe\\n' > /tmp/project/items",
+            "/tmp/project",
+            caushell_types::ShellKind::Bash,
+        );
+        let _ = graph.add_node(GraphNode::new_provenance_artifact(
+            artifact_node_id.clone(),
+            ProvenanceArtifact::PathContent {
+                path: path.to_string(),
+                version: None,
+            },
+        ));
+        let _ = graph.add_edge(Edge::with_semantics(
+            command_node_id,
+            artifact_node_id,
+            EdgeKind::Produces,
+            ProvenanceEdgeSemantics::Produce {
+                produce_kind: ProvenanceProduceKind::PathWrite,
+                slot_name: Some("redirect_target_0".to_string()),
+                normalized_command_name: None,
+                domain_label: Some(ProvenanceDomainLabel::Path {
+                    role: ResolvedPathRole::Write,
+                    purpose: Some(ResolvedPathPurpose::GenericOperand),
+                }),
+            },
+        ));
+        graph
+    }
+
+    fn stdin_evidence_with_graph_and_cwd_reliability(
+        graph: &caushell_graph::SessionGraph,
+        raw_command: &str,
+        target_index: usize,
+        cwd: &str,
+        cwd_reliable: bool,
+    ) -> StaticInputEvidence {
+        let parsed = caushell_parse::parse_command(raw_command, caushell_types::ShellKind::Bash)
+            .expect("command should parse");
+        let summary = caushell_types::SessionSummary::new();
+        let session = QuerySession::new(graph, &summary);
+        let bindings = SessionBindings::new();
+        static_stdin_evidence_for_scoped_command(
+            session,
+            &parsed,
+            target_index,
+            CommandSequenceNo::new(2),
+            &bindings,
+            &bindings,
+            cwd,
+            cwd_reliable,
+            None,
+            4,
+        )
+    }
+
+    #[test]
+    fn stdin_evidence_distinguishes_known_empty_from_unknown() {
+        let known_empty = stdin_evidence_for("printf '' | xargs", 1);
+        assert!(known_empty.complete);
+        assert_eq!(known_empty.known_fragments.concat(), "");
+
+        let unknown = stdin_evidence_for("printf '%s' \"$UNBOUND\" | xargs", 1);
+        assert!(!unknown.complete);
+        assert!(unknown.known_fragments.is_empty());
+    }
+
+    #[test]
+    fn relative_redirected_file_is_unknown_after_directory_transition() {
+        let graph = graph_with_known_items_file("/tmp/project/items");
+        let evidence = stdin_evidence_with_graph_and_cwd_reliability(
+            &graph,
+            "cd /var/tmp && xargs rm < items",
+            1,
+            "/tmp/project",
+            true,
+        );
+
+        assert!(!evidence.complete);
+        assert!(evidence.known_fragments.is_empty());
+    }
+
+    #[test]
+    fn relative_redirected_file_is_unknown_when_inherited_cwd_is_unreliable() {
+        let graph = graph_with_known_items_file("/tmp/project/items");
+        let evidence = stdin_evidence_with_graph_and_cwd_reliability(
+            &graph,
+            "xargs rm < items",
+            0,
+            "/tmp/project",
+            false,
+        );
+
+        assert!(!evidence.complete);
+        assert!(evidence.known_fragments.is_empty());
+    }
+
+    #[test]
+    fn relative_cat_file_is_unknown_after_directory_transition() {
+        let graph = graph_with_known_items_file("/tmp/project/items");
+        let evidence = stdin_evidence_with_graph_and_cwd_reliability(
+            &graph,
+            "cd /var/tmp && cat items | xargs rm",
+            2,
+            "/tmp/project",
+            true,
+        );
+
+        assert!(!evidence.complete);
+        assert!(evidence.known_fragments.is_empty());
+    }
+
+    #[test]
+    fn relative_file_inside_process_substitution_is_unknown_after_directory_transition() {
+        let graph = graph_with_known_items_file("/tmp/project/items");
+        let evidence = stdin_evidence_with_graph_and_cwd_reliability(
+            &graph,
+            "cd /var/tmp && cat <(cat items) | xargs rm",
+            2,
+            "/tmp/project",
+            true,
+        );
+
+        assert!(!evidence.complete);
+        assert!(evidence.known_fragments.is_empty());
+    }
+
+    #[test]
+    fn absolute_file_and_literal_printf_remain_exact_with_unreliable_cwd() {
+        let graph = graph_with_known_items_file("/tmp/project/items");
+        let absolute = stdin_evidence_with_graph_and_cwd_reliability(
+            &graph,
+            "cd /var/tmp && xargs rm < /tmp/project/items",
+            1,
+            "/tmp/project",
+            true,
+        );
+        assert!(absolute.complete);
+        assert_eq!(absolute.known_fragments.concat(), "safe\n");
+
+        let literal = stdin_evidence_for_with_cwd_reliability("printf 'safe\\n' | xargs", 1, false);
+        assert!(literal.complete);
+        assert_eq!(literal.known_fragments.concat(), "safe\n");
+
+        let process_substitution =
+            stdin_evidence_for_with_cwd_reliability("cat <(printf 'safe\\n') | xargs", 1, false);
+        assert!(process_substitution.complete);
+        assert_eq!(process_substitution.known_fragments.concat(), "safe\n");
+    }
+
+    #[test]
+    fn mixed_known_and_unknown_expansions_are_not_complete() {
+        let bindings = SessionBindings::new().with_exact_scalar("KNOWN", "value");
+        let evidence = stdin_evidence_for_with_bindings(
+            "printf '%s' \"$KNOWN/$UNKNOWN\" | xargs",
+            1,
+            &bindings,
+        );
+
+        assert!(!evidence.complete);
+    }
+
+    #[test]
+    fn stdin_evidence_explicit_redirection_overrides_pipeline_input() {
+        let evidence = stdin_evidence_for("printf pipeline | cat <<<'redirect'", 1);
+
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "redirect\n");
+    }
+
+    #[test]
+    fn producer_stdout_redirection_prevents_claiming_pipeline_bytes() {
+        let evidence = stdin_evidence_for("printf payload > /tmp/output | xargs", 1);
+
+        assert!(!evidence.complete);
+        assert!(evidence.known_fragments.is_empty());
+    }
+
+    #[test]
+    fn cat_stdin_redirection_can_still_produce_known_pipeline_bytes() {
+        let evidence = stdin_evidence_for("cat <<<'payload' | xargs", 1);
+
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "payload\n");
+    }
+
+    #[test]
+    fn cat_process_substitutions_keep_known_fragments_when_an_input_is_unknown() {
+        let evidence = stdin_evidence_for("cat <(printf known) <(unknown-command) | xargs", 1);
+
+        assert!(!evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "known");
+    }
+
+    #[test]
+    fn cat_options_do_not_claim_exact_static_output() {
+        let evidence = stdin_evidence_for("cat -n <(printf known) | xargs", 1);
+
+        assert!(!evidence.complete);
+    }
+
+    #[test]
+    fn process_substitution_pipeline_is_not_flattened_as_exact_output() {
+        let evidence = stdin_evidence_for("cat <(printf known | cat) | xargs", 1);
+
+        assert!(!evidence.complete);
+    }
+
+    #[test]
+    fn shell_positional_metacharacters_remain_argv_data() {
+        let evidence =
+            stdin_evidence_for("bash -c 'printf \"%s\" \"$1\"' _ 'semi;$data' | xargs", 1);
+
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "semi;$data");
+    }
+
+    #[test]
+    fn shell_unknown_trailing_argv_is_not_static() {
+        let evidence =
+            stdin_evidence_for("bash -c 'printf \"%s\" \"$1\"' _ \"$UNKNOWN\" | xargs", 1);
+
+        assert!(!evidence.complete);
+    }
+
+    #[test]
+    fn static_input_preserves_literal_semicolon_and_dollar_data() {
+        let evidence = stdin_evidence_for("printf '%s\\n' 'semi;$data' | xargs", 1);
+
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "semi;$data\n");
+    }
 
     #[test]
     fn static_printf_payload_renders_string_format_with_literal_escape() {

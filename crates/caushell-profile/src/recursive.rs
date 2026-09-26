@@ -30,6 +30,7 @@ pub struct RecursivePayloadArgumentFragment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecursivePayloadFragmentMaterialization {
     Literal,
+    RuntimeData,
     ResolvedExactScalar { variable_name: String },
     ResolvedRuntimeProduced { variable_name: String },
 }
@@ -41,6 +42,7 @@ pub enum RecursivePayloadInput {
     },
     ImplicitInput {
         source: ImplicitInputSource,
+        domain: Option<caushell_types::RuntimeArgumentDomain>,
     },
     LiteralText {
         text: String,
@@ -108,6 +110,9 @@ pub fn collect_recursive_payload_candidates(
                         BoundArgumentMaterialization::Literal => {
                             RecursivePayloadFragmentMaterialization::Literal
                         }
+                        BoundArgumentMaterialization::RuntimeData => {
+                            RecursivePayloadFragmentMaterialization::RuntimeData
+                        }
                         BoundArgumentMaterialization::ResolvedExactScalar { variable_name } => {
                             RecursivePayloadFragmentMaterialization::ResolvedExactScalar {
                                 variable_name: variable_name.clone(),
@@ -122,6 +127,7 @@ pub fn collect_recursive_payload_candidates(
                 }),
                 BoundValue::ImplicitInput {
                     source: implicit_source,
+                    domain,
                 } => {
                     candidates.push(RecursivePayloadCandidate {
                         language,
@@ -131,6 +137,7 @@ pub fn collect_recursive_payload_candidates(
                         },
                         input: RecursivePayloadInput::ImplicitInput {
                             source: *implicit_source,
+                            domain: domain.clone(),
                         },
                     });
                 }
@@ -160,6 +167,7 @@ pub fn collect_recursive_payload_candidates(
             origin: RecursivePayloadOrigin::FormImplicitInput,
             input: RecursivePayloadInput::ImplicitInput {
                 source: implicit_input.source,
+                domain: None,
             },
         });
     }
@@ -399,7 +407,7 @@ mod tests {
         );
 
         match &candidates[0].input {
-            RecursivePayloadInput::ImplicitInput { source } => {
+            RecursivePayloadInput::ImplicitInput { source, .. } => {
                 assert_eq!(*source, ImplicitInputSource::StdinPayload);
             }
             other => panic!("unexpected recursive payload input: {other:?}"),
@@ -431,7 +439,7 @@ mod tests {
         );
 
         match &candidates[0].input {
-            RecursivePayloadInput::ImplicitInput { source } => {
+            RecursivePayloadInput::ImplicitInput { source, .. } => {
                 assert_eq!(*source, ImplicitInputSource::InteractiveSession);
             }
             other => panic!("unexpected recursive payload input: {other:?}"),
@@ -548,7 +556,7 @@ mod tests {
                 assert_eq!(candidate.origin, RecursivePayloadOrigin::FormImplicitInput);
 
                 match &candidate.input {
-                    RecursivePayloadInput::ImplicitInput { source } => {
+                    RecursivePayloadInput::ImplicitInput { source, .. } => {
                         assert_eq!(*source, ImplicitInputSource::StdinPayload);
                     }
                     other => panic!("unexpected recursive payload input: {other:?}"),

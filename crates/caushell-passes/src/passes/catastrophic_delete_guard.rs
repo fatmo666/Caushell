@@ -2014,9 +2014,11 @@ mod tests {
                 finding.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete
                     && finding
                         .message
-                        .contains("delete target /etc/* in command rm")
+                        .contains("dispatch-scoped destructive child command rm")
+                    && finding.message.contains("catastrophic search root /etc")
+                    && finding.message.contains("via find")
             }),
-            "expected exact nested rm target finding, got {:?}",
+            "expected nested rm to remain scoped to the catastrophic find root, got {:?}",
             ctx.findings
         );
     }

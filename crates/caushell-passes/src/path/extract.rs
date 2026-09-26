@@ -1,9 +1,9 @@
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_parse::{ParsedCommandArtifact, RedirectionFact, RedirectionKind, SourceSpan};
 use caushell_profile::{
-    BoundInvocation, BoundParameter, BoundValue, DerivedPathSource, DerivedPathTarget, Effect,
-    EffectKind, EffectTarget, MutationScopeTarget, PathPurpose, PathRole,
-    ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SemanticType, SlotName,
+    BoundArgumentMaterialization, BoundInvocation, BoundParameter, BoundValue, DerivedPathSource,
+    DerivedPathTarget, Effect, EffectKind, EffectTarget, MutationScopeTarget, PathPurpose,
+    PathRole, ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SemanticType, SlotName,
     StructuredValueContext, ToolConventionPathTarget, ValueMaterialization, parse_owner_group_spec,
 };
 use caushell_types::{
@@ -56,6 +56,80 @@ pub(crate) struct MutationTargetCandidate {
     pub operation: EffectKind,
     pub slot_name: String,
     pub resolution: PathResolution,
+    pub cwd_dependent: bool,
+}
+
+pub(crate) fn path_operand_depends_on_cwd(
+    text: &str,
+    _quoted: bool,
+    _node_kind: &str,
+    materialization: Option<&ValueMaterialization>,
+) -> bool {
+    let effective_text = match materialization {
+        Some(ValueMaterialization::ResolvedExactScalar { value, .. })
+        | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. }) => value.as_str(),
+        _ => text,
+    };
+    !(effective_text.starts_with('/') || effective_text == "~" || effective_text.starts_with("~/"))
+}
+
+fn bound_path_operand_depends_on_cwd(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    materialization: &BoundArgumentMaterialization,
+    projection_materialization: Option<&ValueMaterialization>,
+) -> bool {
+    if matches!(
+        materialization,
+        BoundArgumentMaterialization::RuntimeData
+            | BoundArgumentMaterialization::ResolvedExactScalar { .. }
+            | BoundArgumentMaterialization::ResolvedRuntimeProduced { .. }
+    ) {
+        return !text.starts_with('/');
+    }
+    path_operand_depends_on_cwd(text, quoted, node_kind, projection_materialization)
+}
+
+fn runtime_input_path_depends_on_cwd(
+    domain: Option<&caushell_types::RuntimeArgumentDomain>,
+) -> bool {
+    !matches!(
+        domain,
+        Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, .. })
+            if !roots.is_empty() && roots.iter().all(|root| root.starts_with('/'))
+    )
+}
+
+fn runtime_input_path_resolution<S: std::fmt::Debug>(
+    source: &S,
+    domain: Option<&caushell_types::RuntimeArgumentDomain>,
+    cwd: &str,
+) -> PathResolution {
+    match domain {
+        Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape }) => {
+            PathResolution::BoundedPathSet {
+                roots: roots
+                    .iter()
+                    .map(|root| lexical_path_from_argv(root, cwd))
+                    .collect(),
+                may_escape: *may_escape,
+            }
+        }
+        Some(caushell_types::RuntimeArgumentDomain::Unbounded) | None => {
+            PathResolution::UnsupportedDynamicText {
+                text: format!("path operand depends on runtime input {source:?}"),
+            }
+        }
+    }
+}
+
+fn lexical_path_from_argv(text: &str, cwd: &str) -> String {
+    if text.starts_with('/') {
+        normalize_shell_path(text)
+    } else {
+        join_shell_path(cwd, text)
+    }
 }
 
 pub(crate) fn collect_effect_mutation_targets(
@@ -101,19 +175,41 @@ pub(crate) fn collect_effect_mutation_targets(
                             quoted,
                             node_kind,
                             span,
+                            materialization,
                             ..
                         } = value
                         {
+                            let projection_materialization =
+                                arg_materialization_for_span(resolved, span);
                             targets.push(MutationTargetCandidate {
                                 operation: effect.kind,
                                 slot_name: slot.as_str().to_string(),
-                                resolution: resolve_path_resolution(
+                                cwd_dependent: bound_path_operand_depends_on_cwd(
+                                    text,
+                                    *quoted,
+                                    node_kind,
+                                    materialization,
+                                    projection_materialization,
+                                ),
+                                resolution: resolve_bound_path_resolution(
                                     text,
                                     *quoted,
                                     node_kind,
                                     cwd,
                                     home,
-                                    arg_materialization_for_span(resolved, span),
+                                    materialization,
+                                    projection_materialization,
+                                ),
+                            });
+                        } else if let BoundValue::ImplicitInput { source, domain } = value {
+                            targets.push(MutationTargetCandidate {
+                                operation: effect.kind,
+                                slot_name: slot.as_str().to_string(),
+                                cwd_dependent: runtime_input_path_depends_on_cwd(domain.as_ref()),
+                                resolution: runtime_input_path_resolution(
+                                    source,
+                                    domain.as_ref(),
+                                    cwd,
                                 ),
                             });
                         }
@@ -125,6 +221,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     operation: effect.kind,
                     slot_name: tool_convention_slot_name(effect_index, &target.convention),
                     resolution: resolve_tool_convention_path(target, cwd),
+                    cwd_dependent: false,
                 });
             }
             EffectTarget::DerivedPath(target) => {
@@ -145,6 +242,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     operation: effect.kind,
                     slot_name: path.slot_name,
                     resolution: path.resolution,
+                    cwd_dependent: false,
                 }));
             }
             EffectTarget::MutationScope(scope) => {
@@ -162,6 +260,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     operation: effect.kind,
                     slot_name,
                     resolution,
+                    cwd_dependent: false,
                 });
             }
             EffectTarget::ImplicitInput(_) | EffectTarget::Dispatch(_) | EffectTarget::None => {}
@@ -174,6 +273,7 @@ pub(crate) fn collect_effect_mutation_targets(
                 resolution: PathResolution::UnsupportedDynamicText {
                     text: format!("unresolved mutation target for {:?}", effect.kind),
                 },
+                cwd_dependent: true,
             });
         }
     }
@@ -271,21 +371,46 @@ fn collect_resolved_record_path_facts(
 ) {
     for parameter in &resolved.bound.bound_parameters {
         for value in &parameter.values {
-            let BoundValue::Argument {
-                text,
-                quoted,
-                node_kind,
-                span,
-                ..
-            } = value
-            else {
-                continue;
-            };
-
-            let Some((role, purpose)) =
-                path_semantics_for_parameter_value(&parameter.semantic, text)
-            else {
-                continue;
+            let (resolution, role, purpose) = match value {
+                BoundValue::Argument {
+                    text,
+                    quoted,
+                    node_kind,
+                    span,
+                    materialization,
+                    ..
+                } => {
+                    let Some((role, purpose)) =
+                        path_semantics_for_parameter_value(&parameter.semantic, text)
+                    else {
+                        continue;
+                    };
+                    (
+                        resolve_bound_path_resolution(
+                            text,
+                            *quoted,
+                            node_kind,
+                            cwd,
+                            home,
+                            materialization,
+                            arg_materialization_for_span(resolved, span),
+                        ),
+                        role,
+                        purpose,
+                    )
+                }
+                BoundValue::ImplicitInput { source, domain } => {
+                    let Some((role, purpose)) =
+                        path_semantics_for_parameter_value(&parameter.semantic, "")
+                    else {
+                        continue;
+                    };
+                    (
+                        runtime_input_path_resolution(source, domain.as_ref(), cwd),
+                        role,
+                        purpose,
+                    )
+                }
             };
 
             out.push(PathFactCandidate {
@@ -293,14 +418,7 @@ fn collect_resolved_record_path_facts(
                 command_index: record.command_index(),
                 slot_name: parameter.name.as_str().to_string(),
                 normalized_command_name: resolved.normalized_command_name.clone(),
-                resolution: resolve_path_resolution(
-                    text,
-                    *quoted,
-                    node_kind,
-                    cwd,
-                    home,
-                    arg_materialization_for_span(resolved, span),
-                ),
+                resolution,
                 role,
                 purpose,
                 metadata_mutation: metadata_mutation_for_path_slot(
@@ -332,20 +450,36 @@ fn collect_selection_error_path_facts(
 ) {
     for parameter in &bound.bound_parameters {
         for value in &parameter.values {
-            let BoundValue::Argument {
-                text,
-                quoted,
-                node_kind,
-                ..
-            } = value
-            else {
-                continue;
-            };
-
-            let Some((role, purpose)) =
-                path_semantics_for_parameter_value(&parameter.semantic, text)
-            else {
-                continue;
+            let (resolution, role, purpose) = match value {
+                BoundValue::Argument {
+                    text,
+                    quoted,
+                    node_kind,
+                    ..
+                } => {
+                    let Some((role, purpose)) =
+                        path_semantics_for_parameter_value(&parameter.semantic, text)
+                    else {
+                        continue;
+                    };
+                    (
+                        resolve_path_resolution(text, *quoted, node_kind, cwd, home, None),
+                        role,
+                        purpose,
+                    )
+                }
+                BoundValue::ImplicitInput { source, domain } => {
+                    let Some((role, purpose)) =
+                        path_semantics_for_parameter_value(&parameter.semantic, "")
+                    else {
+                        continue;
+                    };
+                    (
+                        runtime_input_path_resolution(source, domain.as_ref(), cwd),
+                        role,
+                        purpose,
+                    )
+                }
             };
 
             out.push(PathFactCandidate {
@@ -353,7 +487,7 @@ fn collect_selection_error_path_facts(
                 command_index: record.command_index(),
                 slot_name: parameter.name.as_str().to_string(),
                 normalized_command_name: normalized_command_name.to_string(),
-                resolution: resolve_path_resolution(text, *quoted, node_kind, cwd, home, None),
+                resolution,
                 role,
                 purpose,
                 metadata_mutation: metadata_mutation_for_path_slot(bound, parameter.name.as_str()),
@@ -924,6 +1058,10 @@ fn compose_derived_path_under_root(
         PathResolution::HomeUnavailable { text } => {
             PathResolution::HomeUnavailable { text: text.clone() }
         }
+        PathResolution::BoundedPathSet { roots, may_escape } => PathResolution::BoundedPathSet {
+            roots: roots.clone(),
+            may_escape: *may_escape,
+        },
     }
 }
 
@@ -1170,6 +1308,35 @@ fn arg_materialization_for_span<'a>(
         .iter()
         .zip(resolved.materialized_projection.arg_resolutions.iter())
         .find_map(|(arg, resolution)| (&arg.span == span).then_some(resolution))
+}
+
+fn resolve_bound_path_resolution(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    cwd: &str,
+    home: Option<&str>,
+    materialization: &BoundArgumentMaterialization,
+    projection_materialization: Option<&ValueMaterialization>,
+) -> PathResolution {
+    if matches!(
+        materialization,
+        BoundArgumentMaterialization::RuntimeData
+            | BoundArgumentMaterialization::ResolvedExactScalar { .. }
+            | BoundArgumentMaterialization::ResolvedRuntimeProduced { .. }
+    ) {
+        return PathResolution::Concrete {
+            path: lexical_path_from_argv(text, cwd),
+        };
+    }
+    resolve_path_resolution(
+        text,
+        quoted,
+        node_kind,
+        cwd,
+        home,
+        projection_materialization,
+    )
 }
 
 fn resolve_path_resolution(
@@ -1534,6 +1701,9 @@ fn path_resolution_id_suffix(resolution: &PathResolution) -> String {
         }
         PathResolution::UnsupportedDynamicText { text } => format!("dynamic-text:{text}"),
         PathResolution::HomeUnavailable { text } => format!("home-unavailable:{text}"),
+        PathResolution::BoundedPathSet { roots, may_escape } => {
+            format!("bounded-path-set:{}:{}", roots.join("|"), may_escape)
+        }
     }
 }
 
@@ -1673,5 +1843,73 @@ fn provenance_produce_kind_for_path_fact(role: PathRole) -> Option<ProvenancePro
         | PathRole::Target
         | PathRole::Config
         | PathRole::CwdAnchor => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BoundArgumentMaterialization, PathResolution, ValueMaterialization,
+        resolve_bound_path_resolution, runtime_input_path_resolution,
+    };
+    use caushell_profile::ImplicitInputSource;
+    use caushell_types::RuntimeArgumentDomain;
+
+    #[test]
+    fn materialized_argv_paths_keep_dollar_and_tilde_as_literal_bytes() {
+        let resolution = resolve_bound_path_resolution(
+            "$HOME/~/file",
+            false,
+            "word",
+            "/workspace/project",
+            Some("/home/user"),
+            &BoundArgumentMaterialization::RuntimeData,
+            Some(&ValueMaterialization::Static),
+        );
+
+        assert_eq!(
+            resolution,
+            PathResolution::Concrete {
+                path: "/workspace/project/$HOME/~/file".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_path_domain_roots_are_lexically_joined_without_expansion() {
+        let resolution = runtime_input_path_resolution(
+            &ImplicitInputSource::StdinData,
+            Some(&RuntimeArgumentDomain::PathSet {
+                roots: vec!["$ROOT/~/out".to_string(), "/tmp/../var/data".to_string()],
+                may_escape: false,
+            }),
+            "/workspace/project",
+        );
+
+        assert_eq!(
+            resolution,
+            PathResolution::BoundedPathSet {
+                roots: vec![
+                    "/workspace/project/$ROOT/~/out".to_string(),
+                    "/var/data".to_string(),
+                ],
+                may_escape: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ordinary_implicit_path_evidence_keeps_unknown_input_unsupported() {
+        let resolution = runtime_input_path_resolution(
+            &ImplicitInputSource::StdinData,
+            Some(&RuntimeArgumentDomain::Unbounded),
+            "/workspace/project",
+        );
+
+        assert!(matches!(
+            resolution,
+            PathResolution::UnsupportedDynamicText { ref text }
+                if text.contains("StdinData")
+        ));
     }
 }

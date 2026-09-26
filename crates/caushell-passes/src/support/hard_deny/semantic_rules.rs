@@ -747,11 +747,11 @@ fn collect_dispatch_scoped_block_device_semantics(
         else {
             return;
         };
-        if !sink
-            .target_operands
-            .iter()
-            .any(|operand| operand.text == "{}" && !operand.quoted)
-        {
+        // A typed runtime target represents a possible member of the
+        // inherited block-device search scope. Do not encode that fact as a
+        // fake "{}" path operand: literal operands remain independently
+        // classified below, while runtime sources are scoped by the parent.
+        if !sink_has_dispatch_output_target(&sink) {
             return;
         }
 
@@ -764,6 +764,12 @@ fn collect_dispatch_scoped_block_device_semantics(
         }
     });
     semantics
+}
+
+fn sink_has_dispatch_output_target(sink: &ResolvedHostRiskSink<'_>) -> bool {
+    sink.runtime_targets
+        .iter()
+        .any(|target| target.source == caushell_profile::ImplicitInputSource::DispatchOutput)
 }
 
 fn destructive_block_device_semantic_class(
@@ -816,4 +822,49 @@ fn bound_argument_operands_for_slot<'a>(
             BoundValue::ImplicitInput { .. } => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::resolved_sink::ResolvedRuntimeHostTarget;
+    use super::{
+        HostTargetOperand, ResolvedHostRiskSemanticClass, ResolvedHostRiskSink,
+        sink_has_dispatch_output_target,
+    };
+    use caushell_profile::ImplicitInputSource;
+
+    #[test]
+    fn block_device_scope_requires_dispatch_output_not_arbitrary_runtime_input() {
+        let stdin_data = ResolvedHostRiskSink {
+            semantic_class: ResolvedHostRiskSemanticClass::Catastrophic(
+                caushell_profile::CatastrophicSemanticClass::RawWriteTarget,
+            ),
+            target_operands: Vec::new(),
+            runtime_targets: vec![ResolvedRuntimeHostTarget {
+                source: ImplicitInputSource::StdinData,
+                domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded),
+            }],
+            normalized_command_name: "dd",
+        };
+        assert!(!sink_has_dispatch_output_target(&stdin_data));
+
+        let dispatch_output = ResolvedHostRiskSink {
+            runtime_targets: vec![ResolvedRuntimeHostTarget {
+                source: ImplicitInputSource::DispatchOutput,
+                domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                    roots: vec!["/dev".to_string()],
+                    may_escape: false,
+                }),
+            }],
+            ..stdin_data.clone()
+        };
+        assert!(sink_has_dispatch_output_target(&dispatch_output));
+
+        let known_literal = ResolvedHostRiskSink {
+            target_operands: vec![HostTargetOperand::unquoted_word("/dev/sda")],
+            runtime_targets: Vec::new(),
+            ..stdin_data
+        };
+        assert!(!sink_has_dispatch_output_target(&known_literal));
+    }
 }

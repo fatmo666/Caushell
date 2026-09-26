@@ -101,6 +101,14 @@ Provenance records where data originated, which steps it passed through, and how
 
 This relationship chain connects the network source, downloaded payload, file content, and script execution. Analysis modules can trace backward through the graph to produce a reviewable evidence chain.
 
+### Nested dispatch and runtime arguments
+
+Command Profiles describe where a command can dispatch execution and how its arguments are bound. The dispatch layer carries each argument as a typed value: literal argv data, a runtime-produced value, or an implicit input with a conservative domain. Consumers may use a bounded path domain to classify possible locations, but it is not a claim that any listed root is the concrete file actually acted on. Unknown input and known-empty input remain distinct.
+
+The `find -exec`/`-execdir` and `xargs` profiles feed the same dispatch and execution-graph machinery. `find` arguments may carry a bounded search-root domain; symlink-following, unresolved roots, and `-execdir` context that cannot be established widen that domain or leave it unknown. `xargs` static input is used only when its source is known complete; partial fragments are advisory, not a proven argv prefix, and incomplete or runtime-generated input leaves arguments unknown. Explicit stdin redirection takes precedence over pipeline input.
+
+Known argv data is never parsed again as shell source. A shell `-c` operand is the intentional exception at the payload boundary: it is parsed once as code, while its positional arguments remain typed data and are bound separately. Recursive inline execution uses the canonical execution frontier so graph expansion is bounded by the configured depth and preserves source relationships. This models common cases conservatively; it is not a complete shell, `find`, or `xargs` interpreter.
+
 ## Session Graph Lifecycle
 
 | Point in time | Graph state |

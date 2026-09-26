@@ -40,6 +40,11 @@ pub enum CommandTokenKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandToken {
     pub text: String,
+    /// Present when this token stands for runtime data rather than literal shell text.
+    pub implicit_input_source: Option<caushell_types::ImplicitInputSource>,
+    pub runtime_argument_domain: Option<caushell_types::RuntimeArgumentDomain>,
+    /// True when text is argv data and must not undergo shell expansion.
+    pub runtime_data: bool,
     pub kind: CommandTokenKind,
     pub quoted: bool,
     pub node_kind: String,

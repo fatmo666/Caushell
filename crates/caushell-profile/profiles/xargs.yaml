@@ -213,5 +213,5 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - Runtime-only stdin items are modeled as stdin data consumed by xargs unless the payload can be statically traced.
-    - Static expansion covers common delimiter, replacement, batching, no-run-if-empty, and arg-file modes; runtime-generated item streams remain opaque.
+    - Static expansion covers common delimiter, replacement, batching, no-run-if-empty, and arg-file modes only when the input source is known complete; otherwise input-derived arguments remain unknown, and known fragments do not prove an argv prefix.
+    - Runtime-generated item streams remain opaque, and relative arg-file contents are not trusted when the effective working directory is uncertain.

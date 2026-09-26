@@ -150,6 +150,10 @@ pub enum PathResolution {
         basis: DerivedPathBasis,
         rule: DerivedPathRule,
     },
+    BoundedPathSet {
+        roots: Vec<String>,
+        may_escape: bool,
+    },
     DerivedUnresolved {
         basis: DerivedPathBasis,
         rule: DerivedPathRule,
@@ -176,6 +180,7 @@ impl PathResolution {
             Self::Concrete { path }
             | Self::ToolConvention { path, .. }
             | Self::DerivedConcrete { path, .. } => Some(path.as_str()),
+            Self::BoundedPathSet { .. } => None,
             Self::DerivedUnresolved { .. }
             | Self::MissingBinding { .. }
             | Self::UnsupportedDynamicBinding { .. }

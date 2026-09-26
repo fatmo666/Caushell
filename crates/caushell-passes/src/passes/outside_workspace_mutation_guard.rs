@@ -7,7 +7,7 @@ use caushell_types::{PathResolution, RuleId};
 
 use crate::path::{
     MutationTargetCandidate, collect_effect_mutation_targets, collect_redirection_path_facts,
-    normalize_shell_path, path_is_within_root,
+    normalize_shell_path, path_is_within_root, path_operand_depends_on_cwd,
 };
 use crate::support::{
     decision_for_rule_action, graph_backed_execution_resolve_records,
@@ -58,6 +58,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                         target.operation,
                         &target.slot_name,
                         &target.resolution,
+                        target.cwd_dependent,
                         cwd.is_none(),
                         workspace_root.as_deref(),
                     );
@@ -75,6 +76,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                     target.operation,
                     &target.slot_name,
                     &target.resolution,
+                    target.cwd_dependent,
                     false,
                     workspace_root.as_deref(),
                 );
@@ -135,6 +137,9 @@ fn collect_redirection_mutation_targets(
             operation: EffectKind::WritePath,
             slot_name: path.slot_name,
             resolution: path.resolution,
+            cwd_dependent: path.fact.target.as_ref().is_some_and(|target| {
+                path_operand_depends_on_cwd(&target.text, target.quoted, &target.node_kind, None)
+            }),
         })
         .collect()
 }
@@ -144,6 +149,7 @@ fn add_reason_for_target(
     operation: EffectKind,
     slot_name: &str,
     resolution: &PathResolution,
+    cwd_dependent: bool,
     cwd_unknown: bool,
     workspace_root: Option<&str>,
 ) {
@@ -153,7 +159,7 @@ fn add_reason_for_target(
         return;
     }
     let operation = operation_name(operation);
-    if cwd_unknown {
+    if cwd_unknown && cwd_dependent {
         reasons.insert(format!(
             "{operation} target for slot {slot_name} has an unknown effective working directory"
         ));
@@ -180,6 +186,29 @@ fn add_reason_for_target(
             ));
         }
         None => {
+            if let PathResolution::BoundedPathSet { roots, may_escape } = resolution {
+                if *may_escape {
+                    reasons.insert(format!(
+                        "{operation} target for slot {slot_name} may escape its bounded path set"
+                    ));
+                    return;
+                }
+                if roots.is_empty() {
+                    reasons.insert(format!(
+                        "{operation} target for slot {slot_name} has an empty or unknown path bound"
+                    ));
+                    return;
+                }
+                for path in roots {
+                    let normalized = normalize_shell_path(path);
+                    if !path_is_within_root(&normalized, root) {
+                        reasons.insert(format!(
+                            "{operation} target may be outside workspace root {root} through bounded path {path}"
+                        ));
+                    }
+                }
+                return;
+            }
             reasons.insert(format!(
                 "{operation} target for slot {slot_name} cannot be resolved: {resolution:?}"
             ));

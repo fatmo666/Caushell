@@ -13,6 +13,45 @@ use crate::{
 };
 use caushell_types::ShellKind;
 
+/// Decode a shell token only when its value is a static argv string. This is
+/// intentionally not an evaluator: expansions and pathname generation remain
+/// unresolved, while backslash-quoted characters are decoded as shell data.
+pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -> Option<String> {
+    if matches!(node_kind, "raw_string" | "ansi_c_string") {
+        return Some(text.to_string());
+    }
+    if quoted && node_kind == "string" {
+        let mut decoded = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            match character {
+                '$' | '`' => return None,
+                '\\' => match chars.next()? {
+                    escaped @ ('$' | '`' | '"' | '\\') => decoded.push(escaped),
+                    '\n' => {}
+                    other => {
+                        decoded.push('\\');
+                        decoded.push(other);
+                    }
+                },
+                other => decoded.push(other),
+            }
+        }
+        return Some(decoded);
+    }
+
+    let mut decoded = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => decoded.push(chars.next()?),
+            '$' | '`' | '*' | '?' | '[' => return None,
+            _ => decoded.push(character),
+        }
+    }
+    Some(decoded)
+}
+
 pub fn parse_command(
     raw_command: &str,
     shell_kind: ShellKind,
@@ -539,6 +578,9 @@ fn extract_test_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
         if child.kind() == closer {
             tokens.push(CommandToken {
                 text: source_text(child, source),
+                implicit_input_source: None,
+                runtime_argument_domain: None,
+                runtime_data: false,
                 kind: CommandTokenKind::Arg,
                 quoted: false,
                 node_kind: child.kind().to_string(),
@@ -585,6 +627,9 @@ fn append_test_expression_tokens(node: Node<'_>, source: &[u8], tokens: &mut Vec
     if let Some((text, quoted)) = extract_token_text(node, source) {
         tokens.push(CommandToken {
             text,
+            implicit_input_source: None,
+            runtime_argument_domain: None,
+            runtime_data: false,
             kind: CommandTokenKind::Arg,
             quoted,
             node_kind: node.kind().to_string(),
@@ -597,6 +642,9 @@ fn append_test_expression_tokens(node: Node<'_>, source: &[u8], tokens: &mut Vec
     if node.kind() == "test_operator" {
         tokens.push(CommandToken {
             text: source_text(node, source),
+            implicit_input_source: None,
+            runtime_argument_domain: None,
+            runtime_data: false,
             kind: CommandTokenKind::Arg,
             quoted: false,
             node_kind: node.kind().to_string(),
@@ -868,6 +916,9 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
 
         tokens.push(CommandToken {
             text,
+            implicit_input_source: None,
+            runtime_argument_domain: None,
+            runtime_data: false,
             kind,
             quoted,
             node_kind: child.kind().to_string(),
@@ -1675,12 +1726,80 @@ fn child_at(node: Node<'_>, index: usize) -> Option<Node<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_command, parse_command_substitutions, parse_process_substitutions};
+    use super::{
+        decode_static_shell_argument, parse_command, parse_command_substitutions,
+        parse_process_substitutions,
+    };
     use crate::{
         AssignmentOperator, CommandTokenKind, DeclarationCommandKind, ParseError, ParseStatus,
         PipelinePosition, ProcessSubstitutionOperator, RedirectionKind, StatementTerminator,
     };
     use caushell_types::ShellKind;
+
+    #[test]
+    fn decode_static_double_quoted_argument_applies_shell_lexical_escapes_only() {
+        assert_eq!(
+            decode_static_shell_argument(
+                r#"script \$1 \`echo hi\` \"quoted\" \\ tail \q"#,
+                true,
+                "string",
+            ),
+            Some(r#"script $1 `echo hi` "quoted" \ tail \q"#.to_string())
+        );
+        assert_eq!(
+            decode_static_shell_argument("before\\\nafter", true, "string"),
+            Some("beforeafter".to_string())
+        );
+        assert_eq!(
+            decode_static_shell_argument("expand $VALUE", true, "string"),
+            None
+        );
+        assert_eq!(
+            decode_static_shell_argument("run `command`", true, "string"),
+            None
+        );
+        // Single-quoted and ANSI-C strings already carry their decoded argv
+        // value; their dollars and backticks are data, not expansions.
+        assert_eq!(
+            decode_static_shell_argument("$1 `data`", true, "raw_string"),
+            Some("$1 `data`".to_string())
+        );
+        assert_eq!(
+            decode_static_shell_argument("$1 `data`", true, "ansi_c_string"),
+            Some("$1 `data`".to_string())
+        );
+    }
+
+    #[test]
+    fn find_exec_double_quoted_script_decodes_outer_escapes_before_nested_parse() {
+        let artifact = parse_command(
+            r#"find /var/tmp -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
+            ShellKind::Bash,
+        )
+        .expect("expected find command to parse");
+        let command = artifact.commands.first().expect("expected find command");
+        let script_index = command
+            .tokens
+            .iter()
+            .position(|token| token.text == "-c")
+            .expect("expected sh -c flag")
+            + 1;
+        let script_token = &command.tokens[script_index];
+        let script = decode_static_shell_argument(
+            &script_token.text,
+            script_token.quoted,
+            &script_token.node_kind,
+        )
+        .expect("escaped dollars in outer double quotes are static argv data");
+        assert_eq!(script, r#"sh -c 'rm "$1"' _ "$1""#);
+
+        let nested = parse_command(&script, ShellKind::Sh).expect("expected nested shell parse");
+        let nested_command = nested.commands.first().expect("expected nested sh command");
+        assert_eq!(nested_command.command_name.as_deref(), Some("sh"));
+        assert_eq!(nested_command.tokens[1].text, "rm \"$1\"");
+        assert_eq!(nested_command.tokens[3].text, "$1");
+        assert!(!nested_command.tokens[3].text.contains('\\'));
+    }
 
     #[test]
     fn parse_command_extracts_simple_command_tokens() {

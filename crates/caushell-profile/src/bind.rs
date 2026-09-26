@@ -5,10 +5,11 @@ use regex::Regex;
 use crate::{
     ArgumentBindingSource, BindingSpec, BoundImplicitInput, BoundInvocation, BoundParameter,
     BoundValue, CommandProfile, DefaultSubcommandBehavior, Effect, EffectTarget, FlagName,
-    FlagOperandMode, Form, FormId, Modifier, ModifierMatcher, Parameter, PositionalBindingSource,
-    ProjectedArgKind, ProjectedInvocation, Residual, ResidualKind, ResidualSurface, RuntimeFeature,
-    SelectorExpr, SelectorPredicate, SemanticType, StructuredValueContext, SubcommandNode,
-    SubcommandTree, ValueConstraint, ValueMatcher, parse_owner_group_spec,
+    FlagOperandMode, Form, FormId, ImplicitInputSource, Modifier, ModifierMatcher, Parameter,
+    PositionalBindingSource, ProjectedArgKind, ProjectedInvocation, Residual, ResidualKind,
+    ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType,
+    StructuredValueContext, SubcommandNode, SubcommandTree, ValueConstraint, ValueMatcher,
+    parse_owner_group_spec,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -324,6 +325,7 @@ pub fn bind_invocation(
     }
 
     bound.residuals = residuals;
+    bind_runtime_argument_sources(&mut bound, projection);
     bound
 }
 
@@ -387,7 +389,32 @@ pub(crate) fn bind_modifier_only_invocation(
     }
 
     bound.residuals = residuals;
+    bind_runtime_argument_sources(&mut bound, projection);
     Some(bound)
+}
+
+fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &ProjectedInvocation) {
+    for parameter in &mut bound.bound_parameters {
+        for value in &mut parameter.values {
+            let BoundValue::Argument { span, .. } = value else {
+                continue;
+            };
+            let Some(argument) = projection
+                .args
+                .iter()
+                .find(|argument| argument.span == *span)
+            else {
+                continue;
+            };
+            let Some(source) = argument.implicit_input_source else {
+                continue;
+            };
+            *value = BoundValue::ImplicitInput {
+                source: ImplicitInputSource::from_caushell_types_implicit_input_source(source),
+                domain: argument.runtime_argument_domain.clone(),
+            };
+        }
+    }
 }
 
 pub fn select_form<'a>(

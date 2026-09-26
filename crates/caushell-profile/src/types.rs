@@ -10,8 +10,15 @@ use serde_json::Value as JsonValue;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundArgumentMaterialization {
     Literal,
-    ResolvedExactScalar { variable_name: String },
-    ResolvedRuntimeProduced { variable_name: String },
+    /// Already-materialized argv data; preserve its bytes without another
+    /// shell-word expansion pass.
+    RuntimeData,
+    ResolvedExactScalar {
+        variable_name: String,
+    },
+    ResolvedRuntimeProduced {
+        variable_name: String,
+    },
 }
 
 pub type ExtensionMap = BTreeMap<String, JsonValue>;
@@ -521,6 +528,7 @@ pub enum ImplicitInputSource {
     StdinPayload,
     StdinData,
     InteractiveSession,
+    DispatchOutput,
     InheritedEnvironment,
 }
 
@@ -530,6 +538,7 @@ impl ImplicitInputSource {
             Self::StdinPayload => "stdin_payload",
             Self::StdinData => "stdin_data",
             Self::InteractiveSession => "interactive_session",
+            Self::DispatchOutput => "dispatch_output",
             Self::InheritedEnvironment => "inherited_environment",
         }
     }
@@ -539,7 +548,20 @@ impl ImplicitInputSource {
             Self::StdinPayload => caushell_types::ImplicitInputSource::StdinPayload,
             Self::StdinData => caushell_types::ImplicitInputSource::StdinData,
             Self::InteractiveSession => caushell_types::ImplicitInputSource::InteractiveSession,
+            Self::DispatchOutput => caushell_types::ImplicitInputSource::DispatchOutput,
             Self::InheritedEnvironment => caushell_types::ImplicitInputSource::InheritedEnvironment,
+        }
+    }
+
+    pub fn from_caushell_types_implicit_input_source(
+        source: caushell_types::ImplicitInputSource,
+    ) -> Self {
+        match source {
+            caushell_types::ImplicitInputSource::StdinPayload => Self::StdinPayload,
+            caushell_types::ImplicitInputSource::StdinData => Self::StdinData,
+            caushell_types::ImplicitInputSource::InteractiveSession => Self::InteractiveSession,
+            caushell_types::ImplicitInputSource::DispatchOutput => Self::DispatchOutput,
+            caushell_types::ImplicitInputSource::InheritedEnvironment => Self::InheritedEnvironment,
         }
     }
 
@@ -550,6 +572,7 @@ impl ImplicitInputSource {
             Self::InteractiveSession => {
                 Some(caushell_types::RuntimeInputSource::InteractiveSession)
             }
+            Self::DispatchOutput => None,
             Self::InheritedEnvironment => None,
         }
     }
@@ -989,6 +1012,7 @@ pub enum BoundValue {
     },
     ImplicitInput {
         source: ImplicitInputSource,
+        domain: Option<caushell_types::RuntimeArgumentDomain>,
     },
 }
 
@@ -1042,7 +1066,10 @@ impl BoundValue {
     }
 
     pub fn implicit_input(source: ImplicitInputSource) -> Self {
-        Self::ImplicitInput { source }
+        Self::ImplicitInput {
+            source,
+            domain: None,
+        }
     }
 }
 

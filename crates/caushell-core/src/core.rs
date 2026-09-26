@@ -1066,6 +1066,273 @@ mod tests {
     }
 
     #[test]
+    fn outside_workspace_mutation_guard_covers_indirect_file_mutations() {
+        let cases = [
+            ("find /var/tmp -type f -exec rm {} \\;", true),
+            ("find /system -type f -exec rm {} +", true),
+            (
+                "find /system/folder1 -name '*.doc' -exec rm \"{}\" \\;",
+                true,
+            ),
+            (
+                "find /system/folder3/temp -type d -empty -exec rmdir -vp --ignore-fail-on-non-empty {} +",
+                true,
+            ),
+            ("find /var/tmp -type f -exec rm {} +", true),
+            ("find /var/tmp -type f -exec chmod 600 {} \\;", true),
+            ("find /tmp/project /var/tmp -type f -exec rm {} \\;", true),
+            ("find /tmp/project -type f -exec rm {} \\;", false),
+            ("cd /var/tmp && find . -exec rm {} \\;", true),
+            ("find '/tmp/project' -exec rm '{}' \\;", false),
+            ("find \"$UNKNOWN_ROOT\" -exec rm {} \\;", true),
+            ("find -L /tmp/project -type f -exec rm {} \\;", true),
+            ("find /var/tmp -execdir rm target \\;", true),
+            ("find /tmp/project -execdir rm target \\;", true),
+            ("find /tmp/project -execdir rm ../target \\;", true),
+            (
+                "find /tmp/project -execdir sh -c 'cd /var/tmp && rm \"$1\"' _ {} \\;",
+                true,
+            ),
+            (
+                "find /var/tmp -execdir chmod 600 /tmp/project/item \\;",
+                false,
+            ),
+            (
+                "find /var/tmp -execdir sh -c 'cd /tmp/project && rm local' \\;",
+                false,
+            ),
+            (
+                "find /var/tmp -execdir sh -c 'cd /tmp/project && env rm local' \\;",
+                false,
+            ),
+            ("find /var/tmp -type f -exec echo {} \\;", false),
+            ("find /var/tmp -exec echo {} \\; -exec rm {} \\;", true),
+            (
+                "find /tmp/project -exec echo {} \\; -exec rm \"$UNKNOWN_TARGET\" \\;",
+                true,
+            ),
+            ("find /var/tmp -type f | xargs rm", true),
+            ("find /system -name '*.txt' -maxdepth 1 | xargs rm", true),
+            ("find /tmp/project -type f | xargs rm", true),
+            ("find /var/tmp -type f | xargs -I{} rm '{}'", true),
+            ("compaudit | xargs chmod g-w", true),
+            ("printf '/var/tmp/item\\n' | xargs rm", true),
+            ("printf '/tmp/project/item\\n' | xargs rm", false),
+            ("printf '' | xargs -r rm", false),
+            ("printf '/var/tmp/item\\n' | xargs echo", false),
+            // Both find and its child have path operands: bounding the source
+            // placeholder must not hide cp's independent destination.
+            (
+                "find /tmp/project -type f -exec cp {} /etc/target \\;",
+                true,
+            ),
+            // A semicolon and command-looking text inside a quoted data value
+            // are still one printf argument, not a second shell command.
+            (
+                "find /tmp/project -exec printf '%s\\n' 'rm; /etc/wgetrc' \\;",
+                false,
+            ),
+            // sh -c's first argument after the script is $0; the following
+            // placeholders/data must remain in their original positions.
+            ("find /var/tmp -exec sh -c 'rm -- \"$1\"' _ {} \\;", true),
+            (
+                "find /tmp/project -exec sh -c 'rm -- \"$1\"' _ {} \\;",
+                false,
+            ),
+            (
+                "find /tmp/project -exec sh -c 'rm \"$2\"' _ fixed {} \\;",
+                false,
+            ),
+            (
+                r#"find /tmp/project -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
+                false,
+            ),
+            (
+                r#"find /var/tmp -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
+                true,
+            ),
+            ("find /var/tmp -exec env sh -c 'rm \"$1\"' _ {} \\;", true),
+            (
+                "find /tmp/project -exec env sh -c 'rm \"$1\"' _ {} \\;",
+                false,
+            ),
+            (
+                "find /var/tmp -exec sh -c 'rm \"$1\"' _ {} /tmp/project/a \\; -exec sh -c 'rm \"$1\"' _ /tmp/project/a {} \\;",
+                true,
+            ),
+            (
+                "find /var/tmp -exec sh -c 'cp \"$1\" \"$2\"' _ {} /etc/target \\;",
+                true,
+            ),
+            ("find /var/tmp -exec sh -c 'rm \"$2\"' _ fixed {} \\;", true),
+            (
+                "printf '/tmp/project/a;rm /var/tmp/victim\\n' | xargs -d '\\n' echo",
+                false,
+            ),
+            (
+                "printf '/tmp/project/a;rm /var/tmp/victim\\n' | xargs sh -c 'echo $1' sh",
+                false,
+            ),
+            (
+                "printf '%s\\n' '$UNKNOWN;rm /var/tmp/victim' | xargs -d '\\n' sh -c 'echo $1' sh",
+                false,
+            ),
+            // Known contents of the stdin redirection take precedence over
+            // the safe pipeline producer.
+            (
+                "printf '/var/tmp/list-item\\n' > /tmp/project/list; printf '/tmp/project/pipeline-item\\n' | xargs rm < /tmp/project/list",
+                true,
+            ),
+            ("printf '%s\\n' \"$UNKNOWN_TARGET\" | xargs rm", true),
+            (
+                "printf '/tmp/project/known\\n%s\\n' \"$UNKNOWN_TARGET\" | xargs rm",
+                true,
+            ),
+        ];
+
+        let mut mismatches = Vec::new();
+        for (index, (command, expected_outside)) in cases.iter().enumerate() {
+            let response = ShellQueryCore::new().check(sample_request(
+                &format!("indirect-mutation-{index}"),
+                1,
+                command,
+            ));
+            let outside = response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation);
+            if outside != *expected_outside {
+                mismatches.push(format!(
+                    "{command}: expected outside={expected_outside}, got outside={outside}; findings={:?}",
+                    response.decision_trace.findings
+                ));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
+    }
+
+    #[test]
+    fn outside_workspace_mutation_guard_keeps_nested_dynamic_shell_payload_unresolved() {
+        let response = ShellQueryCore::new().check(sample_request(
+            "nested-dynamic-find-shell-payload",
+            1,
+            "find /var/tmp -exec sh -c \"$UNKNOWN_SCRIPT\" _ {} \\;",
+        ));
+
+        assert_ne!(response.decision, Decision::Allow);
+        assert!(
+            response.decision_trace.findings.iter().any(|finding| {
+                finding.rule_id == RuleId::TaintedExecution
+                    && finding.message.contains("unresolved payload")
+            }),
+            "{:?}",
+            response.decision_trace.findings
+        );
+    }
+
+    #[test]
+    fn core_registers_nested_dispatch_children_in_the_execution_graph() {
+        let mut core = ShellQueryCore::new();
+        let request = sample_request(
+            "sess-find-env-sh",
+            1,
+            "find /tmp/project -exec env sh -c 'echo \"$1\"' _ {} \\;",
+        );
+        let session_id = request.session_id.clone();
+        let response = core.check(request.clone());
+        assert_eq!(response.decision, Decision::Allow);
+
+        let graph = core
+            .session_graph(&session_id)
+            .expect("expected committed execution graph");
+        let find = caushell_runner::top_level_command_node_id(&request, 0);
+        let env = NodeId::new("derived-dispatch:sess-find-env-sh:1:0:0");
+        let shell = NodeId::new("expanded-dispatch:derived-dispatch:sess-find-env-sh:1:0:0:0");
+        assert!(graph.get_node(&find).is_some(), "missing find node");
+        assert!(graph.get_node(&env).is_some(), "missing env dispatch node");
+        assert!(graph.get_node(&shell).is_some(), "missing nested sh node");
+        assert!(graph.edges().iter().any(|edge| {
+            edge.from == find && edge.to == env && edge.kind == caushell_graph::EdgeKind::Dispatches
+        }));
+        assert!(graph.edges().iter().any(|edge| {
+            edge.from == env && edge.to == shell && edge.kind == caushell_graph::EdgeKind::ExpandsTo
+        }));
+    }
+
+    #[test]
+    fn core_keeps_xargs_wrapper_arguments_as_literal_data() {
+        let mut core = ShellQueryCore::new();
+        let request = sample_request(
+            "sess-xargs-wrapper-literal",
+            1,
+            "printf '%s\\n' 'semi;$UNKNOWN' | xargs env rm",
+        );
+        let session_id = request.session_id.clone();
+        let response = core.check(request);
+
+        assert_eq!(response.decision, Decision::Allow);
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id != RuleId::OutsideWorkspaceMutation)
+        );
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id != RuleId::TaintedExecution)
+        );
+
+        let graph = core
+            .session_graph(&session_id)
+            .expect("expected committed execution graph");
+        let xargs_data_children = graph
+            .nodes()
+            .filter_map(|node| match &node.kind {
+                NodeKind::DerivedInvocation {
+                    raw_text,
+                    command_name,
+                    ..
+                } if command_name.as_deref() == Some("env")
+                    && raw_text.contains("semi;$UNKNOWN") =>
+                {
+                    Some(node)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(xargs_data_children.len(), 1, "{xargs_data_children:?}");
+        let child_id = &xargs_data_children[0].id;
+        assert_eq!(
+            graph
+                .edges()
+                .iter()
+                .filter(|edge| edge.to == *child_id)
+                .count(),
+            1,
+            "expected exactly one parent edge for the literal xargs child"
+        );
+        assert!(graph.edges().iter().all(|edge| {
+            !matches!(
+                &edge.semantics,
+                Some(caushell_types::ProvenanceEdgeSemantics::Consume {
+                    consume_kind: caushell_types::ProvenanceConsumeKind::VariableExpansion,
+                    ..
+                })
+            )
+        }));
+    }
+
+    #[test]
     fn outside_workspace_mutation_guard_does_not_approve_reads_or_inside_writes() {
         for (index, command) in [
             "cat /etc/wgetrc",
