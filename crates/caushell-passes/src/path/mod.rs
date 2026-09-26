@@ -3,8 +3,6 @@ mod extract;
 mod normalize;
 mod target_match;
 
-pub(crate) const DYNAMIC_XARGS_ITEM: &str = "__CAUSHELL_DYNAMIC_XARGS_ITEM__";
-
 pub(crate) use expression::{
     PathExpression, classify_path_operand_expression, shell_pattern_matches_path,
 };
