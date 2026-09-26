@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
 
@@ -152,7 +152,6 @@ pub struct InvocationSelection<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlagTokenMatch<'a> {
     Exact,
-    ClusterMember,
     LongInlineOperand(&'a str),
     ShortAttachedOperand(&'a str),
 }
@@ -216,12 +215,41 @@ pub fn select_invocation<'a>(
     projection: &ProjectedInvocation,
 ) -> Result<InvocationSelection<'a>, BindError> {
     if let Some(subcommands) = &profile.subcommands {
+        if profile.option_boundary != crate::OptionBoundary::Invocation {
+            return Err(BindError::UnsupportedProfileFeature {
+                command_name: profile.primary_name().to_string(),
+                reason: "leading-option boundaries on subcommand trees are not supported"
+                    .to_string(),
+            });
+        }
         return select_subcommand_invocation(profile, projection, subcommands);
     }
 
     let scope = ArgumentScope::for_invocation(projection);
-    let modifiers = match_scoped_modifiers(&profile.modifiers, projection, scope, None, &[]);
+    let (modifiers, form_scope) =
+        if profile.option_boundary == crate::OptionBoundary::FirstPositional {
+            let scan = scan_leading_options(profile, projection)?;
+            let leading_modifiers = match_leading_options(profile, projection, &scan);
+            (
+                leading_modifiers,
+                ArgumentScope::new(0, scan.boundary.saturating_add(1).min(scope.end_index)),
+            )
+        } else {
+            (
+                match_scoped_modifiers(
+                    &profile.modifiers,
+                    &profile.forms,
+                    projection,
+                    scope,
+                    None,
+                    &[],
+                ),
+                scope,
+            )
+        };
     let mut scan_state = BindingState::with_modifier_context(projection, &modifiers);
+    scan_state.strict_option_arity =
+        profile.option_boundary == crate::OptionBoundary::FirstPositional;
 
     consume_selected_modifiers_for_scanning(&modifiers, &mut scan_state);
 
@@ -229,10 +257,11 @@ pub fn select_invocation<'a>(
         profile.primary_name(),
         &profile.forms,
         projection,
-        scope,
+        form_scope,
         &scan_state.consumed,
         &modifiers,
         &[],
+        profile.option_boundary == crate::OptionBoundary::FirstPositional,
     )?;
 
     Ok(InvocationSelection {
@@ -244,6 +273,120 @@ pub fn select_invocation<'a>(
     })
 }
 
+struct LeadingOptionScan {
+    boundary: usize,
+    operands: Vec<bool>,
+}
+
+fn match_leading_options<'a>(
+    profile: &'a CommandProfile,
+    projection: &ProjectedInvocation,
+    scan: &LeadingOptionScan,
+) -> Vec<SelectedModifier<'a>> {
+    let declarations = OptionDeclarations::for_forms(&profile.modifiers, &profile.forms);
+    let has_flag = |name: &str| {
+        projection.args[..scan.boundary]
+            .iter()
+            .enumerate()
+            .any(|(index, arg)| {
+                !scan.operands[index]
+                    && arg.kind == ProjectedArgKind::Flag
+                    && declarations.binding_match(&arg.text, name).is_some()
+            })
+    };
+    let candidates = profile
+        .modifiers
+        .iter()
+        .filter(|modifier| match &modifier.matcher {
+            ModifierMatcher::AnyFlag(flags) => flags.iter().any(|flag| has_flag(flag.as_str())),
+            ModifierMatcher::AllFlags(flags) => {
+                !flags.is_empty() && flags.iter().all(|flag| has_flag(flag.as_str()))
+            }
+        })
+        .collect();
+    filter_modifier_candidates_by_constraints(candidates, has_flag, &[])
+        .into_iter()
+        .map(|modifier| SelectedModifier {
+            modifier,
+            scope: ArgumentScope::new(0, scan.boundary),
+        })
+        .collect()
+}
+
+// This is command grammar, not shell syntax. Only profiles opting into
+// leading options use this scan; unknown/conflicting options cannot prove an
+// argv boundary and therefore produce a selection gap rather than a guess.
+fn scan_leading_options(
+    profile: &CommandProfile,
+    projection: &ProjectedInvocation,
+) -> Result<LeadingOptionScan, BindError> {
+    let declarations = OptionDeclarations::for_forms(&profile.modifiers, &profile.forms);
+    let mut operands = vec![false; projection.args.len()];
+    let mut index = 0;
+    let fail = |reason: String| BindError::UnsupportedProfileFeature {
+        command_name: profile.primary_name().to_string(),
+        reason,
+    };
+    while let Some(arg) = projection.args.get(index) {
+        if arg.kind == ProjectedArgKind::DashDash {
+            return Ok(LeadingOptionScan {
+                boundary: index + 1,
+                operands,
+            });
+        }
+        if arg.kind == ProjectedArgKind::Positional {
+            return Ok(LeadingOptionScan {
+                boundary: index,
+                operands,
+            });
+        }
+        let (mode, inline) = declarations.token_operand(&arg.text).ok_or_else(|| {
+            fail(format!(
+                "cannot establish leading-option boundary at {:?}",
+                arg.text
+            ))
+        })?;
+        if let Some(mode) = mode.filter(|_| !inline) {
+            let count = match mode {
+                FlagOperandMode::NextArg | FlagOperandMode::NextPositional => 1,
+                FlagOperandMode::SecondArg => 2,
+                FlagOperandMode::InlineOnly | FlagOperandMode::InlineOrShortAttached => 0,
+                FlagOperandMode::NextPositionalAfterDashDash => {
+                    if projection
+                        .args
+                        .get(index + 1)
+                        .is_some_and(|arg| arg.kind == ProjectedArgKind::DashDash)
+                    {
+                        2
+                    } else {
+                        1
+                    }
+                }
+            };
+            if index + count >= projection.args.len() && count != 0 {
+                return Err(fail(format!("missing operand for {:?}", arg.text)));
+            }
+            if mode == FlagOperandMode::NextPositional
+                && projection
+                    .args
+                    .get(index + 1)
+                    .is_some_and(|arg| arg.kind != ProjectedArgKind::Positional)
+            {
+                return Err(fail(format!("non-positional operand for {:?}", arg.text)));
+            }
+            for offset in 1..=count {
+                operands[index + offset] = true;
+            }
+            index += count;
+        }
+        index += 1;
+    }
+    Ok(LeadingOptionScan {
+        boundary: index,
+        operands,
+    })
+}
+
 pub fn bind_invocation(
     profile: &CommandProfile,
     projection: &ProjectedInvocation,
@@ -251,6 +394,8 @@ pub fn bind_invocation(
 ) -> BoundInvocation {
     let targets = collect_parameter_targets(selection);
     let mut state = BindingState::with_modifier_context(projection, &selection.modifiers);
+    state.strict_option_arity = profile.option_boundary == crate::OptionBoundary::FirstPositional;
+    state.add_form_options(selection.form);
     let mut parameter_results = vec![None; targets.len()];
     let mut residuals = selection.residuals.clone();
 
@@ -334,7 +479,19 @@ pub(crate) fn bind_modifier_only_invocation(
     projection: &ProjectedInvocation,
 ) -> Option<BoundInvocation> {
     let scope = ArgumentScope::for_invocation(projection);
-    let modifiers = match_scoped_modifiers(&profile.modifiers, projection, scope, None, &[]);
+    let modifiers = if profile.option_boundary == crate::OptionBoundary::FirstPositional {
+        let scan = scan_leading_options(profile, projection).ok()?;
+        match_leading_options(profile, projection, &scan)
+    } else {
+        match_scoped_modifiers(
+            &profile.modifiers,
+            &profile.forms,
+            projection,
+            scope,
+            None,
+            &[],
+        )
+    };
 
     if modifiers.is_empty() {
         return None;
@@ -342,6 +499,7 @@ pub(crate) fn bind_modifier_only_invocation(
 
     let targets = collect_modifier_parameter_targets(&modifiers);
     let mut state = BindingState::with_modifier_context(projection, &modifiers);
+    state.strict_option_arity = profile.option_boundary == crate::OptionBoundary::FirstPositional;
     let mut parameter_results = vec![None; targets.len()];
     let mut residuals = Vec::new();
 
@@ -428,9 +586,8 @@ pub fn match_modifiers<'a>(
     profile: &'a CommandProfile,
     shape: &InvocationShape,
 ) -> Vec<&'a Modifier> {
-    let declared_short_flags = declared_short_modifier_flags(&profile.modifiers);
-    let short_flags_allowing_attached_operands =
-        short_flags_allowing_attached_operands(&profile.modifiers);
+    let declarations = OptionDeclarations::for_forms(&profile.modifiers, &profile.forms);
+    let (declared_short_flags, short_flags_allowing_attached_operands) = declarations.short_sets();
     let candidates: Vec<&Modifier> = profile
         .modifiers
         .iter()
@@ -457,8 +614,13 @@ fn select_subcommand_invocation<'a>(
     subcommands: &'a SubcommandTree,
 ) -> Result<InvocationSelection<'a>, BindError> {
     let root_scope = ArgumentScope::for_invocation(projection);
-    let mut selected_modifiers =
-        match_leading_root_modifiers(&profile.modifiers, projection, root_scope, subcommands);
+    let mut selected_modifiers = match_leading_root_modifiers(
+        &profile.modifiers,
+        &profile.forms,
+        projection,
+        root_scope,
+        subcommands,
+    );
     let mut scan_state = BindingState::with_modifier_context(projection, &selected_modifiers);
 
     consume_selected_modifiers_for_scanning(&selected_modifiers, &mut scan_state);
@@ -482,6 +644,7 @@ fn select_subcommand_invocation<'a>(
         let node_scope = ArgumentScope::new(scan_start, projection.args.len());
         let node_modifiers = match_scoped_modifiers(
             &node.modifiers,
+            &node.forms,
             projection,
             node_scope,
             Some(&scan_state.consumed),
@@ -506,6 +669,7 @@ fn select_subcommand_invocation<'a>(
                 &scan_state.consumed,
                 &selected_modifiers,
                 &[],
+                false,
             )?;
 
             return Ok(InvocationSelection {
@@ -540,6 +704,7 @@ fn select_subcommand_invocation<'a>(
         &scan_state.consumed,
         &selected_modifiers,
         &path,
+        false,
     ) {
         Ok(form) => Ok(InvocationSelection {
             form,
@@ -604,13 +769,29 @@ fn select_form_for_scope<'a>(
     consumed: &[bool],
     modifiers: &[SelectedModifier<'a>],
     subcommand_path: &[String],
+    strict_option_arity: bool,
 ) -> Result<&'a Form, BindError> {
-    let shape =
-        shape_for_scope_with_consumed(projection, scope, consumed, modifiers, subcommand_path);
+    let shape = shape_for_scope_with_consumed(
+        projection,
+        scope,
+        consumed,
+        modifiers,
+        subcommand_path,
+        strict_option_arity,
+    );
     let matched_forms: Vec<FormConsumptionPreview<'a>> = forms
         .iter()
         .filter(|form| form_matches(form, &shape))
-        .map(|form| preview_form_consumption(form, projection, scope, consumed, modifiers))
+        .map(|form| {
+            preview_form_consumption(
+                form,
+                projection,
+                scope,
+                consumed,
+                modifiers,
+                strict_option_arity,
+            )
+        })
         .filter(|preview| {
             let remaining_shape = shape_for_scope_with_consumed(
                 projection,
@@ -618,6 +799,7 @@ fn select_form_for_scope<'a>(
                 &preview.consumed,
                 modifiers,
                 subcommand_path,
+                strict_option_arity,
             );
 
             remaining_selector_matches(preview.form, &remaining_shape)
@@ -657,11 +839,12 @@ fn resolve_matched_forms<'a>(
 
 fn match_leading_root_modifiers<'a>(
     modifiers: &'a [Modifier],
+    forms: &[Form],
     projection: &ProjectedInvocation,
     root_scope: ArgumentScope,
     subcommands: &SubcommandTree,
 ) -> Vec<SelectedModifier<'a>> {
-    let mut selected = match_root_flag_only_modifiers(modifiers, projection, root_scope);
+    let mut selected = match_root_flag_only_modifiers(modifiers, forms, projection, root_scope);
     let mut consumed = vec![false; projection.args.len()];
 
     loop {
@@ -682,6 +865,7 @@ fn match_leading_root_modifiers<'a>(
 
         let mut next = match_leading_parameterized_modifiers(
             modifiers,
+            forms,
             projection,
             leading_scope,
             &consumed,
@@ -713,11 +897,12 @@ fn match_leading_root_modifiers<'a>(
 
 fn match_root_flag_only_modifiers<'a>(
     modifiers: &'a [Modifier],
+    forms: &[Form],
     projection: &ProjectedInvocation,
     root_scope: ArgumentScope,
 ) -> Vec<SelectedModifier<'a>> {
-    let declared_short_flags = declared_short_modifier_flags(modifiers);
-    let short_flags_allowing_attached_operands = short_flags_allowing_attached_operands(modifiers);
+    let (declared_short_flags, short_flags_allowing_attached_operands) =
+        OptionDeclarations::for_forms(modifiers, forms).short_sets();
     let candidates: Vec<&Modifier> = modifiers
         .iter()
         .filter(|modifier| modifier.parameters.is_empty())
@@ -757,13 +942,14 @@ fn match_root_flag_only_modifiers<'a>(
 
 fn match_leading_parameterized_modifiers<'a>(
     modifiers: &'a [Modifier],
+    forms: &[Form],
     projection: &ProjectedInvocation,
     leading_scope: ArgumentScope,
     consumed: &[bool],
     preselected_modifiers: &[SelectedModifier<'_>],
 ) -> Vec<SelectedModifier<'a>> {
-    let declared_short_flags = declared_short_modifier_flags(modifiers);
-    let short_flags_allowing_attached_operands = short_flags_allowing_attached_operands(modifiers);
+    let (declared_short_flags, short_flags_allowing_attached_operands) =
+        OptionDeclarations::for_forms(modifiers, forms).short_sets();
     let preselected_modifier_ids: Vec<_> = preselected_modifiers
         .iter()
         .map(|selected| selected.modifier.id.clone())
@@ -808,13 +994,14 @@ fn match_leading_parameterized_modifiers<'a>(
 
 fn match_scoped_modifiers<'a>(
     modifiers: &'a [Modifier],
+    forms: &[Form],
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
     consumed: Option<&[bool]>,
     preselected_modifiers: &[SelectedModifier<'_>],
 ) -> Vec<SelectedModifier<'a>> {
-    let declared_short_flags = declared_short_modifier_flags(modifiers);
-    let short_flags_allowing_attached_operands = short_flags_allowing_attached_operands(modifiers);
+    let declarations = OptionDeclarations::for_forms(modifiers, forms);
+    let (declared_short_flags, short_flags_allowing_attached_operands) = declarations.short_sets();
     let preselected_modifier_ids: Vec<_> = preselected_modifiers
         .iter()
         .map(|selected| selected.modifier.id.clone())
@@ -889,6 +1076,7 @@ fn shape_for_scope_with_consumed<'a>(
     consumed: &[bool],
     modifiers: &[SelectedModifier<'_>],
     subcommand_path: &[String],
+    strict_option_arity: bool,
 ) -> InvocationShape {
     shape_for_scope_internal(
         projection,
@@ -896,6 +1084,7 @@ fn shape_for_scope_with_consumed<'a>(
         Some(consumed),
         modifiers,
         subcommand_path,
+        strict_option_arity,
     )
 }
 
@@ -905,13 +1094,14 @@ fn shape_for_scope_internal<'a>(
     consumed: Option<&[bool]>,
     modifiers: &[SelectedModifier<'_>],
     subcommand_path: &[String],
+    strict_option_arity: bool,
 ) -> InvocationShape {
     let mut shape = InvocationShape::new().with_subcommand_path(subcommand_path.to_vec());
 
     for modifier in modifiers {
         shape.matched_modifiers.push(modifier.modifier.id.clone());
     }
-    populate_modifier_parameters_for_shape(projection, modifiers, &mut shape);
+    populate_modifier_parameters_for_shape(projection, modifiers, &mut shape, strict_option_arity);
 
     let mut before_dashdash = true;
     for (index, arg) in args_in_scope(projection, scope) {
@@ -943,6 +1133,7 @@ fn populate_modifier_parameters_for_shape(
     projection: &ProjectedInvocation,
     modifiers: &[SelectedModifier<'_>],
     shape: &mut InvocationShape,
+    strict_option_arity: bool,
 ) {
     for selected_modifier in modifiers {
         for parameter in &selected_modifier.modifier.parameters {
@@ -953,6 +1144,7 @@ fn populate_modifier_parameters_for_shape(
             };
 
             let mut state = BindingState::with_modifier_context(projection, modifiers);
+            state.strict_option_arity = strict_option_arity;
             let values = state.bind_parameter_values(&target);
             for value in values {
                 if let BoundValue::Argument { text, .. } = value {
@@ -1075,9 +1267,12 @@ fn preview_form_consumption<'a>(
     scope: ArgumentScope,
     base_consumed: &[bool],
     modifiers: &[SelectedModifier<'a>],
+    strict_option_arity: bool,
 ) -> FormConsumptionPreview<'a> {
     let targets = collect_form_parameter_targets(form, scope);
     let mut state = BindingState::with_consumed(projection, base_consumed, modifiers);
+    state.strict_option_arity = strict_option_arity;
+    state.add_form_options(form);
 
     for target in &targets {
         if is_flag_binding(&target.parameter.binding) {
@@ -1291,6 +1486,8 @@ struct BindingState<'p, 'm> {
     declared_short_flags: BTreeSet<String>,
     short_flags_allowing_attached_operands: BTreeSet<String>,
     selected_modifiers: Vec<SelectedModifier<'m>>,
+    strict_option_arity: bool,
+    option_declarations: OptionDeclarations,
 }
 
 impl<'p, 'm> BindingState<'p, 'm> {
@@ -1301,6 +1498,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
             selected_modifiers: Vec::new(),
+            strict_option_arity: false,
+            option_declarations: OptionDeclarations::default(),
         }
     }
 
@@ -1315,6 +1514,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
             selected_modifiers: Vec::new(),
+            strict_option_arity: false,
+            option_declarations: OptionDeclarations::default(),
         };
         state.set_modifier_context(modifiers);
         state
@@ -1330,10 +1531,22 @@ impl<'p, 'm> BindingState<'p, 'm> {
     }
 
     fn set_modifier_context(&mut self, modifiers: &[SelectedModifier<'m>]) {
-        self.declared_short_flags = declared_short_modifier_flags_from_selected(modifiers);
-        self.short_flags_allowing_attached_operands =
-            short_flags_allowing_attached_operands_from_selected(modifiers);
+        let mut declarations = OptionDeclarations::default();
+        declarations.add_modifiers(modifiers.iter().map(|selected| selected.modifier));
+        (
+            self.declared_short_flags,
+            self.short_flags_allowing_attached_operands,
+        ) = declarations.short_sets();
+        self.option_declarations = declarations;
         self.selected_modifiers = modifiers.to_vec();
+    }
+
+    fn add_form_options(&mut self, form: &Form) {
+        self.option_declarations.add_form(form);
+        (
+            self.declared_short_flags,
+            self.short_flags_allowing_attached_operands,
+        ) = self.option_declarations.short_sets();
     }
 
     fn bind_parameter_values(&mut self, target: &ParameterTarget<'_>) -> Vec<BoundValue> {
@@ -1437,12 +1650,15 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 continue;
             }
 
-            if modifier
-                .matcher
-                .flag_names()
-                .iter()
-                .any(|flag_name| flag_token_matches_name(arg.text.as_str(), flag_name.as_str()))
-            {
+            if modifier.matcher.flag_names().iter().any(|flag_name| {
+                if self.strict_option_arity {
+                    self.option_declarations
+                        .binding_match(&arg.text, flag_name.as_str())
+                        .is_some()
+                } else {
+                    flag_token_matches_name(arg.text.as_str(), flag_name.as_str())
+                }
+            }) {
                 self.consumed[index] = true;
             }
         }
@@ -1457,11 +1673,10 @@ impl<'p, 'm> BindingState<'p, 'm> {
         value_constraints: &[ValueConstraint],
     ) -> Vec<BoundValue> {
         let mut values = Vec::new();
-        let allow_short_attached = modifier.is_some()
-            && matches!(
-                operand_mode,
-                FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
-            );
+        let allow_short_attached = matches!(
+            operand_mode,
+            FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
+        );
         let declared_short_flags = modifier
             .map(|modifier| declared_short_modifier_flags(std::slice::from_ref(modifier)))
             .unwrap_or_default();
@@ -1483,6 +1698,12 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let Some((matched_flag_name, flag_match)) = flag_names.iter().find_map(|flag_name| {
+                if self.strict_option_arity {
+                    return self
+                        .option_declarations
+                        .binding_match(&arg.text, flag_name.as_str())
+                        .map(|matched| (flag_name, matched));
+                }
                 flag_token_binding_match(
                     arg.text.as_str(),
                     flag_name.as_str(),
@@ -1491,12 +1712,17 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     &declared_short_flags,
                     &self.declared_short_flags,
                     &self.short_flags_allowing_attached_operands,
-                    true,
+                    modifier.is_some(),
                 )
                 .or_else(|| {
                     (modifier.is_none()
-                        && short_flag_cluster_contains_name(arg.text.as_str(), flag_name.as_str()))
-                    .then_some(FlagTokenMatch::ClusterMember)
+                        && clustered_short_flag_with_next_arg(
+                            arg.text.as_str(),
+                            flag_name.as_str(),
+                            &self.declared_short_flags,
+                            &self.short_flags_allowing_attached_operands,
+                        ))
+                    .then_some(FlagTokenMatch::Exact)
                 })
                 .map(|flag_match| (flag_name, flag_match))
             }) else {
@@ -1518,7 +1744,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             self.consumed[index] = true;
 
             match flag_match {
-                FlagTokenMatch::Exact | FlagTokenMatch::ClusterMember => {
+                FlagTokenMatch::Exact => {
                     if matches!(
                         operand_mode,
                         FlagOperandMode::InlineOnly | FlagOperandMode::InlineOrShortAttached
@@ -2979,46 +3205,170 @@ fn modifier_allows_inline_long_operand(modifier: &Modifier) -> bool {
     })
 }
 
+// Both modifier matchers and form bindings declare options. A form-only flag
+// such as tar's -f must participate in cluster recognition before form selection.
+// Conflicting declarations are excluded from cluster/boundary inference.
+#[derive(Default)]
+struct OptionDeclarations {
+    modes: BTreeMap<String, Option<FlagOperandMode>>,
+    conflicts: BTreeSet<String>,
+}
+
+impl OptionDeclarations {
+    fn binding_match<'t>(&self, token: &'t str, flag_name: &str) -> Option<FlagTokenMatch<'t>> {
+        let lookup = |name: &str| {
+            (!self.conflicts.contains(name))
+                .then(|| self.modes.get(name).copied())
+                .flatten()
+        };
+        if token == flag_name && lookup(flag_name).is_some() {
+            return Some(FlagTokenMatch::Exact);
+        }
+        if token.starts_with("--") {
+            let operand = inline_long_flag_operand(token, flag_name)?;
+            let mode = lookup(flag_name)?.filter(|mode| *mode != FlagOperandMode::SecondArg)?;
+            let _ = mode;
+            return Some(FlagTokenMatch::LongInlineOperand(operand));
+        }
+        let cluster = token.strip_prefix('-')?;
+        for (offset, character) in cluster.char_indices() {
+            let candidate = format!("-{character}");
+            let mode = lookup(&candidate)?;
+            if candidate == flag_name {
+                if let Some(mode) = mode {
+                    let suffix = &cluster[offset + character.len_utf8()..];
+                    if !suffix.is_empty() {
+                        return matches!(
+                            mode,
+                            FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
+                        )
+                        .then_some(FlagTokenMatch::ShortAttachedOperand(suffix));
+                    }
+                }
+                return Some(FlagTokenMatch::Exact);
+            }
+            if mode.is_some() {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn declare(&mut self, name: &str, mode: Option<FlagOperandMode>) {
+        if self
+            .modes
+            .get(name)
+            .is_some_and(|previous| *previous != mode)
+        {
+            self.conflicts.insert(name.to_string());
+        } else {
+            self.modes.insert(name.to_string(), mode);
+        }
+    }
+
+    fn add_modifiers<'a>(&mut self, modifiers: impl Iterator<Item = &'a Modifier>) {
+        for modifier in modifiers {
+            let modes: Vec<_> = modifier
+                .parameters
+                .iter()
+                .filter_map(|parameter| match parameter.binding {
+                    BindingSpec::FollowingMatchedFlag { operand_mode } => Some(operand_mode),
+                    _ => None,
+                })
+                .collect();
+            for flag in modifier.matcher.flag_names() {
+                if modes.is_empty() {
+                    self.declare(flag.as_str(), None);
+                }
+                for mode in &modes {
+                    self.declare(flag.as_str(), Some(*mode));
+                }
+            }
+            for parameter in &modifier.parameters {
+                self.add_parameter(parameter);
+            }
+        }
+    }
+
+    fn add_parameter(&mut self, parameter: &Parameter) {
+        if let BindingSpec::FollowingFlag {
+            flag_name,
+            operand_mode,
+        } = &parameter.binding
+        {
+            self.declare(flag_name.as_str(), Some(*operand_mode));
+        }
+    }
+
+    fn add_form(&mut self, form: &Form) {
+        for parameter in &form.parameters {
+            self.add_parameter(parameter);
+        }
+    }
+
+    fn for_forms(modifiers: &[Modifier], forms: &[Form]) -> Self {
+        let mut result = Self::default();
+        result.add_modifiers(modifiers.iter());
+        for form in forms {
+            result.add_form(form);
+        }
+        result
+    }
+
+    fn short_sets(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+        let mut flags = BTreeSet::new();
+        let mut operands = BTreeSet::new();
+        for (flag, mode) in &self.modes {
+            if !is_single_letter_short_flag(flag) || self.conflicts.contains(flag) {
+                continue;
+            }
+            flags.insert(flag.clone());
+            if mode.is_some() {
+                operands.insert(flag.clone());
+            }
+        }
+        (flags, operands)
+    }
+
+    fn token_operand(&self, token: &str) -> Option<(Option<FlagOperandMode>, bool)> {
+        let lookup = |flag: &str| {
+            (!self.conflicts.contains(flag))
+                .then(|| self.modes.get(flag).copied())
+                .flatten()
+        };
+        if let Some(mode) = lookup(token) {
+            return Some((mode, false));
+        }
+        if token.starts_with("--") {
+            let (flag, _) = token.split_once('=')?;
+            let mode = lookup(flag)?;
+            return mode
+                .filter(|mode| *mode != FlagOperandMode::SecondArg)
+                .map(|mode| (Some(mode), true));
+        }
+        let cluster = token.strip_prefix('-')?;
+        for (offset, character) in cluster.char_indices() {
+            let flag = format!("-{character}");
+            let mode = lookup(&flag)?;
+            if let Some(mode) = mode {
+                let inline = offset + character.len_utf8() < cluster.len();
+                if inline
+                    && !matches!(
+                        mode,
+                        FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
+                    )
+                {
+                    return None;
+                }
+                return Some((Some(mode), inline));
+            }
+        }
+        (!cluster.is_empty()).then_some((None, false))
+    }
+}
+
 fn declared_short_modifier_flags(modifiers: &[Modifier]) -> BTreeSet<String> {
-    modifiers
-        .iter()
-        .flat_map(|modifier| modifier.matcher.flag_names().iter())
-        .filter(|flag_name| is_single_letter_short_flag(flag_name.as_str()))
-        .map(|flag_name| flag_name.as_str().to_string())
-        .collect()
-}
-
-fn short_flags_allowing_attached_operands(modifiers: &[Modifier]) -> BTreeSet<String> {
-    modifiers
-        .iter()
-        .filter(|modifier| modifier_allows_short_attached(modifier))
-        .flat_map(|modifier| modifier.matcher.flag_names().iter())
-        .filter(|flag_name| is_single_letter_short_flag(flag_name.as_str()))
-        .map(|flag_name| flag_name.as_str().to_string())
-        .collect()
-}
-
-fn declared_short_modifier_flags_from_selected(
-    modifiers: &[SelectedModifier<'_>],
-) -> BTreeSet<String> {
-    modifiers
-        .iter()
-        .flat_map(|selected| selected.modifier.matcher.flag_names().iter())
-        .filter(|flag_name| is_single_letter_short_flag(flag_name.as_str()))
-        .map(|flag_name| flag_name.as_str().to_string())
-        .collect()
-}
-
-fn short_flags_allowing_attached_operands_from_selected(
-    modifiers: &[SelectedModifier<'_>],
-) -> BTreeSet<String> {
-    modifiers
-        .iter()
-        .filter(|selected| modifier_allows_short_attached(selected.modifier))
-        .flat_map(|selected| selected.modifier.matcher.flag_names().iter())
-        .filter(|flag_name| is_single_letter_short_flag(flag_name.as_str()))
-        .map(|flag_name| flag_name.as_str().to_string())
-        .collect()
+    OptionDeclarations::for_forms(modifiers, &[]).short_sets().0
 }
 
 fn is_single_letter_short_flag(flag_name: &str) -> bool {
@@ -3047,29 +3397,26 @@ fn short_flag_cluster_matches_flag_only_modifier(
         return false;
     };
 
-    if token_text.starts_with("--")
-        || cluster_text.len() <= 1
-        || !cluster_text.chars().all(|ch| ch.is_ascii_alphabetic())
-    {
+    if token_text.starts_with("--") || cluster_text.len() <= 1 {
         return false;
     }
 
-    let last_index = cluster_text.len() - 1;
+    let mut seen = false;
     for (index, candidate) in cluster_text.char_indices() {
         let candidate_flag = format!("-{candidate}");
         if !declared_short_flags.contains(&candidate_flag) {
             return false;
         }
         if short_flags_allowing_attached_operands.contains(&candidate_flag) {
-            // Only a final operand-taking flag can be part of this cluster;
-            // its value is supplied by the next argument.
-            if index != last_index {
-                return false;
-            }
+            // Subsequent characters are an operand, never more options.
+            // Only flag-only members preceding this option can match here.
+            return seen
+                || (index + candidate.len_utf8() == cluster_text.len() && candidate == flag_char);
         }
+        seen |= candidate == flag_char;
     }
 
-    cluster_text.chars().any(|candidate| candidate == flag_char)
+    seen
 }
 
 #[cfg(test)]
@@ -5014,6 +5361,219 @@ mod tests {
                 .any(|effect| matches!(effect.kind, EffectKind::DispatchCommand))
         );
         assert!(invocation.residuals.is_empty());
+    }
+
+    #[test]
+    fn xargs_parent_options_stop_at_wrapped_command_and_consume_their_own_values() {
+        let profile = built_in_profile("xargs");
+        let cases = [
+            ("xargs -p mkdir", true, Vec::<&str>::new()),
+            ("xargs mkdir -p", false, vec!["-p"]),
+            ("xargs -n 2 mkdir -p", false, vec!["-p"]),
+            ("xargs -I -p mkdir -p", false, vec!["-p"]),
+            ("xargs -n2 mkdir -p", false, vec!["-p"]),
+            ("xargs -Ip mkdir -p", false, vec!["-p"]),
+            ("xargs -0p mkdir -p", true, vec!["-p"]),
+            ("xargs -0n2 mkdir -p", false, vec!["-p"]),
+            (
+                "xargs -- mkdir -p -- /backup",
+                false,
+                vec!["-p", "--", "/backup"],
+            ),
+            ("xargs -pn2 mkdir -p", true, vec!["-p"]),
+            ("xargs --replace=-p mkdir -p", false, vec!["-p"]),
+            (
+                "xargs mkdir -I child -n 2 -p",
+                false,
+                vec!["-I", "child", "-n", "2", "-p"],
+            ),
+        ];
+
+        for (command_text, has_interactive, expected_child_args) in cases {
+            let artifact = parse_command(command_text, ShellKind::Bash)
+                .unwrap_or_else(|_| panic!("expected {command_text:?} to parse"));
+            let command = artifact.commands.first().expect("expected one command");
+            let projection = project_invocation(command, InvocationRuntimeContext::new());
+            let selection = select_invocation(&profile, &projection)
+                .unwrap_or_else(|error| panic!("expected {command_text:?} to select: {error}"));
+            let invocation = bind_invocation(&profile, &projection, &selection);
+            let has_interactive_modifier = invocation
+                .applied_modifiers
+                .iter()
+                .any(|modifier| modifier.as_str() == "interactive_prompt");
+            assert_eq!(has_interactive_modifier, has_interactive, "{command_text}");
+
+            let wrapped_command = find_bound_parameter(&invocation, "wrapped_command");
+            assert_eq!(
+                first_argument_text(wrapped_command),
+                "mkdir",
+                "{command_text}"
+            );
+            let actual_child_args: Vec<&str> = invocation
+                .bound_parameters
+                .iter()
+                .find(|parameter| parameter.name.as_str() == "wrapped_args")
+                .into_iter()
+                .flat_map(|parameter| &parameter.values)
+                .map(|value| match value {
+                    BoundValue::Argument { text, .. } => text.as_str(),
+                    other => panic!("expected argument, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(actual_child_args, expected_child_args, "{command_text}");
+        }
+    }
+
+    #[test]
+    fn leading_options_do_not_guess_unknown_or_conflicting_option_arity() {
+        let mut profile = built_in_profile("xargs");
+        for text in ["xargs --unknown 2 mkdir -p", "xargs -n"] {
+            let artifact = parse_command(text, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            assert!(
+                matches!(
+                    select_invocation(&profile, &projection),
+                    Err(BindError::UnsupportedProfileFeature { .. })
+                ),
+                "{text}"
+            );
+        }
+        profile
+            .modifiers
+            .push(Modifier::new("conflicting_n").with_flag_name("-n"));
+        let artifact = parse_command("xargs -n 2 mkdir", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        assert!(select_invocation(&profile, &projection).is_err());
+    }
+
+    #[test]
+    fn leading_option_boundary_scopes_form_selectors_without_changing_default_profiles() {
+        let mut profile = built_in_profile("xargs");
+        profile.forms[0].selector = SelectorExpr::Not(Box::new(SelectorExpr::Predicate(
+            SelectorPredicate::HasFlag(FlagName::new("-p")),
+        )));
+        let artifact = parse_command("xargs mkdir -p", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        assert!(select_invocation(&profile, &projection).is_ok());
+        profile.option_boundary = crate::OptionBoundary::Invocation;
+        assert!(select_invocation(&profile, &projection).is_err());
+    }
+
+    #[test]
+    fn leading_option_form_selectors_see_attached_modifier_operands_as_values() {
+        let mut profile = built_in_profile("xargs");
+        profile.forms[0].selector =
+            SelectorExpr::Predicate(SelectorPredicate::HasModifierParameterMatching(
+                ModifierId::new("replace_token"),
+                crate::SlotName::new("replace_token"),
+                ValueMatcher::Literal("p".to_string()),
+            ));
+        let artifact = parse_command("xargs -Ip mkdir -p", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        let selection = select_invocation(&profile, &projection).unwrap();
+        let bound = bind_invocation(&profile, &projection, &selection);
+        assert_eq!(
+            first_argument_text(find_bound_parameter(&bound, "replace_token")),
+            "p"
+        );
+        assert_eq!(
+            argument_texts(find_bound_parameter(&bound, "wrapped_args")),
+            vec!["-p"]
+        );
+    }
+
+    #[test]
+    fn tar_form_options_participate_in_cluster_selection_and_binding() {
+        let profile = built_in_profile("tar");
+        for (text, form, archive) in [
+            ("tar -xf - -C /backup", "extract_archive", "-"),
+            ("tar -x -f - -C /backup", "extract_archive", "-"),
+            (
+                "tar -cf /backup/archive.tar /workspace/input",
+                "create_archive",
+                "/backup/archive.tar",
+            ),
+            (
+                "tar -tf /workspace/archive.tar",
+                "list_archive",
+                "/workspace/archive.tar",
+            ),
+            (
+                "tar -xf/backup/archive.tar -C /backup",
+                "extract_archive",
+                "/backup/archive.tar",
+            ),
+        ] {
+            let artifact = parse_command(text, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            let selection = select_invocation(&profile, &projection)
+                .unwrap_or_else(|error| panic!("{text}: {error}"));
+            assert_eq!(selection.form.id.as_str(), form, "{text}");
+            let bound = bind_invocation(&profile, &projection, &selection);
+            assert_eq!(
+                first_argument_text(find_bound_parameter(&bound, "archive_file")),
+                archive,
+                "{text}"
+            );
+            assert!(bound.residuals.is_empty(), "{text}: {:?}", bound.residuals);
+            if form == "extract_archive" {
+                assert_eq!(
+                    first_argument_text(find_bound_parameter(&bound, "working_directory")),
+                    "/backup"
+                );
+                assert!(
+                    bound
+                        .effects
+                        .iter()
+                        .any(|effect| effect.kind == EffectKind::WritePath)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tar_archive_operand_does_not_supply_extraction_flags() {
+        let profile = built_in_profile("tar");
+        for text in [
+            "tar -fx /workspace/archive.tar",
+            "tar -qx /workspace/archive.tar",
+        ] {
+            let artifact = parse_command(text, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            assert!(select_invocation(&profile, &projection).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn clustered_form_binding_requires_declared_prefix_and_consistent_arity() {
+        let mut profile = built_in_profile("tar");
+        let artifact = parse_command("tar -x -qf /backup/archive.tar", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        let selection = select_invocation(&profile, &projection).unwrap();
+        let bound = bind_invocation(&profile, &projection, &selection);
+        assert!(
+            !bound
+                .bound_parameters
+                .iter()
+                .any(|parameter| parameter.name.as_str() == "archive_file")
+        );
+        assert!(
+            !bound
+                .effects
+                .iter()
+                .any(|effect| effect.kind == EffectKind::WritePath)
+        );
+        assert!(!bound.residuals.is_empty());
+
+        profile
+            .modifiers
+            .push(Modifier::new("conflicting_f").with_flag_name("-f"));
+        let artifact = parse_command("tar -xf /backup/archive.tar", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        assert!(select_invocation(&profile, &projection).is_err());
     }
 
     #[test]

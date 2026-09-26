@@ -9,12 +9,12 @@ use crate::raw::{
     RawEndpointKind, RawEndpointUsage, RawFlagOperandMode, RawForm, RawHostRiskEffectMetadata,
     RawHostRiskSemanticClass, RawImplicitInput, RawImplicitInputSource, RawInProcessCodeLoadKind,
     RawInteractiveEscapeCapability, RawInteractiveEscapeSurface, RawInteractiveEscapeSurfaceKind,
-    RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind, RawOsFamily,
-    RawPackageLocatorKind, RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole,
-    RawPayloadLanguage, RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind,
-    RawProfileSourceKind, RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
-    RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr, RawSemanticType,
-    RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
+    RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind,
+    RawOptionBoundary, RawOsFamily, RawPackageLocatorKind, RawPackageManagerKind, RawParameter,
+    RawPathPurpose, RawPathRole, RawPayloadLanguage, RawPayloadSource, RawPlatformConstraints,
+    RawProcessTargetKind, RawProfileSourceKind, RawProfileTrustMetadata, RawProfileTrustTier,
+    RawRepositoryOperationKind, RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr,
+    RawSemanticType, RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
     RawValueMatcher,
 };
@@ -78,6 +78,10 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         platform: normalize_platform(raw.platform),
         forms,
         modifiers,
+        option_boundary: match raw.option_boundary {
+            RawOptionBoundary::Invocation => crate::OptionBoundary::Invocation,
+            RawOptionBoundary::FirstPositional => crate::OptionBoundary::FirstPositional,
+        },
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
     })
@@ -1225,6 +1229,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1377,6 +1382,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1456,6 +1462,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1535,6 +1542,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1584,6 +1592,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_metadata_mutation_semantics() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1648,6 +1657,7 @@ mod tests {
     #[test]
     fn normalize_rejects_invalid_dsl_version() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1667,6 +1677,7 @@ mod tests {
     #[test]
     fn normalize_rejects_duplicate_form_ids() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1696,6 +1707,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
+            option_boundary: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {

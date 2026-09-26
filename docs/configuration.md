@@ -54,6 +54,20 @@ If the configuration file does not exist, `validate` still succeeds because Caus
 | --- | --- | --- | --- |
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Fallback behavior when Caushell cannot complete analysis |
 | `codex.need_approval_mode` | `block` / `observe` | `block` | How Codex handles `NeedApproval` decisions |
+| `policy.rules.process_control` | `allow` / `need_approval` / `deny` | `need_approval` | Whether resolved commands that signal or resume a process/job require approval |
+
+`allow` records the finding without requesting approval. Process targets are not
+resolved to operating-system processes here, so unknown targets receive the same
+configured action as known target forms; this rule does not identify or specially
+protect critical PIDs.
+
+```yaml
+policy:
+  rules:
+    process_control: allow
+```
+
+This rule consumes resolved `control_process` effects, including nested calls and `fg`/`bg` job resumption. Covered zero-signal probes and signal-list forms do not produce this effect. Unsupported options or invocation forms remain subject to the existing resolution-gap policy (`form_selection_unmatched` defaults to observe), not a safety verdict from this rule. Allowing this rule does not override approval or denial from other rules.
 
 ### `failure_action`
 
@@ -110,4 +124,3 @@ codex:
 ```
 
 The default configuration uses `need_approval` and `block`.
-

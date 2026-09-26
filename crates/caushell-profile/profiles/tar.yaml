@@ -228,5 +228,5 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - Combined short option clusters such as -xf and -cf require shell projection support for short-option cluster splitting; use separated flags in the current profile.
+    - Short option clusters use declared option arity, including the form-bound -f operand; undeclared options and additional old-style option forms are not inferred.
     - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.

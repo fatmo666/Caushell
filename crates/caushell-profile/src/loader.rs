@@ -314,7 +314,7 @@ extensions: {}
         assert_eq!(profile.primary_name(), "bash");
         assert_eq!(profile.identity.aliases.len(), 1);
         assert_eq!(profile.forms.len(), 5);
-        assert_eq!(profile.modifiers.len(), 1);
+        assert_eq!(profile.modifiers.len(), 2);
 
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
         assert_eq!(

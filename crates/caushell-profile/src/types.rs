@@ -1171,6 +1171,7 @@ pub struct CommandProfile {
     pub platform: PlatformConstraints,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
+    pub option_boundary: OptionBoundary,
     pub subcommands: Option<SubcommandTree>,
     pub extensions: ExtensionMap,
 }
@@ -1183,6 +1184,7 @@ impl CommandProfile {
             platform: PlatformConstraints::default(),
             forms: Vec::new(),
             modifiers: Vec::new(),
+            option_boundary: OptionBoundary::Invocation,
             subcommands: None,
             extensions: ExtensionMap::new(),
         }
@@ -1215,6 +1217,13 @@ impl CommandProfile {
                 .iter()
                 .any(|candidate| candidate.as_str() == name)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptionBoundary {
+    #[default]
+    Invocation,
+    FirstPositional,
 }
 
 #[cfg(test)]

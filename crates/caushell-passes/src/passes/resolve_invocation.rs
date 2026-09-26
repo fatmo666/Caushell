@@ -85,13 +85,12 @@ impl SessionTransformPass for ResolveInvocationPass {
             ctx.request(),
             &function_derived_commands,
         );
-        let (dispatch_derived_commands, unresolved_dispatches) =
-            collect_top_level_dispatch_derived_commands(
-                staged_view.summary(),
-                ctx.request(),
-                &parsed,
-                &records,
-            );
+        let dispatch_derived_commands = collect_top_level_dispatch_derived_commands(
+            staged_view.summary(),
+            ctx.request(),
+            &parsed,
+            &records,
+        );
         let dispatch_derived_records = collect_top_level_dispatch_command_resolve_records(
             &self.registry,
             ctx.request(),
@@ -120,23 +119,21 @@ impl SessionTransformPass for ResolveInvocationPass {
         let mut derived_records = dispatch_derived_records.clone();
         derived_records.extend(function_derived_records.clone());
         derived_records.extend(nested_derived_records);
-        let execution_unit_resolve_records = collect_execution_unit_resolve_records(
-            &self.registry,
-            staged_view,
-            ctx.request(),
-            &parsed,
-            &records,
-            &function_derived_commands,
-            &function_derived_records,
-            &dispatch_derived_commands,
-            &dispatch_derived_records,
-            &nested_payload_records,
-            ctx.policy().semantic_expansion.max_nested_parse_depth,
-        );
-        ctx.set_unresolved_dispatch_records(project_unresolved_dispatch_records(
-            ctx.request(),
-            &unresolved_dispatches,
-        ));
+        let (execution_unit_resolve_records, unresolved_dispatches) =
+            collect_execution_unit_resolve_records(
+                &self.registry,
+                staged_view,
+                ctx.request(),
+                &parsed,
+                &records,
+                &function_derived_commands,
+                &function_derived_records,
+                &dispatch_derived_commands,
+                &dispatch_derived_records,
+                &nested_payload_records,
+                ctx.policy().semantic_expansion.max_nested_parse_depth,
+            );
+        ctx.set_unresolved_dispatch_records(unresolved_dispatches);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
         ctx.set_parsed_command_scopes(project_parsed_command_scopes(
             ctx.request(),
@@ -353,15 +350,6 @@ struct TopLevelDispatchDerivedCommand {
     parent_node_id: caushell_graph::NodeId,
     bindings: SessionBindings,
     command: caushell_parse::CommandFact,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TopLevelUnresolvedDispatch {
-    source_command_index: usize,
-    dispatch_index: usize,
-    command_slot: String,
-    source_node_id: caushell_graph::NodeId,
-    span: caushell_parse::SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -733,12 +721,8 @@ fn collect_top_level_dispatch_derived_commands(
     request: &CheckRequest,
     parsed: &caushell_parse::ParsedCommandArtifact,
     records: &[ResolvedCommandSeed],
-) -> (
-    Vec<TopLevelDispatchDerivedCommand>,
-    Vec<TopLevelUnresolvedDispatch>,
-) {
+) -> Vec<TopLevelDispatchDerivedCommand> {
     let mut commands = Vec::new();
-    let mut unresolved = Vec::new();
 
     for record in records {
         let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
@@ -774,19 +758,9 @@ fn collect_top_level_dispatch_derived_commands(
                 command,
             });
         }
-
-        for candidate in projection.unresolved {
-            unresolved.push(TopLevelUnresolvedDispatch {
-                source_command_index: record.command_ref.command_index,
-                dispatch_index: candidate.dispatch_index,
-                command_slot: candidate.command_slot.as_str().to_string(),
-                source_node_id: record.source_node_id.clone(),
-                span: record.command_ref.span.clone(),
-            });
-        }
     }
 
-    (commands, unresolved)
+    commands
 }
 
 fn should_skip_generic_dispatch_projection(
@@ -831,21 +805,20 @@ fn dispatch_candidates_for_resolved(
     cwd: &str,
     home: Option<&str>,
 ) -> caushell_profile::DispatchCommandProjection {
-    if resolved.normalized_command_name.as_str() == "find" {
-        return caushell_profile::DispatchCommandProjection {
-            resolved: find_dispatch_candidates(resolved, cwd, home),
-            unresolved: collect_dispatch_command_projection(&resolved.bound).unresolved,
-        };
+    if resolved.normalized_command_name.as_str() == "find"
+        && resolved.bound.form_id.as_str() == "exec_command"
+    {
+        return find_dispatch_projection(resolved, cwd, home);
     }
 
     collect_dispatch_command_projection(&resolved.bound)
 }
 
-fn find_dispatch_candidates(
+fn find_dispatch_projection(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     cwd: &str,
     home: Option<&str>,
-) -> Vec<caushell_profile::DispatchCommandCandidate> {
+) -> caushell_profile::DispatchCommandProjection {
     use caushell_profile::{ArgumentBindingSource, DispatchArgument, DispatchCommandCandidate};
 
     let tokens = &resolved.materialized_projection.invocation.args;
@@ -914,7 +887,8 @@ fn find_dispatch_candidates(
         .iter()
         .zip(decoded.iter())
         .any(|(_, token)| matches!(token.as_deref(), Some("-L" | "-H" | "-follow")));
-    let mut candidates = Vec::new();
+    let mut projection = caushell_profile::DispatchCommandProjection::default();
+    let mut dispatch_index = 0;
     let mut index = 0;
 
     while index < tokens.len() {
@@ -928,16 +902,37 @@ fn find_dispatch_candidates(
             continue;
         };
 
-        let Some(command_token) = tokens.get(index + 1) else {
-            break;
-        };
-        let mut end = index + 2;
+        // Clause identity includes failures, so a failed clause cannot renumber
+        // later successful children or share their dispatch identity.
+        let clause_index = dispatch_index;
+        dispatch_index += 1;
+        let mut end = index + 1;
         while end < tokens.len() && !matches!(decoded[end].as_deref(), Some(";" | "+")) {
             end += 1;
         }
-        let Some(_terminator) = tokens.get(end) else {
+        if end == tokens.len() {
+            projection
+                .unresolved
+                .push(caushell_profile::UnresolvedDispatchCommand {
+                    dispatch_index: clause_index,
+                    command_slot: SlotName::new(command_slot),
+                });
             break;
-        };
+        }
+        let command_value = decoded.get(index + 1).and_then(|value| value.as_deref());
+        if end == index + 1
+            || command_value.is_none_or(|value| value.is_empty() || value.contains("{}"))
+        {
+            projection
+                .unresolved
+                .push(caushell_profile::UnresolvedDispatchCommand {
+                    dispatch_index: clause_index,
+                    command_slot: SlotName::new(command_slot),
+                });
+            index = end + 1;
+            continue;
+        }
+        let command_token = &tokens[index + 1];
 
         let make_argument = |slot: &str,
                              token: &caushell_profile::ProjectedArg,
@@ -976,7 +971,6 @@ fn find_dispatch_candidates(
             }
         };
 
-        let command_value = decoded.get(index + 1).and_then(|value| value.as_deref());
         let command = make_argument(command_slot, command_token, command_value, false);
         let argv = tokens[index + 2..end]
             .iter()
@@ -990,8 +984,8 @@ fn find_dispatch_candidates(
             })
             .collect();
 
-        candidates.push(DispatchCommandCandidate {
-            dispatch_index: candidates.len(),
+        projection.resolved.push(DispatchCommandCandidate {
+            dispatch_index: clause_index,
             command,
             argv,
             environment: Vec::new(),
@@ -1000,7 +994,7 @@ fn find_dispatch_candidates(
         index = end + 1;
     }
 
-    candidates
+    projection
 }
 
 fn decoded_find_argv_value(
@@ -1282,8 +1276,12 @@ fn collect_execution_unit_resolve_records(
     dispatch_derived_records: &[ResolvedCommandSeed],
     nested_payload_records: &[NestedPayloadRecord],
     max_nested_parse_depth: u8,
-) -> Vec<ExecutionUnitResolveRecord> {
+) -> (
+    Vec<ExecutionUnitResolveRecord>,
+    Vec<UnresolvedDispatchRecord>,
+) {
     let mut records = Vec::new();
+    let mut unresolved_dispatches = Vec::new();
     let mut frontier = Vec::new();
     let request_scope_base_bindings = request_bindings(session.summary(), request);
 
@@ -1497,7 +1495,11 @@ fn collect_execution_unit_resolve_records(
         };
 
         frontier.extend(expanded_dispatch_children(
-            registry, request, &entry, resolved,
+            registry,
+            request,
+            &entry,
+            resolved,
+            &mut unresolved_dispatches,
         ));
         frontier.extend(expanded_shell_payload_children(
             registry, request, &entry, resolved,
@@ -1533,7 +1535,7 @@ fn collect_execution_unit_resolve_records(
         ));
     }
 
-    records
+    (records, unresolved_dispatches)
 }
 
 fn nested_payload_history_anchor_node_id(
@@ -1726,6 +1728,7 @@ fn expanded_dispatch_children(
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
+    unresolved_dispatches: &mut Vec<UnresolvedDispatchRecord>,
 ) -> Vec<ExpandedFrontierEntry> {
     if should_skip_generic_dispatch_projection(resolved) {
         return Vec::new();
@@ -1739,13 +1742,20 @@ fn expanded_dispatch_children(
         request.home.as_deref(),
     );
 
-    for child in dispatch_candidates_for_resolved(
+    let projection = dispatch_candidates_for_resolved(
         resolved,
         request.shell_state_before.cwd(),
         request.home.as_deref(),
-    )
-    .resolved
-    {
+    );
+    for unresolved in projection.unresolved {
+        unresolved_dispatches.push(UnresolvedDispatchRecord::new(
+            entry.source_node_id.clone(),
+            entry.command_ref.clone(),
+            unresolved.dispatch_index,
+            unresolved.command_slot.as_str(),
+        ));
+    }
+    for child in projection.resolved {
         let mut child_inherited_scope = inherited_scope.clone();
         child_inherited_scope.dispatch_working_directory =
             child.execution_cwd_unknown.then_some(EffectiveCwd::Unknown);
@@ -3603,23 +3613,6 @@ fn project_dispatch_derived_invocation_mutation(
         parent_node_id: command.parent_node_id.clone(),
         relation_from_parent: caushell_graph::EdgeKind::Dispatches,
     }
-}
-
-fn project_unresolved_dispatch_records(
-    _request: &caushell_types::CheckRequest,
-    unresolved_dispatches: &[TopLevelUnresolvedDispatch],
-) -> Vec<UnresolvedDispatchRecord> {
-    unresolved_dispatches
-        .iter()
-        .map(|dispatch| {
-            UnresolvedDispatchRecord::new(
-                dispatch.source_node_id.clone(),
-                ParsedCommandRef::new(dispatch.source_command_index, dispatch.span.clone()),
-                dispatch.dispatch_index,
-                dispatch.command_slot.clone(),
-            )
-        })
-        .collect()
 }
 
 fn project_alias_derived_invocation_mutation(
@@ -7345,6 +7338,99 @@ mod tests {
                 && execution_record_matches_fixture(record, "rm -rf --no-preserve-root \"/\"")
                 && record.parent_execution_node_id == xargs_child.source_node_id
         }));
+    }
+
+    #[test]
+    fn find_dispatch_projection_keeps_multiple_complete_clauses_without_false_gaps() {
+        for command in [
+            r#"find . -exec echo {} \; -exec true {} \; -exec grep value {} +"#,
+            r#"find . -execdir echo {} \; -exec true {} \;"#,
+            r#"sh -c 'find . -exec echo {} \; -exec true {} \;'"#,
+            r#"find . -exec echo "$VALUE" {} \; -exec true {} \;"#,
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            assert!(
+                ctx.unresolved_dispatch_records().is_empty(),
+                "{command}: {:?}",
+                ctx.unresolved_dispatch_records()
+            );
+            let children: Vec<_> = ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .filter(|record| record.origin_kind == ExecutionUnitOriginKind::Dispatch)
+                .collect();
+            assert!(children.len() >= 2, "{command}");
+        }
+    }
+
+    #[test]
+    fn find_predicate_values_are_not_dispatch_failures_without_exec_form() {
+        for command in [
+            r#"find . -name '-exec' -print"#,
+            r#"find . -name '-execdir' -print"#,
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            assert!(ctx.unresolved_dispatch_records().is_empty(), "{command}");
+            assert!(
+                !ctx.execution_unit_resolve_records()
+                    .iter()
+                    .any(|record| record.origin_kind == ExecutionUnitOriginKind::Dispatch),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_dispatch_projection_keeps_each_failed_clause_and_stable_child_identity() {
+        for command in [
+            r#"find . -exec "$CMD" {} \; -exec echo {} \;"#,
+            r#"find . -exec {} \; -exec echo {} \;"#,
+            r#"find . -exec \; -exec echo {} \;"#,
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            let gaps = ctx.unresolved_dispatch_records();
+            assert_eq!(gaps.len(), 1, "{command}: {gaps:?}");
+            assert_eq!(gaps[0].dispatch_index, 0);
+            assert_eq!(gaps[0].command_slot, "exec_command");
+            let child = ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .find(|record| record.origin_kind == ExecutionUnitOriginKind::Dispatch)
+                .expect("later valid clause must survive");
+            assert_eq!(child.origin_index, 1, "{command}");
+            assert_eq!(child.parent_execution_node_id, gaps[0].source_node_id);
+        }
+    }
+
+    #[test]
+    fn find_dispatch_projection_keeps_missing_terminator_gaps_in_nested_scopes() {
+        for command in [
+            r#"find . -exec echo {} \; -exec echo {}"#,
+            r#"sh -c 'find . -exec echo {} \; -exec echo {}'"#,
+            r#"find . -exec echo {} \; -execdir"#,
+            r#"sh -c 'find . -exec echo {} \; -execdir'"#,
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            let gaps = ctx.unresolved_dispatch_records();
+            assert_eq!(gaps.len(), 1, "{command}: {gaps:?}");
+            assert_eq!(gaps[0].dispatch_index, 1);
+            let parent = ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .find(|record| record.source_node_id == gaps[0].source_node_id)
+                .expect("gap must refer to its actual execution unit");
+            assert_eq!(parent.command_ref, gaps[0].command_ref);
+            let children: Vec<_> = ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .filter(|record| {
+                    record.origin_kind == ExecutionUnitOriginKind::Dispatch
+                        && record.parent_execution_node_id == parent.source_node_id
+                })
+                .collect();
+            assert_eq!(children.len(), 1, "{command}");
+            assert_eq!(children[0].origin_index, 0);
+        }
     }
 
     #[test]

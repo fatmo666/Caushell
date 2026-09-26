@@ -17,11 +17,66 @@ platform:
   shell_families: []
   requires_features: []
 
+option_boundary: first_positional
+
 forms:
+  - id: list_signals
+    selector:
+      kind: has_modifier
+      modifier: list_signals
+
+  - id: probe_targets
+    selector: &probe_selector
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: nonzero_signal
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: zero_signal
+            - kind: has_modifier_parameter_matching
+              modifier: signal
+              parameter: signal_spec
+              matcher:
+                kind: literal
+                value: "0"
+        - kind: not
+          item:
+            kind: has_modifier_parameter_matching
+            modifier: signal
+            parameter: signal_spec
+            matcher:
+              kind: regex_pattern
+              pattern: "^([^0].*|0.+)$"
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_signals
+    parameters:
+      - name: targets
+        semantic:
+          kind: process_target
+          target_kind: process_name
+          broad_match: true
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+
   - id: process_name_targets
     selector:
-      kind: has_positional_at
-      index: 0
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item: *probe_selector
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_signals
     parameters:
       - name: targets
         semantic:
@@ -38,6 +93,107 @@ forms:
           name: targets
 
 modifiers:
+  - id: nonzero_signal
+    matcher:
+      kind: any_flag
+      flags:
+        - "-1"
+        - "-2"
+        - "-3"
+        - "-4"
+        - "-5"
+        - "-6"
+        - "-7"
+        - "-8"
+        - "-9"
+        - "-10"
+        - "-11"
+        - "-12"
+        - "-13"
+        - "-14"
+        - "-15"
+        - "-16"
+        - "-17"
+        - "-18"
+        - "-19"
+        - "-20"
+        - "-21"
+        - "-22"
+        - "-23"
+        - "-24"
+        - "-25"
+        - "-26"
+        - "-27"
+        - "-28"
+        - "-29"
+        - "-30"
+        - "-31"
+        - "-32"
+        - "-33"
+        - "-34"
+        - "-35"
+        - "-36"
+        - "-37"
+        - "-38"
+        - "-39"
+        - "-40"
+        - "-41"
+        - "-42"
+        - "-43"
+        - "-44"
+        - "-45"
+        - "-46"
+        - "-47"
+        - "-48"
+        - "-49"
+        - "-50"
+        - "-51"
+        - "-52"
+        - "-53"
+        - "-54"
+        - "-55"
+        - "-56"
+        - "-57"
+        - "-58"
+        - "-59"
+        - "-60"
+        - "-61"
+        - "-62"
+        - "-63"
+        - "-64"
+        - "-HUP"
+        - "-INT"
+        - "-QUIT"
+        - "-ILL"
+        - "-TRAP"
+        - "-ABRT"
+        - "-BUS"
+        - "-FPE"
+        - "-KILL"
+        - "-USR1"
+        - "-SEGV"
+        - "-USR2"
+        - "-PIPE"
+        - "-ALRM"
+        - "-TERM"
+        - "-CHLD"
+        - "-CONT"
+        - "-STOP"
+        - "-TSTP"
+        - "-TTIN"
+        - "-TTOU"
+        - "-SIGTERM"
+        - "-SIGKILL"
+        - "-SIGSTOP"
+        - "-SIGCONT"
+  - id: list_signals
+    matcher:
+      kind: any_flag
+      flags: ["-l", "--list"]
+  - id: zero_signal
+    matcher:
+      kind: any_flag
+      flags: ["-0"]
   - id: signal
     matcher:
       kind: any_flag

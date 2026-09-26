@@ -13,8 +13,17 @@ pub struct RawCommandProfile {
     pub platform: RawPlatformConstraints,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
+    pub option_boundary: RawOptionBoundary,
     pub subcommands: Option<RawSubcommandTree>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawOptionBoundary {
+    #[default]
+    Invocation,
+    FirstPositional,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]

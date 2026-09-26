@@ -250,7 +250,8 @@ fn process_control_semantics_for_invocation(
         .find(|effect| effect.kind == EffectKind::ControlProcess)?;
     let action = process_control_action(normalized_command_name, invocation.form_id.as_str())?;
     let (target_kind, broad_target) =
-        process_control_target_kind_for_effect_target(invocation, &effect.target)?;
+        process_control_target_kind_for_effect_target(invocation, &effect.target)
+            .unwrap_or((ProcessControlTargetKind::Unknown, false));
 
     Some((action, target_kind, broad_target))
 }

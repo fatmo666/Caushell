@@ -297,6 +297,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::InteractiveEscapeSurface => RuleAction::Observe,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
+        RuleId::ProcessControl => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceScriptSource => RuleAction::Observe,
         RuleId::OutsideWorkspaceStartupConfig => RuleAction::Observe,
         RuleId::MissingCommandName => RuleAction::NeedApproval,

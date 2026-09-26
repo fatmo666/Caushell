@@ -192,5 +192,12 @@ modifiers:
           kind: slot
           name: startup_config
 
+  - id: login_shell
+    matcher:
+      kind: any_flag
+      flags:
+        - "-l"
+        - "--login"
+
 subcommands: null
 extensions: {}

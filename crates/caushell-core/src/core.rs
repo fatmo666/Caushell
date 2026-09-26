@@ -16,7 +16,7 @@ use caushell_passes::{
     GitDestructiveOperationGuardPass, ImportedPackageExecutionGuardPass,
     InteractiveEscapeGuardPass, OutsideWorkspaceMutationGuardPass,
     OutsideWorkspaceScriptSourcePass, OutsideWorkspaceStartupConfigPass, ParseCommandPass,
-    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
+    ProcessControlGuardPass, ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
     SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
 use caushell_profile::{BuiltInRegistryError, ProfileRegistry};
@@ -473,6 +473,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_request_analysis_pass(CwdWorkspaceBoundaryPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
+    runner.register_session_analysis_pass(ProcessControlGuardPass);
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
@@ -1004,6 +1005,190 @@ mod tests {
     }
 
     #[test]
+    fn find_multiple_exec_clauses_do_not_leave_spurious_wrapper_gaps() {
+        for command in [
+            r#"find /testbed -name "*.php" -exec chmod 755 {} \; -exec /bin/echo {} \; | wc -l"#,
+            r#"find /testbed -name "*.txt" \( -exec echo {} \; -o -exec true \; \) -exec grep another {} \;"#,
+            r#"find /testbed -exec echo {} \; -exec true {} \;"#,
+            r#"sh -c 'find /testbed -exec echo {} \; -exec true {} \;'"#,
+            r#"find /testbed -execdir echo {} \; -exec true {} +"#,
+        ] {
+            let mut request = sample_request("find-multiple", 1, command);
+            request.shell_state_before = caushell_types::ShellStateSnapshot::new("/testbed");
+            request.workspace_root = Some("/testbed".into());
+            let response = ShellQueryCore::new().check(request);
+            assert_eq!(
+                response.decision,
+                Decision::Allow,
+                "{command}: {:?}",
+                response.reasons
+            );
+            assert!(
+                !response
+                    .decision_trace
+                    .decision_proposals
+                    .iter()
+                    .any(|proposal| proposal.reason.contains("wrapper child command")),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_partial_dispatch_keeps_approval_and_successful_sibling_effects() {
+        for command in [
+            r#"find /tmp/project -exec echo {} \; -exec echo {}"#,
+            r#"sh -c 'find /tmp/project -exec echo {} \; -exec echo {}'"#,
+            r#"find /tmp/project -exec "$CMD" {} \; -exec echo {} \;"#,
+            r#"sh -c 'find /tmp/project -exec "$CMD" {} \; -exec echo {} \;'"#,
+            r#"find /tmp/project -exec echo {} \; -execdir"#,
+        ] {
+            let response = ShellQueryCore::new().check(sample_request("find-partial", 1, command));
+            assert_eq!(
+                response.decision,
+                Decision::NeedApproval,
+                "{command}: {:?}",
+                response.reasons
+            );
+            assert!(
+                response
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.contains("wrapper child command")),
+                "{command}"
+            );
+            assert!(
+                response
+                    .decision_trace
+                    .execution_semantics
+                    .iter()
+                    .any(|semantic| semantic.normalized_command_name == "echo"),
+                "{command}"
+            );
+        }
+        let response = ShellQueryCore::new().check(sample_request(
+            "find-outside",
+            1,
+            r#"find /etc -exec chmod 755 {} \; -exec echo {} \;"#,
+        ));
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+        assert!(
+            !response
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("wrapper child command"))
+        );
+    }
+
+    #[test]
+    fn process_control_guard_covers_nested_commands_and_does_not_leak_across_actions() {
+        for command in [
+            "kill 1234",
+            "pkill -f service",
+            "killall service",
+            "fg %1",
+            "bg %1",
+            "fg",
+            "bg",
+            "bash -c 'kill 1234'",
+            "echo 1234 | xargs kill",
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("process-control", 1, command));
+            assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == RuleId::ProcessControl),
+                "{command}"
+            );
+            let next = core.check(sample_request("process-control", 2, "echo ok"));
+            assert_eq!(next.decision, Decision::Allow);
+            assert!(
+                !next
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == RuleId::ProcessControl)
+            );
+        }
+    }
+
+    #[test]
+    fn process_control_guard_keeps_readonly_forms_and_other_rules_independent() {
+        for command in [
+            "kill -0 1234",
+            "kill -s 0 1234",
+            "kill --signal=0 1234",
+            "kill -l",
+            "kill -l TERM",
+            "kill -L",
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("process-readonly", 1, command));
+            assert_eq!(
+                response.decision,
+                Decision::Allow,
+                "{command}: {:?}",
+                response.reasons
+            );
+            assert!(
+                !response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == RuleId::ProcessControl)
+            );
+        }
+        for command in [
+            "kill -s \"$sig\" 1234",
+            "kill -0 -TERM 1234",
+            "kill -s 0 -s TERM 1234",
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("process-ambiguous", 1, command));
+            assert_ne!(response.decision, Decision::Allow, "{command}");
+        }
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            RuleId::ProcessControl,
+            RulePolicyEntry::new(RuleAction::Observe),
+        );
+        let mut core = ShellQueryCore::with_policy(policy);
+        let allowed = core.check(sample_request("process-policy", 1, "kill 1234"));
+        assert_eq!(allowed.decision, Decision::Allow);
+        assert!(
+            allowed
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::ProcessControl)
+        );
+        let other_risk = core.check(sample_request(
+            "process-policy",
+            2,
+            "kill 1234; rm /etc/some-file",
+        ));
+        assert_eq!(other_risk.decision, Decision::NeedApproval);
+        assert!(
+            other_risk
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+    }
+
+    #[test]
     fn outside_workspace_mutation_guard_covers_direct_file_effects_and_redirections() {
         let cases = [
             ("rm /etc/wgetrc", "delete target /etc/wgetrc"),
@@ -1063,6 +1248,52 @@ mod tests {
         assert_eq!(reasons.len(), 2, "{reasons:?}");
         assert!(reasons.iter().any(|reason| reason.contains("/etc/first")));
         assert!(reasons.iter().any(|reason| reason.contains("/var/second")));
+    }
+
+    #[test]
+    fn option_binding_keeps_nested_mkdir_and_clustered_tar_mutations_visible() {
+        for (command, expected_command, expected_form) in [
+            (
+                "find /workspace -type d -print | sed 's@^@/usr/@' | xargs mkdir -p",
+                "mkdir",
+                "create_directories",
+            ),
+            (
+                "printf '/backup/newdir\\n' | xargs mkdir -p",
+                "mkdir",
+                "create_directories",
+            ),
+            (
+                "gzip -dc /workspace/archive.tar.gz | tar -xf - -C /backup",
+                "tar",
+                "extract_archive",
+            ),
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("binding-mutation-regression", 1, command));
+            assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+            assert!(
+                response
+                    .decision_trace
+                    .execution_semantics
+                    .iter()
+                    .any(|semantics| {
+                        semantics.normalized_command_name == expected_command
+                            && semantics.form_id == expected_form
+                    }),
+                "{command}: {:?}",
+                response.decision_trace.execution_semantics
+            );
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation),
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+        }
     }
 
     #[test]

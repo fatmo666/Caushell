@@ -5,6 +5,8 @@ identity:
   canonical_name: xargs
   aliases: []
 
+option_boundary: first_positional
+
 trust:
   tier: tier_a
   source: built_in

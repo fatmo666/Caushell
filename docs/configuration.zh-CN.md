@@ -54,6 +54,17 @@ caushell config validate
 | --- | --- | --- | --- |
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Caushell 无法完成分析时的回退行为 |
 | `codex.need_approval_mode` | `block` / `observe` | `block` | Codex 遇到 `NeedApproval` 时的处理方式 |
+| `policy.rules.process_control` | `allow` / `need_approval` / `deny` | `need_approval` | 对已解析的发信号或恢复进程/作业的命令是否要求审批 |
+
+`allow` 会保留风险发现，但不要求审批。当前不会把目标解析为操作系统中的具体进程，因此未知目标也使用同一配置；此规则不会识别或特别保护关键 PID。
+
+本规则消费已解析的 `control_process` 效果，包括嵌套调用和 `fg`/`bg` 恢复作业。已覆盖的零信号探测与信号列表形式不产生此效果。未覆盖的选项或调用形式仍由现有解析缺口策略处理（`form_selection_unmatched` 默认放行并观察），不能视为本规则确认安全；`allow` 也不会覆盖其他规则的审批或拒绝。
+
+```yaml
+policy:
+  rules:
+    process_control: allow
+```
 
 ### `failure_action`
 

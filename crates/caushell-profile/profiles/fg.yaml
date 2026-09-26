@@ -22,6 +22,14 @@ platform:
   requires_features: []
 
 forms:
+  - id: resume_current_job
+    selector:
+      kind: no_positional_args
+    effects:
+      - kind: control_process
+        target:
+          kind: none
+
   - id: resume_job
     selector:
       kind: has_positional_at
