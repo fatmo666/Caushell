@@ -23,11 +23,44 @@ forms:
       kind: all
       items: []
     parameters:
-      - name: query_targets
+      - name: query_file
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_flag
+          flag: "-f"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: port
+        semantic:
+          kind: structured_value
+          context: numeric_quantity
+        binding:
+          kind: following_flag
+          flag: "-p"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: query_target
         semantic:
           kind: endpoint
           endpoint_kind: host_port
-          usage: generic_endpoint
+          usage: upload_target
+        binding:
+          kind: args_with_prefix
+          prefix: "@"
+        cardinality: optional_one
+      - name: dig_options
+        semantic:
+          kind: plain_value
+        binding:
+          kind: args_with_prefix
+          prefix: "+"
+        cardinality: optional_many
+      - name: query_names
+        semantic:
+          kind: plain_value
         binding:
           kind: remaining_positionals
         cardinality: optional_many
@@ -36,10 +69,14 @@ forms:
       stdout_mode: data
       stderr_mode: opaque
     effects:
+      - kind: read_path
+        target:
+          kind: slot
+          name: query_file
       - kind: network_endpoint
         target:
           kind: slot
-          name: query_targets
+          name: query_target
       - kind: transform_data
         target:
           kind: none
@@ -49,3 +86,6 @@ subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/known_limitations:
+    - When no explicit @server argument is present, the system resolver is not materialized as a NetworkEndpoint.
+    - Arguments consumed by other options that take values, such as -k or -y, may remain classified as query_names.
