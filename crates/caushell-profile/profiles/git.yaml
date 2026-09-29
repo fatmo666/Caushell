@@ -522,6 +522,157 @@ subcommands:
       default_behavior: reject_unknown
       extensions: {}
 
+    - name: config
+      aliases: []
+      forms:
+        - id: write_local_config_value
+          selector:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--local"
+              - kind: has_positional_at
+                index: 1
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_flag
+                      flag: "--get"
+                    - kind: has_flag
+                      flag: "--get-all"
+                    - kind: has_flag
+                      flag: "--get-regexp"
+                    - kind: has_flag
+                      flag: "--get-urlmatch"
+                    - kind: has_flag
+                      flag: "--unset"
+                    - kind: has_flag
+                      flag: "--unset-all"
+          parameters:
+            - name: key
+              semantic:
+                kind: plain_value
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: value
+              semantic:
+                kind: plain_value
+              binding:
+                kind: next_positional
+              cardinality: required_one
+          effects:
+            - kind: write_path
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+        - id: inspect_local_config
+          selector:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--local"
+              - kind: not
+                item:
+                  kind: has_positional_at
+                  index: 1
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Only explicit --local value writes and simple --local reads are modeled here. Other scopes and mutations need separate forms so they are not mislabeled as writes to .git/config.
+
+    - name: ls-remote
+      aliases: []
+      forms:
+        - id: inspect_remote_refs
+          selector:
+            kind: all
+            items:
+              - kind: has_positional_at
+                index: 0
+              - kind: not
+                item:
+                  kind: has_flag
+                  flag: "--get-url"
+          parameters:
+            - name: repository
+              semantic:
+                kind: endpoint
+                endpoint_kind: remote_spec
+                usage: fetch_source
+              binding:
+                kind: next_positional
+              cardinality: required_one
+            - name: patterns
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_positionals
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+            - kind: network_endpoint
+              target:
+                kind: slot
+                name: repository
+        - id: resolve_remote_url
+          selector:
+            kind: all
+            items:
+              - kind: has_flag
+                flag: "--get-url"
+              - kind: has_positional_at
+                index: 0
+          parameters:
+            - name: repository
+              semantic:
+                kind: plain_value
+              binding:
+                kind: next_positional
+              cardinality: required_one
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: load_config
+              target:
+                kind: tool_convention_path
+                path: .git/config
+                convention: git.local_config
+                purpose: tool_config
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - HTTP headers inherited from Git configuration are not represented by the current profile effect model.
+
     - name: status
       aliases: []
       forms:
