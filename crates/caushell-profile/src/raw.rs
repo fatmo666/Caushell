@@ -13,8 +13,26 @@ pub struct RawCommandProfile {
     pub platform: RawPlatformConstraints,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
+    pub option_scope: RawOptionScopePolicy,
+    pub option_matching: RawOptionMatchingPolicy,
     pub subcommands: Option<RawSubcommandTree>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawOptionScopePolicy {
+    #[default]
+    AllArguments,
+    LeadingOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawOptionMatchingPolicy {
+    #[default]
+    ShortClusters,
+    ExactNames,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -721,6 +739,9 @@ pub struct RawSubcommandNode {
     pub aliases: Vec<String>,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
+    pub option_scope: RawOptionScopePolicy,
+    /// Omission inherits the enclosing command/node's matching policy.
+    pub option_matching: Option<RawOptionMatchingPolicy>,
     pub children: Vec<RawSubcommandNode>,
     pub default_behavior: Option<RawDefaultSubcommandBehavior>,
     pub extensions: BTreeMap<String, JsonValue>,

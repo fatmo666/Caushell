@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
 
 identity:
   canonical_name: timeout
@@ -68,6 +69,7 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
+        - "-f"
         - "--foreground"
 
   - id: preserve_status

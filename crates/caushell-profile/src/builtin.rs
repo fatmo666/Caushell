@@ -7,6 +7,26 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "nvidia-smi",
+        content: include_str!("../profiles/nvidia-smi.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sshpass",
+        content: include_str!("../profiles/sshpass.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "getent",
+        content: include_str!("../profiles/getent.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bc",
+        content: include_str!("../profiles/bc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pdftotext",
+        content: include_str!("../profiles/pdftotext.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "alias",
         content: include_str!("../profiles/alias.yaml"),
     },

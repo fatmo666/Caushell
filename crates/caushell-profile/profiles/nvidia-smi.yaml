@@ -1,0 +1,247 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: nvidia-smi, aliases: []}
+option_matching: exact_names
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, windows], shell_families: [], requires_features: []}
+
+# Hardware changes deliberately have no filesystem/process-control surrogate.
+# This profile's approved device-operation scope is power-limit and GPU reset.
+forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: device_query
+    selector:
+      kind: all
+      items:
+        - &not_information {kind: not, item: *information}
+        - &not_power_limit {kind: not, item: {kind: has_modifier, modifier: power_limit}}
+        - &not_reset {kind: not, item: {kind: has_modifier, modifier: gpu_reset}}
+        - &not_other_control {kind: not, item: {kind: has_modifier, modifier: other_device_control}}
+        - {kind: not, item: {kind: has_modifier, modifier: power_scope}}
+    remaining_selector: &no_positionals {kind: no_positional_args}
+    stream_contract: *query_stream
+  - id: set_power_limit
+    selector:
+      kind: all
+      items:
+        - *not_information
+        - {kind: has_modifier, modifier: power_limit}
+        - *not_reset
+        - *not_other_control
+    remaining_selector: *no_positionals
+    stream_contract: *query_stream
+    extensions:
+      caushell.profile/risk_scope: Power-limit changes alone do not require approval under the current product scope. File outputs and shell composition remain independently checked.
+  - id: reset_gpu
+    selector:
+      kind: all
+      items:
+        - *not_information
+        - *not_power_limit
+        - {kind: has_modifier, modifier: gpu_reset}
+        - *not_other_control
+    remaining_selector: *no_positionals
+    stream_contract: *query_stream
+    extensions:
+      caushell.profile/risk_scope: GPU reset alone does not require approval under the current product scope; this is not a process kill effect or a promise of successful reset.
+
+modifiers:
+  - id: information
+    matcher:
+      kind: any_flag
+      flags: ["-h", "--help", "--version", "--help-query-gpu", "--help-query-supported-clocks", "--help-query-compute-apps", "--help-query-accounted-apps", "--help-query-retired-pages", "--help-query-remapped-rows"]
+  - &gpu_id
+    id: gpu_id
+    matcher: {kind: any_flag, flags: ["-i", "--id"]}
+    parameters:
+      - name: gpu_ids
+        semantic: &plain {kind: plain_value}
+        binding: &following_value {kind: following_matched_flag, operand_mode: next_positional}
+        cardinality: required_one
+  - id: query_switches
+    matcher: {kind: any_flag, flags: ["-L", "--list-gpus", "-B", "--list-excluded-gpus", "-col", "--columns", "-q", "--query", "-u", "--unit", "-x", "--xml-format", "--dtd", "-lmi", "--lock-memory-clocks-info", "-gvfd", "--get-vf-derate-info", "--get-hostname", "-eom", "--error-on-warning"]}
+  - id: display_fields
+    matcher: {kind: any_flag, flags: ["-d", "--display"]}
+    parameters:
+      - {name: display_fields, semantic: *plain, binding: *following_value, cardinality: required_one}
+  - id: query_fields
+    matcher: {kind: any_flag, flags: ["--query-gpu", "--query-supported-clocks", "--query-compute-apps", "--query-accounted-apps", "--query-retired-pages", "--query-remapped-rows"]}
+    parameters:
+      - {name: query_fields, semantic: *plain, binding: *following_value, cardinality: required_one}
+  - &format
+    id: output_format
+    matcher: {kind: any_flag, flags: ["--format"]}
+    parameters:
+      - {name: output_format, semantic: *plain, binding: *following_value, cardinality: required_one}
+  - id: loop_seconds
+    matcher: {kind: any_flag, flags: ["-l", "--loop"]}
+    parameters:
+      - {name: loop_seconds, semantic: *plain, binding: *following_value, cardinality: optional_one}
+  - id: loop_milliseconds
+    matcher: {kind: any_flag, flags: ["-lms", "--loop-ms"]}
+    parameters:
+      - {name: loop_milliseconds, semantic: *plain, binding: *following_value, cardinality: required_one}
+  - id: query_output
+    matcher: {kind: any_flag, flags: ["-f", "--filename"]}
+    parameters:
+      - name: query_output
+        semantic: &write_path {kind: path, role: write, purpose: generic_operand}
+        binding: *following_value
+        cardinality: required_one
+    effects: [{kind: write_path, target: {kind: slot, name: query_output}}]
+    constraints: &unless_information [{kind: mutually_exclusive_with, modifier: information}]
+  - id: debug_output
+    matcher: {kind: any_flag, flags: ["--debug"]}
+    parameters:
+      - {name: debug_output, semantic: *write_path, binding: *following_value, cardinality: required_one}
+    effects: [{kind: write_path, target: {kind: slot, name: debug_output}}]
+    constraints: *unless_information
+  - id: power_limit
+    matcher: {kind: any_flag, flags: ["-pl", "--power-limit"]}
+    parameters:
+      - {name: power_watts, semantic: *plain, binding: *following_value, cardinality: required_one}
+  - id: power_scope
+    matcher: {kind: any_flag, flags: ["-sc", "--scope"]}
+    parameters:
+      - {name: power_scope, semantic: *plain, binding: *following_value, cardinality: required_one}
+  - id: gpu_reset
+    matcher: {kind: any_flag, flags: ["-r", "--gpu-reset"]}
+    parameters:
+      - {name: reset_type, semantic: *plain, binding: *following_value, cardinality: optional_one}
+  # These declarations exclude known unapproved controls from the query form;
+  # they do not purport to model their effects or assign a new risk action.
+  - id: other_device_control
+    matcher:
+      kind: any_flag
+      flags: ["-pm", "--persistence-mode", "-e", "--ecc-config", "-p", "--reset-ecc-errors", "-c", "--compute-mode", "-dm", "--driver-model", "-fdm", "--force-driver-model", "--no-driver-restart", "--gom", "-vm", "--virt-mode", "-lgc", "--lock-gpu-clocks", "--mode", "-lmc", "--lock-memory-clocks", "-rgc", "--reset-gpu-clocks", "-rmc", "--reset-memory-clocks", "-ac", "--applications-clocks", "-rac", "--reset-applications-clocks", "-lmcd", "--lock-memory-clocks-deferred", "-rmcd", "--reset-memory-clocks-deferred", "-svfd", "--set-vf-derate", "-cc", "--cuda-clocks", "-am", "--accounting-mode", "-caa", "--clear-accounted-apps", "--auto-boost-default", "--auto-boost-permission", "-mig", "--multi-instance-gpu", "-gtt", "--gpu-target-temp", "--set-hostname", "-t", "--toggle-led"]
+    parameters:
+      - {name: unmodeled_control_values, semantic: *plain, binding: *following_value, cardinality: optional_many}
+
+subcommands:
+  roots:
+    - name: dmon
+      aliases: []
+      forms:
+        - &monitor_information {id: information, selector: *information, stream_contract: *query_stream}
+        - &monitor_form
+          id: monitor_devices
+          selector: *not_information
+          remaining_selector: *no_positionals
+          stream_contract: *query_stream
+      modifiers:
+        - *gpu_id
+        - &monitor_metrics
+          id: monitor_metrics
+          matcher: {kind: any_flag, flags: ["-s"]}
+          parameters:
+            - {name: metric_groups, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - &monitor_count
+          id: monitor_count
+          matcher: {kind: any_flag, flags: ["-c"]}
+          parameters:
+            - {name: sample_count, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - &monitor_interval
+          id: monitor_interval
+          matcher: {kind: any_flag, flags: ["-d"]}
+          parameters:
+            - {name: sample_seconds, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - &monitor_timestamp
+          id: monitor_timestamp
+          matcher: {kind: any_flag, flags: ["-o"]}
+          parameters:
+            - {name: timestamp_format, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - id: gpm_metrics
+          matcher: {kind: any_flag, flags: ["--gpm-metrics"]}
+          parameters:
+            - {name: gpm_metrics, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - id: gpm_options
+          matcher: {kind: any_flag, flags: ["--gpm-options"]}
+          parameters:
+            - {name: gpm_options, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - *format
+      children: []
+      default_behavior: reject_unknown
+    - name: pmon
+      aliases: []
+      forms:
+        - *monitor_information
+        - {id: monitor_processes, selector: *not_information, remaining_selector: *no_positionals, stream_contract: *query_stream}
+      modifiers: [*gpu_id, *monitor_metrics, *monitor_count, *monitor_interval, *monitor_timestamp]
+      children: []
+      default_behavior: reject_unknown
+    - name: topo
+      aliases: []
+      forms:
+        - *monitor_information
+        - {id: query_topology, selector: *not_information, remaining_selector: *no_positionals, stream_contract: *query_stream}
+      modifiers:
+        - *gpu_id
+        - id: topology_switches
+          matcher: {kind: any_flag, flags: ["-m", "-mp", "-p", "-C", "-M", "-gnid", "-nvme", "-cpu", "-gpu", "-nic", "-all"]}
+        - id: cpu_affinity
+          matcher: {kind: any_flag, flags: ["-c"]}
+          parameters:
+            - {name: cpu_id, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - id: traversal
+          matcher: {kind: any_flag, flags: ["-n"]}
+          parameters:
+            - {name: traversal_path, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - id: p2p
+          matcher: {kind: any_flag, flags: ["-p2p"]}
+          parameters:
+            - {name: p2p_capability, semantic: *plain, binding: *following_value, cardinality: required_one}
+      children: []
+      default_behavior: reject_unknown
+    - name: replay
+      aliases: []
+      forms:
+        - *monitor_information
+        - id: replay_log
+          selector:
+            kind: all
+            items:
+              - *not_information
+              - {kind: has_modifier, modifier: replay_input}
+          remaining_selector: *no_positionals
+          stream_contract: *query_stream
+      modifiers:
+        - id: replay_input
+          matcher: {kind: any_flag, flags: ["-f"]}
+          parameters:
+            - name: replay_input
+              semantic: {kind: path, role: read, purpose: generic_operand}
+              binding: *following_value
+              cardinality: required_one
+          effects: [{kind: read_path, target: {kind: slot, name: replay_input}}]
+          constraints: *unless_information
+        - id: replay_output
+          matcher: {kind: any_flag, flags: ["-r"]}
+          parameters:
+            - {name: replay_output, semantic: *write_path, binding: *following_value, cardinality: required_one}
+          effects: [{kind: write_path, target: {kind: slot, name: replay_output}}]
+          constraints: *unless_information
+        - *gpu_id
+        - *monitor_metrics
+        - id: begin_time
+          matcher: {kind: any_flag, flags: ["-b"]}
+          parameters:
+            - {name: begin_time, semantic: *plain, binding: *following_value, cardinality: required_one}
+        - id: end_time
+          matcher: {kind: any_flag, flags: ["-e"]}
+          parameters:
+            - {name: end_time, semantic: *plain, binding: *following_value, cardinality: required_one}
+      children: []
+      default_behavior: reject_unknown
+
+extensions:
+  caushell.profile/sources:
+    - https://docs.nvidia.com/deploy/nvidia-smi/index.html
+  caushell.profile/known_limitations:
+    - Power-limit and GPU-reset operations are intentionally outside the current approval-triggering hardware risk scope, not classified as read-only. No GPU capability, driver state, process activity or runtime success is probed.
+    - GPU IDs, query fields, power values, scopes, intervals and reset type are plain operands, never filesystem paths or process targets.
+    - Root query/file/debug options and dmon, pmon, topo, replay have distinct operand meanings. Monitoring does not imply process control or a network service.
+    - Daemon, MIG, ECC, clocks, drain, virtualization, confidential-compute and other advanced controls remain unmodeled. Known root device controls are explicitly excluded from query forms. Other unknown flags do not activate declared modifiers; the existing all_arguments binder does not universally report unknown flags as residuals. Name registration does not imply complete call-form coverage or automatic approval of every unsupported form.
+    - Numeric ranges, device-specific legality, query format requirements and every invalid flag combination are not validated; this is semantic binding, not an NVIDIA CLI validator.
+    - Separate short-flag operands and long --flag=value forms are supported. NVIDIA multi-letter short options are not treated as supported POSIX clusters or attached-operand syntax.

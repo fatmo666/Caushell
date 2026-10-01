@@ -1,0 +1,75 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: getent, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+forms:
+  - id: show_help
+    selector: &information {kind: has_modifier, modifier: information}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: query_name_service
+    selector:
+      kind: all
+      items:
+        - &query {kind: not, item: *information}
+        - kind: has_positional_at_matching
+          index: 0
+          matcher: {kind: regex_pattern, pattern: '^(aliases|ethers|group|gshadow|initgroups|netgroup|networks|passwd|protocols|rpc|services|shadow)$'}
+    parameters:
+      - &database
+        name: database
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: lookup_keys
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - &nss_config
+        kind: load_config
+        target: {kind: tool_convention_path, path: /etc/nsswitch.conf, convention: getent.nss_configuration, purpose: tool_config}
+      - &nss_modules {kind: load_in_process_code, target: {kind: none}}
+      - &query_data {kind: transform_data, target: {kind: none}}
+  - id: query_hosts
+    selector:
+      kind: all
+      items:
+        - *query
+        - kind: has_positional_at_matching
+          index: 0
+          matcher: {kind: regex_pattern, pattern: '^(hosts|ahosts|ahostsv4|ahostsv6)$'}
+    parameters:
+      - *database
+      - name: host_keys
+        semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    stream_contract: *query_stream
+    effects:
+      - *nss_config
+      - *nss_modules
+      - *query_data
+      - {kind: network_endpoint, target: {kind: slot, name: host_keys}}
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: ["-?", "--help", "--usage", "-V", "--version"]}
+  - id: service
+    matcher: {kind: any_flag, flags: ["-s", "--service"]}
+    parameters:
+      - name: service_overrides
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: no_idn
+    matcher: {kind: any_flag, flags: ["-i", "--no-idn"]}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://man7.org/linux/man-pages/man1/getent.1.html
+  caushell.profile/known_limitations:
+    - GNU libc getent interface, not the differing BSD implementations.
+    - NSS dispatch is represented as configuration and in-process code loading; installed NSS modules and LDAP/NIS backend endpoints are not dynamically inspected.
+    - Host keys are potential name-resolution endpoints; an /etc/hosts or cache hit need not make a network request.
+    - Non-host lookup keys and database names are not filesystem paths. Actual backend data files depend on NSS configuration and are not guessed.

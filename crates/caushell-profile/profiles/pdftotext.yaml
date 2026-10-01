@@ -1,0 +1,344 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: pdftotext
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: information
+    selector: &information
+      kind: has_modifier
+      modifier: information
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+
+  - id: file_to_stdout
+    selector:
+      kind: all
+      items:
+        - &conversion
+          kind: not
+          item: *information
+        - &file_input
+          kind: all
+          items:
+            - {kind: has_positional_at, index: 0}
+            - kind: not
+              item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: "-"}}
+            - kind: not
+              item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[A-Za-z][A-Za-z0-9+.-]*://'}}
+        - &stdout_output
+          kind: has_positional_at_matching
+          index: 1
+          matcher: {kind: literal, value: "-"}
+        - &at_most_two
+          kind: not
+          item: {kind: has_positional_at, index: 2}
+    parameters: &file_parameters
+      - name: input_pdf
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: stdout_sentinel
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - &read_pdf {kind: read_path, target: {kind: slot, name: input_pdf}}
+      - &transform {kind: transform_data, target: {kind: none}}
+
+  - id: stdin_to_stdout
+    selector:
+      kind: all
+      items:
+        - *conversion
+        - &stdin_input {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(-|fd://0)$'}}
+        - *stdout_output
+        - *at_most_two
+    parameters: &stdin_parameters
+      - name: stdin_sentinel
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: stdout_sentinel
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    implicit_inputs: &stdin_inputs
+      - source: stdin_data
+        semantic: {kind: plain_value}
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - &consume_stdin {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - *transform
+
+  - id: file_to_file
+    selector:
+      kind: all
+      items:
+        - *conversion
+        - *file_input
+        - &file_output
+          kind: all
+          items:
+            - {kind: has_positional_at, index: 1}
+            - {kind: not, item: *stdout_output}
+        - *at_most_two
+    parameters:
+      - name: input_pdf
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - &output_parameter
+        name: output_text
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    stream_contract: &file_stream {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - *read_pdf
+      - &write_output {kind: write_path, target: {kind: slot, name: output_text}}
+      - *transform
+
+  - id: stdin_to_file
+    selector:
+      kind: all
+      items: [*conversion, *stdin_input, *file_output, *at_most_two]
+    parameters:
+      - name: stdin_sentinel
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - *output_parameter
+    implicit_inputs: *stdin_inputs
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque}
+    effects: [*consume_stdin, *write_output, *transform]
+
+  # PDFDocFactory accepts non-filesystem inputs. Preserve a known output even
+  # when the input protocol cannot yet be resolved to a file or data source.
+  - id: protocol_to_file
+    selector:
+      kind: all
+      items:
+        - *conversion
+        - &protocol_input
+          kind: all
+          items:
+            - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[A-Za-z][A-Za-z0-9+.-]*://'}}
+            - {kind: not, item: *stdin_input}
+        - *file_output
+        - *at_most_two
+    parameters:
+      - &protocol_parameter
+        name: protocol_input
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - *output_parameter
+    stream_contract: *file_stream
+    effects: [*write_output, *transform]
+
+  - id: protocol_to_stdout
+    selector:
+      kind: all
+      items: [*conversion, *protocol_input, *stdout_output, *at_most_two]
+    parameters:
+      - *protocol_parameter
+      - name: stdout_sentinel
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects: [*transform]
+
+  # Poppler removes only exact .pdf or .PDF; mixed-case suffixes are retained.
+  # HTML metadata and both bbox modes generate .html, not .txt. -tsv uses .txt.
+  - id: default_pdf_text
+    selector:
+      kind: all
+      items:
+        - *conversion
+        - *file_input
+        - &implicit_output {kind: not, item: {kind: has_positional_at, index: 1}}
+        - &text_mode {kind: not, item: {kind: has_modifier, modifier: html}}
+        - &pdf_suffix {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.pdf$'}}
+    parameters: &default_parameters
+      - name: input_pdf
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    stream_contract: *file_stream
+    effects:
+      - *read_pdf
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: input_pdf}
+          rule: {kind: replace_suffix, from: ".pdf", to: ".txt"}
+          purpose: generic_operand
+      - *transform
+
+  - id: default_upper_pdf_text
+    selector:
+      kind: all
+      items: [*conversion, *file_input, *implicit_output, *text_mode, &upper_pdf_suffix {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.PDF$'}}]
+    parameters: *default_parameters
+    stream_contract: *file_stream
+    effects:
+      - *read_pdf
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: input_pdf}
+          rule: {kind: replace_suffix, from: ".PDF", to: ".txt"}
+          purpose: generic_operand
+      - *transform
+
+  - id: default_other_text
+    selector:
+      kind: all
+      items: [*conversion, *file_input, *implicit_output, *text_mode, &other_suffix {kind: not, item: {kind: any, items: [*pdf_suffix, *upper_pdf_suffix]}}]
+    parameters: *default_parameters
+    stream_contract: *file_stream
+    effects:
+      - *read_pdf
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: input_pdf}
+          rule: {kind: append_suffix, suffix: ".txt"}
+          purpose: generic_operand
+      - *transform
+
+  - id: default_pdf_html
+    selector:
+      kind: all
+      items: [*conversion, *file_input, *implicit_output, &html_mode {kind: has_modifier, modifier: html}, *pdf_suffix]
+    parameters: *default_parameters
+    stream_contract: *file_stream
+    effects:
+      - *read_pdf
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: input_pdf}
+          rule: {kind: replace_suffix, from: ".pdf", to: ".html"}
+          purpose: generic_operand
+      - *transform
+
+  - id: default_upper_pdf_html
+    selector:
+      kind: all
+      items: [*conversion, *file_input, *implicit_output, *html_mode, *upper_pdf_suffix]
+    parameters: *default_parameters
+    stream_contract: *file_stream
+    effects:
+      - *read_pdf
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: input_pdf}
+          rule: {kind: replace_suffix, from: ".PDF", to: ".html"}
+          purpose: generic_operand
+      - *transform
+
+  - id: default_other_html
+    selector:
+      kind: all
+      items: [*conversion, *file_input, *implicit_output, *html_mode, *other_suffix]
+    parameters: *default_parameters
+    stream_contract: *file_stream
+    effects:
+      - *read_pdf
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: input_pdf}
+          rule: {kind: append_suffix, suffix: ".html"}
+          purpose: generic_operand
+      - *transform
+
+  # Preserve the actual naming rule, but leave the target DerivedUnresolved:
+  # the plain protocol operand is not a claimed local input path. Existing
+  # outside-workspace policy requires approval for this unresolved write.
+  - id: protocol_default_pdf_text
+    selector: {kind: all, items: [*conversion, *protocol_input, *implicit_output, *text_mode, *pdf_suffix]}
+    parameters: &protocol_parameters [*protocol_parameter]
+    stream_contract: *file_stream
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: protocol_input}, rule: {kind: replace_suffix, from: ".pdf", to: ".txt"}, purpose: generic_operand}}
+      - *transform
+  - id: protocol_default_upper_pdf_text
+    selector: {kind: all, items: [*conversion, *protocol_input, *implicit_output, *text_mode, *upper_pdf_suffix]}
+    parameters: *protocol_parameters
+    stream_contract: *file_stream
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: protocol_input}, rule: {kind: replace_suffix, from: ".PDF", to: ".txt"}, purpose: generic_operand}}
+      - *transform
+  - id: protocol_default_other_text
+    selector: {kind: all, items: [*conversion, *protocol_input, *implicit_output, *text_mode, *other_suffix]}
+    parameters: *protocol_parameters
+    stream_contract: *file_stream
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: protocol_input}, rule: {kind: append_suffix, suffix: ".txt"}, purpose: generic_operand}}
+      - *transform
+  - id: protocol_default_pdf_html
+    selector: {kind: all, items: [*conversion, *protocol_input, *implicit_output, *html_mode, *pdf_suffix]}
+    parameters: *protocol_parameters
+    stream_contract: *file_stream
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: protocol_input}, rule: {kind: replace_suffix, from: ".pdf", to: ".html"}, purpose: generic_operand}}
+      - *transform
+  - id: protocol_default_upper_pdf_html
+    selector: {kind: all, items: [*conversion, *protocol_input, *implicit_output, *html_mode, *upper_pdf_suffix]}
+    parameters: *protocol_parameters
+    stream_contract: *file_stream
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: protocol_input}, rule: {kind: replace_suffix, from: ".PDF", to: ".html"}, purpose: generic_operand}}
+      - *transform
+  - id: protocol_default_other_html
+    selector: {kind: all, items: [*conversion, *protocol_input, *implicit_output, *html_mode, *other_suffix]}
+    parameters: *protocol_parameters
+    stream_contract: *file_stream
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: protocol_input}, rule: {kind: append_suffix, suffix: ".html"}, purpose: generic_operand}}
+      - *transform
+
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: ["-h", "-help", "--help", "-?", "-v", "-listenc"]}
+  - id: html
+    matcher: {kind: any_flag, flags: ["-htmlmeta", "-bbox", "-bbox-layout"]}
+  - id: layout
+    matcher: {kind: any_flag, flags: ["-layout", "-raw", "-nodiag", "-tsv", "-nopgbrk", "-cropbox", "-q"]}
+  - id: numeric_options
+    matcher: {kind: any_flag, flags: ["-fixed", "-colspacing", "-f", "-l", "-r", "-x", "-y", "-W", "-H"]}
+    parameters:
+      - name: numeric_options
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: string_options
+    matcher: {kind: any_flag, flags: ["-enc", "-eol", "-opw", "-upw"]}
+    parameters:
+      - name: string_options
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/trixie/poppler-utils/pdftotext.1.en.html
+    - https://gitlab.freedesktop.org/poppler/poppler/-/blob/poppler-25.03.0/utils/pdftotext.cc
+  caushell.profile/known_limitations:
+    - Targets describe successful conversion, not proof that a PDF exists or is valid; input content is not parsed.
+    - fd://0 is equivalent to stdin. Other PDFDocFactory protocol inputs are preserved as opaque values, never fabricated as local input paths; resolving their input provenance requires separate adaptation.
+    - Explicit protocol output paths are retained. Implicit protocol output names preserve the naming rule but remain DerivedUnresolved and require approval until protocol-derived paths are supported.

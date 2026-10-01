@@ -913,9 +913,34 @@ pub struct SubcommandNode {
     pub aliases: Vec<String>,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
+    pub option_scope: OptionScopePolicy,
+    /// Effective policy after declarative inheritance is normalized.
+    pub option_matching: OptionMatchingPolicy,
     pub children: Vec<SubcommandNode>,
     pub default_behavior: Option<DefaultSubcommandBehavior>,
     pub extensions: ExtensionMap,
+}
+
+/// Where this invocation's options may occur. Positional form parameters
+/// still describe the whole argv, including a dispatched command's tail.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OptionScopePolicy {
+    #[default]
+    AllArguments,
+    /// Parse declared options and their operands, then stop at the first
+    /// non-option or an option terminator. Never inspect the child argv.
+    LeadingOptions,
+}
+
+/// How option names are recognized, independent of where options may occur.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OptionMatchingPolicy {
+    /// Preserve the existing short-cluster and attached-operand behaviour.
+    #[default]
+    ShortClusters,
+    /// Match complete declared names; long inline operands remain supported.
+    /// Single-dash words are neither split nor guessed as attached operands.
+    ExactNames,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1171,6 +1196,8 @@ pub struct CommandProfile {
     pub platform: PlatformConstraints,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
+    pub option_scope: OptionScopePolicy,
+    pub option_matching: OptionMatchingPolicy,
     pub subcommands: Option<SubcommandTree>,
     pub extensions: ExtensionMap,
 }
@@ -1183,6 +1210,8 @@ impl CommandProfile {
             platform: PlatformConstraints::default(),
             forms: Vec::new(),
             modifiers: Vec::new(),
+            option_scope: OptionScopePolicy::default(),
+            option_matching: OptionMatchingPolicy::default(),
             subcommands: None,
             extensions: ExtensionMap::new(),
         }
@@ -1200,6 +1229,16 @@ impl CommandProfile {
 
     pub fn with_modifier(mut self, modifier: Modifier) -> Self {
         self.modifiers.push(modifier);
+        self
+    }
+
+    pub fn with_option_scope(mut self, policy: OptionScopePolicy) -> Self {
+        self.option_scope = policy;
+        self
+    }
+
+    pub fn with_option_matching(mut self, policy: OptionMatchingPolicy) -> Self {
+        self.option_matching = policy;
         self
     }
 

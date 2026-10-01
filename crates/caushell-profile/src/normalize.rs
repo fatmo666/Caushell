@@ -9,10 +9,11 @@ use crate::raw::{
     RawEndpointKind, RawEndpointUsage, RawFlagOperandMode, RawForm, RawHostRiskEffectMetadata,
     RawHostRiskSemanticClass, RawImplicitInput, RawImplicitInputSource, RawInProcessCodeLoadKind,
     RawInteractiveEscapeCapability, RawInteractiveEscapeSurface, RawInteractiveEscapeSurfaceKind,
-    RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind, RawOsFamily,
-    RawPackageLocatorKind, RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole,
-    RawPayloadLanguage, RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind,
-    RawProfileSourceKind, RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
+    RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind,
+    RawOptionMatchingPolicy, RawOptionScopePolicy, RawOsFamily, RawPackageLocatorKind,
+    RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole, RawPayloadLanguage,
+    RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind, RawProfileSourceKind,
+    RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
     RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr, RawSemanticType,
     RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
@@ -25,13 +26,14 @@ use crate::{
     EffectTarget, EndpointKind, EndpointSemantic, EndpointUsage, ExtensionMap, FlagName,
     FlagOperandMode, Form, FormId, HostRiskEffectMetadata, HostRiskSemanticClass, ImplicitInput,
     ImplicitInputSource, InProcessCodeLoadSemantic, Modifier, ModifierConstraint, ModifierId,
-    ModifierMatcher, MutationScopeTarget, OsFamily, PackageLocatorKind, PackageLocatorSemantic,
-    PackageManagerKind, Parameter, PathPurpose, PathRole, PathSemantic, PayloadLanguage,
-    PayloadSemantic, PayloadSource, PlatformConstraints, ProcessTargetKind, ProcessTargetSemantic,
-    ProfileSourceKind, ProfileTrustMetadata, ProfileTrustTier, RuntimeFeature, SelectorExpr,
-    SelectorPredicate, SemanticType, ShellFamily, SlotName, StreamContract, StreamInputMode,
-    StreamOutputMode, StructuredValueContext, StructuredValueSemantic, SubcommandNode,
-    SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
+    ModifierMatcher, MutationScopeTarget, OptionMatchingPolicy, OptionScopePolicy, OsFamily,
+    PackageLocatorKind, PackageLocatorSemantic, PackageManagerKind, Parameter, PathPurpose,
+    PathRole, PathSemantic, PayloadLanguage, PayloadSemantic, PayloadSource, PlatformConstraints,
+    ProcessTargetKind, ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata,
+    ProfileTrustTier, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType, ShellFamily,
+    SlotName, StreamContract, StreamInputMode, StreamOutputMode, StructuredValueContext,
+    StructuredValueSemantic, SubcommandNode, SubcommandTree, ToolConventionPathTarget,
+    ValueConstraint, ValueMatcher,
 };
 use caushell_types::{
     InteractiveEscapeCapability, InteractiveEscapeSurfaceKind, RepositoryWorktreePathSet,
@@ -56,6 +58,7 @@ pub enum NormalizeError {
     MissingRepositoryOperation,
     UnexpectedRepositoryOperation,
     InvalidExtensionKey(String),
+    InvalidOptionScope(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -70,7 +73,13 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     let identity = normalize_identity(raw.identity)?;
     let forms = normalize_forms(raw.forms)?;
     let modifiers = normalize_modifiers(raw.modifiers)?;
-    let subcommands = raw.subcommands.map(normalize_subcommand_tree).transpose()?;
+    let option_matching = normalize_option_matching(raw.option_matching);
+    let subcommands = raw
+        .subcommands
+        .map(|tree| normalize_subcommand_tree(tree, option_matching))
+        .transpose()?;
+    let option_scope = normalize_option_scope(raw.option_scope);
+    validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
 
     Ok(CommandProfile {
         identity,
@@ -78,9 +87,38 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         platform: normalize_platform(raw.platform),
         forms,
         modifiers,
+        option_scope,
+        option_matching,
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn normalize_option_scope(raw: RawOptionScopePolicy) -> OptionScopePolicy {
+    match raw {
+        RawOptionScopePolicy::AllArguments => OptionScopePolicy::AllArguments,
+        RawOptionScopePolicy::LeadingOptions => OptionScopePolicy::LeadingOptions,
+    }
+}
+
+fn validate_option_scope(
+    policy: OptionScopePolicy,
+    matching: OptionMatchingPolicy,
+    modifiers: &[Modifier],
+    forms: &[Form],
+) -> Result<(), NormalizeError> {
+    if policy == OptionScopePolicy::LeadingOptions {
+        crate::option_scope::validate_declarations(modifiers, forms, matching)
+            .map_err(NormalizeError::InvalidOptionScope)?;
+    }
+    Ok(())
+}
+
+fn normalize_option_matching(raw: RawOptionMatchingPolicy) -> OptionMatchingPolicy {
+    match raw {
+        RawOptionMatchingPolicy::ShortClusters => OptionMatchingPolicy::ShortClusters,
+        RawOptionMatchingPolicy::ExactNames => OptionMatchingPolicy::ExactNames,
+    }
 }
 
 fn normalize_identity(raw: RawCommandIdentity) -> Result<CommandIdentity, NormalizeError> {
@@ -1071,23 +1109,38 @@ fn normalize_slot_names(
         .collect()
 }
 
-fn normalize_subcommand_tree(raw: RawSubcommandTree) -> Result<SubcommandTree, NormalizeError> {
-    let roots = normalize_subcommand_nodes(raw.roots)?;
+fn normalize_subcommand_tree(
+    raw: RawSubcommandTree,
+    matching: OptionMatchingPolicy,
+) -> Result<SubcommandTree, NormalizeError> {
+    let roots = normalize_subcommand_nodes(raw.roots, matching)?;
     Ok(SubcommandTree { roots })
 }
 
 fn normalize_subcommand_nodes(
     raw_nodes: Vec<RawSubcommandNode>,
+    inherited_matching: OptionMatchingPolicy,
 ) -> Result<Vec<SubcommandNode>, NormalizeError> {
     ensure_unique_subcommand_names(&raw_nodes)?;
     raw_nodes
         .into_iter()
-        .map(normalize_subcommand_node)
+        .map(|node| normalize_subcommand_node(node, inherited_matching))
         .collect()
 }
 
-fn normalize_subcommand_node(raw: RawSubcommandNode) -> Result<SubcommandNode, NormalizeError> {
+fn normalize_subcommand_node(
+    raw: RawSubcommandNode,
+    inherited_matching: OptionMatchingPolicy,
+) -> Result<SubcommandNode, NormalizeError> {
     ensure_non_empty(&raw.name, "subcommands.name")?;
+    let forms = normalize_forms(raw.forms)?;
+    let modifiers = normalize_modifiers(raw.modifiers)?;
+    let option_scope = normalize_option_scope(raw.option_scope);
+    let option_matching = raw
+        .option_matching
+        .map(normalize_option_matching)
+        .unwrap_or(inherited_matching);
+    validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
 
     Ok(SubcommandNode {
         name: raw.name,
@@ -1099,9 +1152,11 @@ fn normalize_subcommand_node(raw: RawSubcommandNode) -> Result<SubcommandNode, N
                 Ok(alias)
             })
             .collect::<Result<Vec<_>, _>>()?,
-        forms: normalize_forms(raw.forms)?,
-        modifiers: normalize_modifiers(raw.modifiers)?,
-        children: normalize_subcommand_nodes(raw.children)?,
+        forms,
+        modifiers,
+        option_scope,
+        option_matching,
+        children: normalize_subcommand_nodes(raw.children, option_matching)?,
         default_behavior: raw.default_behavior.map(|value| match value {
             RawDefaultSubcommandBehavior::RejectUnknown => DefaultSubcommandBehavior::RejectUnknown,
             RawDefaultSubcommandBehavior::ResidualUnknownSubcommand => {
@@ -1225,6 +1280,8 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
+            option_scope: Default::default(),
+            option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1377,6 +1434,8 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
+            option_scope: Default::default(),
+            option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1456,6 +1515,8 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
+            option_scope: Default::default(),
+            option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1535,6 +1596,8 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
+            option_scope: Default::default(),
+            option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -1696,6 +1759,8 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
+            option_scope: Default::default(),
+            option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {

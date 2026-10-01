@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: bc
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: []
+  requires_features: []
+forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: evaluate_expressions
+    selector: {kind: not, item: *information}
+    parameters:
+      - name: input_files
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    implicit_inputs:
+      - source: stdin_data
+        semantic: {kind: plain_value}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_files}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: transform_data, target: {kind: none}}
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: ["-h", "--help", "-v", "--version"]}
+  - id: evaluation_mode
+    matcher: {kind: any_flag, flags: ["-i", "--interactive", "-l", "--mathlib", "-w", "--warn", "-s", "--standard", "-q", "--quiet"]}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/trixie/bc/bc.1.en.html
+  caushell.profile/known_limitations:
+    - GNU bc 1.07 CLI only; other bc implementations have different execution/file features.
+    - Arithmetic program content is transformed as data, not parsed as Bash or interpreted by the guard.
+    - Files are read in argv order before stdin; runtime quit/read control flow and BC_ENV_ARGS are not resolved.

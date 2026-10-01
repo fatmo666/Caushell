@@ -5,15 +5,16 @@ use regex::Regex;
 use crate::{
     ArgumentBindingSource, BindingSpec, BoundImplicitInput, BoundInvocation, BoundParameter,
     BoundValue, CommandProfile, DefaultSubcommandBehavior, Effect, EffectTarget, FlagName,
-    FlagOperandMode, Form, FormId, ImplicitInputSource, Modifier, ModifierMatcher, Parameter,
-    PositionalBindingSource, ProjectedArgKind, ProjectedInvocation, Residual, ResidualKind,
-    ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType,
-    StructuredValueContext, SubcommandNode, SubcommandTree, ValueConstraint, ValueMatcher,
-    parse_owner_group_spec,
+    FlagOperandMode, Form, FormId, ImplicitInputSource, Modifier, ModifierMatcher,
+    OptionMatchingPolicy, Parameter, PositionalBindingSource, ProjectedArgKind,
+    ProjectedInvocation, Residual, ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr,
+    SelectorPredicate, SemanticType, StructuredValueContext, SubcommandNode, SubcommandTree,
+    ValueConstraint, ValueMatcher, parse_owner_group_spec,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InvocationShape {
+    pub option_matching: OptionMatchingPolicy,
     pub flags: Vec<FlagName>,
     pub matched_modifiers: Vec<crate::ModifierId>,
     pub matched_modifier_parameters: Vec<MatchedModifierParameter>,
@@ -64,15 +65,17 @@ impl InvocationShape {
     }
 
     pub fn has_flag(&self, flag_name: &str) -> bool {
-        self.flags
-            .iter()
-            .any(|candidate| flag_token_matches_name(candidate.as_str(), flag_name))
+        self.flags.iter().any(|candidate| {
+            flag_token_matches_name(candidate.as_str(), flag_name, self.option_matching)
+        })
     }
 
     pub fn flag_count(&self, flag_name: &str) -> usize {
         self.flags
             .iter()
-            .filter(|candidate| flag_token_matches_name(candidate.as_str(), flag_name))
+            .filter(|candidate| {
+                flag_token_matches_name(candidate.as_str(), flag_name, self.option_matching)
+            })
             .count()
     }
 
@@ -126,10 +129,14 @@ impl ArgumentScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedModifier<'a> {
+    pub option_matching: OptionMatchingPolicy,
     pub modifier: &'a Modifier,
     pub scope: ArgumentScope,
+    /// When option ownership is explicit, operand tokens must not be
+    /// reconsidered as options by a different modifier.
+    pub option_flag_indices: Option<Vec<usize>>,
 }
 
 impl std::ops::Deref for SelectedModifier<'_> {
@@ -142,11 +149,14 @@ impl std::ops::Deref for SelectedModifier<'_> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvocationSelection<'a> {
+    pub option_matching: OptionMatchingPolicy,
     pub form: &'a Form,
     pub form_scope: ArgumentScope,
     pub modifiers: Vec<SelectedModifier<'a>>,
     pub subcommand_path: Vec<String>,
     pub residuals: Vec<Residual>,
+    pub option_scope: Option<crate::ScopedOptions>,
+    pub option_terminators: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +221,78 @@ impl std::fmt::Display for BindError {
 
 impl std::error::Error for BindError {}
 
+fn scoped_options(
+    policy: crate::OptionScopePolicy,
+    matching: OptionMatchingPolicy,
+    projection: &ProjectedInvocation,
+    scope: ArgumentScope,
+    modifiers: &[Modifier],
+    forms: &[Form],
+) -> Option<crate::ScopedOptions> {
+    match policy {
+        crate::OptionScopePolicy::AllArguments => None,
+        crate::OptionScopePolicy::LeadingOptions => {
+            Some(crate::option_scope::scan_leading_options(
+                projection, scope, modifiers, forms, matching,
+            ))
+        }
+    }
+}
+
+fn ensure_option_scope(
+    command_name: &str,
+    options: Option<&crate::ScopedOptions>,
+) -> Result<(), BindError> {
+    if let Some(reason) = options.and_then(|options| options.error.as_ref()) {
+        return Err(BindError::UnsupportedProfileFeature {
+            command_name: command_name.to_string(),
+            reason: reason.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn match_owned_modifiers<'a>(
+    modifiers: &'a [Modifier],
+    options: &crate::ScopedOptions,
+    preselected: &[SelectedModifier<'_>],
+    matching: OptionMatchingPolicy,
+) -> Vec<SelectedModifier<'a>> {
+    let shape = InvocationShape {
+        option_matching: matching,
+        flags: options.flags.iter().map(|(_, flag)| flag.clone()).collect(),
+        ..InvocationShape::default()
+    };
+    let candidates = modifiers
+        .iter()
+        .filter(|modifier| modifier_matches(modifier, &shape))
+        .collect();
+    let preselected_ids: Vec<_> = preselected
+        .iter()
+        .map(|selected| selected.modifier.id.clone())
+        .collect();
+    filter_modifier_candidates_by_constraints(
+        candidates,
+        |name| shape.has_flag(name),
+        &preselected_ids,
+    )
+    .into_iter()
+    .map(|modifier| SelectedModifier {
+        option_matching: matching,
+        modifier,
+        scope: options.scope,
+        option_flag_indices: Some(
+            options
+                .flags
+                .iter()
+                .filter(|(_, flag)| modifier.matcher.flag_names().contains(flag))
+                .map(|(index, _)| *index)
+                .collect(),
+        ),
+    })
+    .collect()
+}
+
 pub fn select_invocation<'a>(
     profile: &'a CommandProfile,
     projection: &ProjectedInvocation,
@@ -220,8 +302,29 @@ pub fn select_invocation<'a>(
     }
 
     let scope = ArgumentScope::for_invocation(projection);
-    let modifiers = match_scoped_modifiers(&profile.modifiers, projection, scope, None, &[]);
+    let option_scope = scoped_options(
+        profile.option_scope,
+        profile.option_matching,
+        projection,
+        scope,
+        &profile.modifiers,
+        &profile.forms,
+    );
+    ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
+    let modifiers = if let Some(options) = &option_scope {
+        match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
+    } else {
+        match_scoped_modifiers(
+            &profile.modifiers,
+            projection,
+            scope,
+            None,
+            &[],
+            profile.option_matching,
+        )
+    };
     let mut scan_state = BindingState::with_modifier_context(projection, &modifiers);
+    scan_state.set_option_scope(option_scope.as_ref());
 
     consume_selected_modifiers_for_scanning(&modifiers, &mut scan_state);
 
@@ -233,14 +336,23 @@ pub fn select_invocation<'a>(
         &scan_state.consumed,
         &modifiers,
         &[],
+        option_scope.as_ref(),
+        profile.option_matching,
     )?;
 
     Ok(InvocationSelection {
+        option_matching: profile.option_matching,
         form,
         form_scope: scope,
         modifiers,
         subcommand_path: Vec::new(),
         residuals: Vec::new(),
+        option_terminators: option_scope
+            .as_ref()
+            .and_then(|options| options.terminator)
+            .into_iter()
+            .collect(),
+        option_scope,
     })
 }
 
@@ -251,6 +363,10 @@ pub fn bind_invocation(
 ) -> BoundInvocation {
     let targets = collect_parameter_targets(selection);
     let mut state = BindingState::with_modifier_context(projection, &selection.modifiers);
+    state.set_option_scope(selection.option_scope.as_ref());
+    for index in &selection.option_terminators {
+        state.consumed[*index] = true;
+    }
     let mut parameter_results = vec![None; targets.len()];
     let mut residuals = selection.residuals.clone();
 
@@ -288,7 +404,7 @@ pub fn bind_invocation(
         ));
     }
 
-    for selected_modifier in selection.modifiers.iter().copied() {
+    for selected_modifier in &selection.modifiers {
         bound
             .applied_modifiers
             .push(selected_modifier.modifier.id.clone());
@@ -314,7 +430,7 @@ pub fn bind_invocation(
     );
 
     if !form_suppresses_modifier_effects(selection.form) {
-        for selected_modifier in selection.modifiers.iter().copied() {
+        for selected_modifier in &selection.modifiers {
             emit_effects(
                 &selected_modifier.modifier.effects,
                 &bound_slots,
@@ -334,7 +450,48 @@ pub(crate) fn bind_modifier_only_invocation(
     projection: &ProjectedInvocation,
 ) -> Option<BoundInvocation> {
     let scope = ArgumentScope::for_invocation(projection);
-    let modifiers = match_scoped_modifiers(&profile.modifiers, projection, scope, None, &[]);
+    let (modifiers, option_scope, option_terminators, subcommand_path) =
+        if let Some(subcommands) = &profile.subcommands {
+            let scan = scan_subcommand_path(profile, projection, subcommands);
+            let options = if scan.selected_node.is_some() {
+                scan.node_options
+            } else {
+                scan.root_options
+            };
+            (
+                scan.selected_modifiers,
+                options,
+                scan.option_terminators,
+                scan.path,
+            )
+        } else {
+            let root_options = scoped_options(
+                profile.option_scope,
+                profile.option_matching,
+                projection,
+                scope,
+                &profile.modifiers,
+                &profile.forms,
+            );
+            let modifiers = if let Some(options) = &root_options {
+                match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
+            } else {
+                match_scoped_modifiers(
+                    &profile.modifiers,
+                    projection,
+                    scope,
+                    None,
+                    &[],
+                    profile.option_matching,
+                )
+            };
+            let terminators = root_options
+                .as_ref()
+                .and_then(|options| options.terminator)
+                .into_iter()
+                .collect::<Vec<_>>();
+            (modifiers, root_options, terminators, Vec::new())
+        };
 
     if modifiers.is_empty() {
         return None;
@@ -342,6 +499,10 @@ pub(crate) fn bind_modifier_only_invocation(
 
     let targets = collect_modifier_parameter_targets(&modifiers);
     let mut state = BindingState::with_modifier_context(projection, &modifiers);
+    state.set_option_scope(option_scope.as_ref());
+    for index in option_terminators {
+        state.consumed[index] = true;
+    }
     let mut parameter_results = vec![None; targets.len()];
     let mut residuals = Vec::new();
 
@@ -360,13 +521,14 @@ pub(crate) fn bind_modifier_only_invocation(
     let mut bound = BoundInvocation::new(
         profile.identity.canonical_name.clone(),
         FormId::new("__modifier_only__"),
-    );
+    )
+    .with_subcommand_path(subcommand_path);
 
     for bound_parameter in parameter_results.into_iter().flatten() {
         bound.bound_parameters.push(bound_parameter);
     }
 
-    for selected_modifier in modifiers.iter().copied() {
+    for selected_modifier in &modifiers {
         bound
             .applied_modifiers
             .push(selected_modifier.modifier.id.clone());
@@ -379,7 +541,7 @@ pub(crate) fn bind_modifier_only_invocation(
         .collect();
     let bound_implicit_sources = BTreeSet::new();
 
-    for selected_modifier in modifiers.iter().copied() {
+    for selected_modifier in &modifiers {
         emit_effects(
             &selected_modifier.modifier.effects,
             &bound_slots,
@@ -421,7 +583,9 @@ pub fn select_form<'a>(
     profile: &'a CommandProfile,
     shape: &InvocationShape,
 ) -> Result<&'a Form, BindError> {
-    select_form_from_forms(profile.primary_name(), &profile.forms, shape)
+    let mut shape = shape.clone();
+    shape.option_matching = profile.option_matching;
+    select_form_from_forms(profile.primary_name(), &profile.forms, &shape)
 }
 
 pub fn match_modifiers<'a>(
@@ -431,17 +595,19 @@ pub fn match_modifiers<'a>(
     let declared_short_flags = declared_short_modifier_flags(&profile.modifiers);
     let short_flags_allowing_attached_operands =
         short_flags_allowing_attached_operands(&profile.modifiers);
+    let mut shape = shape.clone();
+    shape.option_matching = profile.option_matching;
     let candidates: Vec<&Modifier> = profile
         .modifiers
         .iter()
-        .filter(|modifier| modifier_matches(modifier, shape))
+        .filter(|modifier| modifier_matches(modifier, &shape))
         .collect();
 
     filter_modifier_candidates_by_constraints(
         candidates,
         |flag_name| {
             constraint_flag_matches_in_shape(
-                shape,
+                &shape,
                 flag_name,
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
@@ -451,15 +617,51 @@ pub fn match_modifiers<'a>(
     )
 }
 
-fn select_subcommand_invocation<'a>(
+struct SubcommandScan<'p, 'a> {
+    root_options: Option<crate::ScopedOptions>,
+    node_options: Option<crate::ScopedOptions>,
+    option_terminators: Vec<usize>,
+    selected_modifiers: Vec<SelectedModifier<'a>>,
+    scan_state: BindingState<'p, 'a>,
+    path: Vec<String>,
+    scan_start: usize,
+    selected_node: Option<&'a SubcommandNode>,
+    error: Option<BindError>,
+}
+
+fn scan_subcommand_path<'p, 'a>(
     profile: &'a CommandProfile,
-    projection: &ProjectedInvocation,
+    projection: &'p ProjectedInvocation,
     subcommands: &'a SubcommandTree,
-) -> Result<InvocationSelection<'a>, BindError> {
+) -> SubcommandScan<'p, 'a> {
     let root_scope = ArgumentScope::for_invocation(projection);
-    let mut selected_modifiers =
-        match_leading_root_modifiers(&profile.modifiers, projection, root_scope, subcommands);
+    let root_options = scoped_options(
+        profile.option_scope,
+        profile.option_matching,
+        projection,
+        root_scope,
+        &profile.modifiers,
+        &profile.forms,
+    );
+    let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
+    let mut option_terminators: Vec<_> = root_options
+        .as_ref()
+        .and_then(|options| options.terminator)
+        .into_iter()
+        .collect();
+    let mut selected_modifiers = if let Some(options) = &root_options {
+        match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
+    } else {
+        match_leading_root_modifiers(
+            &profile.modifiers,
+            projection,
+            root_scope,
+            subcommands,
+            profile.option_matching,
+        )
+    };
     let mut scan_state = BindingState::with_modifier_context(projection, &selected_modifiers);
+    scan_state.set_option_scope(root_options.as_ref());
 
     consume_selected_modifiers_for_scanning(&selected_modifiers, &mut scan_state);
 
@@ -467,10 +669,21 @@ fn select_subcommand_invocation<'a>(
     let mut scan_start = 0;
     let mut children = subcommands.roots.as_slice();
     let mut selected_node = None;
+    let mut node_options = None;
 
-    while let Some((index, text)) =
-        next_unconsumed_positional_from(projection, &scan_state.consumed, scan_start)
-    {
+    while let Some((index, text)) = next_unconsumed_operand_from(
+        projection,
+        &scan_state.consumed,
+        scan_start,
+        if selected_node.is_none() {
+            root_options.as_ref()
+        } else {
+            node_options.as_ref()
+        },
+    ) {
+        if error.is_some() {
+            break;
+        }
         let Some(node) = find_subcommand_node(children, text) else {
             break;
         };
@@ -480,21 +693,77 @@ fn select_subcommand_invocation<'a>(
         scan_start = index + 1;
 
         let node_scope = ArgumentScope::new(scan_start, projection.args.len());
-        let node_modifiers = match_scoped_modifiers(
-            &node.modifiers,
+        node_options = scoped_options(
+            node.option_scope,
+            node.option_matching,
             projection,
             node_scope,
-            Some(&scan_state.consumed),
-            &selected_modifiers,
+            &node.modifiers,
+            &node.forms,
         );
+        error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
+        let node_modifiers = if let Some(options) = &node_options {
+            match_owned_modifiers(
+                &node.modifiers,
+                options,
+                &selected_modifiers,
+                node.option_matching,
+            )
+        } else {
+            match_scoped_modifiers(
+                &node.modifiers,
+                projection,
+                node_scope,
+                Some(&scan_state.consumed),
+                &selected_modifiers,
+                node.option_matching,
+            )
+        };
 
-        selected_modifiers.extend(node_modifiers.iter().copied());
+        selected_modifiers.extend(node_modifiers.iter().cloned());
         scan_state.set_modifier_context(&selected_modifiers);
+        scan_state.set_option_scope(node_options.as_ref());
+        option_terminators.extend(node_options.as_ref().and_then(|options| options.terminator));
         consume_selected_modifiers_for_scanning(&node_modifiers, &mut scan_state);
 
         selected_node = Some(node);
         children = node.children.as_slice();
     }
+
+    SubcommandScan {
+        root_options,
+        node_options,
+        option_terminators,
+        selected_modifiers,
+        scan_state,
+        path,
+        scan_start,
+        selected_node,
+        error,
+    }
+}
+
+fn select_subcommand_invocation<'a>(
+    profile: &'a CommandProfile,
+    projection: &ProjectedInvocation,
+    subcommands: &'a SubcommandTree,
+) -> Result<InvocationSelection<'a>, BindError> {
+    // Successful selection and partial binding share the same ownership scan.
+    let SubcommandScan {
+        root_options,
+        node_options,
+        option_terminators,
+        selected_modifiers,
+        scan_state,
+        path,
+        scan_start,
+        selected_node,
+        error,
+    } = scan_subcommand_path(profile, projection, subcommands);
+    if let Some(error) = error {
+        return Err(error);
+    }
+    let root_scope = ArgumentScope::for_invocation(projection);
 
     let Some(node) = selected_node else {
         if !profile.forms.is_empty() {
@@ -506,14 +775,19 @@ fn select_subcommand_invocation<'a>(
                 &scan_state.consumed,
                 &selected_modifiers,
                 &[],
+                root_options.as_ref(),
+                profile.option_matching,
             )?;
 
             return Ok(InvocationSelection {
+                option_matching: profile.option_matching,
                 form,
                 form_scope: root_scope,
                 modifiers: selected_modifiers,
                 subcommand_path: Vec::new(),
                 residuals: Vec::new(),
+                option_scope: root_options,
+                option_terminators,
             });
         }
 
@@ -540,13 +814,18 @@ fn select_subcommand_invocation<'a>(
         &scan_state.consumed,
         &selected_modifiers,
         &path,
+        node_options.as_ref(),
+        node.option_matching,
     ) {
         Ok(form) => Ok(InvocationSelection {
+            option_matching: node.option_matching,
             form,
             form_scope,
             modifiers: selected_modifiers,
             subcommand_path: path,
             residuals: Vec::new(),
+            option_scope: node_options,
+            option_terminators,
         }),
         Err(BindError::NoFormMatched { .. }) => {
             if let Some((_, text)) =
@@ -604,13 +883,26 @@ fn select_form_for_scope<'a>(
     consumed: &[bool],
     modifiers: &[SelectedModifier<'a>],
     subcommand_path: &[String],
+    options: Option<&crate::ScopedOptions>,
+    matching: OptionMatchingPolicy,
 ) -> Result<&'a Form, BindError> {
-    let shape =
-        shape_for_scope_with_consumed(projection, scope, consumed, modifiers, subcommand_path);
+    let shape = shape_for_scope_with_consumed(
+        projection,
+        scope,
+        consumed,
+        modifiers,
+        subcommand_path,
+        options,
+        matching,
+    );
     let matched_forms: Vec<FormConsumptionPreview<'a>> = forms
         .iter()
         .filter(|form| form_matches(form, &shape))
-        .map(|form| preview_form_consumption(form, projection, scope, consumed, modifiers))
+        .map(|form| {
+            preview_form_consumption(
+                form, projection, scope, consumed, modifiers, options, matching,
+            )
+        })
         .filter(|preview| {
             let remaining_shape = shape_for_scope_with_consumed(
                 projection,
@@ -618,6 +910,8 @@ fn select_form_for_scope<'a>(
                 &preview.consumed,
                 modifiers,
                 subcommand_path,
+                options,
+                matching,
             );
 
             remaining_selector_matches(preview.form, &remaining_shape)
@@ -660,8 +954,9 @@ fn match_leading_root_modifiers<'a>(
     projection: &ProjectedInvocation,
     root_scope: ArgumentScope,
     subcommands: &SubcommandTree,
+    matching: OptionMatchingPolicy,
 ) -> Vec<SelectedModifier<'a>> {
-    let mut selected = match_root_flag_only_modifiers(modifiers, projection, root_scope);
+    let mut selected = match_root_flag_only_modifiers(modifiers, projection, root_scope, matching);
     let mut consumed = vec![false; projection.args.len()];
 
     loop {
@@ -686,6 +981,7 @@ fn match_leading_root_modifiers<'a>(
             leading_scope,
             &consumed,
             &selected,
+            matching,
         );
         if next.is_empty() {
             break;
@@ -715,6 +1011,7 @@ fn match_root_flag_only_modifiers<'a>(
     modifiers: &'a [Modifier],
     projection: &ProjectedInvocation,
     root_scope: ArgumentScope,
+    matching: OptionMatchingPolicy,
 ) -> Vec<SelectedModifier<'a>> {
     let declared_short_flags = declared_short_modifier_flags(modifiers);
     let short_flags_allowing_attached_operands = short_flags_allowing_attached_operands(modifiers);
@@ -729,6 +1026,7 @@ fn match_root_flag_only_modifiers<'a>(
                 None,
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
+                matching,
             )
         })
         .collect();
@@ -743,14 +1041,17 @@ fn match_root_flag_only_modifiers<'a>(
                 flag_name,
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
+                matching,
             )
         },
         &[],
     )
     .into_iter()
     .map(|modifier| SelectedModifier {
+        option_matching: matching,
         modifier,
         scope: root_scope,
+        option_flag_indices: None,
     })
     .collect()
 }
@@ -761,6 +1062,7 @@ fn match_leading_parameterized_modifiers<'a>(
     leading_scope: ArgumentScope,
     consumed: &[bool],
     preselected_modifiers: &[SelectedModifier<'_>],
+    matching: OptionMatchingPolicy,
 ) -> Vec<SelectedModifier<'a>> {
     let declared_short_flags = declared_short_modifier_flags(modifiers);
     let short_flags_allowing_attached_operands = short_flags_allowing_attached_operands(modifiers);
@@ -780,6 +1082,7 @@ fn match_leading_parameterized_modifiers<'a>(
                 Some(consumed),
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
+                matching,
             )
         })
         .collect();
@@ -794,14 +1097,17 @@ fn match_leading_parameterized_modifiers<'a>(
                 flag_name,
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
+                matching,
             )
         },
         &preselected_modifier_ids,
     )
     .into_iter()
     .map(|modifier| SelectedModifier {
+        option_matching: matching,
         modifier,
         scope: leading_scope,
+        option_flag_indices: None,
     })
     .collect()
 }
@@ -812,6 +1118,7 @@ fn match_scoped_modifiers<'a>(
     scope: ArgumentScope,
     consumed: Option<&[bool]>,
     preselected_modifiers: &[SelectedModifier<'_>],
+    matching: OptionMatchingPolicy,
 ) -> Vec<SelectedModifier<'a>> {
     let declared_short_flags = declared_short_modifier_flags(modifiers);
     let short_flags_allowing_attached_operands = short_flags_allowing_attached_operands(modifiers);
@@ -830,6 +1137,7 @@ fn match_scoped_modifiers<'a>(
                 consumed,
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
+                matching,
             )
         })
         .collect();
@@ -844,12 +1152,18 @@ fn match_scoped_modifiers<'a>(
                 flag_name,
                 &declared_short_flags,
                 &short_flags_allowing_attached_operands,
+                matching,
             )
         },
         &preselected_modifier_ids,
     )
     .into_iter()
-    .map(|modifier| SelectedModifier { modifier, scope })
+    .map(|modifier| SelectedModifier {
+        option_matching: matching,
+        modifier,
+        scope,
+        option_flag_indices: None,
+    })
     .collect()
 }
 
@@ -863,6 +1177,7 @@ fn consume_selected_modifiers_for_scanning(
                 parameter,
                 modifier: Some(selected_modifier.modifier),
                 scope: selected_modifier.scope,
+                option_matching: selected_modifier.option_matching,
             };
 
             let _ = state.bind_parameter_values(&target);
@@ -879,7 +1194,11 @@ fn consume_flag_only_modifiers_for_binding(
             continue;
         }
 
-        state.consume_modifier_flags(selected_modifier.modifier, selected_modifier.scope);
+        state.consume_modifier_flags(
+            selected_modifier.modifier,
+            selected_modifier.scope,
+            selected_modifier.option_matching,
+        );
     }
 }
 
@@ -889,6 +1208,8 @@ fn shape_for_scope_with_consumed<'a>(
     consumed: &[bool],
     modifiers: &[SelectedModifier<'_>],
     subcommand_path: &[String],
+    options: Option<&crate::ScopedOptions>,
+    matching: OptionMatchingPolicy,
 ) -> InvocationShape {
     shape_for_scope_internal(
         projection,
@@ -896,6 +1217,8 @@ fn shape_for_scope_with_consumed<'a>(
         Some(consumed),
         modifiers,
         subcommand_path,
+        options,
+        matching,
     )
 }
 
@@ -905,8 +1228,11 @@ fn shape_for_scope_internal<'a>(
     consumed: Option<&[bool]>,
     modifiers: &[SelectedModifier<'_>],
     subcommand_path: &[String],
+    options: Option<&crate::ScopedOptions>,
+    matching: OptionMatchingPolicy,
 ) -> InvocationShape {
     let mut shape = InvocationShape::new().with_subcommand_path(subcommand_path.to_vec());
+    shape.option_matching = matching;
 
     for modifier in modifiers {
         shape.matched_modifiers.push(modifier.modifier.id.clone());
@@ -914,8 +1240,31 @@ fn shape_for_scope_internal<'a>(
     populate_modifier_parameters_for_shape(projection, modifiers, &mut shape);
 
     let mut before_dashdash = true;
+    if let Some(options) = options {
+        // Selectors describe option presence, not the scanner's consumption
+        // order. Operands have already been excluded by the ownership scan.
+        shape.flags = options.flags.iter().map(|(_, flag)| flag.clone()).collect();
+        shape.has_dashdash = options.terminator.is_some();
+    }
     for (index, arg) in args_in_scope(projection, scope) {
+        if options.is_some_and(|options| options.terminator == Some(index)) {
+            before_dashdash = false;
+        }
+        // The projector's original `--` classification may itself be an
+        // option operand. Explicit ownership is authoritative for this prefix.
+        if options.is_some_and(|options| index < options.scope.end_index) {
+            continue;
+        }
         if consumed.is_some_and(|consumed| consumed[index]) {
+            continue;
+        }
+
+        if options.is_some() {
+            // After the option prefix every token is argv data, even `--`.
+            shape.positional_args.push(arg.text.clone());
+            if before_dashdash {
+                shape.positional_args_before_dashdash.push(arg.text.clone());
+            }
             continue;
         }
 
@@ -950,6 +1299,7 @@ fn populate_modifier_parameters_for_shape(
                 parameter,
                 modifier: Some(selected_modifier.modifier),
                 scope: selected_modifier.scope,
+                option_matching: selected_modifier.option_matching,
             };
 
             let mut state = BindingState::with_modifier_context(projection, modifiers);
@@ -999,7 +1349,27 @@ fn find_subcommand_node<'a>(nodes: &'a [SubcommandNode], text: &str) -> Option<&
         .find(|node| node.name == text || node.aliases.iter().any(|alias| alias == text))
 }
 
+fn next_unconsumed_operand_from<'a>(
+    projection: &'a ProjectedInvocation,
+    consumed: &[bool],
+    start_index: usize,
+    options: Option<&crate::ScopedOptions>,
+) -> Option<(usize, &'a str)> {
+    if let Some(options) = options {
+        projection
+            .args
+            .iter()
+            .enumerate()
+            .skip(start_index.max(options.scope.end_index))
+            .find(|(index, _)| !consumed[*index])
+            .map(|(index, arg)| (index, arg.text.as_str()))
+    } else {
+        next_unconsumed_positional_from(projection, consumed, start_index)
+    }
+}
+
 struct ParameterTarget<'a> {
+    option_matching: OptionMatchingPolicy,
     parameter: &'a Parameter,
     modifier: Option<&'a Modifier>,
     scope: ArgumentScope,
@@ -1018,15 +1388,17 @@ fn collect_parameter_targets<'a>(selection: &InvocationSelection<'a>) -> Vec<Par
             parameter,
             modifier: None,
             scope: selection.form_scope,
+            option_matching: selection.option_matching,
         });
     }
 
-    for selected_modifier in selection.modifiers.iter().copied() {
+    for selected_modifier in &selection.modifiers {
         for parameter in &selected_modifier.modifier.parameters {
             targets.push(ParameterTarget {
                 parameter,
                 modifier: Some(selected_modifier.modifier),
                 scope: selected_modifier.scope,
+                option_matching: selected_modifier.option_matching,
             });
         }
     }
@@ -1037,6 +1409,7 @@ fn collect_parameter_targets<'a>(selection: &InvocationSelection<'a>) -> Vec<Par
 fn collect_form_parameter_targets<'a>(
     form: &'a Form,
     scope: ArgumentScope,
+    matching: OptionMatchingPolicy,
 ) -> Vec<ParameterTarget<'a>> {
     let mut targets = Vec::new();
 
@@ -1045,6 +1418,7 @@ fn collect_form_parameter_targets<'a>(
             parameter,
             modifier: None,
             scope,
+            option_matching: matching,
         });
     }
 
@@ -1056,12 +1430,13 @@ fn collect_modifier_parameter_targets<'a>(
 ) -> Vec<ParameterTarget<'a>> {
     let mut targets = Vec::new();
 
-    for selected_modifier in modifiers.iter().copied() {
+    for selected_modifier in modifiers {
         for parameter in &selected_modifier.modifier.parameters {
             targets.push(ParameterTarget {
                 parameter,
                 modifier: Some(selected_modifier.modifier),
                 scope: selected_modifier.scope,
+                option_matching: selected_modifier.option_matching,
             });
         }
     }
@@ -1075,14 +1450,21 @@ fn preview_form_consumption<'a>(
     scope: ArgumentScope,
     base_consumed: &[bool],
     modifiers: &[SelectedModifier<'a>],
+    options: Option<&crate::ScopedOptions>,
+    matching: OptionMatchingPolicy,
 ) -> FormConsumptionPreview<'a> {
-    let targets = collect_form_parameter_targets(form, scope);
+    let targets = collect_form_parameter_targets(form, scope, matching);
     let mut state = BindingState::with_consumed(projection, base_consumed, modifiers);
+    state.set_option_scope(options);
 
     for target in &targets {
         if is_flag_binding(&target.parameter.binding) {
             let _ = state.bind_parameter_values(target);
         }
+    }
+
+    if options.is_some() {
+        consume_flag_only_modifiers_for_binding(modifiers, &mut state);
     }
 
     for target in &targets {
@@ -1291,6 +1673,9 @@ struct BindingState<'p, 'm> {
     declared_short_flags: BTreeSet<String>,
     short_flags_allowing_attached_operands: BTreeSet<String>,
     selected_modifiers: Vec<SelectedModifier<'m>>,
+    option_flag_indices: Option<Vec<usize>>,
+    option_boundary: Option<usize>,
+    option_terminator: Option<usize>,
 }
 
 impl<'p, 'm> BindingState<'p, 'm> {
@@ -1301,6 +1686,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
             selected_modifiers: Vec::new(),
+            option_flag_indices: None,
+            option_boundary: None,
+            option_terminator: None,
         }
     }
 
@@ -1315,6 +1703,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
             selected_modifiers: Vec::new(),
+            option_flag_indices: None,
+            option_boundary: None,
+            option_terminator: None,
         };
         state.set_modifier_context(modifiers);
         state
@@ -1336,6 +1727,45 @@ impl<'p, 'm> BindingState<'p, 'm> {
         self.selected_modifiers = modifiers.to_vec();
     }
 
+    fn set_option_scope(&mut self, options: Option<&crate::ScopedOptions>) {
+        self.option_boundary = options.map(|options| options.scope.end_index);
+        self.option_terminator = options.and_then(|options| options.terminator);
+        self.option_flag_indices =
+            options.map(|options| options.flags.iter().map(|(index, _)| *index).collect());
+        if let Some(index) = options.and_then(|options| options.terminator) {
+            self.consumed[index] = true;
+        }
+    }
+
+    fn owned_flag_indices(&self, modifier: Option<&Modifier>) -> Option<Vec<usize>> {
+        match modifier {
+            Some(modifier) => self
+                .selected_modifiers
+                .iter()
+                .find(|selected| std::ptr::eq(selected.modifier, modifier))
+                .and_then(|selected| selected.option_flag_indices.clone()),
+            None => self.option_flag_indices.clone(),
+        }
+    }
+
+    fn is_positional(&self, index: usize) -> bool {
+        self.option_boundary
+            .is_some_and(|boundary| index >= boundary)
+            || self.projection.args[index].kind == ProjectedArgKind::Positional
+    }
+
+    fn positional_separator(&self, scope: ArgumentScope) -> Option<usize> {
+        if self.option_boundary.is_some() {
+            self.option_terminator
+                .filter(|index| *index >= scope.start_index && *index < scope.end_index)
+        } else {
+            (scope.start_index..scope.end_index).find(|index| {
+                !self.consumed[*index]
+                    && self.projection.args[*index].kind == ProjectedArgKind::DashDash
+            })
+        }
+    }
+
     fn bind_parameter_values(&mut self, target: &ParameterTarget<'_>) -> Vec<BoundValue> {
         let value_constraints = &target.parameter.value_constraints;
 
@@ -1348,7 +1778,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 *operand_mode,
                 target.scope,
                 None,
+                target.modifier,
                 value_constraints,
+                target.option_matching,
             ),
             BindingSpec::FollowingMatchedFlag { operand_mode } => {
                 let modifier = target
@@ -1359,7 +1791,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     *operand_mode,
                     target.scope,
                     Some(modifier),
+                    Some(modifier),
                     value_constraints,
+                    target.option_matching,
                 )
             }
             BindingSpec::ArgsWithPrefix(prefix) => {
@@ -1426,23 +1860,30 @@ impl<'p, 'm> BindingState<'p, 'm> {
         }
     }
 
-    fn consume_modifier_flags(&mut self, modifier: &Modifier, scope: ArgumentScope) {
+    fn consume_modifier_flags(
+        &mut self,
+        modifier: &Modifier,
+        scope: ArgumentScope,
+        matching: OptionMatchingPolicy,
+    ) {
+        let owned_indices = self.owned_flag_indices(Some(modifier));
         for index in scope.start_index..scope.end_index {
             if self.consumed[index] {
                 continue;
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Flag {
+            if let Some(indices) = &owned_indices {
+                if !indices.contains(&index) {
+                    continue;
+                }
+            } else if arg.kind != ProjectedArgKind::Flag {
                 continue;
             }
 
-            if modifier
-                .matcher
-                .flag_names()
-                .iter()
-                .any(|flag_name| flag_token_matches_name(arg.text.as_str(), flag_name.as_str()))
-            {
+            if modifier.matcher.flag_names().iter().any(|flag_name| {
+                flag_token_matches_name(arg.text.as_str(), flag_name.as_str(), matching)
+            }) {
                 self.consumed[index] = true;
             }
         }
@@ -1454,10 +1895,13 @@ impl<'p, 'm> BindingState<'p, 'm> {
         operand_mode: FlagOperandMode,
         scope: ArgumentScope,
         modifier: Option<&Modifier>,
+        option_owner: Option<&Modifier>,
         value_constraints: &[ValueConstraint],
+        matching: OptionMatchingPolicy,
     ) -> Vec<BoundValue> {
         let mut values = Vec::new();
-        let allow_short_attached = modifier.is_some()
+        let owned_indices = self.owned_flag_indices(option_owner);
+        let allow_short_attached = (modifier.is_some() || owned_indices.is_some())
             && matches!(
                 operand_mode,
                 FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
@@ -1466,20 +1910,24 @@ impl<'p, 'm> BindingState<'p, 'm> {
             .map(|modifier| declared_short_modifier_flags(std::slice::from_ref(modifier)))
             .unwrap_or_default();
         let mut saw_positional = false;
-
         for index in scope.start_index..scope.end_index {
             if self.consumed[index] {
                 continue;
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind == ProjectedArgKind::Positional {
-                saw_positional = true;
-                continue;
-            }
-
-            if arg.kind != ProjectedArgKind::Flag {
-                continue;
+            if let Some(indices) = &owned_indices {
+                if !indices.contains(&index) {
+                    continue;
+                }
+            } else {
+                if arg.kind == ProjectedArgKind::Positional {
+                    saw_positional = true;
+                    continue;
+                }
+                if arg.kind != ProjectedArgKind::Flag {
+                    continue;
+                }
             }
 
             let Some((matched_flag_name, flag_match)) = flag_names.iter().find_map(|flag_name| {
@@ -1492,9 +1940,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     &self.declared_short_flags,
                     &self.short_flags_allowing_attached_operands,
                     true,
+                    matching,
                 )
                 .or_else(|| {
-                    (modifier.is_none()
+                    (matching == OptionMatchingPolicy::ShortClusters
+                        && modifier.is_none()
                         && short_flag_cluster_contains_name(arg.text.as_str(), flag_name.as_str()))
                     .then_some(FlagTokenMatch::ClusterMember)
                 })
@@ -1671,7 +2121,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
 
         let arg = self.projection.args.get(value_index)?;
 
-        if self.consumed[value_index] || arg.kind != ProjectedArgKind::Positional {
+        if self.consumed[value_index] || !self.is_positional(value_index) {
             return None;
         }
 
@@ -1710,7 +2160,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
         }
 
         let arg = self.projection.args.get(value_index)?;
-        if arg.kind != ProjectedArgKind::Positional {
+        if !self.is_positional(value_index) {
             return None;
         }
 
@@ -1739,7 +2189,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 continue;
             }
 
@@ -1775,7 +2225,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 continue;
             }
 
@@ -1827,10 +2277,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
         scope: ArgumentScope,
         value_constraints: &[ValueConstraint],
     ) -> Option<BoundValue> {
-        let dashdash_index = (scope.start_index..scope.end_index).find(|index| {
-            !self.consumed[*index]
-                && self.projection.args[*index].kind == ProjectedArgKind::DashDash
-        })?;
+        let dashdash_index = self.positional_separator(scope)?;
 
         self.consumed[dashdash_index] = true;
 
@@ -1840,7 +2287,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 continue;
             }
 
@@ -1869,10 +2316,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
         scope: ArgumentScope,
         value_constraints: &[ValueConstraint],
     ) -> Vec<BoundValue> {
-        let Some(mut start_index) = (scope.start_index..scope.end_index).find(|index| {
-            !self.consumed[*index]
-                && self.projection.args[*index].kind == ProjectedArgKind::DashDash
-        }) else {
+        let Some(mut start_index) = self.positional_separator(scope) else {
             return Vec::new();
         };
 
@@ -1887,7 +2331,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 continue;
             }
 
@@ -1960,14 +2404,23 @@ impl<'p, 'm> BindingState<'p, 'm> {
             .flat_map(|selected| {
                 (scope.start_index..scope.end_index).filter_map(move |index| {
                     let arg = &self.projection.args[index];
-                    (arg.kind == ProjectedArgKind::Flag
+                    (selected
+                        .option_flag_indices
+                        .as_ref()
+                        .map_or(arg.kind == ProjectedArgKind::Flag, |indices| {
+                            indices.contains(&index)
+                        })
                         && selected
                             .modifier
                             .matcher
                             .flag_names()
                             .iter()
                             .any(|flag_name| {
-                                flag_token_matches_name(arg.text.as_str(), flag_name.as_str())
+                                flag_token_matches_name(
+                                    arg.text.as_str(),
+                                    flag_name.as_str(),
+                                    selected.option_matching,
+                                )
                             }))
                     .then_some(index)
                 })
@@ -1987,7 +2440,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 continue;
             }
 
@@ -2022,7 +2475,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 continue;
             }
 
@@ -2056,7 +2509,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
         (scope.start_index..scope.end_index)
             .filter(|index| {
                 !self.consumed[*index]
-                    && self.projection.args[*index].kind == ProjectedArgKind::Positional
+                    && self.is_positional(*index)
                     && argument_satisfies_value_constraints(
                         self.projection.args[*index].text.as_str(),
                         value_constraints,
@@ -2177,7 +2630,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let arg = &self.projection.args[index];
-            if arg.kind != ProjectedArgKind::Positional {
+            if !self.is_positional(index) {
                 break;
             }
 
@@ -2374,6 +2827,7 @@ fn modifier_matches_in_scope(
     consumed: Option<&[bool]>,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
+    matching: OptionMatchingPolicy,
 ) -> bool {
     let flags = modifier.matcher.flag_names();
     let allow_short_attached = modifier_allows_short_attached(modifier);
@@ -2393,6 +2847,7 @@ fn modifier_matches_in_scope(
                     allow_inline_long_operand,
                     declared_short_flags,
                     short_flags_allowing_attached_operands,
+                    matching,
                 )
             }),
             ModifierMatcher::AllFlags(_) => flags.iter().all(|flag_name| {
@@ -2406,6 +2861,7 @@ fn modifier_matches_in_scope(
                     allow_inline_long_operand,
                     declared_short_flags,
                     short_flags_allowing_attached_operands,
+                    matching,
                 )
             }),
         }
@@ -2421,6 +2877,7 @@ fn modifier_flag_matches_in_scope(
     allow_inline_long_operand: bool,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
+    matching: OptionMatchingPolicy,
 ) -> bool {
     let mut saw_positional = false;
 
@@ -2442,12 +2899,15 @@ fn modifier_flag_matches_in_scope(
                     allow_inline_long_operand,
                     declared_short_flags,
                     short_flags_allowing_attached_operands,
-                ) || short_flag_cluster_matches_flag_only_modifier(
-                    arg.text.as_str(),
-                    flag_name,
-                    declared_short_flags,
-                    short_flags_allowing_attached_operands,
-                ) {
+                    matching,
+                ) || (matching == OptionMatchingPolicy::ShortClusters
+                    && short_flag_cluster_matches_flag_only_modifier(
+                        arg.text.as_str(),
+                        flag_name,
+                        declared_short_flags,
+                        short_flags_allowing_attached_operands,
+                    ))
+                {
                     return true;
                 }
             }
@@ -2465,6 +2925,7 @@ fn constraint_flag_matches_in_scope(
     flag_name: &str,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
+    matching: OptionMatchingPolicy,
 ) -> bool {
     for (index, arg) in args_in_scope(projection, scope) {
         if consumed.is_some_and(|consumed| consumed[index]) {
@@ -2483,12 +2944,15 @@ fn constraint_flag_matches_in_scope(
             true,
             declared_short_flags,
             short_flags_allowing_attached_operands,
-        ) || short_flag_cluster_matches_flag_only_modifier(
-            arg.text.as_str(),
-            flag_name,
-            declared_short_flags,
-            short_flags_allowing_attached_operands,
-        ) {
+            matching,
+        ) || (matching == OptionMatchingPolicy::ShortClusters
+            && short_flag_cluster_matches_flag_only_modifier(
+                arg.text.as_str(),
+                flag_name,
+                declared_short_flags,
+                short_flags_allowing_attached_operands,
+            ))
+        {
             return true;
         }
     }
@@ -2511,12 +2975,14 @@ fn constraint_flag_matches_in_shape(
             true,
             declared_short_flags,
             short_flags_allowing_attached_operands,
-        ) || short_flag_cluster_matches_flag_only_modifier(
-            candidate.as_str(),
-            flag_name,
-            declared_short_flags,
-            short_flags_allowing_attached_operands,
-        )
+            shape.option_matching,
+        ) || (shape.option_matching == OptionMatchingPolicy::ShortClusters
+            && short_flag_cluster_matches_flag_only_modifier(
+                candidate.as_str(),
+                flag_name,
+                declared_short_flags,
+                short_flags_allowing_attached_operands,
+            ))
     })
 }
 
@@ -2528,6 +2994,7 @@ fn modifier_flag_token_matches_name(
     allow_inline_long_operand: bool,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
+    matching: OptionMatchingPolicy,
 ) -> bool {
     if token_text == flag_name {
         return true;
@@ -2547,6 +3014,7 @@ fn modifier_flag_token_matches_name(
             declared_short_flags,
             short_flags_allowing_attached_operands,
             false,
+            matching,
         )
         .is_some()
 }
@@ -2715,10 +3183,15 @@ fn remote_spec_prefix_is_host_like(prefix: &str) -> bool {
     true
 }
 
-fn flag_token_matches_name(token_text: &str, flag_name: &str) -> bool {
+fn flag_token_matches_name(
+    token_text: &str,
+    flag_name: &str,
+    matching: OptionMatchingPolicy,
+) -> bool {
     token_text == flag_name
         || inline_long_flag_operand(token_text, flag_name).is_some()
-        || short_flag_cluster_contains_name(token_text, flag_name)
+        || (matching == OptionMatchingPolicy::ShortClusters
+            && short_flag_cluster_contains_name(token_text, flag_name))
 }
 
 fn short_flag_cluster_contains_name(token_text: &str, flag_name: &str) -> bool {
@@ -2749,6 +3222,7 @@ fn flag_token_binding_match<'a>(
     all_declared_short_flags: &BTreeSet<String>,
     all_short_flags_allowing_attached_operands: &BTreeSet<String>,
     allow_unknown_prefix_flags: bool,
+    matching: OptionMatchingPolicy,
 ) -> Option<FlagTokenMatch<'a>> {
     if token_text == flag_name {
         return Some(FlagTokenMatch::Exact);
@@ -2758,7 +3232,7 @@ fn flag_token_binding_match<'a>(
         return Some(FlagTokenMatch::LongInlineOperand(inline_operand));
     }
 
-    if !allow_short_attached {
+    if !allow_short_attached || matching == OptionMatchingPolicy::ExactNames {
         return None;
     }
 
@@ -3122,6 +3596,8 @@ mod tests {
             roots: vec![
                 SubcommandNode {
                     name: "clone".to_string(),
+                    option_scope: Default::default(),
+                    option_matching: Default::default(),
                     aliases: Vec::new(),
                     forms: vec![
                         Form::new("clone_repository")
@@ -3159,11 +3635,15 @@ mod tests {
                 },
                 SubcommandNode {
                     name: "remote".to_string(),
+                    option_scope: Default::default(),
+                    option_matching: Default::default(),
                     aliases: Vec::new(),
                     forms: Vec::new(),
                     modifiers: Vec::new(),
                     children: vec![SubcommandNode {
                         name: "add".to_string(),
+                        option_scope: Default::default(),
+                        option_matching: Default::default(),
                         aliases: Vec::new(),
                         forms: vec![
                             Form::new("add_remote")
@@ -4017,6 +4497,8 @@ mod tests {
         let mut profile = CommandProfile::new("git");
         profile.subcommands = Some(SubcommandTree {
             roots: vec![SubcommandNode {
+                option_scope: Default::default(),
+                option_matching: Default::default(),
                 name: "restore".to_string(),
                 aliases: Vec::new(),
                 forms: vec![

@@ -5,6 +5,7 @@ mod loader;
 mod lookup;
 mod materialize;
 mod normalize;
+mod option_scope;
 mod projection;
 mod raw;
 mod recursive;
@@ -40,6 +41,7 @@ pub use materialize::{
     parse_shell_parameter_reference_after_dollar,
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
+pub use option_scope::ScopedOptions;
 pub use projection::{
     InvocationRuntimeContext, ProjectedArg, ProjectedArgKind, ProjectedInvocation,
     project_invocation,
@@ -51,10 +53,11 @@ pub use raw::{
     RawEndpointKind, RawEndpointUsage, RawFlagOperandMode, RawForm, RawHostRiskEffectMetadata,
     RawHostRiskSemanticClass, RawImplicitInput, RawImplicitInputSource, RawInProcessCodeLoadKind,
     RawInteractiveEscapeCapability, RawInteractiveEscapeSurface, RawInteractiveEscapeSurfaceKind,
-    RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind, RawOsFamily,
-    RawPackageLocatorKind, RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole,
-    RawPayloadLanguage, RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind,
-    RawProfileSourceKind, RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
+    RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind,
+    RawOptionMatchingPolicy, RawOptionScopePolicy, RawOsFamily, RawPackageLocatorKind,
+    RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole, RawPayloadLanguage,
+    RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind, RawProfileSourceKind,
+    RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
     RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr, RawSemanticType,
     RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
@@ -82,14 +85,14 @@ pub use types::{
     Effect, EffectKind, EffectTarget, EndpointKind, EndpointSemantic, EndpointUsage, ExtensionMap,
     FlagName, FlagOperandMode, Form, FormId, HostRiskEffectMetadata, HostRiskSemanticClass,
     ImplicitInput, ImplicitInputSource, InProcessCodeLoadSemantic, InteractiveEscapeSurface,
-    Modifier, ModifierConstraint, ModifierId, ModifierMatcher, MutationScopeTarget, OsFamily,
-    PackageLocatorKind, PackageLocatorSemantic, PackageManagerKind, Parameter, PathPurpose,
-    PathRole, PathSemantic, PayloadLanguage, PayloadSemantic, PayloadSource, PlatformConstraints,
-    PositionalBindingSource, ProcessTargetKind, ProcessTargetSemantic, ProfileSourceKind,
-    ProfileTrustMetadata, ProfileTrustTier, Residual, ResidualKind, ResidualSurface,
-    RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType, ShellFamily, SlotName,
-    StreamContract, StreamInputMode, StreamOutputMode, StructuredValueContext,
-    StructuredValueSemantic, SubcommandNode, SubcommandTree, ToolConventionPathTarget,
-    ValueConstraint, ValueMatcher,
+    Modifier, ModifierConstraint, ModifierId, ModifierMatcher, MutationScopeTarget,
+    OptionMatchingPolicy, OptionScopePolicy, OsFamily, PackageLocatorKind, PackageLocatorSemantic,
+    PackageManagerKind, Parameter, PathPurpose, PathRole, PathSemantic, PayloadLanguage,
+    PayloadSemantic, PayloadSource, PlatformConstraints, PositionalBindingSource,
+    ProcessTargetKind, ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata,
+    ProfileTrustTier, Residual, ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr,
+    SelectorPredicate, SemanticType, ShellFamily, SlotName, StreamContract, StreamInputMode,
+    StreamOutputMode, StructuredValueContext, StructuredValueSemantic, SubcommandNode,
+    SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
 };
 pub use value_shape::parse_owner_group_spec;
