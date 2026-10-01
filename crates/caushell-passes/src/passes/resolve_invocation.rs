@@ -120,19 +120,23 @@ impl SessionTransformPass for ResolveInvocationPass {
         let mut derived_records = dispatch_derived_records.clone();
         derived_records.extend(function_derived_records.clone());
         derived_records.extend(nested_derived_records);
-        let execution_unit_resolve_records = collect_execution_unit_resolve_records(
-            &self.registry,
-            staged_view,
-            ctx.request(),
-            &parsed,
-            &records,
-            &function_derived_commands,
-            &function_derived_records,
-            &dispatch_derived_commands,
-            &dispatch_derived_records,
-            &nested_payload_records,
-            ctx.policy().semantic_expansion.max_nested_parse_depth,
-        );
+        let (execution_unit_resolve_records, expansion_limit_evidence) =
+            collect_execution_unit_resolve_records(
+                &self.registry,
+                staged_view,
+                ctx.request(),
+                &parsed,
+                &records,
+                &function_derived_commands,
+                &function_derived_records,
+                &dispatch_derived_commands,
+                &dispatch_derived_records,
+                &nested_payload_records,
+                ctx.policy().semantic_expansion.max_nested_parse_depth,
+            );
+        for evidence in expansion_limit_evidence {
+            ctx.add_evidence(evidence);
+        }
         ctx.set_unresolved_dispatch_records(project_unresolved_dispatch_records(
             ctx.request(),
             &unresolved_dispatches,
@@ -1282,8 +1286,9 @@ fn collect_execution_unit_resolve_records(
     dispatch_derived_records: &[ResolvedCommandSeed],
     nested_payload_records: &[NestedPayloadRecord],
     max_nested_parse_depth: u8,
-) -> Vec<ExecutionUnitResolveRecord> {
+) -> (Vec<ExecutionUnitResolveRecord>, Vec<Evidence>) {
     let mut records = Vec::new();
+    let mut expansion_limit_evidence = Vec::new();
     let mut frontier = Vec::new();
     let request_scope_base_bindings = request_bindings(session.summary(), request);
 
@@ -1457,6 +1462,14 @@ fn collect_execution_unit_resolve_records(
         }
 
         if entry.depth > max_nested_parse_depth {
+            expansion_limit_evidence.push(Evidence::execution_expansion_truncated(
+                entry.parent_execution_node_id.0.clone(),
+                entry.rendered_command_text.clone(),
+                entry.root_command_index,
+                entry.depth,
+                max_nested_parse_depth,
+                1,
+            ));
             continue;
         }
 
@@ -1496,13 +1509,11 @@ fn collect_execution_unit_resolve_records(
             continue;
         };
 
-        frontier.extend(expanded_dispatch_children(
+        let mut children = expanded_dispatch_children(registry, request, &entry, resolved);
+        children.extend(expanded_shell_payload_children(
             registry, request, &entry, resolved,
         ));
-        frontier.extend(expanded_shell_payload_children(
-            registry, request, &entry, resolved,
-        ));
-        frontier.extend(expanded_recursive_payload_children(
+        children.extend(expanded_recursive_payload_children(
             registry,
             session,
             request,
@@ -1510,17 +1521,17 @@ fn collect_execution_unit_resolve_records(
             resolved,
             max_nested_parse_depth,
         ));
-        frontier.extend(expanded_command_substitution_body_children(
+        children.extend(expanded_command_substitution_body_children(
             registry, request, &entry,
         ));
-        frontier.extend(expanded_command_substitution_materialization_children(
+        children.extend(expanded_command_substitution_materialization_children(
             registry,
             session,
             request,
             &entry,
             max_nested_parse_depth,
         ));
-        frontier.extend(expanded_static_xargs_children(
+        children.extend(expanded_static_xargs_children(
             registry,
             session,
             request,
@@ -1528,12 +1539,38 @@ fn collect_execution_unit_resolve_records(
             resolved,
             max_nested_parse_depth,
         ));
-        frontier.extend(expanded_process_substitution_body_children(
+        children.extend(expanded_process_substitution_body_children(
             registry, request, &entry, resolved,
         ));
+
+        if frontier_depth < max_nested_parse_depth {
+            frontier.extend(children);
+        } else {
+            // All existing child producers share this admission gate. Do not
+            // recurse beyond the budget or silently drop the pending frontier.
+            // No extra graph traversal or command-specific risk logic is needed.
+            let unresolved_dispatch_count = if should_skip_generic_dispatch_projection(resolved) {
+                0
+            } else {
+                collect_dispatch_command_projection(&resolved.bound)
+                    .unresolved
+                    .len()
+            };
+            let next_candidate_count = children.len() + unresolved_dispatch_count;
+            if next_candidate_count > 0 {
+                expansion_limit_evidence.push(Evidence::execution_expansion_truncated(
+                    entry.source_node_id.0.clone(),
+                    entry.rendered_command_text.clone(),
+                    entry.root_command_index,
+                    entry.depth,
+                    max_nested_parse_depth,
+                    next_candidate_count,
+                ));
+            }
+        }
     }
 
-    records
+    (records, expansion_limit_evidence)
 }
 
 fn nested_payload_history_anchor_node_id(
@@ -4745,7 +4782,7 @@ fn collect_nested_payload_records(
                         &record.bindings,
                         record_id,
                         entry.root_command_index,
-                        entry.depth + 1,
+                        entry.depth.saturating_add(1),
                         max_nested_parse_depth,
                     );
 

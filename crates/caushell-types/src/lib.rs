@@ -19,12 +19,12 @@ mod shell_state;
 pub use decision::Decision;
 pub use evidence::{
     CatastrophicShellExpansionModeEvidence, CatastrophicShellProcessExplosionEvidence, Evidence,
-    EvidenceKind, ExecutionRiskSubtype, ImportedPackageExecutionEvidence,
-    ImportedPackageExecutionSinkEvidence, ImportedPackageSourceClass,
-    InteractiveEscapeSurfaceEvidence, NestedPayloadContextEvidence, NestedPayloadInputEvidence,
-    NestedPayloadInputFragmentEvidence, NestedPayloadLanguageEvidence, NestedPayloadOriginEvidence,
-    NestedPayloadParentEvidence, NestedPayloadParsedEvidence, NestedPayloadSourceEvidence,
-    NestedPayloadTruncatedEvidence, NestedPayloadUnresolvedEvidence,
+    EvidenceKind, ExecutionExpansionTruncatedEvidence, ExecutionRiskSubtype,
+    ImportedPackageExecutionEvidence, ImportedPackageExecutionSinkEvidence,
+    ImportedPackageSourceClass, InteractiveEscapeSurfaceEvidence, NestedPayloadContextEvidence,
+    NestedPayloadInputEvidence, NestedPayloadInputFragmentEvidence, NestedPayloadLanguageEvidence,
+    NestedPayloadOriginEvidence, NestedPayloadParentEvidence, NestedPayloadParsedEvidence,
+    NestedPayloadSourceEvidence, NestedPayloadTruncatedEvidence, NestedPayloadUnresolvedEvidence,
     NestedPayloadUnresolvedReasonEvidence, OutsideWorkspacePathEvidence, PriorPathWriteEvidence,
     RepositoryOperationEvidence, TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence,
     TaintedExecutionSinkEvidence, TaintedExecutionSourceEvidence,

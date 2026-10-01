@@ -98,6 +98,17 @@ caushell config set codex.need_approval_mode observe
 
 `Deny` 决策始终会被阻断，不受这个开关影响。
 
+## 展开深度
+
+`analysis.max_nested_parse_depth` 默认值为 8。顶层命令计为第 0 层，嵌套分派或 shell payload 执行会增加深度。位于上限且没有进一步子调用的命令照常判断；上限之外还有执行子调用时，默认要求审批（`policy.rules.execution_expansion_limit`）。这不是适配器的 `failure_action`，也不改变不支持的非 Bash 字面量的处理方式。
+
+已有显式深度配置仍然有效；配置校验继续要求至少为 3，以保留硬拒绝分析的下限。提高默认值不会重写用户已有的配置文件。
+
+```yaml
+analysis:
+  max_nested_parse_depth: 8
+```
+
 ## 最小示例
 
 这是一个最小配置：

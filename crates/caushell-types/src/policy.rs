@@ -64,7 +64,7 @@ pub struct SemanticExpansionPolicy {
 impl Default for SemanticExpansionPolicy {
     fn default() -> Self {
         Self {
-            max_nested_parse_depth: 3,
+            max_nested_parse_depth: 8,
         }
     }
 }
@@ -303,6 +303,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::SelectionError => RuleAction::NeedApproval,
         RuleId::NoProfile => RuleAction::Observe,
         RuleId::NestedPayloadExpansion => RuleAction::Observe,
+        RuleId::ExecutionExpansionLimit => RuleAction::NeedApproval,
         RuleId::NonMonotonicSequence => RuleAction::Deny,
         RuleId::CatastrophicFileSystemDelete => RuleAction::Deny,
         RuleId::CatastrophicShellProcessExplosion => RuleAction::Deny,
@@ -439,6 +440,12 @@ mod tests {
                 .rule_policy
                 .action_for(RuleId::NestedPayloadExpansion),
             RuleAction::Observe
+        );
+        assert_eq!(
+            config
+                .rule_policy
+                .action_for(RuleId::ExecutionExpansionLimit),
+            RuleAction::NeedApproval
         );
         assert_eq!(
             config.rule_policy.action_for(RuleId::NonMonotonicSequence),
@@ -743,7 +750,7 @@ mod tests {
                     }
                 },
                 "semantic_expansion": {
-                    "max_nested_parse_depth": 3
+                    "max_nested_parse_depth": 8
                 },
                 "runtime_taint": {
                     "max_hops": 12,

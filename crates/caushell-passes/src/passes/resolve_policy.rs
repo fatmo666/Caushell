@@ -54,6 +54,35 @@ impl RequestAnalysisPass for ResolvePolicyPass {
                 .collect()
         };
 
+        // Depth truncation is an incomplete analysis, not an unsupported
+        // static language literal. Keep it independent of the latter's Observe
+        // policy and of the origin-based unresolved-payload deduplication.
+        let expansion_limit_action = ctx
+            .policy()
+            .rule_policy
+            .action_for(RuleId::ExecutionExpansionLimit);
+        for evidence in &ctx.evidence {
+            let has_pending_child = match &evidence.kind {
+                EvidenceKind::ExecutionExpansionTruncated(truncated) => {
+                    truncated.next_candidate_count > 0
+                }
+                EvidenceKind::NestedPayloadTruncated(truncated) => {
+                    truncated.next_candidate_count > 0
+                }
+                _ => false,
+            };
+            if has_pending_child {
+                escalations.push((
+                    RuleId::ExecutionExpansionLimit,
+                    expansion_limit_action,
+                    format!(
+                        "execution analysis stopped before all child calls were analysed: {}",
+                        evidence.summary
+                    ),
+                ));
+            }
+        }
+
         for (evidence, action) in
             unresolved_execution_payload_evidence(ctx).filter_map(|evidence| {
                 unresolved_execution_payload_action(&ctx.policy().rule_policy, evidence)
@@ -796,6 +825,57 @@ mod tests {
         );
 
         assert!(ctx.decision_proposals.is_empty());
+    }
+
+    #[test]
+    fn truncated_payload_is_not_hidden_by_a_parsed_payload_with_the_same_origin() {
+        let context = sample_nested_payload_context("payload");
+        let ctx = run_pass(
+            PolicyConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                Evidence::nested_payload_parsed(context.clone(), ShellKind::Bash, 1),
+                Evidence::nested_payload_truncated(context, 8, 1),
+            ],
+            "bash -c ...",
+        );
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(
+            ctx.decision_proposals[0].rule_id,
+            RuleId::ExecutionExpansionLimit
+        );
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
+    }
+
+    #[test]
+    fn no_pending_child_does_not_trigger_the_budget_rule() {
+        let ctx = run_pass(
+            PolicyConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                Evidence::nested_payload_truncated(sample_nested_payload_context("payload"), 8, 0),
+                Evidence::execution_expansion_truncated("node", "echo ok", 0, 8, 8, 0),
+            ],
+            "echo ok",
+        );
+        assert!(ctx.decision_proposals.is_empty());
+    }
+
+    #[test]
+    fn static_literal_observe_policy_does_not_disable_depth_truncation_approval() {
+        let evidence = Evidence::execution_expansion_truncated("node", "env echo ok", 0, 8, 8, 1);
+        let ctx = run_pass(
+            PolicyConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            vec![evidence],
+            "env echo ok",
+        );
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
+        assert_eq!(ctx.decision_proposals[0].source_pass, "resolve_policy");
     }
 
     fn sample_nested_payload_context(slot_name: &str) -> NestedPayloadContextEvidence {

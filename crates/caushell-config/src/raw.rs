@@ -132,7 +132,8 @@ pub struct RawAnalysisConfig {
 impl Default for RawAnalysisConfig {
     fn default() -> Self {
         Self {
-            max_nested_parse_depth: 3,
+            max_nested_parse_depth: caushell_types::SemanticExpansionPolicy::default()
+                .max_nested_parse_depth,
             max_taint_hops: 12,
             max_taint_nodes: 256,
         }

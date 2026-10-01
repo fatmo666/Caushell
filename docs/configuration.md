@@ -98,6 +98,17 @@ caushell config set codex.need_approval_mode observe
 
 `Deny` decisions are always blocked and are not affected by this setting.
 
+## Expansion depth
+
+`analysis.max_nested_parse_depth` defaults to 8. The top-level command is depth 0, and nested dispatch or shell payload execution increments the depth. A command with no further child at the limit is judged normally; pending child execution beyond the limit requires approval by default (`policy.rules.execution_expansion_limit`). This is not the adapter's `failure_action`, and it does not change the handling of unsupported non-Bash literals.
+
+Existing explicit depth values remain effective; configuration validation still requires at least 3 for the hard-deny analysis floor. Raising the default does not rewrite existing configuration files.
+
+```yaml
+analysis:
+  max_nested_parse_depth: 8
+```
+
 ## Minimal example
 
 This is a minimal configuration:
@@ -110,4 +121,3 @@ codex:
 ```
 
 The default configuration uses `need_approval` and `block`.
-

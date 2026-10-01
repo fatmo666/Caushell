@@ -16,6 +16,32 @@ pub struct Evidence {
 }
 
 impl Evidence {
+    pub fn execution_expansion_truncated(
+        parent_node_id: impl Into<String>,
+        command: impl Into<String>,
+        root_command_index: usize,
+        depth: u8,
+        max_depth: u8,
+        next_candidate_count: usize,
+    ) -> Self {
+        let command = command.into();
+        Self {
+            rule_id: RuleId::ExecutionExpansionLimit,
+            summary: format!(
+                "execution expansion of {:?} at depth {} stopped at depth budget {} with {} unanalysed child candidates",
+                command, depth, max_depth, next_candidate_count
+            ),
+            kind: EvidenceKind::ExecutionExpansionTruncated(ExecutionExpansionTruncatedEvidence {
+                parent_node_id: parent_node_id.into(),
+                command,
+                root_command_index,
+                depth,
+                max_depth,
+                next_candidate_count,
+            }),
+        }
+    }
+
     pub fn outside_workspace_path(
         rule_id: RuleId,
         path: impl Into<String>,
@@ -424,6 +450,7 @@ pub enum EvidenceKind {
     PriorPathWrite(PriorPathWriteEvidence),
     NestedPayloadParsed(NestedPayloadParsedEvidence),
     NestedPayloadTruncated(NestedPayloadTruncatedEvidence),
+    ExecutionExpansionTruncated(ExecutionExpansionTruncatedEvidence),
     NestedPayloadUnresolved(NestedPayloadUnresolvedEvidence),
     TaintedExecutionSource(TaintedExecutionSourceEvidence),
     TaintedExecutionUnresolvedOrigin(TaintedExecutionUnresolvedOriginEvidence),
@@ -491,6 +518,16 @@ pub struct NestedPayloadParsedEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NestedPayloadTruncatedEvidence {
     pub context: NestedPayloadContextEvidence,
+    pub max_depth: u8,
+    pub next_candidate_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionExpansionTruncatedEvidence {
+    pub parent_node_id: String,
+    pub command: String,
+    pub root_command_index: usize,
+    pub depth: u8,
     pub max_depth: u8,
     pub next_candidate_count: usize,
 }
@@ -805,6 +842,18 @@ fn catastrophic_shell_expansion_mode_name(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn execution_expansion_truncation_roundtrips_through_json() {
+        let evidence =
+            super::Evidence::execution_expansion_truncated("parent:1", "env echo ok", 2, 8, 8, 1);
+        let value = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(value["rule_id"], "execution_expansion_limit");
+        assert_eq!(value["kind"]["kind"], "execution_expansion_truncated");
+        assert_eq!(value["kind"]["max_depth"], 8);
+        let roundtrip: super::Evidence = serde_json::from_value(value).unwrap();
+        assert_eq!(roundtrip, evidence);
+    }
+
     use super::{
         CatastrophicShellExpansionModeEvidence, CatastrophicShellProcessExplosionEvidence,
         Evidence, EvidenceKind, ExecutionRiskSubtype, ImportedPackageExecutionSinkEvidence,

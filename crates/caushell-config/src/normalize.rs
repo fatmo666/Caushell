@@ -18,6 +18,10 @@ const HARD_DENY_FLOOR_RULES: [RuleId; 2] = [
     RuleId::CatastrophicShellProcessExplosion,
 ];
 
+// The security floor is independent of the tunable default expansion budget.
+// Raising the default must not invalidate existing explicit depth-3 configs.
+const MIN_HARD_DENY_ANALYSIS_DEPTH: u8 = 3;
+
 const TRUSTED_PATH_RULES: [RuleId; 2] = [
     RuleId::OutsideWorkspaceScriptSource,
     RuleId::OutsideWorkspaceStartupConfig,
@@ -210,7 +214,7 @@ fn enforce_hard_deny_floor(rules: &mut BTreeMap<RuleId, RulePolicyEntry>) {
 }
 
 fn validate_hard_deny_analysis_depth(depth: u8) -> Result<(), NormalizeConfigError> {
-    let minimum = crate::RawAnalysisConfig::default().max_nested_parse_depth;
+    let minimum = MIN_HARD_DENY_ANALYSIS_DEPTH;
     if depth < minimum {
         return Err(NormalizeConfigError::HardDenyAnalysisDepthCannotBeLowered {
             actual: depth,
@@ -493,5 +497,21 @@ trusted_paths:
                 minimum: 3,
             })
         );
+    }
+
+    #[test]
+    fn default_depth_is_eight_but_explicit_legacy_depth_remains_valid() {
+        let default_config = normalize_config(RawConfigFile::default()).unwrap();
+        assert_eq!(
+            default_config
+                .policy
+                .semantic_expansion
+                .max_nested_parse_depth,
+            8
+        );
+        let mut raw = RawConfigFile::default();
+        raw.analysis.max_nested_parse_depth = 3;
+        let config = normalize_config(raw).unwrap();
+        assert_eq!(config.policy.semantic_expansion.max_nested_parse_depth, 3);
     }
 }
