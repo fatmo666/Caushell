@@ -482,6 +482,7 @@ pub struct Parameter {
     pub name: SlotName,
     pub semantic: SemanticType,
     pub binding: BindingSpec,
+    pub value_projection: Option<ValueProjection>,
     pub cardinality: Cardinality,
     pub value_constraints: Vec<ValueConstraint>,
     pub extensions: ExtensionMap,
@@ -493,6 +494,7 @@ impl Parameter {
             name: SlotName::new(name),
             semantic,
             binding,
+            value_projection: None,
             cardinality: Cardinality::RequiredOne,
             value_constraints: Vec::new(),
             extensions: ExtensionMap::new(),
@@ -521,6 +523,61 @@ impl Parameter {
         self.value_constraints.push(constraint);
         self
     }
+
+    pub fn with_value_projection(mut self, projection: ValueProjection) -> Self {
+        self.value_projection = Some(projection);
+        self
+    }
+}
+
+/// A semantic view of an operand, never a replacement for execution argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueProjection {
+    PrefixBefore {
+        delimiter: String,
+        if_absent: ProjectionAbsentPolicy,
+    },
+    KeyValue {
+        separator: String,
+        key: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectionAbsentPolicy {
+    #[default]
+    Original,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionUnknownReason {
+    DynamicArgument,
+    MissingDelimiter,
+    EmptyValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticValueResolution {
+    Known(String),
+    Unknown(ProjectionUnknownReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedSemanticValue {
+    /// Index into the untouched BoundParameter::values; retains spans,
+    /// binding source and materialization provenance without copying them.
+    pub source_index: usize,
+    pub resolution: SemanticValueResolution,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SemanticValueRef<'a> {
+    Original(&'a BoundValue),
+    Projected {
+        source: &'a BoundValue,
+        value: &'a ProjectedSemanticValue,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1103,6 +1160,10 @@ pub struct BoundParameter {
     pub name: SlotName,
     pub semantic: SemanticType,
     pub values: Vec<BoundValue>,
+    pub value_projection: Option<ValueProjection>,
+    /// None is the legacy identity view, with no allocation. Some(empty)
+    /// means all operands were proven inapplicable (not unresolved).
+    pub projected_values: Option<Vec<ProjectedSemanticValue>>,
 }
 
 impl BoundParameter {
@@ -1111,12 +1172,37 @@ impl BoundParameter {
             name,
             semantic,
             values: Vec::new(),
+            value_projection: None,
+            projected_values: None,
         }
     }
 
     pub fn with_value(mut self, value: BoundValue) -> Self {
         self.values.push(value);
+        if self.value_projection.is_some() {
+            crate::refresh_parameter_semantic_values(&mut self);
+        }
         self
+    }
+
+    pub fn semantic_values(&self) -> impl Iterator<Item = SemanticValueRef<'_>> {
+        self.projected_values
+            .iter()
+            .flatten()
+            .map(|value| SemanticValueRef::Projected {
+                source: &self.values[value.source_index],
+                value,
+            })
+            .chain(
+                self.values
+                    .iter()
+                    .filter(|_| self.projected_values.is_none())
+                    .map(SemanticValueRef::Original),
+            )
+    }
+
+    pub fn semantic_values_are_inapplicable(&self) -> bool {
+        self.projected_values.as_ref().is_some_and(Vec::is_empty)
     }
 }
 

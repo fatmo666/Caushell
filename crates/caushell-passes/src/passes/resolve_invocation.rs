@@ -29,9 +29,9 @@ use serde_json::Value as JsonValue;
 
 use crate::path::resolve_path_operand;
 use crate::support::{
-    AliasExpansionHop, HostTargetOperand, StaticInputEvidence, apply_alias_command,
+    AliasExpansionHop, StaticInputEvidence, apply_alias_command,
     apply_visible_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
-    catastrophic_delete_target_for_arg, expand_alias_chain,
+    bound_argument_operands_for_slot, catastrophic_delete_target_for_arg, expand_alias_chain,
     known_literal_path_content_before_execution_unit as static_known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command as static_known_literal_path_content_before_scoped_command,
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
@@ -2988,31 +2988,6 @@ fn find_search_target_candidate_from_path_pattern(root: &str, pattern: &str) -> 
     } else {
         find_search_target_candidate_from_name_pattern(root, pattern)
     }
-}
-
-fn bound_argument_operands_for_slot<'a>(
-    bound: &'a caushell_profile::BoundInvocation,
-    slot_name: &str,
-) -> Vec<HostTargetOperand<'a>> {
-    bound
-        .bound_parameters
-        .iter()
-        .filter(|parameter| parameter.name.as_str() == slot_name)
-        .flat_map(|parameter| parameter.values.iter())
-        .filter_map(|value| match value {
-            BoundValue::Argument {
-                text,
-                quoted,
-                node_kind,
-                ..
-            } => Some(HostTargetOperand {
-                text: text.as_str(),
-                quoted: *quoted,
-                node_kind: node_kind.as_str(),
-            }),
-            BoundValue::ImplicitInput { .. } => None,
-        })
-        .collect()
 }
 
 fn bound_argument_texts_for_slot<'a>(

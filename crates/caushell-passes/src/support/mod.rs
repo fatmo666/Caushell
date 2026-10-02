@@ -23,7 +23,7 @@ pub(crate) use execution_records::{
 pub(crate) use function_overlay::visible_function_bindings_before_span;
 pub(crate) use hard_deny::{
     CommandSinkReasonBuckets, HostTargetOperand, block_device_path_for_arg_with_optional_cwd,
-    block_device_write_reason_for_redirection_with_optional_cwd,
+    block_device_write_reason_for_redirection_with_optional_cwd, bound_argument_operands_for_slot,
     catastrophic_delete_target_for_arg, collect_command_sink_reason_buckets_with_optional_cwd,
     collect_execution_unit_scoped_reason_buckets,
 };

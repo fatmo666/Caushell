@@ -54,6 +54,7 @@ fn shell_sink_hard_deny_reason(
             text: target.text.trim(),
             quoted: target.quoted,
             node_kind: target.node_kind.as_str(),
+            literal_argv_data: false,
         },
         cwd,
         home,

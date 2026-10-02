@@ -181,7 +181,18 @@ pub fn resolve_invocation_with_bindings<'a>(
             partial_bound: bind_modifier_only_invocation(
                 profile,
                 &materialized_projection.invocation,
-            ),
+            )
+            .map(|bound| {
+                if bound
+                    .bound_parameters
+                    .iter()
+                    .any(|p| p.value_projection.is_some())
+                {
+                    attach_bound_argument_materialization(bound, &materialized_projection, bindings)
+                } else {
+                    bound
+                }
+            }),
         },
     }
 }
@@ -259,6 +270,7 @@ fn attach_bound_argument_materialization(
                 _ => BoundArgumentMaterialization::Literal,
             };
         }
+        crate::refresh_parameter_semantic_values(parameter);
     }
 
     bound

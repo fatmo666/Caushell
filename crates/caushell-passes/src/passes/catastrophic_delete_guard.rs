@@ -180,6 +180,7 @@ fn collect_python_static_delete_reasons(
                     text: target.path.as_str(),
                     quoted: true,
                     node_kind: "string",
+                    literal_argv_data: false,
                 },
                 cwd,
                 home,

@@ -3,6 +3,8 @@ mod metadata_mutation_classifier;
 mod resolved_sink;
 mod semantic_rules;
 
+pub(crate) use resolved_sink::bound_argument_operands_for_slot;
+
 pub(crate) use host_target_catalog::{
     HostTargetOperand, block_device_path_for_arg_with_optional_cwd,
     block_device_write_reason_for_redirection_with_optional_cwd,

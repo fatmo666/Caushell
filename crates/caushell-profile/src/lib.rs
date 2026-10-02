@@ -12,6 +12,7 @@ mod recursive;
 mod registry;
 mod resolve;
 mod types;
+mod value_projection;
 mod value_shape;
 
 pub use bind::{
@@ -57,11 +58,11 @@ pub use raw::{
     RawOptionMatchingPolicy, RawOptionScopePolicy, RawOsFamily, RawPackageLocatorKind,
     RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole, RawPayloadLanguage,
     RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind, RawProfileSourceKind,
-    RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
-    RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr, RawSemanticType,
-    RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
+    RawProfileTrustMetadata, RawProfileTrustTier, RawProjectionAbsentPolicy,
+    RawRepositoryOperationKind, RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr,
+    RawSemanticType, RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
-    RawValueMatcher,
+    RawValueMatcher, RawValueProjection,
 };
 pub use recursive::{
     ParsedRecursivePayload, RecursivePayloadArgumentFragment, RecursivePayloadCandidate,
@@ -90,9 +91,12 @@ pub use types::{
     PackageManagerKind, Parameter, PathPurpose, PathRole, PathSemantic, PayloadLanguage,
     PayloadSemantic, PayloadSource, PlatformConstraints, PositionalBindingSource,
     ProcessTargetKind, ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata,
-    ProfileTrustTier, Residual, ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr,
-    SelectorPredicate, SemanticType, ShellFamily, SlotName, StreamContract, StreamInputMode,
-    StreamOutputMode, StructuredValueContext, StructuredValueSemantic, SubcommandNode,
-    SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
+    ProfileTrustTier, ProjectedSemanticValue, ProjectionAbsentPolicy, ProjectionUnknownReason,
+    Residual, ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate,
+    SemanticType, SemanticValueRef, SemanticValueResolution, ShellFamily, SlotName, StreamContract,
+    StreamInputMode, StreamOutputMode, StructuredValueContext, StructuredValueSemantic,
+    SubcommandNode, SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
+    ValueProjection,
 };
+pub use value_projection::refresh_parameter_semantic_values;
 pub use value_shape::parse_owner_group_spec;

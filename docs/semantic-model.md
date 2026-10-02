@@ -60,6 +60,38 @@ bash ./setup.sh
 
 The target written by `tee` and the script executed by `bash` therefore both refer to `./setup.sh`. This relative path is resolved further against the current directory during session graph extension.
 
+### Parameter value projections
+
+A path parameter can declare `value_projection` when its operand contains more than the path itself. The binding still retains the complete argument, source span, binding origin and materialization provenance. Path analysis uses a separate semantic view; command dispatch and execution arguments are not rewritten.
+
+```yaml
+- name: test_paths
+  semantic: {kind: path, role: read, purpose: generic_operand}
+  binding: {kind: remaining_positionals}
+  cardinality: optional_many
+  value_projection:
+    kind: prefix_before
+    delimiter: "::"
+    if_absent: original
+
+- name: cache_path
+  semantic: {kind: path, role: write, purpose: generic_operand}
+  binding: {kind: following_flag, flag: "--override", operand_mode: next_arg}
+  cardinality: optional_many
+  value_projection:
+    kind: key_value
+    separator: "="
+    key: cache_dir
+```
+
+`prefix_before` selects text before the first delimiter: `tests/test_api.py::test_login` contributes `tests/test_api.py` to path analysis. Without a delimiter, `if_absent: original` (the default) retains the operand; `if_absent: unknown` leaves it unresolved. `key_value` matches the complete key before the first separator: `cache_dir=/etc/pytest-cache` contributes `/etc/pytest-cache`, whereas `console_output_style=classic` contributes no cache path. Additional separators in the value are retained.
+
+Unknown and inapplicable are distinct. Empty projected paths, malformed keyed operands, unresolved values and implicit runtime operands remain unknown. A known nonmatching key produces no path and no mutation fallback. An unresolved unquoted expansion can introduce additional argv fields, so a static prefix does not establish applicability or a complete path. For a fully double-quoted argument, a completed static delimiter can establish a path prefix or a nonmatching key even if the suffix is unknown. Exact materialized values and decoded literal data are not expanded a second time. Runtime bounds on a whole operand are not reused as bounds on its substring.
+
+Path facts, path-content provenance, mutation targets, derived paths and catastrophic target classification consume the same semantic view. An unknown projected root remains unknown rather than erasing a derived effect. Existing guards decide approval or denial; projection adds no risk pass or command-name special case. Each bound operand is projected independently, without imposing a command-specific repeated-option precedence rule.
+
+The declaration currently supports filesystem `path` semantics except `cwd_anchor`, not command references or payloads. Omitting it preserves the existing identity view without allocating projected values. These examples demonstrate the reusable declaration, not complete pytest support: no built-in Profile is activated or extended by this declaration alone, and configuration/root-directory discovery remains separate.
+
 ## Session Graph Extension
 
 Each session maintains a continuously updated execution graph. When analyzing the current action, Caushell first layers its new commands, state, and provenance relationships onto the existing graph to form the view used for this analysis.

@@ -15,6 +15,8 @@ pub(crate) struct HostTargetOperand<'a> {
     pub(crate) text: &'a str,
     pub(crate) quoted: bool,
     pub(crate) node_kind: &'a str,
+    /// Already-decoded argv data must not be expanded again during analysis.
+    pub(crate) literal_argv_data: bool,
 }
 
 impl<'a> HostTargetOperand<'a> {
@@ -23,6 +25,16 @@ impl<'a> HostTargetOperand<'a> {
             text,
             quoted: false,
             node_kind: "word",
+            literal_argv_data: false,
+        }
+    }
+
+    pub(crate) fn literal_argv_data(text: &'a str) -> Self {
+        Self {
+            text,
+            quoted: true,
+            node_kind: "raw_string",
+            literal_argv_data: true,
         }
     }
 }

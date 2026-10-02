@@ -257,11 +257,35 @@ pub struct RawParameter {
     pub semantic: RawSemanticType,
     pub binding: RawBindingSpec,
     #[serde(default)]
+    pub value_projection: Option<RawValueProjection>,
+    #[serde(default)]
     pub cardinality: Option<RawCardinality>,
     #[serde(default)]
     pub value_constraints: Vec<RawValueConstraint>,
     #[serde(default)]
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawValueProjection {
+    PrefixBefore {
+        delimiter: String,
+        #[serde(default)]
+        if_absent: RawProjectionAbsentPolicy,
+    },
+    KeyValue {
+        separator: String,
+        key: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawProjectionAbsentPolicy {
+    #[default]
+    Original,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

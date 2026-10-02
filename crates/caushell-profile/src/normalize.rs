@@ -59,6 +59,7 @@ pub enum NormalizeError {
     UnexpectedRepositoryOperation,
     InvalidExtensionKey(String),
     InvalidOptionScope(String),
+    InvalidValueProjection(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -435,9 +436,26 @@ fn normalize_modifier_constraint(
 fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
     ensure_non_empty(&raw.name, "parameters.name")?;
 
+    let semantic = normalize_semantic(raw.semantic)?;
+    let value_projection = raw
+        .value_projection
+        .map(normalize_value_projection)
+        .transpose()?;
+    if value_projection.is_some()
+        && !matches!(&semantic,
+            SemanticType::Path(path) if path.role != PathRole::CwdAnchor
+        )
+    {
+        return Err(NormalizeError::InvalidValueProjection(format!(
+            "parameter {}: value_projection requires a filesystem path semantic (not cwd_anchor)",
+            raw.name
+        )));
+    }
+
     Ok(Parameter {
         name: SlotName::new(raw.name),
-        semantic: normalize_semantic(raw.semantic)?,
+        semantic,
+        value_projection,
         binding: normalize_binding(raw.binding)?,
         cardinality: raw
             .cardinality
@@ -450,6 +468,39 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
             .collect(),
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn normalize_value_projection(
+    raw: crate::RawValueProjection,
+) -> Result<crate::ValueProjection, NormalizeError> {
+    use crate::{
+        ProjectionAbsentPolicy, RawProjectionAbsentPolicy, RawValueProjection, ValueProjection,
+    };
+    match raw {
+        RawValueProjection::PrefixBefore {
+            delimiter,
+            if_absent,
+        } => {
+            ensure_non_empty(&delimiter, "parameters.value_projection.delimiter")?;
+            Ok(ValueProjection::PrefixBefore {
+                delimiter,
+                if_absent: match if_absent {
+                    RawProjectionAbsentPolicy::Original => ProjectionAbsentPolicy::Original,
+                    RawProjectionAbsentPolicy::Unknown => ProjectionAbsentPolicy::Unknown,
+                },
+            })
+        }
+        RawValueProjection::KeyValue { separator, key } => {
+            ensure_non_empty(&separator, "parameters.value_projection.separator")?;
+            ensure_non_empty(&key, "parameters.value_projection.key")?;
+            if key.contains(&separator) {
+                return Err(NormalizeError::InvalidValueProjection(
+                    "projection key must not contain its separator".into(),
+                ));
+            }
+            Ok(ValueProjection::KeyValue { separator, key })
+        }
+    }
 }
 
 fn normalize_cardinality(raw: RawCardinality) -> Cardinality {
@@ -1302,6 +1353,7 @@ mod tests {
                 },
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "payload".to_string(),
                     semantic: RawSemanticType::Payload {
                         language: RawPayloadLanguage::Bash,
@@ -1339,6 +1391,7 @@ mod tests {
                     flags: vec!["--rcfile".to_string()],
                 },
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "startup_config".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Config,
@@ -1454,6 +1507,7 @@ mod tests {
                 selector: RawSelectorExpr::HasPositionalAt { index: 1 },
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "destination".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Write,
@@ -1485,6 +1539,7 @@ mod tests {
                     flags: vec!["--context".to_string()],
                 },
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "security_context".to_string(),
                     semantic: RawSemanticType::PlainValue,
                     binding: RawBindingSpec::FollowingMatchedFlag {
@@ -1535,6 +1590,7 @@ mod tests {
                 selector: RawSelectorExpr::HasPositionalAt { index: 0 },
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "target".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Write,
@@ -1566,6 +1622,7 @@ mod tests {
                     flags: vec!["-c".to_string(), "--compatibility".to_string()],
                 },
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "compatibility_mode".to_string(),
                     semantic: RawSemanticType::PlainValue,
                     binding: RawBindingSpec::FollowingMatchedFlag {
@@ -1616,6 +1673,7 @@ mod tests {
                 selector: RawSelectorExpr::HasPositionalAt { index: 2 },
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "target".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Write,
@@ -1659,6 +1717,7 @@ mod tests {
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
                 parameters: vec![
                     RawParameter {
+                        value_projection: None,
                         name: "mode".to_string(),
                         semantic: RawSemanticType::PlainValue,
                         binding: RawBindingSpec::NextPositional,
@@ -1667,6 +1726,7 @@ mod tests {
                         extensions: BTreeMap::new(),
                     },
                     RawParameter {
+                        value_projection: None,
                         name: "path_targets".to_string(),
                         semantic: RawSemanticType::Path {
                             role: RawPathRole::MetadataMutation,
@@ -1776,6 +1836,7 @@ mod tests {
                 },
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
                 parameters: vec![RawParameter {
+                    value_projection: None,
                     name: "require_target".to_string(),
                     semantic: RawSemanticType::InProcessCodeLoad {
                         load_kind: RawInProcessCodeLoadKind::Unknown,

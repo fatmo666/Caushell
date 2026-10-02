@@ -3,10 +3,11 @@ use super::host_target_catalog::{
 };
 use super::metadata_mutation_classifier::{MetadataMutationKind, classify_metadata_mutation};
 use super::resolved_sink::{
-    ResolvedHostRiskSemanticClass, ResolvedHostRiskSink, each_resolved_host_risk_sink,
+    ResolvedHostRiskSemanticClass, ResolvedHostRiskSink, bound_argument_operands_for_slot,
+    each_resolved_host_risk_sink,
 };
 use caushell_profile::{
-    BoundInvocation, BoundValue, CatastrophicSemanticClass, Effect, EffectKind, EffectTarget,
+    BoundInvocation, CatastrophicSemanticClass, Effect, EffectKind, EffectTarget,
     HostRiskSemanticClass, ResolvedInvocationArtifact, SessionBindings, ShellParameterReference,
     exact_scalar_shell_parameter_value, exact_shell_parameter_reference,
     materialize_exact_shell_parameter_reference_fields,
@@ -266,6 +267,7 @@ struct OwnedHostTargetOperand {
     text: String,
     quoted: bool,
     node_kind: String,
+    literal_argv_data: bool,
 }
 
 impl OwnedHostTargetOperand {
@@ -274,6 +276,7 @@ impl OwnedHostTargetOperand {
             text: operand.text.to_string(),
             quoted: operand.quoted,
             node_kind: operand.node_kind.to_string(),
+            literal_argv_data: operand.literal_argv_data,
         }
     }
 
@@ -282,6 +285,7 @@ impl OwnedHostTargetOperand {
             text: self.text.as_str(),
             quoted: self.quoted,
             node_kind: self.node_kind.as_str(),
+            literal_argv_data: self.literal_argv_data,
         }
     }
 }
@@ -297,6 +301,10 @@ fn materialized_host_target_operands(
             OwnedHostTargetOperand::from_borrowed(operand),
         );
 
+        if operand.literal_argv_data {
+            continue;
+        }
+
         if let Some(text) = materialize_simple_shell_path_word(operand.text, bindings) {
             push_unique_operand(
                 &mut materialized,
@@ -304,6 +312,7 @@ fn materialized_host_target_operands(
                     text,
                     quoted: false,
                     node_kind: "word".to_string(),
+                    literal_argv_data: false,
                 },
             );
         }
@@ -324,6 +333,7 @@ fn materialized_host_target_operands(
                             text: field.text,
                             quoted: false,
                             node_kind: "word".to_string(),
+                            literal_argv_data: false,
                         },
                     );
                 }
@@ -796,31 +806,6 @@ fn bound_argument_texts_for_slot<'a>(bound: &'a BoundInvocation, slot_name: &str
     bound_argument_operands_for_slot(bound, slot_name)
         .into_iter()
         .map(|operand| operand.text)
-        .collect()
-}
-
-fn bound_argument_operands_for_slot<'a>(
-    bound: &'a BoundInvocation,
-    slot_name: &str,
-) -> Vec<HostTargetOperand<'a>> {
-    bound
-        .bound_parameters
-        .iter()
-        .filter(|parameter| parameter.name.as_str() == slot_name)
-        .flat_map(|parameter| parameter.values.iter())
-        .filter_map(|value| match value {
-            BoundValue::Argument {
-                text,
-                quoted,
-                node_kind,
-                ..
-            } => Some(HostTargetOperand {
-                text: text.as_str(),
-                quoted: *quoted,
-                node_kind: node_kind.as_str(),
-            }),
-            BoundValue::ImplicitInput { .. } => None,
-        })
         .collect()
 }
 

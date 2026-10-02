@@ -3,8 +3,9 @@ use caushell_parse::{ParsedCommandArtifact, RedirectionFact, RedirectionKind, So
 use caushell_profile::{
     BoundArgumentMaterialization, BoundInvocation, BoundParameter, BoundValue, DerivedPathSource,
     DerivedPathTarget, Effect, EffectKind, EffectTarget, MutationScopeTarget, PathPurpose,
-    PathRole, ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SemanticType, SlotName,
-    StructuredValueContext, ToolConventionPathTarget, ValueMaterialization, parse_owner_group_spec,
+    PathRole, ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SemanticType,
+    SemanticValueRef, SemanticValueResolution, SlotName, StructuredValueContext,
+    ToolConventionPathTarget, ValueMaterialization, parse_owner_group_spec,
 };
 use caushell_types::{
     DerivedPathBasis, DerivedPathRule, DerivedPathUnresolvedReason, InProcessCodeLoadKind,
@@ -132,6 +133,162 @@ fn lexical_path_from_argv(text: &str, cwd: &str) -> String {
     }
 }
 
+/// Projected values are argv data, not shell source. Resolve them lexically;
+/// the original-value branch retains the existing resolution and provenance.
+fn semantic_path_resolution(
+    value: SemanticValueRef<'_>,
+    resolved: Option<&ResolvedInvocationArtifact>,
+    cwd: &str,
+    home: Option<&str>,
+) -> (PathResolution, bool) {
+    match value {
+        SemanticValueRef::Projected { source, value } => match &value.resolution {
+            SemanticValueResolution::Known(text) => (
+                PathResolution::Concrete {
+                    path: lexical_path_from_argv(text, cwd),
+                },
+                !text.starts_with('/'),
+            ),
+            SemanticValueResolution::Unknown(reason) => (
+                PathResolution::UnsupportedDynamicText {
+                    text: format!("unresolved value projection ({reason:?}) from {source:?}"),
+                },
+                true,
+            ),
+        },
+        SemanticValueRef::Original(BoundValue::Argument {
+            text,
+            quoted,
+            node_kind,
+            span,
+            materialization,
+            ..
+        }) => {
+            let projection_materialization =
+                resolved.and_then(|resolved| arg_materialization_for_span(resolved, span));
+            let resolution = if resolved.is_some() {
+                resolve_bound_path_resolution(
+                    text,
+                    *quoted,
+                    node_kind,
+                    cwd,
+                    home,
+                    materialization,
+                    projection_materialization,
+                )
+            } else {
+                resolve_path_resolution(text, *quoted, node_kind, cwd, home, None)
+            };
+            (
+                resolution,
+                bound_path_operand_depends_on_cwd(
+                    text,
+                    *quoted,
+                    node_kind,
+                    materialization,
+                    projection_materialization,
+                ),
+            )
+        }
+        SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain }) => (
+            runtime_input_path_resolution(source, domain.as_ref(), cwd),
+            runtime_input_path_depends_on_cwd(domain.as_ref()),
+        ),
+    }
+}
+
+fn semantic_value_text(value: SemanticValueRef<'_>) -> &str {
+    match value {
+        SemanticValueRef::Projected { value, .. } => match &value.resolution {
+            SemanticValueResolution::Known(text) => text,
+            SemanticValueResolution::Unknown(_) => "",
+        },
+        SemanticValueRef::Original(BoundValue::Argument { text, .. }) => text,
+        SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => "",
+    }
+}
+
+fn path_target_is_inapplicable(invocation: &BoundInvocation, target: &EffectTarget) -> bool {
+    let slot_is_inapplicable = |slot: &SlotName| {
+        bound_parameter(invocation, slot.as_str())
+            .is_some_and(BoundParameter::semantic_values_are_inapplicable)
+    };
+    match target {
+        EffectTarget::Slot(slot) => slot_is_inapplicable(slot),
+        EffectTarget::DerivedPath(target) => {
+            std::iter::once(&target.source).chain(target.root.iter()).any(|source| {
+                matches!(source, DerivedPathSource::Slot(slot) if slot_is_inapplicable(slot))
+            })
+        }
+        _ => false,
+    }
+}
+
+fn slot_has_value_projection(invocation: &BoundInvocation, slot: &SlotName) -> bool {
+    bound_parameter(invocation, slot.as_str()).is_some_and(|p| p.projected_values.is_some())
+}
+
+fn slot_depends_on_cwd(
+    invocation: &BoundInvocation,
+    slot: &SlotName,
+    resolved: &ResolvedInvocationArtifact,
+    cwd: &str,
+    home: Option<&str>,
+) -> bool {
+    let Some(parameter) = bound_parameter(invocation, slot.as_str()) else {
+        return true;
+    };
+    let mut values = parameter.semantic_values().peekable();
+    values.peek().is_none()
+        || values.any(|value| semantic_path_resolution(value, Some(resolved), cwd, home).1)
+}
+
+fn projected_derived_target_depends_on_cwd(
+    target: &DerivedPathTarget,
+    resolved: &ResolvedInvocationArtifact,
+    cwd: &str,
+    home: Option<&str>,
+) -> bool {
+    if !std::iter::once(&target.source).chain(target.root.iter()).any(|source| {
+        matches!(source, DerivedPathSource::Slot(slot) if slot_has_value_projection(&resolved.bound, slot))
+    }) {
+        return false;
+    }
+    match target.root.as_ref().unwrap_or(&target.source) {
+        DerivedPathSource::Slot(slot) => {
+            slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home)
+        }
+        DerivedPathSource::ToolConventionRoot { convention } => {
+            tool_convention_roots_for_convention(&resolved.bound, convention)
+                .any(|target| !target.path.starts_with('/'))
+        }
+    }
+}
+
+fn projected_mutation_scope_depends_on_cwd(
+    target: &MutationScopeTarget,
+    resolved: &ResolvedInvocationArtifact,
+    cwd: &str,
+    home: Option<&str>,
+) -> bool {
+    match target {
+        MutationScopeTarget::RepositoryWorktree { root, subtree, .. } => {
+            if !root
+                .iter()
+                .chain(subtree.iter())
+                .any(|slot| slot_has_value_projection(&resolved.bound, slot))
+            {
+                return false;
+            }
+            root.as_ref()
+                .is_none_or(|slot| slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home))
+                || subtree.as_ref().is_some_and(|slot| {
+                    slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home)
+                })
+        }
+    }
+}
+
 pub(crate) fn collect_effect_mutation_targets(
     record: ExecutionResolveRecordRef<'_>,
     cwd: &str,
@@ -165,54 +322,25 @@ pub(crate) fn collect_effect_mutation_targets(
             continue;
         }
 
+        // A proven nonmatching key means this path effect is inapplicable,
+        // unlike a missing/unresolved operand that still needs the fallback.
+        if path_target_is_inapplicable(&resolved.bound, &effect.target) {
+            continue;
+        }
+
         let start = targets.len();
         match &effect.target {
             EffectTarget::Slot(slot) => {
                 if let Some(parameter) = bound_parameter(&resolved.bound, slot.as_str()) {
-                    for value in &parameter.values {
-                        if let BoundValue::Argument {
-                            text,
-                            quoted,
-                            node_kind,
-                            span,
-                            materialization,
-                            ..
-                        } = value
-                        {
-                            let projection_materialization =
-                                arg_materialization_for_span(resolved, span);
-                            targets.push(MutationTargetCandidate {
-                                operation: effect.kind,
-                                slot_name: slot.as_str().to_string(),
-                                cwd_dependent: bound_path_operand_depends_on_cwd(
-                                    text,
-                                    *quoted,
-                                    node_kind,
-                                    materialization,
-                                    projection_materialization,
-                                ),
-                                resolution: resolve_bound_path_resolution(
-                                    text,
-                                    *quoted,
-                                    node_kind,
-                                    cwd,
-                                    home,
-                                    materialization,
-                                    projection_materialization,
-                                ),
-                            });
-                        } else if let BoundValue::ImplicitInput { source, domain } = value {
-                            targets.push(MutationTargetCandidate {
-                                operation: effect.kind,
-                                slot_name: slot.as_str().to_string(),
-                                cwd_dependent: runtime_input_path_depends_on_cwd(domain.as_ref()),
-                                resolution: runtime_input_path_resolution(
-                                    source,
-                                    domain.as_ref(),
-                                    cwd,
-                                ),
-                            });
-                        }
+                    for value in parameter.semantic_values() {
+                        let (resolution, cwd_dependent) =
+                            semantic_path_resolution(value, Some(resolved), cwd, home);
+                        targets.push(MutationTargetCandidate {
+                            operation: effect.kind,
+                            slot_name: slot.as_str().to_string(),
+                            cwd_dependent,
+                            resolution,
+                        });
                     }
                 }
             }
@@ -238,17 +366,19 @@ pub(crate) fn collect_effect_mutation_targets(
                     home,
                     &mut derived,
                 );
+                let cwd_dependent =
+                    projected_derived_target_depends_on_cwd(target, resolved, cwd, home);
                 targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
                     operation: effect.kind,
                     slot_name: path.slot_name,
                     resolution: path.resolution,
-                    cwd_dependent: false,
+                    cwd_dependent,
                 }));
             }
             EffectTarget::MutationScope(scope) => {
-                let (slot_name, scope) =
+                let (slot_name, scope_resolution) =
                     resolve_mutation_scope_target(scope, &resolved.bound, cwd, home);
-                let resolution = match scope {
+                let resolution = match scope_resolution {
                     MutationScopeResolution::RepositoryWorktree { root, scope, .. } => {
                         match scope {
                             RepositoryWorktreeScopeResolution::WholeWorktree => root,
@@ -260,7 +390,9 @@ pub(crate) fn collect_effect_mutation_targets(
                     operation: effect.kind,
                     slot_name,
                     resolution,
-                    cwd_dependent: false,
+                    cwd_dependent: projected_mutation_scope_depends_on_cwd(
+                        scope, resolved, cwd, home,
+                    ),
                 });
             }
             EffectTarget::ImplicitInput(_) | EffectTarget::Dispatch(_) | EffectTarget::None => {}
@@ -370,48 +502,13 @@ fn collect_resolved_record_path_facts(
     out: &mut Vec<PathFactCandidate>,
 ) {
     for parameter in &resolved.bound.bound_parameters {
-        for value in &parameter.values {
-            let (resolution, role, purpose) = match value {
-                BoundValue::Argument {
-                    text,
-                    quoted,
-                    node_kind,
-                    span,
-                    materialization,
-                    ..
-                } => {
-                    let Some((role, purpose)) =
-                        path_semantics_for_parameter_value(&parameter.semantic, text)
-                    else {
-                        continue;
-                    };
-                    (
-                        resolve_bound_path_resolution(
-                            text,
-                            *quoted,
-                            node_kind,
-                            cwd,
-                            home,
-                            materialization,
-                            arg_materialization_for_span(resolved, span),
-                        ),
-                        role,
-                        purpose,
-                    )
-                }
-                BoundValue::ImplicitInput { source, domain } => {
-                    let Some((role, purpose)) =
-                        path_semantics_for_parameter_value(&parameter.semantic, "")
-                    else {
-                        continue;
-                    };
-                    (
-                        runtime_input_path_resolution(source, domain.as_ref(), cwd),
-                        role,
-                        purpose,
-                    )
-                }
+        for value in parameter.semantic_values() {
+            let Some((role, purpose)) =
+                path_semantics_for_parameter_value(&parameter.semantic, semantic_value_text(value))
+            else {
+                continue;
             };
+            let (resolution, _) = semantic_path_resolution(value, Some(resolved), cwd, home);
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
@@ -449,38 +546,13 @@ fn collect_selection_error_path_facts(
     out: &mut Vec<PathFactCandidate>,
 ) {
     for parameter in &bound.bound_parameters {
-        for value in &parameter.values {
-            let (resolution, role, purpose) = match value {
-                BoundValue::Argument {
-                    text,
-                    quoted,
-                    node_kind,
-                    ..
-                } => {
-                    let Some((role, purpose)) =
-                        path_semantics_for_parameter_value(&parameter.semantic, text)
-                    else {
-                        continue;
-                    };
-                    (
-                        resolve_path_resolution(text, *quoted, node_kind, cwd, home, None),
-                        role,
-                        purpose,
-                    )
-                }
-                BoundValue::ImplicitInput { source, domain } => {
-                    let Some((role, purpose)) =
-                        path_semantics_for_parameter_value(&parameter.semantic, "")
-                    else {
-                        continue;
-                    };
-                    (
-                        runtime_input_path_resolution(source, domain.as_ref(), cwd),
-                        role,
-                        purpose,
-                    )
-                }
+        for value in parameter.semantic_values() {
+            let Some((role, purpose)) =
+                path_semantics_for_parameter_value(&parameter.semantic, semantic_value_text(value))
+            else {
+                continue;
             };
+            let (resolution, _) = semantic_path_resolution(value, None, cwd, home);
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
@@ -581,16 +653,9 @@ fn first_path_resolution_for_slot(
         .iter()
         .find(|parameter| parameter.name == *slot)?;
 
-    parameter.values.iter().find_map(|value| match value {
-        BoundValue::Argument {
-            text,
-            quoted,
-            node_kind,
-            ..
-        } => Some(resolve_path_resolution(
-            text, *quoted, node_kind, cwd, home, None,
-        )),
-        BoundValue::ImplicitInput { .. } => None,
+    parameter.semantic_values().find_map(|value| match value {
+        SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
+        _ => Some(semantic_path_resolution(value, None, cwd, home).0),
     })
 }
 
@@ -607,6 +672,10 @@ fn collect_effect_target_path_facts(
         let Some(role) = path_role_for_effect(effect.kind) else {
             continue;
         };
+
+        if path_target_is_inapplicable(invocation, &effect.target) {
+            continue;
+        }
 
         match &effect.target {
             EffectTarget::ToolConventionPath(target) => out.push(PathFactCandidate {
@@ -663,35 +732,31 @@ fn collect_derived_target_path_facts(
                 return;
             }
 
-            for value in &parameter.values {
-                let BoundValue::Argument {
-                    text,
-                    quoted,
-                    node_kind,
-                    span,
-                    ..
-                } = value
-                else {
+            for value in parameter.semantic_values() {
+                let Some(child_resolution) = derive_semantic_slot_path_resolution(
+                    parameter,
+                    value,
+                    resolved,
+                    cwd,
+                    home,
+                    source_slot_name.as_str(),
+                    &target.rule,
+                ) else {
                     continue;
                 };
 
-                let materialization =
-                    resolved.and_then(|resolved| arg_materialization_for_span(resolved, span));
-                let child_resolution = derive_slot_target_path_resolution(
-                    parameter,
-                    text,
-                    *quoted,
-                    node_kind,
-                    cwd,
-                    home,
-                    materialization,
-                    source_slot_name.as_str(),
-                    &target.rule,
-                );
-
                 for root_path in &root_paths {
-                    let resolution =
-                        compose_derived_path_under_root(&child_resolution, root_path.as_str());
+                    let resolution = match root_path.concrete_path() {
+                        Some(root) => compose_derived_path_under_root(&child_resolution, root),
+                        // A projected unknown root must not erase the derived
+                        // effect. Keep its uncertainty in the graph and guard.
+                        None => PathResolution::UnsupportedDynamicText {
+                            text: format!(
+                                "derived target {:?} from {child_resolution:?} has unresolved root {root_path:?}",
+                                target.rule
+                            ),
+                        },
+                    };
 
                     out.push(PathFactCandidate {
                         source_node_id: record.source_node_id().clone(),
@@ -711,31 +776,18 @@ fn collect_derived_target_path_facts(
                 return;
             };
 
-            for value in &parameter.values {
-                let BoundValue::Argument {
-                    text,
-                    quoted,
-                    node_kind,
-                    span,
-                    ..
-                } = value
-                else {
-                    continue;
-                };
-
-                let materialization =
-                    resolved.and_then(|resolved| arg_materialization_for_span(resolved, span));
-                let resolution = derive_slot_target_path_resolution(
+            for value in parameter.semantic_values() {
+                let Some(resolution) = derive_semantic_slot_path_resolution(
                     parameter,
-                    text,
-                    *quoted,
-                    node_kind,
+                    value,
+                    resolved,
                     cwd,
                     home,
-                    materialization,
                     source_slot_name.as_str(),
                     &target.rule,
-                );
+                ) else {
+                    continue;
+                };
 
                 out.push(PathFactCandidate {
                     source_node_id: record.source_node_id().clone(),
@@ -799,7 +851,7 @@ fn resolve_derived_root_paths(
     root_source: &DerivedPathSource,
     cwd: &str,
     home: Option<&str>,
-) -> Vec<String> {
+) -> Vec<PathResolution> {
     match root_source {
         DerivedPathSource::Slot(slot_name) => {
             let Some(parameter) = bound_parameter(invocation, slot_name.as_str()) else {
@@ -807,29 +859,28 @@ fn resolve_derived_root_paths(
             };
 
             parameter
-                .values
-                .iter()
+                .semantic_values()
                 .filter_map(|value| match value {
-                    BoundValue::Argument {
+                    SemanticValueRef::Projected { .. } => {
+                        Some(semantic_path_resolution(value, None, cwd, home).0)
+                    }
+                    SemanticValueRef::Original(BoundValue::Argument {
                         text,
                         quoted,
                         node_kind,
                         ..
-                    } => resolve_path_resolution(text, *quoted, node_kind, cwd, home, None)
-                        .concrete_path()
-                        .map(str::to_string),
-                    BoundValue::ImplicitInput { .. } => None,
+                    }) => {
+                        let resolution =
+                            resolve_path_resolution(text, *quoted, node_kind, cwd, home, None);
+                        resolution.concrete_path().is_some().then_some(resolution)
+                    }
+                    SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
                 })
                 .collect()
         }
         DerivedPathSource::ToolConventionRoot { convention } => {
             tool_convention_roots_for_convention(invocation, convention)
-                .map(|target| {
-                    resolve_tool_convention_path(target, cwd)
-                        .concrete_path()
-                        .expect("tool convention targets always resolve to a concrete path")
-                        .to_string()
-                })
+                .map(|target| resolve_tool_convention_path(target, cwd))
                 .collect()
         }
     }
@@ -876,6 +927,54 @@ fn looks_like_explicit_path_operand(text: &str) -> bool {
         || text.starts_with("./")
         || text.starts_with("../")
         || text.starts_with('/')
+}
+
+fn derive_semantic_slot_path_resolution(
+    parameter: &BoundParameter,
+    value: SemanticValueRef<'_>,
+    resolved: Option<&ResolvedInvocationArtifact>,
+    cwd: &str,
+    home: Option<&str>,
+    slot_name: &str,
+    rule: &DerivedPathRule,
+) -> Option<PathResolution> {
+    match value {
+        SemanticValueRef::Original(BoundValue::Argument {
+            text,
+            quoted,
+            node_kind,
+            span,
+            ..
+        }) => Some(derive_slot_target_path_resolution(
+            parameter,
+            text,
+            *quoted,
+            node_kind,
+            cwd,
+            home,
+            resolved.and_then(|resolved| arg_materialization_for_span(resolved, span)),
+            slot_name,
+            rule,
+        )),
+        SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
+        SemanticValueRef::Projected { source, .. } => {
+            let source_resolution = semantic_path_resolution(value, resolved, cwd, home).0;
+            let raw = match source {
+                BoundValue::Argument { text, .. } => text.clone(),
+                BoundValue::ImplicitInput { .. } => format!("{source:?}"),
+            };
+            let basis = DerivedPathBasis::PathOperand {
+                raw,
+                resolved_input_path: source_resolution.concrete_path().map(str::to_string),
+                slot_name: slot_name.to_string(),
+            };
+            Some(derive_path_resolution_from_concrete_source(
+                source_resolution,
+                basis,
+                rule,
+            ))
+        }
+    }
 }
 
 fn derive_slot_target_path_resolution(

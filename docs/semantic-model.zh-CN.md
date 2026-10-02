@@ -60,6 +60,38 @@ bash ./setup.sh
 
 因此，`tee` 写入的目标和 `bash` 执行的脚本都指向 `./setup.sh`。这个相对路径会在会话图扩展阶段结合当前目录继续解析。
 
+### 参数值投影
+
+当操作数除了路径还包含其他信息时，路径参数可以声明 `value_projection`。绑定结果仍保留完整参数、源码位置、绑定来源和物化来源信息，路径分析使用单独的语义视图；命令分派和实际 argv 不会因此被改写。
+
+```yaml
+- name: test_paths
+  semantic: {kind: path, role: read, purpose: generic_operand}
+  binding: {kind: remaining_positionals}
+  cardinality: optional_many
+  value_projection:
+    kind: prefix_before
+    delimiter: "::"
+    if_absent: original
+
+- name: cache_path
+  semantic: {kind: path, role: write, purpose: generic_operand}
+  binding: {kind: following_flag, flag: "--override", operand_mode: next_arg}
+  cardinality: optional_many
+  value_projection:
+    kind: key_value
+    separator: "="
+    key: cache_dir
+```
+
+`prefix_before` 提取第一个分隔符前面的文本：`tests/test_api.py::test_login` 在路径分析中表示 `tests/test_api.py`。没有分隔符时，`if_absent: original`（默认值）保留整个操作数，`if_absent: unknown` 则保留未知。`key_value` 完整匹配第一个分隔符前面的键：`cache_dir=/etc/pytest-cache` 提供路径 `/etc/pytest-cache`，`console_output_style=classic` 不提供缓存路径；值中后续的 `=` 不会被截掉。
+
+未知与不适用严格区分。投影后为空、格式不完整、值无法解析、或来自隐式运行时操作数时，都保留未知；已确认不匹配的键不生成路径，也不触发“目标未解析”的修改兜底。未引用的动态展开可能产生更多 argv，所以固定前缀不足以证明路径完整或参数不适用。对于完整双引号包裹的参数，已经完成的静态分隔符可以确定路径前缀或不匹配的键，即使后缀仍未知。已物化的精确值和解码后的字面数据不会二次展开；整个操作数的运行时路径域不会直接继承给其子串。
+
+路径事实、文件内容来源关系、修改目标、派生路径及灾难性目标判断使用同一语义视图。投影根目录未知时，派生效果仍保留未知，不会消失。审批或拒绝由已有护栏决定，不新增风险 pass 或命令名特例。多个绑定操作数分别投影，不擅自采用某个命令的重复选项优先级规则。
+
+此声明目前只用于 `cwd_anchor` 以外的文件系统 `path` 语义，不用于命令引用或 payload。不声明时沿用已有视图，不分配投影值。上述示例展示通用声明，不代表完整 pytest 支持：声明本身不会自动补充任何内置 Profile，配置读取及根目录确定仍是独立问题。
+
 ## 会话图扩展
 
 每个会话维护一张持续更新的执行图。分析当前 action 时，Caushell 先把新产生的命令、状态和来源关系叠加到已有图上，形成本次分析使用的视图。

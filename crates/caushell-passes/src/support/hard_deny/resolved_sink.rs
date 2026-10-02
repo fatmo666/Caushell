@@ -1,6 +1,6 @@
 use caushell_profile::{
     BoundInvocation, BoundValue, CatastrophicSemanticClass, EffectTarget, HostRiskSemanticClass,
-    ResolvedInvocationArtifact,
+    ResolvedInvocationArtifact, SemanticValueRef, SemanticValueResolution,
 };
 
 use super::host_target_catalog::HostTargetOperand;
@@ -72,13 +72,23 @@ fn bound_runtime_targets_for_slot(
         .bound_parameters
         .iter()
         .filter(|parameter| parameter.name.as_str() == slot_name)
-        .flat_map(|parameter| parameter.values.iter())
+        .flat_map(|parameter| parameter.semantic_values())
         .filter_map(|value| match value {
-            BoundValue::Argument { .. } => None,
-            BoundValue::ImplicitInput { source, domain } => Some(ResolvedRuntimeHostTarget {
+            SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain }) => {
+                Some(ResolvedRuntimeHostTarget {
+                    source: source.clone(),
+                    domain: domain.clone(),
+                })
+            }
+            SemanticValueRef::Projected {
+                source: BoundValue::ImplicitInput { source, .. },
+                ..
+            } => Some(ResolvedRuntimeHostTarget {
                 source: source.clone(),
-                domain: domain.clone(),
+                // Bounds on a whole operand do not bound a substring.
+                domain: None,
             }),
+            _ => None,
         })
         .collect()
 }
@@ -128,7 +138,7 @@ fn effect_required_modifiers(effect: &caushell_profile::Effect) -> &[caushell_pr
     }
 }
 
-fn bound_argument_operands_for_slot<'a>(
+pub(crate) fn bound_argument_operands_for_slot<'a>(
     bound: &'a BoundInvocation,
     slot_name: &str,
 ) -> Vec<HostTargetOperand<'a>> {
@@ -136,19 +146,26 @@ fn bound_argument_operands_for_slot<'a>(
         .bound_parameters
         .iter()
         .filter(|parameter| parameter.name.as_str() == slot_name)
-        .flat_map(|parameter| parameter.values.iter())
+        .flat_map(|parameter| parameter.semantic_values())
         .filter_map(|value| match value {
-            BoundValue::Argument {
+            SemanticValueRef::Original(BoundValue::Argument {
                 text,
                 quoted,
                 node_kind,
                 ..
-            } => Some(HostTargetOperand {
+            }) => Some(HostTargetOperand {
                 text: text.as_str(),
                 quoted: *quoted,
                 node_kind: node_kind.as_str(),
+                literal_argv_data: false,
             }),
-            BoundValue::ImplicitInput { .. } => None,
+            SemanticValueRef::Projected { value, .. } => match &value.resolution {
+                SemanticValueResolution::Known(text) => {
+                    Some(HostTargetOperand::literal_argv_data(text))
+                }
+                SemanticValueResolution::Unknown(_) => None,
+            },
+            SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
         })
         .collect()
 }

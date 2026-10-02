@@ -576,6 +576,7 @@ fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &Proje
                 domain: argument.runtime_argument_domain.clone(),
             };
         }
+        crate::refresh_parameter_semantic_values(parameter);
     }
 }
 
@@ -1581,6 +1582,8 @@ fn bind_parameter_target(
         name: target.parameter.name.clone(),
         semantic: target.parameter.semantic.clone(),
         values,
+        value_projection: target.parameter.value_projection.clone(),
+        projected_values: None,
     })
 }
 
