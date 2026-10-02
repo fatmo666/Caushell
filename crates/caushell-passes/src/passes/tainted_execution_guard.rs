@@ -336,6 +336,7 @@ fn payload_input_scope(effects: &[caushell_profile::Effect]) -> PayloadInputScop
                 scope.slot_names.insert(slot_name.as_str().to_string());
             }
             EffectTarget::ToolConventionPath(_)
+            | EffectTarget::ConfiguredPath(_)
             | EffectTarget::DerivedPath(_)
             | EffectTarget::MutationScope(_) => {}
             EffectTarget::ImplicitInput(source) => {

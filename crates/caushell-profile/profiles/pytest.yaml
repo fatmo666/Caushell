@@ -1,0 +1,215 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pytest, aliases: [py.test]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+
+# Builtin pytest CLI semantics, checked against pytest 9.0.2. No config reads,
+# Python interpretation, plugin simulation, or implicit module dispatch.
+forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    stream_contract: &stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: tests
+    selector:
+      kind: all
+      items:
+        - &running {kind: not, item: *information}
+        - &paths {kind: not, item: {kind: has_modifier, modifier: pyargs}}
+        - &cache_enabled
+          kind: not
+          item: &cache_disabled
+            kind: has_modifier_parameter_matching
+            modifier: plugins
+            parameter: plugins
+            matcher: {kind: literal, value: 'no:cacheprovider'}
+        - &not_cache_clear {kind: not, item: {kind: has_modifier, modifier: cache_clear}}
+        - &not_cache_show {kind: not, item: {kind: has_modifier, modifier: cache_show}}
+    parameters: &test_parameters
+      - name: tests
+        semantic: {kind: path, role: read, purpose: in_process_code}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_projection: {kind: prefix_before, delimiter: '::'}
+    effects:
+      - &read_tests {kind: read_path, target: {kind: slot, name: tests}}
+      - &load_tests {kind: load_in_process_code, target: {kind: slot, name: tests}}
+      - &load_config {kind: load_config, target: {kind: none}}
+      - &log_write
+        kind: write_path
+        target:
+          kind: configured_path
+          sources:
+            - {slot: log_file, projection: {kind: identity}}
+            - {slot: overrides, projection: {kind: key_value, separator: '=', key: log_file}}
+          missing: skip
+      - &cache_write
+        kind: write_path
+        target: &cache_target
+          kind: configured_path
+          sources:
+            - {slot: overrides, projection: {kind: key_value, separator: '=', key: cache_dir}}
+          relative_to: &root_anchor {slot: rootdir, expand_environment: true, fallback_parent_slot: config_file}
+          expand_environment: true
+          expand_user: true
+          missing: incidental_cache
+          purpose: incidental_cache
+  - id: tests_clear_cache
+    selector: {kind: all, items: [*running, *paths, *cache_enabled, {kind: has_modifier, modifier: cache_clear}, *not_cache_show]}
+    parameters: *test_parameters
+    effects:
+      - *read_tests
+      - *load_tests
+      - *load_config
+      - *log_write
+      - *cache_write
+      - &clear_cache
+        kind: delete_path
+        target:
+          kind: configured_path
+          sources: [{slot: overrides, projection: {kind: key_value, separator: '=', key: cache_dir}}]
+          relative_to: *root_anchor
+          expand_environment: true
+          expand_user: true
+          purpose: incidental_cache
+          missing: unknown
+  - id: tests_without_cache
+    selector: {kind: all, items: [*running, *paths, *cache_disabled]}
+    parameters: *test_parameters
+    effects: [*read_tests, *load_tests, *load_config, *log_write]
+  - id: module_tests
+    selector:
+      kind: all
+      items: [*running, {kind: has_modifier, modifier: pyargs}, *cache_enabled, *not_cache_clear, *not_cache_show]
+    parameters: &module_parameters
+      - name: modules
+        semantic: {kind: in_process_code_load, load_kind: module_name}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    effects:
+      - &load_modules {kind: load_in_process_code, target: {kind: slot, name: modules}}
+      - *load_config
+      - *log_write
+      - *cache_write
+  - id: module_tests_clear_cache
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: pyargs}, *cache_enabled, {kind: has_modifier, modifier: cache_clear}, *not_cache_show]}
+    parameters: *module_parameters
+    effects: [*load_modules, *load_config, *log_write, *cache_write, *clear_cache]
+  - id: show_cache
+    selector: {kind: all, items: [*running, *cache_enabled, {kind: has_modifier, modifier: cache_show}, *not_cache_clear]}
+    effects:
+      - *load_config
+      - *log_write
+      - &read_cache
+        kind: read_path
+        target:
+          kind: configured_path
+          sources: [{slot: overrides, projection: {kind: key_value, separator: '=', key: cache_dir}}]
+          relative_to: *root_anchor
+          expand_environment: true
+          expand_user: true
+          purpose: incidental_cache
+          missing: unknown
+  - id: show_clear_cache
+    selector: {kind: all, items: [*running, *cache_enabled, {kind: has_modifier, modifier: cache_show}, {kind: has_modifier, modifier: cache_clear}]}
+    effects: [*load_config, *log_write, *read_cache, *clear_cache]
+  - id: module_tests_without_cache
+    selector:
+      kind: all
+      items: [*running, {kind: has_modifier, modifier: pyargs}, *cache_disabled]
+    parameters: *module_parameters
+    effects: [*load_modules, *load_config, *log_write]
+
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: ['-h', '--help', '-V', '--version']}
+  - id: pyargs
+    matcher: {kind: any_flag, flags: ['--pyargs']}
+  - id: switches
+    matcher:
+      kind: any_flag
+      flags: ['-x', '--exitfirst', '-s', '-v', '--verbose', '-q', '--quiet', '--disable-warnings', '--disable-pytest-warnings', '-l', '--showlocals', '--no-showlocals', '--full-trace', '--collect-only', '--co', '--keep-duplicates', '--continue-on-collection-errors', '--noconftest', '--trace-config', '--strict', '--strict-config', '--strict-markers', '--doctest-modules', '--doctest-ignore-import-errors', '--doctest-continue-on-failure', '--pdb', '--trace', '--runxfail', '--setup-only', '--setup-show', '--setup-plan', '--no-header', '--no-summary', '--no-fold-skipped', '--no-fold-skipped-reasons', '--force-short-summary', '--lf', '--last-failed', '--ff', '--failed-first', '--nf', '--new-first', '--disable-plugin-autoload', '--fixtures', '--funcargs', '--fixtures-per-test']
+  - id: value_options
+    matcher:
+      kind: any_flag
+      flags: ['-k', '-m', '--maxfail', '--capture', '--pdbcls', '-r', '--tb', '--color', '--code-highlight', '--show-capture', '--verbosity', '--assert', '--import-mode', '--doctest-glob', '--lfnf', '--last-failed-no-failures', '--junitprefix', '--junit-prefix', '--log-level', '--log-format', '--log-date-format', '--log-cli-level', '--log-cli-format', '--log-cli-date-format', '--log-file-mode', '--log-file-level', '--log-file-format', '--log-file-date-format', '--log-auto-indent']
+    parameters:
+      - {name: option_values, semantic: &plain {kind: plain_value}, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+  - id: rootdir
+    matcher: {kind: any_flag, flags: ['--rootdir']}
+    parameters:
+      - {name: rootdir, semantic: *plain, binding: *following, cardinality: optional_many}
+  - id: config_file
+    matcher: {kind: any_flag, flags: ['-c', '--config-file']}
+    parameters:
+      - name: config_file
+        semantic: {kind: path, role: config, purpose: tool_config}
+        binding: *following
+        cardinality: optional_many
+        value_projection: {kind: identity}
+    effects: [{kind: load_config, target: {kind: slot, name: config_file}}]
+  - id: overrides
+    matcher: {kind: any_flag, flags: ['-o', '--override-ini']}
+    parameters:
+      - {name: overrides, semantic: *plain, binding: *following, cardinality: optional_many}
+    # Bind once. Separate typed views of these same argv values feed cache and
+    # log paths; one projected key must not consume another key's operand.
+  - id: plugins
+    matcher: {kind: any_flag, flags: ['-p']}
+    parameters:
+      - {name: plugins, semantic: {kind: in_process_code_load, load_kind: plugin_name}, binding: *following, cardinality: optional_many}
+    effects: [{kind: load_in_process_code, target: {kind: slot, name: plugins}}]
+  - id: input_paths
+    matcher: {kind: any_flag, flags: ['--ignore', '--ignore-glob', '--confcutdir', '--deselect']}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *following, cardinality: optional_many}
+  - id: junit
+    matcher: {kind: any_flag, flags: ['--junitxml', '--junit-xml']}
+    parameters:
+      - {name: junit, semantic: *plain, binding: *following, cardinality: optional_many}
+    effects:
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources: [{slot: junit, projection: {kind: identity}}]
+          expand_environment: true
+          expand_user: true
+    constraints: &unless_information [{kind: mutually_exclusive_with, modifier: information}]
+  - id: logging
+    matcher: {kind: any_flag, flags: ['--log-file']}
+    parameters:
+      - {name: log_file, semantic: *plain, binding: *following, cardinality: optional_many}
+    constraints: *unless_information
+  - id: basetemp
+    matcher: {kind: any_flag, flags: ['--basetemp']}
+    parameters:
+      - {name: basetemp, semantic: *plain, binding: *following, cardinality: optional_many}
+    effects:
+      - kind: delete_path
+        target: &basetemp_target
+          kind: configured_path
+          sources: [{slot: basetemp, projection: {kind: identity}}]
+          missing: unknown
+      - {kind: write_path, target: *basetemp_target}
+    constraints: *unless_information
+  - id: cache_clear
+    matcher: {kind: any_flag, flags: ['--cache-clear']}
+    constraints: [{kind: mutually_exclusive_with, modifier: information}]
+  - id: cache_show
+    matcher: {kind: any_flag, flags: ['--cache-show']}
+    parameters:
+      - {name: cache_show_filter, semantic: *plain, binding: *following, cardinality: optional_many}
+  - id: debug
+    matcher: {kind: any_flag, flags: ['--debug']}
+    parameters:
+      - {name: debug_output, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: inline_only}, cardinality: optional_many}
+    effects:
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources: [{slot: debug_output, projection: {kind: identity}}]
+          default_value: pytestdebug.log
+    constraints: *unless_information
+
+extensions:
+  caushell.profile/scope: Builtin CLI output/cache semantics only. Undiscovered config and plugin/test code are recorded as loading boundaries, not interpreted. Default incidental cache writes are unknown but do not request outside-workspace approval; explicit destinations, cache clearing, reports, logs, shell redirections and other commands are not exempt. Python -m pytest remains a separate pending module-dispatch task.

@@ -154,6 +154,7 @@ fn execution_semantics_for_bound(
                 semantics = semantics.loading_tool_config();
             }
             Some(PathPurpose::StartupConfig)
+            | Some(PathPurpose::IncidentalCache)
             | Some(PathPurpose::GenericOperand)
             | Some(PathPurpose::InProcessCode)
             | Some(PathPurpose::ScriptSource)
@@ -217,6 +218,7 @@ fn config_purpose_for_effect_target(
                 _ => None,
             }),
         EffectTarget::ToolConventionPath(target) => target.purpose,
+        EffectTarget::ConfiguredPath(target) => target.purpose,
         EffectTarget::DerivedPath(target) => target.purpose,
         EffectTarget::MutationScope(_)
         | EffectTarget::ImplicitInput(_)
@@ -357,7 +359,10 @@ fn payload_mode_for_effect(
             == Some(PathPurpose::ScriptSource))
         .then_some(ExecutionPayloadMode::ScriptFile),
         EffectTarget::DerivedPath(target) => payload_mode_for_derived_path_target(target),
-        EffectTarget::MutationScope(_) | EffectTarget::Dispatch(_) | EffectTarget::None => None,
+        EffectTarget::ConfiguredPath(_)
+        | EffectTarget::MutationScope(_)
+        | EffectTarget::Dispatch(_)
+        | EffectTarget::None => None,
     }
 }
 

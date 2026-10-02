@@ -27,7 +27,7 @@ pub fn refresh_parameter_semantic_values(parameter: &mut BoundParameter) {
     );
 }
 
-fn project_value(
+pub fn project_value(
     projection: &ValueProjection,
     source: &BoundValue,
 ) -> Option<SemanticValueResolution> {
@@ -59,6 +59,14 @@ fn project_value(
         ));
     }
     let selected = match projection {
+        ValueProjection::Identity => {
+            if !complete {
+                return Some(SemanticValueResolution::Unknown(
+                    ProjectionUnknownReason::DynamicArgument,
+                ));
+            }
+            value.as_str()
+        }
         ValueProjection::PrefixBefore {
             delimiter,
             if_absent,

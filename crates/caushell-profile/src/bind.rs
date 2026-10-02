@@ -1499,6 +1499,7 @@ fn emit_effects(
 ) {
     for effect in effects {
         let should_emit = match &effect.target {
+            EffectTarget::ConfiguredPath(_) => true,
             EffectTarget::Slot(slot) => bound_slots.contains(slot),
             EffectTarget::ToolConventionPath(_) => true,
             EffectTarget::DerivedPath(target) => {

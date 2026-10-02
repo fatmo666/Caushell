@@ -187,6 +187,9 @@ pub fn resolve_invocation_with_bindings<'a>(
                     .bound_parameters
                     .iter()
                     .any(|p| p.value_projection.is_some())
+                    || bound.effects.iter().any(|effect| {
+                        matches!(effect.target, crate::EffectTarget::ConfiguredPath(_))
+                    })
                 {
                     attach_bound_argument_materialization(bound, &materialized_projection, bindings)
                 } else {

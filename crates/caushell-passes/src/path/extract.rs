@@ -15,6 +15,7 @@ use caushell_types::{
     ResolvedMutationScopeOperation, ResolvedPathPurpose, ResolvedPathRole,
 };
 
+use super::configured::resolve_configured_path;
 use super::normalize::{
     join_shell_path, normalize_shell_path, path_is_within_root, resolve_path_operand,
 };
@@ -58,6 +59,7 @@ pub(crate) struct MutationTargetCandidate {
     pub slot_name: String,
     pub resolution: PathResolution,
     pub cwd_dependent: bool,
+    pub implicit_incidental_cache: bool,
 }
 
 pub(crate) fn path_operand_depends_on_cwd(
@@ -330,12 +332,27 @@ pub(crate) fn collect_effect_mutation_targets(
 
         let start = targets.len();
         match &effect.target {
+            EffectTarget::ConfiguredPath(target) => {
+                if let Some(path) = resolve_configured_path(&resolved.bound, target, cwd, home) {
+                    targets.push(MutationTargetCandidate {
+                        operation: effect.kind,
+                        slot_name: format!("configured_path_{effect_index}"),
+                        resolution: path.resolution,
+                        cwd_dependent: path.cwd_dependent,
+                        implicit_incidental_cache: path.implicit_incidental_cache,
+                    });
+                }
+                // An absent optional configured output is inapplicable, not an
+                // unresolved mutation requiring the generic fallback.
+                continue;
+            }
             EffectTarget::Slot(slot) => {
                 if let Some(parameter) = bound_parameter(&resolved.bound, slot.as_str()) {
                     for value in parameter.semantic_values() {
                         let (resolution, cwd_dependent) =
                             semantic_path_resolution(value, Some(resolved), cwd, home);
                         targets.push(MutationTargetCandidate {
+                            implicit_incidental_cache: false,
                             operation: effect.kind,
                             slot_name: slot.as_str().to_string(),
                             cwd_dependent,
@@ -346,6 +363,7 @@ pub(crate) fn collect_effect_mutation_targets(
             }
             EffectTarget::ToolConventionPath(target) => {
                 targets.push(MutationTargetCandidate {
+                    implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name: tool_convention_slot_name(effect_index, &target.convention),
                     resolution: resolve_tool_convention_path(target, cwd),
@@ -369,6 +387,7 @@ pub(crate) fn collect_effect_mutation_targets(
                 let cwd_dependent =
                     projected_derived_target_depends_on_cwd(target, resolved, cwd, home);
                 targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
+                    implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name: path.slot_name,
                     resolution: path.resolution,
@@ -387,6 +406,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     }
                 };
                 targets.push(MutationTargetCandidate {
+                    implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name,
                     resolution,
@@ -400,6 +420,7 @@ pub(crate) fn collect_effect_mutation_targets(
 
         if targets.len() == start {
             targets.push(MutationTargetCandidate {
+                implicit_incidental_cache: false,
                 operation: effect.kind,
                 slot_name: format!("effect_{effect_index}"),
                 resolution: PathResolution::UnsupportedDynamicText {
@@ -669,7 +690,11 @@ fn collect_effect_target_path_facts(
     out: &mut Vec<PathFactCandidate>,
 ) {
     for (effect_index, effect) in invocation.effects.iter().enumerate() {
-        let Some(role) = path_role_for_effect(effect.kind) else {
+        let Some(role) = path_role_for_effect(effect.kind).or_else(|| {
+            (effect.kind == EffectKind::DeletePath
+                && matches!(effect.target, EffectTarget::ConfiguredPath(_)))
+            .then_some(PathRole::Target)
+        }) else {
             continue;
         };
 
@@ -678,6 +703,20 @@ fn collect_effect_target_path_facts(
         }
 
         match &effect.target {
+            EffectTarget::ConfiguredPath(target) => {
+                if let Some(path) = resolve_configured_path(invocation, target, cwd, home) {
+                    out.push(PathFactCandidate {
+                        source_node_id: record.source_node_id().clone(),
+                        command_index: record.command_index(),
+                        slot_name: format!("configured_path_{effect_index}"),
+                        normalized_command_name: normalized_command_name.to_string(),
+                        resolution: path.resolution,
+                        role,
+                        purpose: target.purpose,
+                        metadata_mutation: None,
+                    });
+                }
+            }
             EffectTarget::ToolConventionPath(target) => out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
                 command_index: record.command_index(),
@@ -1682,6 +1721,7 @@ pub(crate) fn resolved_path_purpose_for_profile_purpose(
     purpose: PathPurpose,
 ) -> ResolvedPathPurpose {
     match purpose {
+        PathPurpose::IncidentalCache => ResolvedPathPurpose::IncidentalCache,
         PathPurpose::GenericOperand => ResolvedPathPurpose::GenericOperand,
         PathPurpose::ScriptSource => ResolvedPathPurpose::ScriptSource,
         PathPurpose::InProcessCode => ResolvedPathPurpose::InProcessCode,
@@ -1924,6 +1964,7 @@ fn provenance_consume_kind_for_path_fact(
             Some(PathPurpose::ScriptSource) => ProvenanceConsumeKind::ScriptSource,
             Some(PathPurpose::InProcessCode) => ProvenanceConsumeKind::InProcessCodeSource,
             Some(PathPurpose::StartupConfig)
+            | Some(PathPurpose::IncidentalCache)
             | Some(PathPurpose::GenericOperand)
             | Some(PathPurpose::WorkingDirectory)
             | None => ProvenanceConsumeKind::StartupConfigSource,

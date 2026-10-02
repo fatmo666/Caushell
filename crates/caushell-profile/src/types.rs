@@ -257,6 +257,7 @@ pub enum PathRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathPurpose {
+    IncidentalCache,
     GenericOperand,
     ScriptSource,
     InProcessCode,
@@ -533,6 +534,7 @@ impl Parameter {
 /// A semantic view of an operand, never a replacement for execution argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueProjection {
+    Identity,
     PrefixBefore {
         delimiter: String,
         if_absent: ProjectionAbsentPolicy,
@@ -836,6 +838,7 @@ pub enum MutationScopeTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectTarget {
+    ConfiguredPath(ConfiguredPathTarget),
     Slot(SlotName),
     ToolConventionPath(ToolConventionPathTarget),
     DerivedPath(DerivedPathTarget),
@@ -843,6 +846,40 @@ pub enum EffectTarget {
     ImplicitInput(ImplicitInputSource),
     Dispatch(DispatchTarget),
     None,
+}
+
+/// Ordered sources use the first applicable slot, and its last applicable argv
+/// value. Raw arguments and their ownership/provenance remain unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredPathSource {
+    pub slot: SlotName,
+    pub projection: ValueProjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredPathAnchor {
+    pub slot: SlotName,
+    pub expand_environment: bool,
+    pub fallback_parent_slot: Option<SlotName>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfiguredPathMissing {
+    #[default]
+    Skip,
+    Unknown,
+    IncidentalCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredPathTarget {
+    pub sources: Vec<ConfiguredPathSource>,
+    pub relative_to: Option<ConfiguredPathAnchor>,
+    pub expand_environment: bool,
+    pub expand_user: bool,
+    pub missing: ConfiguredPathMissing,
+    pub default_value: Option<String>,
+    pub purpose: Option<PathPurpose>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

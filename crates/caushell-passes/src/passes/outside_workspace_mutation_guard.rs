@@ -53,6 +53,15 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                     home.as_deref(),
                 ));
                 for target in targets {
+                    // Only a declaratively identified implicit cache fallback
+                    // is exempt. Explicit, unknown argv paths and redirections
+                    // cannot acquire this exemption from their purpose alone.
+                    if target.operation == EffectKind::WritePath
+                        && target.implicit_incidental_cache
+                        && target.resolution.concrete_path().is_none()
+                    {
+                        continue;
+                    }
                     add_reason_for_target(
                         &mut reasons,
                         target.operation,
@@ -134,6 +143,7 @@ fn collect_redirection_mutation_targets(
             })
         })
         .map(|path| MutationTargetCandidate {
+            implicit_incidental_cache: false,
             operation: EffectKind::WritePath,
             slot_name: path.slot_name,
             resolution: path.resolution,

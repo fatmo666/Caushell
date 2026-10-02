@@ -60,6 +60,7 @@ pub enum NormalizeError {
     InvalidExtensionKey(String),
     InvalidOptionScope(String),
     InvalidValueProjection(String),
+    InvalidConfiguredPath(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -81,6 +82,11 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .transpose()?;
     let option_scope = normalize_option_scope(raw.option_scope);
     validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
+    validate_configured_path_references(&forms, &modifiers, &BTreeSet::new())?;
+    if let Some(tree) = &subcommands {
+        let names = declared_parameter_names(&forms, &modifiers, &BTreeSet::new());
+        validate_subcommand_configured_paths(&tree.roots, &names)?;
+    }
 
     Ok(CommandProfile {
         identity,
@@ -93,6 +99,71 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn declared_parameter_names(
+    forms: &[Form],
+    modifiers: &[Modifier],
+    inherited: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut names = inherited.clone();
+    names.extend(
+        forms
+            .iter()
+            .flat_map(|form| &form.parameters)
+            .chain(modifiers.iter().flat_map(|modifier| &modifier.parameters))
+            .map(|parameter| parameter.name.as_str().to_string()),
+    );
+    names
+}
+
+fn validate_configured_path_references(
+    forms: &[Form],
+    modifiers: &[Modifier],
+    inherited: &BTreeSet<String>,
+) -> Result<(), NormalizeError> {
+    // Validate declarations once at load time, not during each guard check.
+    let names = declared_parameter_names(forms, modifiers, inherited);
+    for effect in forms
+        .iter()
+        .flat_map(|form| &form.effects)
+        .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
+    {
+        let EffectTarget::ConfiguredPath(path) = &effect.target else {
+            continue;
+        };
+        let slots = path
+            .sources
+            .iter()
+            .map(|source| &source.slot)
+            .chain(path.relative_to.iter().map(|anchor| &anchor.slot))
+            .chain(
+                path.relative_to
+                    .iter()
+                    .filter_map(|anchor| anchor.fallback_parent_slot.as_ref()),
+            );
+        for slot in slots {
+            if !names.contains(slot.as_str()) {
+                return Err(NormalizeError::InvalidConfiguredPath(format!(
+                    "undeclared configured path slot: {}",
+                    slot.as_str()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_subcommand_configured_paths(
+    nodes: &[SubcommandNode],
+    inherited: &BTreeSet<String>,
+) -> Result<(), NormalizeError> {
+    for node in nodes {
+        validate_configured_path_references(&node.forms, &node.modifiers, inherited)?;
+        let names = declared_parameter_names(&node.forms, &node.modifiers, inherited);
+        validate_subcommand_configured_paths(&node.children, &names)?;
+    }
+    Ok(())
 }
 
 fn normalize_option_scope(raw: RawOptionScopePolicy) -> OptionScopePolicy {
@@ -477,6 +548,7 @@ fn normalize_value_projection(
         ProjectionAbsentPolicy, RawProjectionAbsentPolicy, RawValueProjection, ValueProjection,
     };
     match raw {
+        RawValueProjection::Identity => Ok(ValueProjection::Identity),
         RawValueProjection::PrefixBefore {
             delimiter,
             if_absent,
@@ -687,6 +759,7 @@ fn normalize_path_role(raw: RawPathRole) -> PathRole {
 
 fn normalize_path_purpose(raw: RawPathPurpose) -> PathPurpose {
     match raw {
+        RawPathPurpose::IncidentalCache => PathPurpose::IncidentalCache,
         RawPathPurpose::GenericOperand => PathPurpose::GenericOperand,
         RawPathPurpose::ScriptSource => PathPurpose::ScriptSource,
         RawPathPurpose::InProcessCode => PathPurpose::InProcessCode,
@@ -806,12 +879,37 @@ fn normalize_in_process_code_load_kind(
 
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
+    let target = normalize_effect_target(raw.target)?;
+    if let EffectTarget::ConfiguredPath(path) = &target {
+        if !matches!(
+            kind,
+            EffectKind::ReadPath
+                | EffectKind::WritePath
+                | EffectKind::DeletePath
+                | EffectKind::TargetPath
+                | EffectKind::LoadConfig
+        ) {
+            return Err(NormalizeError::InvalidConfiguredPath(
+                "configured_path requires a filesystem effect".into(),
+            ));
+        }
+        if path.missing == crate::ConfiguredPathMissing::IncidentalCache
+            && (kind != EffectKind::WritePath || path.purpose != Some(PathPurpose::IncidentalCache))
+        {
+            return Err(NormalizeError::InvalidConfiguredPath("incidental_cache fallback is only valid for cache writes, not deletion or explicit targets".into()));
+        }
+        if raw.catastrophic.is_some() || raw.host_risk.is_some() {
+            return Err(NormalizeError::InvalidConfiguredPath(
+                "host-risk annotations currently require their supported target kinds".into(),
+            ));
+        }
+    }
     let surface = normalize_effect_surface(kind, raw.surface)?;
     let repository_operation = normalize_repository_operation(kind, raw.repository_operation)?;
 
     Ok(Effect {
         kind,
-        target: normalize_effect_target(raw.target)?,
+        target,
         interactive_escape_surface: surface,
         catastrophic: normalize_catastrophic_effect_metadata(raw.catastrophic)?,
         host_risk: normalize_host_risk_effect_metadata(raw.host_risk)?,
@@ -1019,6 +1117,76 @@ fn normalize_interactive_escape_capability(
 
 fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, NormalizeError> {
     match raw {
+        RawEffectTarget::ConfiguredPath {
+            sources,
+            relative_to,
+            expand_environment,
+            expand_user,
+            missing,
+            default_value,
+            purpose,
+        } => {
+            if sources.is_empty() {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "sources must not be empty".into(),
+                ));
+            }
+            if let Some(value) = &default_value {
+                ensure_non_empty(value, "effects.target.default_value")?;
+                if missing != crate::RawConfiguredPathMissing::Skip {
+                    return Err(NormalizeError::InvalidConfiguredPath(
+                        "default_value cannot be combined with an unknown fallback".into(),
+                    ));
+                }
+            }
+            let sources = sources
+                .into_iter()
+                .map(|source| {
+                    ensure_non_empty(&source.slot, "effects.target.sources.slot")?;
+                    Ok(crate::ConfiguredPathSource {
+                        slot: SlotName::new(source.slot),
+                        projection: normalize_value_projection(source.projection)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, NormalizeError>>()?;
+            let relative_to = relative_to
+                .map(|anchor| {
+                    ensure_non_empty(&anchor.slot, "effects.target.relative_to.slot")?;
+                    let fallback_parent_slot = anchor
+                        .fallback_parent_slot
+                        .map(|name| {
+                            ensure_non_empty(
+                                &name,
+                                "effects.target.relative_to.fallback_parent_slot",
+                            )?;
+                            Ok(SlotName::new(name))
+                        })
+                        .transpose()?;
+                    Ok(crate::ConfiguredPathAnchor {
+                        slot: SlotName::new(anchor.slot),
+                        expand_environment: anchor.expand_environment,
+                        fallback_parent_slot,
+                    })
+                })
+                .transpose()?;
+            Ok(EffectTarget::ConfiguredPath(crate::ConfiguredPathTarget {
+                sources,
+                relative_to,
+                expand_environment,
+                expand_user,
+                default_value,
+                missing: match missing {
+                    crate::RawConfiguredPathMissing::Skip => crate::ConfiguredPathMissing::Skip,
+                    crate::RawConfiguredPathMissing::Unknown => {
+                        crate::ConfiguredPathMissing::Unknown
+                    }
+                    crate::RawConfiguredPathMissing::IncidentalCache => {
+                        crate::ConfiguredPathMissing::IncidentalCache
+                    }
+                },
+                purpose: purpose.map(normalize_path_purpose),
+            }))
+        }
         RawEffectTarget::Slot { name } => {
             ensure_non_empty(&name, "effects.target.name")?;
             Ok(EffectTarget::Slot(SlotName::new(name)))

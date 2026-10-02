@@ -7,6 +7,10 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "pytest",
+        content: include_str!("../profiles/pytest.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "nvidia-smi",
         content: include_str!("../profiles/nvidia-smi.yaml"),
     },

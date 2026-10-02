@@ -90,7 +90,39 @@ Unknown and inapplicable are distinct. Empty projected paths, malformed keyed op
 
 Path facts, path-content provenance, mutation targets, derived paths and catastrophic target classification consume the same semantic view. An unknown projected root remains unknown rather than erasing a derived effect. Existing guards decide approval or denial; projection adds no risk pass or command-name special case. Each bound operand is projected independently, without imposing a command-specific repeated-option precedence rule.
 
-The declaration currently supports filesystem `path` semantics except `cwd_anchor`, not command references or payloads. Omitting it preserves the existing identity view without allocating projected values. These examples demonstrate the reusable declaration, not complete pytest support: no built-in Profile is activated or extended by this declaration alone, and configuration/root-directory discovery remains separate.
+The declaration currently supports filesystem `path` semantics except `cwd_anchor`, not command references or payloads. Omitting it preserves the existing identity view without allocating projected values. Projection alone does not activate a Profile or discover configuration. The built-in pytest Profile combines projections with the configured-path declaration below.
+
+### Configured paths and incidental cache writes
+
+An effect may declare `configured_path` when its destination comes from multiple options or keyed configuration overrides. Sources are checked in declaration order; the first applicable source wins, and its last applicable argv value wins within that source. An explicit unknown value does not fall back to a lower-priority source or an implicit default. Raw operands and their ownership and materialization metadata remain unchanged.
+
+```yaml
+kind: write_path
+target:
+  kind: configured_path
+  sources:
+    - slot: overrides
+      projection: {kind: key_value, separator: "=", key: cache_dir}
+  relative_to:
+    slot: rootdir
+    expand_environment: true
+    fallback_parent_slot: config_file
+  expand_environment: true
+  expand_user: true
+  missing: incidental_cache
+  purpose: incidental_cache
+```
+
+Absolute destinations do not depend on the anchor. Relative destinations use the declared anchor, or the parent of the fallback config-file operand if the primary anchor is absent. An unknown primary anchor is not treated as absent. Without a declared anchor, relative paths use cwd; a required but unavailable anchor remains unknown. Tool-level environment expansion is opt-in and unresolved environment references remain unknown instead of consulting the guard's environment. Home expansion uses the supplied home and does not look up named users.
+
+`missing: skip` means no applicable source produces no target. `missing: unknown` retains an unresolved target for ordinary guard checking. `missing: incidental_cache` retains an unknown cache-write fact in the Graph, but the existing outside-workspace mutation guard does not request approval for that implicit write. This fallback is validated at Profile load time: it is allowed only for `write_path` with `purpose: incidental_cache`. An explicit source, even an empty or unknown one, never receives this exemption; cache purpose alone does not grant it. A fixed `default_value` can supply a literal convention such as `pytestdebug.log`, but cannot be combined with an unknown fallback. Source and anchor slots must be declared.
+
+The direct pytest/py.test Profile covers test selectors, configuration and plugin loading boundaries, cache overrides and clearing, JUnit reports, log files, and explicit base-temporary-directory cleanup. Its built-in CLI semantics were checked against [pytest 9.0.2 cache handling](https://github.com/pytest-dev/pytest/blob/9.0.2/src/_pytest/cacheprovider.py), [root-directory selection](https://github.com/pytest-dev/pytest/blob/9.0.2/src/_pytest/config/findpaths.py), [JUnit output](https://github.com/pytest-dev/pytest/blob/9.0.2/src/_pytest/junitxml.py), [logging](https://github.com/pytest-dev/pytest/blob/9.0.2/src/_pytest/logging.py), and [temporary-directory handling](https://github.com/pytest-dev/pytest/blob/9.0.2/src/_pytest/tmpdir.py). In particular, cache paths are relative to rootdir, while initial CLI/ini log output and JUnit reports use cwd. Repeated overrides retain the last matching key; a CLI log path takes precedence over an ini override.
+
+With cwd and workspace both `/workspace`, default `pytest tests/` allows the implicit unknown cache write. Explicit `-o cache_dir=/etc/cache`, unknown explicit outputs, `--cache-clear` with an unknown target, and outside-workspace report/log/basetemp destinations require approval. Workspace-local explicit destinations allow when their required anchors are known. Shell redirections, deletion and other commands remain independently checked; no new pass or pytest-name branch is added.
+
+Configuration contents, environment-injected options, test/plugin Python code, and runtime filesystem discovery are not interpreted here. Undiscovered configuration may redirect an implicit cache outside the workspace; allowing that unknown incidental write is the selected policy tradeoff, not proof of a local destination. Non-cache writes hidden in configuration or Python code are not claimed as covered by these CLI declarations. Python `-m pytest` module dispatch remains separate.
+
 
 ## Session Graph Extension
 

@@ -49,7 +49,8 @@ pub use projection::{
 };
 pub use raw::{
     RawBindingSpec, RawCardinality, RawCatastrophicEffectMetadata, RawCatastrophicSemanticClass,
-    RawCommandIdentity, RawCommandProfile, RawDefaultSubcommandBehavior, RawDerivedPathRule,
+    RawCommandIdentity, RawCommandProfile, RawConfiguredPathAnchor, RawConfiguredPathMissing,
+    RawConfiguredPathSource, RawDefaultSubcommandBehavior, RawDerivedPathRule,
     RawDerivedPathSource, RawDispatchKind, RawEffect, RawEffectKind, RawEffectTarget,
     RawEndpointKind, RawEndpointUsage, RawFlagOperandMode, RawForm, RawHostRiskEffectMetadata,
     RawHostRiskSemanticClass, RawImplicitInput, RawImplicitInputSource, RawInProcessCodeLoadKind,
@@ -82,6 +83,7 @@ pub use types::{
     ArgumentBindingSource, BindingSpec, BoundArgumentMaterialization, BoundImplicitInput,
     BoundInvocation, BoundParameter, BoundValue, Cardinality, CatastrophicEffectMetadata,
     CatastrophicSemanticClass, CommandIdentity, CommandName, CommandProfile, CommandRefSemantic,
+    ConfiguredPathAnchor, ConfiguredPathMissing, ConfiguredPathSource, ConfiguredPathTarget,
     DefaultSubcommandBehavior, DerivedPathSource, DerivedPathTarget, DispatchKind, DispatchTarget,
     Effect, EffectKind, EffectTarget, EndpointKind, EndpointSemantic, EndpointUsage, ExtensionMap,
     FlagName, FlagOperandMode, Form, FormId, HostRiskEffectMetadata, HostRiskSemanticClass,
@@ -98,5 +100,5 @@ pub use types::{
     SubcommandNode, SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
     ValueProjection,
 };
-pub use value_projection::refresh_parameter_semantic_values;
+pub use value_projection::{project_value, refresh_parameter_semantic_values};
 pub use value_shape::parse_owner_group_spec;

@@ -1095,6 +1095,7 @@ fn cwd_update_for_effect(
             .unwrap_or_else(CwdState::unknown),
         EffectTarget::None => CwdState::unknown(),
         EffectTarget::ToolConventionPath(_)
+        | EffectTarget::ConfiguredPath(_)
         | EffectTarget::DerivedPath(_)
         | EffectTarget::MutationScope(_)
         | EffectTarget::ImplicitInput(_)

@@ -44,6 +44,7 @@ pub struct PathMetadataMutation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolvedPathPurpose {
+    IncidentalCache,
     GenericOperand,
     ScriptSource,
     InProcessCode,

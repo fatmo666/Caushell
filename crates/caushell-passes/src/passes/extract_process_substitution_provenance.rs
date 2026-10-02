@@ -437,6 +437,7 @@ fn process_substitution_path_consume_kind(
             Some(PathPurpose::ScriptSource) => ProvenanceConsumeKind::ScriptSource,
             Some(PathPurpose::InProcessCode) => ProvenanceConsumeKind::InProcessCodeSource,
             Some(PathPurpose::StartupConfig)
+            | Some(PathPurpose::IncidentalCache)
             | Some(PathPurpose::GenericOperand)
             | Some(PathPurpose::WorkingDirectory)
             | None => ProvenanceConsumeKind::StartupConfigSource,
@@ -449,9 +450,10 @@ fn process_substitution_path_consume_kind(
                 Some(PathPurpose::ProjectConfig) => ProvenanceConsumeKind::ProjectConfigSource,
                 Some(PathPurpose::ToolConfig) => ProvenanceConsumeKind::ToolConfigSource,
                 Some(PathPurpose::TaskConfig) => ProvenanceConsumeKind::TaskDefinitionSource,
-                Some(PathPurpose::GenericOperand) | Some(PathPurpose::WorkingDirectory) | None => {
-                    ProvenanceConsumeKind::PathRead
-                }
+                Some(PathPurpose::IncidentalCache)
+                | Some(PathPurpose::GenericOperand)
+                | Some(PathPurpose::WorkingDirectory)
+                | None => ProvenanceConsumeKind::PathRead,
             }
         }
         PathRole::MetadataMutation => ProvenanceConsumeKind::PathRead,
@@ -471,6 +473,7 @@ fn resolved_path_role_for_process_substitution(role: PathRole) -> ResolvedPathRo
 
 fn resolved_path_purpose_for_process_substitution(purpose: PathPurpose) -> ResolvedPathPurpose {
     match purpose {
+        PathPurpose::IncidentalCache => ResolvedPathPurpose::IncidentalCache,
         PathPurpose::GenericOperand => ResolvedPathPurpose::GenericOperand,
         PathPurpose::ScriptSource => ResolvedPathPurpose::ScriptSource,
         PathPurpose::InProcessCode => ResolvedPathPurpose::InProcessCode,
