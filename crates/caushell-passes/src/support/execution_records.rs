@@ -5,9 +5,27 @@ use caushell_profile::ResolveInvocationArtifactResult;
 use caushell_runner::{ExecutionUnitResolveRecord, PendingMutation, RunnerContext};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ExecutionResolveRecordRef<'a>(&'a ExecutionUnitResolveRecord);
+pub(crate) struct ExecutionResolveRecordRef<'a>(
+    &'a ExecutionUnitResolveRecord,
+    Option<&'a caushell_runner::EffectiveCwd>,
+);
 
 impl<'a> ExecutionResolveRecordRef<'a> {
+    pub(crate) fn new(record: &'a ExecutionUnitResolveRecord) -> Self {
+        Self(record, None)
+    }
+
+    pub(crate) fn cwd_options(&self, fallback: &'a str) -> Vec<Option<&'a str>> {
+        match self.1 {
+            None => vec![Some(fallback)],
+            Some(cwd) => cwd
+                .known_cwds()
+                .into_iter()
+                .map(Some)
+                .chain(cwd.has_unknown().then_some(None))
+                .collect(),
+        }
+    }
     pub(crate) fn source_node_id(&self) -> &'a NodeId {
         &self.0.source_node_id
     }
@@ -51,7 +69,9 @@ pub(crate) fn graph_backed_execution_resolve_records(
     ctx.execution_unit_resolve_records()
         .iter()
         .filter(|record| staged_execution_unit_node_ids.contains(&record.source_node_id))
-        .map(ExecutionResolveRecordRef)
+        .map(|record| {
+            ExecutionResolveRecordRef(record, ctx.execution_cwd_for_node(&record.source_node_id))
+        })
         .collect()
 }
 
@@ -60,7 +80,9 @@ pub(crate) fn resolved_execution_records_for_local_analysis(
 ) -> Vec<ExecutionResolveRecordRef<'_>> {
     ctx.execution_unit_resolve_records()
         .iter()
-        .map(ExecutionResolveRecordRef)
+        .map(|record| {
+            ExecutionResolveRecordRef(record, ctx.execution_cwd_for_node(&record.source_node_id))
+        })
         .collect()
 }
 

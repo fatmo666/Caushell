@@ -1,4 +1,5 @@
 mod configured;
+pub(crate) use configured::resolve_configured_path;
 mod expression;
 mod extract;
 mod normalize;

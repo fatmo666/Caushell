@@ -128,6 +128,7 @@ pub enum ProvenanceTransformKind {
 #[serde(rename_all = "snake_case")]
 pub enum PackageManagerKind {
     Pip,
+    Uv,
     Apt,
     Conan,
     Conda,

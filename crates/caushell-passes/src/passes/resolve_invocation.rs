@@ -1005,6 +1005,8 @@ fn find_dispatch_candidates(
             argv,
             environment: Vec::new(),
             clear_environment: false,
+            unknown_environment: false,
+            unknown_environment_from: Vec::new(),
             unset_environment: Vec::new(),
             execution_cwd_unknown: execdir,
         });
@@ -1083,6 +1085,19 @@ fn dispatch_child_session_bindings(
     command: &caushell_parse::CommandFact,
 ) -> SessionBindings {
     let mut bindings = base.clone();
+    if candidate.unknown_environment
+        || candidate.unknown_environment_from.iter().any(|source| {
+            match base.environment_value(&source.name) {
+                caushell_profile::EnvironmentValueRef::Absent => false,
+                caushell_profile::EnvironmentValueRef::Present(
+                    caushell_profile::SessionValue::ExactScalar(value),
+                ) if source.empty_is_unset && value.is_empty() => false,
+                _ => true,
+            }
+        })
+    {
+        bindings.reset_child_environment(false);
+    }
     if candidate.clear_environment {
         bindings.reset_child_environment(true);
     }

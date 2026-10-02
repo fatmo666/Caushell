@@ -162,21 +162,43 @@ fn collect_redirection_path_mutations(
 
     for record in records {
         let parsed_scope = record.parsed_scope();
-
-        for path in collect_redirection_path_facts(parsed_scope, cwd, home) {
-            if redirection_parent_command_index(parsed_scope, &path.fact)
-                != Some(record.command_index())
+        // Redirections are opened by the caller shell, before a tool-local
+        // chdir. Derived shell payloads have their own shell-entry cwd.
+        let entry = ctx.effective_cwd_for_node(record.source_node_id());
+        let options: Vec<_> = entry.map_or_else(
+            || vec![Some(cwd)],
+            |entry| {
+                entry
+                    .known_cwds()
+                    .into_iter()
+                    .map(Some)
+                    .chain(entry.has_unknown().then_some(None))
+                    .collect()
+            },
+        );
+        for option in options {
+            for mut path in
+                collect_redirection_path_facts(parsed_scope, option.unwrap_or(cwd), home)
             {
-                continue;
-            }
+                if redirection_parent_command_index(parsed_scope, &path.fact)
+                    != Some(record.command_index())
+                {
+                    continue;
+                }
+                if option.is_none() && path.cwd_dependent {
+                    path.resolution = PathResolution::UnsupportedDynamicText {
+                        text: format!("{} depends on unresolved shell cwd", path.slot_name),
+                    };
+                }
 
-            mutations.extend(project_redirection_path_mutations(
-                record.source_node_id().clone(),
-                path.redirection_index,
-                path.slot_name,
-                path.resolution,
-                path.role,
-            ));
+                mutations.extend(project_redirection_path_mutations(
+                    record.source_node_id().clone(),
+                    path.redirection_index,
+                    path.slot_name,
+                    path.resolution,
+                    path.role,
+                ));
+            }
         }
     }
 

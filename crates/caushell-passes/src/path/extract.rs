@@ -28,6 +28,7 @@ pub(crate) struct PathFactCandidate {
     pub slot_name: String,
     pub normalized_command_name: String,
     pub resolution: PathResolution,
+    pub cwd_dependent: bool,
     pub role: PathRole,
     pub purpose: Option<PathPurpose>,
     pub metadata_mutation: Option<PathMetadataMutation>,
@@ -39,6 +40,7 @@ pub(crate) struct RedirectionPathFactCandidate {
     pub redirection_index: usize,
     pub slot_name: String,
     pub resolution: PathResolution,
+    pub cwd_dependent: bool,
     pub role: PathRole,
 }
 
@@ -398,7 +400,7 @@ pub(crate) fn collect_effect_mutation_targets(
             }
             EffectTarget::MutationScope(scope) => {
                 let (slot_name, scope_resolution) =
-                    resolve_mutation_scope_target(scope, &resolved.bound, cwd, home);
+                    resolve_mutation_scope_target(scope, &resolved.bound, cwd, home, true);
                 let resolution = match scope_resolution {
                     MutationScopeResolution::RepositoryWorktree { root, scope, .. } => {
                         match scope {
@@ -446,30 +448,49 @@ pub(crate) fn collect_path_facts(
     let mut paths = Vec::new();
 
     for &record in records {
-        match record.result() {
-            ResolveInvocationArtifactResult::Resolved(resolved) => {
-                collect_resolved_record_path_facts(record, resolved, cwd, home, &mut paths);
-            }
-            ResolveInvocationArtifactResult::SelectionError {
-                normalized_command_name,
-                partial_bound: Some(bound),
-                ..
-            } => {
-                collect_selection_error_path_facts(
-                    record,
+        for option in record.cwd_options(cwd) {
+            let start = paths.len();
+            let resolution_cwd = option.unwrap_or(cwd);
+            match record.result() {
+                ResolveInvocationArtifactResult::Resolved(resolved) => {
+                    collect_resolved_record_path_facts(
+                        record,
+                        resolved,
+                        resolution_cwd,
+                        home,
+                        &mut paths,
+                    );
+                }
+                ResolveInvocationArtifactResult::SelectionError {
                     normalized_command_name,
-                    bound,
-                    cwd,
-                    home,
-                    &mut paths,
-                );
+                    partial_bound: Some(bound),
+                    ..
+                } => {
+                    collect_selection_error_path_facts(
+                        record,
+                        normalized_command_name,
+                        bound,
+                        resolution_cwd,
+                        home,
+                        &mut paths,
+                    );
+                }
+                ResolveInvocationArtifactResult::MissingCommandName { .. }
+                | ResolveInvocationArtifactResult::NoProfile { .. }
+                | ResolveInvocationArtifactResult::SelectionError {
+                    partial_bound: None,
+                    ..
+                } => {}
             }
-            ResolveInvocationArtifactResult::MissingCommandName { .. }
-            | ResolveInvocationArtifactResult::NoProfile { .. }
-            | ResolveInvocationArtifactResult::SelectionError {
-                partial_bound: None,
-                ..
-            } => {}
+            if option.is_none() {
+                for path in &mut paths[start..] {
+                    if path.cwd_dependent {
+                        path.resolution = PathResolution::UnsupportedDynamicText {
+                            text: format!("{} depends on unresolved execution cwd", path.slot_name),
+                        };
+                    }
+                }
+            }
         }
     }
 
@@ -488,7 +509,16 @@ pub(crate) fn collect_mutation_scope_facts(
             continue;
         };
 
-        collect_resolved_record_mutation_scope_facts(record, resolved, cwd, home, &mut scopes);
+        for option in record.cwd_options(cwd) {
+            collect_resolved_record_mutation_scope_facts(
+                record,
+                resolved,
+                option.unwrap_or(cwd),
+                home,
+                option.is_some(),
+                &mut scopes,
+            );
+        }
     }
 
     scopes
@@ -513,6 +543,9 @@ pub(crate) fn collect_redirection_path_facts(
             redirection_index,
             slot_name,
             resolution,
+            cwd_dependent: redirection.target.as_ref().is_none_or(|target| {
+                path_operand_depends_on_cwd(&target.text, target.quoted, &target.node_kind, None)
+            }),
             role,
         });
     }
@@ -534,7 +567,8 @@ fn collect_resolved_record_path_facts(
             else {
                 continue;
             };
-            let (resolution, _) = semantic_path_resolution(value, Some(resolved), cwd, home);
+            let (resolution, cwd_dependent) =
+                semantic_path_resolution(value, Some(resolved), cwd, home);
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
@@ -542,6 +576,7 @@ fn collect_resolved_record_path_facts(
                 slot_name: parameter.name.as_str().to_string(),
                 normalized_command_name: resolved.normalized_command_name.clone(),
                 resolution,
+                cwd_dependent,
                 role,
                 purpose,
                 metadata_mutation: metadata_mutation_for_path_slot(
@@ -578,7 +613,7 @@ fn collect_selection_error_path_facts(
             else {
                 continue;
             };
-            let (resolution, _) = semantic_path_resolution(value, None, cwd, home);
+            let (resolution, cwd_dependent) = semantic_path_resolution(value, None, cwd, home);
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
@@ -586,6 +621,7 @@ fn collect_selection_error_path_facts(
                 slot_name: parameter.name.as_str().to_string(),
                 normalized_command_name: normalized_command_name.to_string(),
                 resolution,
+                cwd_dependent,
                 role,
                 purpose,
                 metadata_mutation: metadata_mutation_for_path_slot(bound, parameter.name.as_str()),
@@ -601,6 +637,7 @@ fn collect_resolved_record_mutation_scope_facts(
     resolved: &ResolvedInvocationArtifact,
     cwd: &str,
     home: Option<&str>,
+    cwd_known: bool,
     out: &mut Vec<MutationScopeFactCandidate>,
 ) {
     for (effect_index, effect) in resolved.bound.effects.iter().enumerate() {
@@ -613,7 +650,7 @@ fn collect_resolved_record_mutation_scope_facts(
         };
 
         let (slot_name, resolution) =
-            resolve_mutation_scope_target(target, &resolved.bound, cwd, home);
+            resolve_mutation_scope_target(target, &resolved.bound, cwd, home, cwd_known);
 
         out.push(MutationScopeFactCandidate {
             source_node_id: record.source_node_id().clone(),
@@ -632,6 +669,7 @@ fn resolve_mutation_scope_target(
     invocation: &BoundInvocation,
     cwd: &str,
     home: Option<&str>,
+    cwd_known: bool,
 ) -> (String, MutationScopeResolution) {
     match target {
         MutationScopeTarget::RepositoryWorktree {
@@ -641,14 +679,26 @@ fn resolve_mutation_scope_target(
         } => {
             let root_resolution = root
                 .as_ref()
-                .and_then(|slot| first_path_resolution_for_slot(invocation, slot, cwd, home))
-                .unwrap_or_else(|| PathResolution::Concrete {
-                    path: normalize_shell_path(cwd),
+                .and_then(|slot| {
+                    first_path_resolution_for_slot(invocation, slot, cwd, home, cwd_known)
+                })
+                .unwrap_or_else(|| {
+                    if cwd_known {
+                        PathResolution::Concrete {
+                            path: normalize_shell_path(cwd),
+                        }
+                    } else {
+                        PathResolution::UnsupportedDynamicText {
+                            text: "repository root depends on unresolved execution cwd".into(),
+                        }
+                    }
                 });
 
             let scope = subtree
                 .as_ref()
-                .and_then(|slot| first_path_resolution_for_slot(invocation, slot, cwd, home))
+                .and_then(|slot| {
+                    first_path_resolution_for_slot(invocation, slot, cwd, home, cwd_known)
+                })
                 .map(|path| RepositoryWorktreeScopeResolution::Subtree { path })
                 .unwrap_or(RepositoryWorktreeScopeResolution::WholeWorktree);
 
@@ -673,6 +723,7 @@ fn first_path_resolution_for_slot(
     slot: &SlotName,
     cwd: &str,
     home: Option<&str>,
+    cwd_known: bool,
 ) -> Option<PathResolution> {
     let parameter = invocation
         .bound_parameters
@@ -681,7 +732,16 @@ fn first_path_resolution_for_slot(
 
     parameter.semantic_values().find_map(|value| match value {
         SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
-        _ => Some(semantic_path_resolution(value, None, cwd, home).0),
+        _ => {
+            let (resolution, dependent) = semantic_path_resolution(value, None, cwd, home);
+            Some(if !cwd_known && dependent {
+                PathResolution::UnsupportedDynamicText {
+                    text: format!("{} depends on unresolved execution cwd", slot.as_str()),
+                }
+            } else {
+                resolution
+            })
+        }
     })
 }
 
@@ -718,6 +778,7 @@ fn collect_effect_target_path_facts(
                         slot_name: format!("configured_path_{effect_index}"),
                         normalized_command_name: normalized_command_name.to_string(),
                         resolution: path.resolution,
+                        cwd_dependent: path.cwd_dependent,
                         role,
                         purpose: target.purpose,
                         metadata_mutation: None,
@@ -730,6 +791,7 @@ fn collect_effect_target_path_facts(
                 slot_name: tool_convention_slot_name(effect_index, &target.convention),
                 normalized_command_name: normalized_command_name.to_string(),
                 resolution: resolve_tool_convention_path(target, cwd),
+                cwd_dependent: !target.path.starts_with('/'),
                 role,
                 purpose: target.purpose,
                 metadata_mutation: None,
@@ -768,6 +830,19 @@ fn collect_derived_target_path_facts(
     home: Option<&str>,
     out: &mut Vec<PathFactCandidate>,
 ) {
+    let cwd_dependent = match target.root.as_ref().unwrap_or(&target.source) {
+        DerivedPathSource::Slot(slot) => {
+            bound_parameter(invocation, slot.as_str()).is_none_or(|parameter| {
+                parameter
+                    .semantic_values()
+                    .any(|value| semantic_path_resolution(value, resolved, cwd, home).1)
+            })
+        }
+        DerivedPathSource::ToolConventionRoot { convention } => {
+            tool_convention_roots_for_convention(invocation, convention)
+                .any(|target| !target.path.starts_with('/'))
+        }
+    };
     match (&target.source, &target.root) {
         (DerivedPathSource::Slot(source_slot_name), Some(root_source)) => {
             let Some(parameter) = bound_parameter(invocation, source_slot_name.as_str()) else {
@@ -811,6 +886,7 @@ fn collect_derived_target_path_facts(
                         slot_name: derived_path_slot_name(effect_index),
                         normalized_command_name: normalized_command_name.to_string(),
                         resolution,
+                        cwd_dependent,
                         role,
                         purpose: target.purpose,
                         metadata_mutation: None,
@@ -842,6 +918,7 @@ fn collect_derived_target_path_facts(
                     slot_name: derived_path_slot_name(effect_index),
                     normalized_command_name: normalized_command_name.to_string(),
                     resolution,
+                    cwd_dependent,
                     role,
                     purpose: target.purpose,
                     metadata_mutation: None,
@@ -870,6 +947,7 @@ fn collect_derived_target_path_facts(
                     slot_name: derived_path_slot_name(effect_index),
                     normalized_command_name: normalized_command_name.to_string(),
                     resolution,
+                    cwd_dependent,
                     role,
                     purpose: target.purpose,
                     metadata_mutation: None,
@@ -1392,6 +1470,7 @@ fn metadata_mutation_kinds(
         | EffectKind::ExecutePayload
         | EffectKind::SourceScriptIntoCurrentShell
         | EffectKind::SetCurrentWorkingDirectory
+        | EffectKind::SetExecutionWorkingDirectory
         | EffectKind::ExecuteRemoteCommand
         | EffectKind::ExecuteHook
         | EffectKind::ExecuteConfigDefinedTask
@@ -1574,6 +1653,7 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::ExecutePayload
         | EffectKind::SourceScriptIntoCurrentShell
         | EffectKind::SetCurrentWorkingDirectory
+        | EffectKind::SetExecutionWorkingDirectory
         | EffectKind::ExecuteRemoteCommand
         | EffectKind::ExecuteHook
         | EffectKind::ExecuteConfigDefinedTask
@@ -1608,6 +1688,7 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::ExecutePayload
         | EffectKind::SourceScriptIntoCurrentShell
         | EffectKind::SetCurrentWorkingDirectory
+        | EffectKind::SetExecutionWorkingDirectory
         | EffectKind::ExecuteRemoteCommand
         | EffectKind::ExecuteHook
         | EffectKind::ExecuteConfigDefinedTask

@@ -252,6 +252,45 @@ Pass 先检查本次请求已经提取的事实，没有非本地或未知监听
 [服务启动](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/server.py)、
 [socket 绑定](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/config.py)。
 
+## 环境准备与 `uv`
+
+`uv` Profile 同时保留包装器的准备效果和子调用。`uv run` 可能先创建或替换项目环境，
+即使 `--no-sync` 也可能创建缺失的环境；`--locked`／`--frozen` 限制的是锁文件更新，
+不是环境修改。`--with*` 叠加依赖和无法读取的 PEP 723 脚本元数据还可能准备其他环境。
+这些真实环境修改进入既有文件修改护栏，不冒充可豁免的隐式缓存。
+
+支持 `run` 的外部命令／模块／本地脚本／stdin／URL 入口，`sync`、`venv`、
+直接 `pip install/sync/uninstall` 及查询、`lock`、`add/remove` 和帮助形式。
+保留已知 CLI 目标和绝对 `UV_PROJECT_ENVIRONMENT`。
+项目发现可能选中父目录，因此默认或相对项目环境、未发现的锁文件目标保留未知，
+不能假定落在请求 cwd 内。预演形式不声明其事务修改，独立选项声明的效果仍保留。
+包来源复用共享分类器，保留完整字符串；相对本地包节点身份加入解析后的来源路径，
+避免不同 cwd 下的同名参数被合并。绝对路径、网络和注册表身份不依赖 cwd。
+
+共享 DSL 增加三项声明能力，风险代码没有 `uv` 命令名特例：
+
+- `set_execution_working_directory` 配合 `configured_path`，改变当前进程和执行子调用，
+  不改变调用者 shell。`--directory`／`UV_WORKING_DIR` 使用它；`--project` 不改变子调用 cwd。
+  shell 展开和外层重定向仍使用 shell 入口 cwd。路径、包来源、仓库修改范围和嵌套 shell
+  重定向与修改决策使用一致的已知分支或未知 cwd 事实。
+- `configured_path.unresolved_relative_base: true` 用于基准目录需文件系统发现的相对目标，
+  不允许与 `relative_to` 同时声明。空 `sources` 只允许有环境／字面默认来源，或
+  `missing: unknown`；空来源且只有 incidental-cache 豁免的声明仍无效。
+- dispatch 在 `command`（slot）和 `command_literal`（固定可执行名）中必须选且只选一个，
+  可用 `argv_prefix` 加入固定 argv 数据。例如
+  `{kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [module, args]}`
+  形成带类型的解释器调用，不把字面参数重新当 shell 源码解析。
+  `unknown_environment_when`（modifier ID）和 `unknown_environment_from`（声明的环境来源）
+  表达不可读取的 env 文件可能替换子环境值，不能继续沿用旧的确定性；后续显式环境变换正常生效。
+
+本范围不读取项目／配置／requirements／脚本内容，不发现已安装解释器。
+自动 Python 获取、`uv tool/python` 管理、build/publish 和其他未支持的管理命令不计入覆盖；
+解释器下载可能增加额外写入目的地。Profile 明列限制，不声称覆盖完整 uv CLI。
+没有增加动态探测、Harness 字段、风险 pass 或审批策略。
+依据：[uv CLI](https://docs.astral.sh/uv/reference/cli/)、
+[run 实现](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/run.rs)、
+[项目环境准备](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/mod.rs)。
+
 ## 进一步阅读
 
 - [工作原理总览](how-it-works.zh-CN.md)

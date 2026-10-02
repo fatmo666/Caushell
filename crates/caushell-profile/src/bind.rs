@@ -1520,7 +1520,10 @@ fn emit_effects(
                     .is_none_or(|slot| bound_slots.contains(slot)),
             },
             EffectTarget::ImplicitInput(source) => bound_implicit_sources.contains(source),
-            EffectTarget::Dispatch(dispatch) => bound_slots.contains(&dispatch.command),
+            EffectTarget::Dispatch(dispatch) => match &dispatch.command {
+                crate::DispatchCommandSource::Slot(slot) => bound_slots.contains(slot),
+                crate::DispatchCommandSource::Literal(_) => true,
+            },
             EffectTarget::None | EffectTarget::NetworkListener(_) => true,
         };
 

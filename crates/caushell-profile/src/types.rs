@@ -357,6 +357,7 @@ pub struct EndpointSemantic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageManagerKind {
     Pip,
+    Uv,
     Apt,
     Conan,
     Conda,
@@ -776,6 +777,8 @@ pub enum EffectKind {
     ExecutePayload,
     SourceScriptIntoCurrentShell,
     SetCurrentWorkingDirectory,
+    /// Changes the launched process and its descendants, never the caller shell.
+    SetExecutionWorkingDirectory,
     ExecuteRemoteCommand,
     ExecuteHook,
     ExecuteConfigDefinedTask,
@@ -802,12 +805,23 @@ pub struct InteractiveEscapeSurface {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchCommandSource {
+    Slot(SlotName),
+    Literal(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchTarget {
-    pub command: SlotName,
+    pub command: DispatchCommandSource,
+    /// Fixed argv data, e.g. the interpreter's `-m`; never shell source.
+    pub argv_prefix: Vec<String>,
     pub argv: Vec<SlotName>,
     pub environment: Vec<SlotName>,
     pub clear_environment_when: Vec<ModifierId>,
     pub unset_environment: Vec<SlotName>,
+    /// A file/configuration can replace child env values but its body is opaque.
+    pub unknown_environment_when: Vec<ModifierId>,
+    pub unknown_environment_from: Vec<EnvironmentValueSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -881,6 +895,8 @@ pub struct ConfiguredPathTarget {
     pub sources: Vec<ConfiguredPathSource>,
     pub environment: Option<EnvironmentValueSource>,
     pub relative_to: Option<ConfiguredPathAnchor>,
+    /// Relative paths need a discovered root unavailable to static analysis.
+    pub unresolved_relative_base: bool,
     pub expand_environment: bool,
     pub expand_user: bool,
     pub missing: ConfiguredPathMissing,

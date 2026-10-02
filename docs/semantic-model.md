@@ -270,6 +270,59 @@ Source: [Uvicorn CLI](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f8
 [server startup](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/server.py),
 [socket binding](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/config.py).
 
+## Environment preparation and `uv`
+
+The `uv` Profile retains both wrapper preparation and child execution. `uv run`
+can create or replace a project environment before launching the child; even
+`--no-sync` can create a missing environment. `--locked` and `--frozen` prevent
+lockfile updates, not environment changes. `--with*` overlays and opaque PEP 723
+script metadata may prepare additional environments. Real environment mutations
+use the existing filesystem guard; they are not incidental-cache exemptions.
+
+Supported entrypoints are external-command/module/local-script/stdin/URL `run`,
+`sync`, `venv`, direct `pip install/sync/uninstall` and query forms, `lock`,
+`add/remove` and help. Known CLI targets and absolute `UV_PROJECT_ENVIRONMENT`
+values are preserved. Project discovery can select a parent directory, so a
+default or relative project environment and an undiscovered lockfile remain
+unknown rather than being placed beneath the request cwd. Preview forms omit
+their transaction effects; independently declared option effects remain present.
+Sources use the shared package-locator classifier and keep their complete text.
+Relative local package artifacts also include their resolved source path in the
+node identity, preventing identical argv spellings in different cwd contexts from
+merging. Absolute and network/registry identities stay cwd-independent.
+
+The shared DSL provides three additive mechanisms, with no `uv`-specific branch
+in the risk passes:
+
+- `set_execution_working_directory` with a `configured_path` target changes a
+  process and its execution descendants, not the caller shell. `--directory` and
+  `UV_WORKING_DIR` use this declaration; `--project` does not change child cwd.
+  Shell expansions and outer redirections use the shell-entry cwd. Paths, package
+  sources, repository scopes and nested shell redirections retain known branches
+  or unknown cwd facts consistently with mutation decisions.
+- `configured_path.unresolved_relative_base: true` keeps a relative target
+  unresolved when its base needs filesystem discovery. It cannot coexist with
+  `relative_to`. Empty `sources` are allowed with an environment/default source or
+  `missing: unknown`; an empty incidental-cache-only declaration is invalid.
+- Dispatch targets accept exactly one of `command` (a slot) or `command_literal`
+  (fixed executable), and optional `argv_prefix` data. For example,
+  `{kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [module, args]}`
+  produces a typed interpreter call, not shell source. `unknown_environment_when`
+  (modifier IDs) and `unknown_environment_from` (declared environment sources)
+  invalidate inherited child environment certainty when an opaque env file may
+  replace values. Explicit later environment transforms still apply normally.
+
+This scope does not inspect project/config/requirements/script contents or discover
+installed interpreters. Automatic Python acquisition, `uv tool/python` management,
+build/publish and the other unsupported administration commands are not claimed
+as covered; interpreter downloads may introduce additional destinations. The
+Profile's limitations are explicit rather than a claim of full `uv` CLI coverage.
+No dynamic probing, new Harness facts, risk pass or approval-policy changes are
+introduced.
+Source: [uv CLI](https://docs.astral.sh/uv/reference/cli/),
+[run implementation](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/run.rs),
+[project environment preparation](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/mod.rs).
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

@@ -8,7 +8,7 @@ use caushell_types::PathResolution;
 
 use super::normalize::{join_shell_path, normalize_shell_path};
 
-pub(super) struct ConfiguredPathResolution {
+pub(crate) struct ConfiguredPathResolution {
     pub resolution: PathResolution,
     pub cwd_dependent: bool,
     pub implicit_incidental_cache: bool,
@@ -22,9 +22,8 @@ fn last_value(
     invocation
         .bound_parameters
         .iter()
-        .find(|parameter| parameter.name.as_str() == slot)?
-        .values
-        .iter()
+        .filter(|parameter| parameter.name.as_str() == slot)
+        .flat_map(|parameter| &parameter.values)
         .filter_map(|value| project_value(projection, value))
         .last()
 }
@@ -86,7 +85,7 @@ fn concrete(text: &str, cwd: &str) -> (PathResolution, bool) {
     (PathResolution::Concrete { path }, relative)
 }
 
-pub(super) fn resolve_configured_path(
+pub(crate) fn resolve_configured_path(
     invocation: &BoundInvocation,
     target: &ConfiguredPathTarget,
     cwd: &str,
@@ -132,6 +131,11 @@ pub(super) fn resolve_configured_path(
     };
     let result = expand_path_text(&text, target.expand_environment, target.expand_user, home)
         .and_then(|text| {
+            if !text.starts_with('/') && target.unresolved_relative_base {
+                return Err(unknown(
+                    "relative configured path requires an undiscovered root",
+                ));
+            }
             // An absolute destination is independent of rootdir and cwd.
             if text.starts_with('/') || target.relative_to.is_none() {
                 return Ok(concrete(&text, cwd));

@@ -38,39 +38,43 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
         let mut reasons = BTreeSet::new();
 
         for record in graph_backed_execution_resolve_records(ctx) {
-            let cwd_options = effective_cwd_options(
-                ctx.effective_cwd_for_node(record.source_node_id()),
-                &fallback_cwd,
-            );
-            for cwd in cwd_options {
-                let resolution_cwd = cwd.as_deref().unwrap_or(&fallback_cwd);
-                let mut targets =
-                    collect_effect_mutation_targets(record, resolution_cwd, home.as_deref());
-                targets.extend(collect_redirection_mutation_targets(
-                    record.parsed_scope(),
-                    Some(record.command_index()),
-                    resolution_cwd,
-                    home.as_deref(),
-                ));
-                for target in targets {
-                    // Only a declaratively identified implicit cache fallback
-                    // is exempt. Explicit, unknown argv paths and redirections
-                    // cannot acquire this exemption from their purpose alone.
-                    if target.operation == EffectKind::WritePath
-                        && target.implicit_incidental_cache
-                        && target.resolution.concrete_path().is_none()
-                    {
-                        continue;
+            for (effective_cwd, redirections) in [
+                (ctx.execution_cwd_for_node(record.source_node_id()), false),
+                (ctx.effective_cwd_for_node(record.source_node_id()), true),
+            ] {
+                let cwd_options = effective_cwd_options(effective_cwd, &fallback_cwd);
+                for cwd in cwd_options {
+                    let resolution_cwd = cwd.as_deref().unwrap_or(&fallback_cwd);
+                    let targets = if redirections {
+                        collect_redirection_mutation_targets(
+                            record.parsed_scope(),
+                            Some(record.command_index()),
+                            resolution_cwd,
+                            home.as_deref(),
+                        )
+                    } else {
+                        collect_effect_mutation_targets(record, resolution_cwd, home.as_deref())
+                    };
+                    for target in targets {
+                        // Only a declaratively identified implicit cache fallback
+                        // is exempt. Explicit, unknown argv paths and redirections
+                        // cannot acquire this exemption from their purpose alone.
+                        if target.operation == EffectKind::WritePath
+                            && target.implicit_incidental_cache
+                            && target.resolution.concrete_path().is_none()
+                        {
+                            continue;
+                        }
+                        add_reason_for_target(
+                            &mut reasons,
+                            target.operation,
+                            &target.slot_name,
+                            &target.resolution,
+                            target.cwd_dependent,
+                            cwd.is_none(),
+                            workspace_root.as_deref(),
+                        );
                     }
-                    add_reason_for_target(
-                        &mut reasons,
-                        target.operation,
-                        &target.slot_name,
-                        &target.resolution,
-                        target.cwd_dependent,
-                        cwd.is_none(),
-                        workspace_root.as_deref(),
-                    );
                 }
             }
         }

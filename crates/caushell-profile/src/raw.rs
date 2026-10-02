@@ -509,6 +509,7 @@ pub enum RawEndpointUsage {
 #[serde(rename_all = "snake_case")]
 pub enum RawPackageManagerKind {
     Pip,
+    Uv,
     Apt,
     Conan,
     Conda,
@@ -625,6 +626,7 @@ pub enum RawEffectKind {
     ExecutePayload,
     SourceScriptIntoCurrentShell,
     SetCurrentWorkingDirectory,
+    SetExecutionWorkingDirectory,
     ExecuteRemoteCommand,
     ExecuteHook,
     ExecuteConfigDefinedTask,
@@ -726,6 +728,8 @@ pub enum RawEffectTarget {
         #[serde(default)]
         relative_to: Option<RawConfiguredPathAnchor>,
         #[serde(default)]
+        unresolved_relative_base: bool,
+        #[serde(default)]
         expand_environment: bool,
         #[serde(default)]
         expand_user: bool,
@@ -765,7 +769,12 @@ pub enum RawEffectTarget {
         source: RawImplicitInputSource,
     },
     Dispatch {
-        command: String,
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        command_literal: Option<String>,
+        #[serde(default)]
+        argv_prefix: Vec<String>,
         #[serde(default)]
         argv: Vec<String>,
         #[serde(default)]
@@ -774,6 +783,10 @@ pub enum RawEffectTarget {
         clear_environment_when: Vec<String>,
         #[serde(default)]
         unset_environment: Vec<String>,
+        #[serde(default)]
+        unknown_environment_when: Vec<String>,
+        #[serde(default)]
+        unknown_environment_from: Vec<RawEnvironmentValueSource>,
     },
     None,
 }

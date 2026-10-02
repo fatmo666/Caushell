@@ -1,0 +1,472 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: uv, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+
+# Checked against astral-sh/uv a75d26a6. Project/venv discovery and file
+# contents are not probed. Unknown real environment targets are not caches.
+forms:
+  - &help_form
+    id: show_help
+    selector: {kind: has_modifier, modifier: help}
+  - id: show_version
+    selector: {kind: all, items: [{kind: has_modifier, modifier: version}, {kind: not, item: {kind: has_modifier, modifier: help}}]}
+  - id: show_usage
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: version}}]}
+modifiers:
+  - &help {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+  - &directory
+    id: directory
+    matcher: {kind: any_flag, flags: ['--directory']}
+    parameters:
+      - {name: directory, semantic: &plain {kind: plain_value}, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+  - &project
+    id: project
+    matcher: {kind: any_flag, flags: ['--project']}
+    parameters: [{name: project, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - &cache
+    id: cache
+    matcher: {kind: any_flag, flags: ['--cache-dir']}
+    parameters: [{name: cache_dir, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - &config
+    id: config
+    matcher: {kind: any_flag, flags: ['--config-file']}
+    parameters: [{name: config_file, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - &global_flags
+    id: global_flags
+    matcher: {kind: any_flag, flags: ['-q', '--quiet', '-v', '--verbose', '--offline', '--no-progress', '--no-config', '--no-cache', '--no-cache-dir', '-n', '--managed-python', '--no-managed-python', '--no-python-downloads', '--system-certs', '--native-tls', '--no-color', '--show-settings', '--no-installer-metadata']}
+  - &global_values
+    id: global_values
+    matcher: {kind: any_flag, flags: ['--color', '--python-preference', '--python-downloads', '--python-fetch']}
+    parameters: [{name: global_values, semantic: *plain, binding: *following, cardinality: optional_many}]
+
+subcommands:
+  roots:
+    - name: run
+      option_scope: leading_options
+      forms:
+        - *help_form
+        - id: command_without_sync
+          selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: help}}, &ordinary {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: module}, {kind: has_modifier, modifier: script}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)(\.py[wc]?|\.pyc)$|^-$|^https?://'}}]}}]}, &no_sync_enabled {kind: all, items: [{kind: has_modifier, modifier: no_sync}, {kind: any, items: [{kind: not, item: {kind: has_modifier_parameter_matching, modifier: no_sync, parameter: no_sync_value, matcher: {kind: regex_pattern, pattern: '^.*$'}}}, {kind: has_modifier_parameter_matching, modifier: no_sync, parameter: no_sync_value, matcher: {kind: regex_pattern, pattern: '(?i)^(true|1|yes|on)$'}}]}]}]}
+          parameters: &command_parameters
+            - {name: run_target, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: optional_one}
+            - {name: run_args, semantic: *plain, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - &execution_directory
+              kind: set_execution_working_directory
+              target: {kind: configured_path, sources: [{slot: directory, projection: {kind: identity}}], environment: {name: UV_WORKING_DIR}, missing: skip}
+            - &config_read
+              kind: load_config
+              target: {kind: configured_path, sources: [{slot: config_file, projection: {kind: identity}}], environment: {name: UV_CONFIG_FILE}, purpose: tool_config, missing: skip}
+            - &implicit_config {kind: load_config, target: {kind: none}}
+            - &environment_write
+              kind: write_path
+              target: &project_environment
+                kind: configured_path
+                sources: []
+                environment: {name: UV_PROJECT_ENVIRONMENT}
+                unresolved_relative_base: true
+                missing: unknown
+            - &environment_delete {kind: delete_path, target: *project_environment}
+            - &dispatch {kind: dispatch_command, target: {kind: dispatch, command: run_target, argv: [run_args], unknown_environment_when: [env_file], unknown_environment_from: [{name: UV_ENV_FILE}]}}
+        - id: command_sync_locked
+          selector: {kind: all, items: [*running, *ordinary, &sync_enabled {kind: not, item: *no_sync_enabled}, &immutable_lock {kind: any, items: [{kind: all, items: [{kind: has_modifier, modifier: locked}, {kind: lacks_flag, flag: '--no-locked'}]}, {kind: all, items: [{kind: has_modifier, modifier: frozen}, {kind: lacks_flag, flag: '--no-frozen'}]}]}]}
+          parameters: *command_parameters
+          effects: &command_sync_locked_effects
+            - *execution_directory
+            - *config_read
+            - *implicit_config
+            - *environment_write
+            - *environment_delete
+            - &cache_write
+              kind: write_path
+              target: &cache_target {kind: configured_path, sources: [{slot: cache_dir, projection: {kind: identity}}], environment: {name: UV_CACHE_DIR}, missing: incidental_cache, purpose: incidental_cache}
+            - *dispatch
+        - id: command_sync
+          selector: {kind: all, items: [*running, *ordinary, *sync_enabled, {kind: not, item: *immutable_lock}]}
+          parameters: *command_parameters
+          effects:
+            - *execution_directory
+            - *config_read
+            - *implicit_config
+            - *environment_write
+            - *environment_delete
+            - &lock_write {kind: write_path, target: &unknown_project_path {kind: configured_path, sources: [], missing: unknown, purpose: project_config}}
+            - *cache_write
+            - *dispatch
+        - id: implicit_python_without_sync
+          selector: {kind: all, items: [*running, &implicit_python {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: module}, {kind: has_modifier, modifier: script}]}}]}, *no_sync_enabled]}
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, &implicit_python_dispatch {kind: dispatch_command, target: {kind: dispatch, command_literal: python, unknown_environment_when: [env_file], unknown_environment_from: [{name: UV_ENV_FILE}]}}]
+        - id: implicit_python_sync_locked
+          selector: {kind: all, items: [*running, *implicit_python, *sync_enabled, *immutable_lock]}
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, *cache_write, *implicit_python_dispatch]
+        - id: implicit_python_sync
+          selector: {kind: all, items: [*running, *implicit_python, *sync_enabled, {kind: not, item: *immutable_lock}]}
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, *lock_write, *cache_write, *implicit_python_dispatch]
+        - id: module_without_sync
+          selector: {kind: all, items: [*running, &module {kind: all, items: [{kind: has_modifier, modifier: module}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^https?://'}}}]}, *no_sync_enabled]}
+          parameters: &module_parameters
+            - {name: run_target, semantic: *plain, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: run_args, semantic: *plain, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - *execution_directory
+            - *config_read
+            - *implicit_config
+            - *environment_write
+            - *environment_delete
+            - &module_dispatch {kind: dispatch_command, target: {kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [run_target, run_args], unknown_environment_when: [env_file], unknown_environment_from: [{name: UV_ENV_FILE}]}}
+        - id: module_sync_locked
+          selector: {kind: all, items: [*running, *module, *sync_enabled, *immutable_lock]}
+          parameters: *module_parameters
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, *cache_write, *module_dispatch]
+        - id: module_sync
+          selector: {kind: all, items: [*running, *module, *sync_enabled, {kind: not, item: *immutable_lock}]}
+          parameters: *module_parameters
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, *lock_write, *cache_write, *module_dispatch]
+        - id: remote_script
+          selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^https?://'}}]}
+          parameters:
+            - {name: remote_script, semantic: &remote_source {kind: package_locator, manager: uv, locator_kinds: [direct_url, unknown_dynamic]}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: run_args, semantic: *plain, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - *execution_directory
+            - *config_read
+            - *implicit_config
+            - &ephemeral_write {kind: write_path, target: &unknown_environment {kind: configured_path, sources: [], missing: unknown}}
+            - *cache_write
+            - {kind: import_package, target: {kind: slot, name: remote_script}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: remote_script}}
+        - id: script
+          selector: {kind: all, items: [*running, {kind: not, item: *module}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^https?://'}}}, {kind: any, items: [{kind: has_modifier, modifier: script}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)(\.py[wc]?|\.pyc)$|^-$'}}]}]}
+          parameters:
+            - {name: run_target, semantic: *plain, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: run_args, semantic: *plain, binding: {kind: remaining_args}, cardinality: optional_many}
+          # PEP 723 contents are unavailable. --no-sync does not disable the
+          # isolated environment for a script that has inline dependencies.
+          effects: [*execution_directory, *config_read, *implicit_config, *ephemeral_write, *cache_write, {kind: dispatch_command, target: {kind: dispatch, command_literal: python, argv: [run_target, run_args], unknown_environment_when: [env_file], unknown_environment_from: [{name: UV_ENV_FILE}]}}]
+      modifiers: &run_options
+        - *help
+        - *directory
+        - *project
+        - *cache
+        - *config
+        - *global_flags
+        - *global_values
+        - {id: module, matcher: {kind: any_flag, flags: ['-m', '--module']}}
+        - {id: script, matcher: {kind: any_flag, flags: ['-s', '--script', '--gui-script']}}
+        - &no_sync
+          id: no_sync
+          matcher: {kind: any_flag, flags: ['--no-sync']}
+          parameters: [{name: no_sync_value, semantic: *plain, binding: &boolean_inline {kind: following_matched_flag, operand_mode: inline_only}, cardinality: optional_many}]
+        - &locked {id: locked, matcher: {kind: any_flag, flags: ['--locked']}}
+        - &frozen {id: frozen, matcher: {kind: any_flag, flags: ['--frozen']}}
+        - &active
+          id: active
+          matcher: {kind: any_flag, flags: ['--active']}
+          # Selection of the active environment depends on project discovery;
+          # preserve its potential mutations alongside the project candidate.
+          effects:
+            - {kind: write_path, target: &active_environment {kind: configured_path, sources: [], environment: {name: VIRTUAL_ENV}, missing: unknown}}
+            - {kind: delete_path, target: *active_environment}
+        - id: isolated_run
+          matcher: {kind: any_flag, flags: ['--isolated']}
+          effects: [*ephemeral_write]
+        - &python
+          id: python
+          matcher: {kind: any_flag, flags: ['-p', '--python']}
+          parameters: [{name: python, semantic: *plain, binding: *following, cardinality: optional_many}]
+        - &with_packages
+          id: with_packages
+          matcher: {kind: any_flag, flags: ['-w', '--with']}
+          parameters: [{name: with_packages, semantic: &package_source {kind: package_locator, manager: uv, locator_kinds: [registry_ref, local_path, direct_url, vcs_url, unknown_dynamic]}, binding: *following, cardinality: optional_many}]
+          effects: [*ephemeral_write, {kind: import_package, target: {kind: slot, name: with_packages}}, {kind: execute_imported_package_logic, target: {kind: slot, name: with_packages}}]
+        - &with_editable
+          id: with_editable
+          matcher: {kind: any_flag, flags: ['--with-editable']}
+          parameters: [{name: with_editable, semantic: &local_package {kind: package_locator, manager: uv, locator_kinds: [local_path, vcs_url, direct_url, unknown_dynamic]}, binding: *following, cardinality: optional_many}]
+          effects: [*ephemeral_write, {kind: import_package, target: {kind: slot, name: with_editable}}, {kind: execute_imported_package_logic, target: {kind: slot, name: with_editable}}]
+        - &with_requirements
+          id: with_requirements
+          matcher: {kind: any_flag, flags: ['--with-requirements']}
+          parameters: [{name: with_requirements, semantic: &definition_source {kind: package_locator, manager: uv, locator_kinds: [requirement_file, direct_url, unknown_dynamic]}, binding: *following, cardinality: optional_many}]
+          effects: [*ephemeral_write, {kind: import_package, target: {kind: slot, name: with_requirements}}, {kind: execute_imported_package_logic, target: {kind: slot, name: with_requirements}}]
+        - id: env_file
+          matcher: {kind: any_flag, flags: ['--env-file']}
+          parameters: [{name: env_files, semantic: {kind: path, role: read, purpose: tool_config}, binding: *following, cardinality: optional_many}]
+          # The file can replace child environment settings. Do not retain a
+          # known inherited value as if the file had no effect.
+          effects: [{kind: read_path, target: {kind: slot, name: env_files}}]
+        - &resolver_flags
+          id: resolver_flags
+          matcher: {kind: any_flag, flags: ['--no-sources', '--no-index', '--no-build', '--no-binary', '--no-build-isolation', '--no-deps', '--refresh', '-U', '--upgrade', '--reinstall', '--compile-bytecode', '--no-compile-bytecode', '--all-extras', '--all-groups', '--no-default-groups', '--no-dev', '--dev', '--only-dev', '--no-editable', '--editable', '--exact', '--inexact', '--no-exact', '--no-active', '--no-locked', '--no-frozen', '--no-project', '--no-workspace', '--no_workspace', '--all-packages', '--no-env-file', '--show-resolution']}
+        - &resolver_values
+          id: resolver_values
+          matcher: {kind: any_flag, flags: ['--extra', '--no-extra', '--group', '--no-group', '--only-group', '--index-strategy', '--keyring-provider', '--allow-insecure-host', '--trusted-host', '--resolution', '--prerelease', '--fork-strategy', '--exclude-newer', '--exclude-newer-package', '--upgrade-package', '-P', '--reinstall-package', '--no-build-package', '--no-binary-package', '--no-build-isolation-package', '--config-setting', '-C', '--config-settings-package', '--link-mode', '--package', '--no-editable-package', '--python-platform', '--max-recursion-depth']}
+          parameters: [{name: resolver_values, semantic: *plain, binding: *following, cardinality: optional_many}]
+        - &resolver_indexes
+          id: resolver_indexes
+          matcher: {kind: any_flag, flags: ['--default-index', '--index-url', '-i', '--index', '--extra-index-url', '--find-links', '-f']}
+          parameters: [{name: indexes, semantic: *package_source, binding: *following, cardinality: optional_many}]
+          effects: [{kind: import_package, target: {kind: slot, name: indexes}}, {kind: execute_imported_package_logic, target: {kind: slot, name: indexes}}]
+      default_behavior: reject_unknown
+
+    - name: sync
+      forms:
+        - *help_form
+        - id: preview
+          selector: {kind: all, items: [*running, {kind: has_modifier, modifier: preview}]}
+          effects: [*execution_directory, *config_read, *implicit_config]
+        - id: sync_locked
+          selector: {kind: all, items: [*running, &not_preview {kind: not, item: {kind: has_modifier, modifier: preview}}, *immutable_lock]}
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, *cache_write]
+        - id: sync
+          selector: {kind: all, items: [*running, *not_preview, {kind: not, item: *immutable_lock}]}
+          effects: [*execution_directory, *config_read, *implicit_config, *environment_write, *environment_delete, *lock_write, *cache_write]
+      modifiers: &sync_options
+        - *help
+        - *directory
+        - *project
+        - *cache
+        - *config
+        - *global_flags
+        - *global_values
+        - *python
+        - *locked
+        - *frozen
+        - *active
+        - *resolver_flags
+        - *resolver_values
+        - *resolver_indexes
+        - &preview {id: preview, matcher: {kind: any_flag, flags: ['--dry-run', '--check']}}
+        - id: sync_flags
+          matcher: {kind: any_flag, flags: ['--no-install-project', '--no-install-workspace', '--no-install-local', '--only-install-project', '--only-install-workspace', '--only-install-local']}
+        - id: sync_values
+          matcher: {kind: any_flag, flags: ['--no-install-package', '--only-install-package', '--output-format']}
+          parameters: [{name: sync_values, semantic: *plain, binding: *following, cardinality: optional_many}]
+      default_behavior: reject_unknown
+
+    - name: venv
+      forms:
+        - *help_form
+        - id: create_at_path
+          selector: {kind: all, items: [*running, {kind: has_positional_at, index: 0}, &not_clear {kind: not, item: {kind: has_modifier, modifier: clear}}]}
+          parameters: &venv_parameters [{name: venv_path, semantic: *plain, binding: {kind: next_positional}, cardinality: optional_one}]
+          effects:
+            - *execution_directory
+            - *config_read
+            - &venv_write {kind: write_path, target: &venv_target {kind: configured_path, sources: [{slot: venv_path, projection: {kind: identity}}], missing: unknown}}
+        - id: clear_at_path
+          selector: {kind: all, items: [*running, {kind: has_positional_at, index: 0}, &clear {kind: has_modifier, modifier: clear}]}
+          parameters: *venv_parameters
+          effects: [*execution_directory, *config_read, *venv_write, {kind: delete_path, target: *venv_target}]
+        - id: create_without_project_discovery
+          selector: {kind: all, items: [*running, {kind: no_positional_args}, {kind: has_modifier, modifier: no_project}, *not_clear]}
+          parameters: *venv_parameters
+          effects: [*execution_directory, *config_read, {kind: write_path, target: &cwd_venv {kind: configured_path, sources: [{slot: venv_path, projection: {kind: identity}}], default_value: .venv}}]
+        - id: clear_without_project_discovery
+          selector: {kind: all, items: [*running, {kind: no_positional_args}, {kind: has_modifier, modifier: no_project}, *clear]}
+          parameters: *venv_parameters
+          effects: [*execution_directory, *config_read, {kind: write_path, target: *cwd_venv}, {kind: delete_path, target: *cwd_venv}]
+        - id: create_with_discovery
+          selector: {kind: all, items: [*running, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: no_project}}, *not_clear]}
+          parameters: *venv_parameters
+          effects: [*execution_directory, *config_read, *venv_write]
+        - id: clear_with_discovery
+          selector: {kind: all, items: [*running, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: no_project}}, *clear]}
+          parameters: *venv_parameters
+          effects: [*execution_directory, *config_read, *venv_write, {kind: delete_path, target: *venv_target}]
+      modifiers:
+        - *help
+        - *directory
+        - *project
+        - *cache
+        - *config
+        - *global_flags
+        - *global_values
+        - *python
+        - {id: no_project, matcher: {kind: any_flag, flags: ['--no-project', '--no-workspace']}}
+        - id: clear
+          matcher: {kind: any_flag, flags: ['-c', '--clear']}
+        - id: seed
+          matcher: {kind: any_flag, flags: ['--seed']}
+          effects: [*cache_write]
+        - id: venv_flags
+          matcher: {kind: any_flag, flags: ['--force', '--no-clear', '--allow-existing', '--system-site-packages', '--relocatable', '--system', '--no-system']}
+        - id: prompt
+          matcher: {kind: any_flag, flags: ['--prompt']}
+          parameters: [{name: prompt, semantic: *plain, binding: *following, cardinality: optional_many}]
+      default_behavior: reject_unknown
+
+    - name: pip
+      forms: [*help_form]
+      children:
+        - name: install
+          forms:
+            - *help_form
+            - id: preview
+              selector: {kind: all, items: [*running, {kind: has_modifier, modifier: preview}]}
+              parameters: &package_parameters [{name: packages, semantic: *package_source, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+              effects: [*execution_directory, *config_read, {kind: import_package, target: {kind: slot, name: packages}}]
+            - id: install
+              selector: {kind: all, items: [*running, *not_preview]}
+              parameters: *package_parameters
+              effects: &pip_install_effects
+                - *execution_directory
+                - *config_read
+                - &pip_write {kind: write_path, target: &pip_target {kind: configured_path, sources: [{slot: target, projection: {kind: identity}}, {slot: prefix, projection: {kind: identity}}], missing: unknown}}
+                - &pip_delete {kind: delete_path, target: *pip_target}
+                - *cache_write
+                - &import_packages {kind: import_package, target: {kind: slot, name: packages}}
+                - &execute_packages {kind: execute_imported_package_logic, target: {kind: slot, name: packages}}
+          modifiers: &pip_options
+            - *help
+            - *directory
+            - *project
+            - *cache
+            - *config
+            - *global_flags
+            - *global_values
+            - *python
+            - *preview
+            - *resolver_flags
+            - *resolver_values
+            - *resolver_indexes
+            - &target
+              id: target
+              matcher: {kind: any_flag, flags: ['-t', '--target']}
+              parameters: [{name: target, semantic: *plain, binding: *following, cardinality: optional_many}]
+            - &prefix
+              id: prefix
+              matcher: {kind: any_flag, flags: ['--prefix']}
+              parameters: [{name: prefix, semantic: *plain, binding: *following, cardinality: optional_many}]
+            - &requirement
+              id: requirement
+              matcher: {kind: any_flag, flags: ['-r', '--requirements', '--requirement']}
+              parameters: [{name: requirements, semantic: *definition_source, binding: *following, cardinality: optional_many}]
+              effects: [{kind: import_package, target: {kind: slot, name: requirements}}, {kind: execute_imported_package_logic, target: {kind: slot, name: requirements}}]
+            - &editable
+              id: editable
+              matcher: {kind: any_flag, flags: ['-e', '--editable']}
+              parameters: [{name: editable, semantic: *local_package, binding: *following, cardinality: optional_many}]
+              effects: [{kind: import_package, target: {kind: slot, name: editable}}, {kind: execute_imported_package_logic, target: {kind: slot, name: editable}}]
+            - id: constraint
+              matcher: {kind: any_flag, flags: ['-c', '--constraints', '--constraint', '--build-constraints']}
+              parameters: [{name: constraints, semantic: {kind: path, role: read, purpose: project_config}, binding: *following, cardinality: optional_many}]
+              effects: [{kind: read_path, target: {kind: slot, name: constraints}}]
+            - id: pip_flags
+              matcher: {kind: any_flag, flags: ['--system', '--break-system-packages', '--strict', '--require-hashes', '--verify-hashes', '--no-verify-hashes', '--allow-empty-requirements', '--allow-empty-requirement', '--no-deps', '--force-reinstall', '--ignore-installed', '--no-progress']}
+            - id: pip_values
+              matcher: {kind: any_flag, flags: ['--overrides', '--python-version', '--exclude', '--only-binary', '--config-settings']}
+              parameters: [{name: pip_values, semantic: *plain, binding: *following, cardinality: optional_many}]
+          default_behavior: reject_unknown
+        - name: sync
+          forms:
+            - *help_form
+            - id: preview
+              selector: {kind: all, items: [*running, {kind: has_modifier, modifier: preview}]}
+              parameters: &pip_sync_parameters [{name: definitions, semantic: *definition_source, binding: {kind: remaining_positionals}, cardinality: required_many}]
+              effects: [*execution_directory, *config_read, {kind: import_package, target: {kind: slot, name: definitions}}]
+            - id: sync
+              selector: {kind: all, items: [*running, *not_preview]}
+              parameters: *pip_sync_parameters
+              effects: [*execution_directory, *config_read, *pip_write, *pip_delete, *cache_write, {kind: import_package, target: {kind: slot, name: definitions}}, {kind: execute_imported_package_logic, target: {kind: slot, name: definitions}}]
+          modifiers: *pip_options
+          default_behavior: reject_unknown
+        - name: uninstall
+          forms:
+            - *help_form
+            - id: preview
+              selector: {kind: all, items: [*running, {kind: has_modifier, modifier: preview}]}
+              parameters: &removed_packages [{name: packages, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+              effects: [*execution_directory, *config_read]
+            - id: uninstall
+              selector: {kind: all, items: [*running, *not_preview]}
+              parameters: *removed_packages
+              effects: [*execution_directory, *config_read, *pip_write, *pip_delete]
+          modifiers: *pip_options
+          default_behavior: reject_unknown
+        - name: list
+          forms: &pip_query_forms [{id: query, effects: [*execution_directory, *config_read]}]
+          modifiers: &pip_query_options
+            - *help
+            - *directory
+            - *project
+            - *cache
+            - *config
+            - *global_flags
+            - *global_values
+            - *python
+            - *target
+            - *prefix
+            - {id: query_flags, matcher: {kind: any_flag, flags: ['--system', '--strict', '--editable', '--exclude-editable', '--outdated', '--not-required', '--pre', '--no-deps', '--reverse', '--dedupe', '--show-version-specifiers', '--show-sizes', '--user']}}
+            - {id: query_values, matcher: {kind: any_flag, flags: ['--format', '--depth', '--package', '--exclude', '--index-url', '--default-index', '--index', '--extra-index-url', '--index-strategy']}, parameters: [{name: query_values, semantic: *plain, binding: *following, cardinality: optional_many}]}
+          default_behavior: reject_unknown
+        - name: freeze
+          forms: *pip_query_forms
+          modifiers: *pip_query_options
+          default_behavior: reject_unknown
+        - name: check
+          forms: *pip_query_forms
+          modifiers: *pip_query_options
+          default_behavior: reject_unknown
+        - name: show
+          forms: [{id: show, parameters: [{name: packages, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: required_many}], effects: [*execution_directory, *config_read]}]
+          modifiers: *pip_query_options
+          default_behavior: reject_unknown
+        - name: tree
+          forms: *pip_query_forms
+          modifiers: *pip_query_options
+          default_behavior: reject_unknown
+      modifiers: [*help, *directory, *project, *cache, *config, *global_flags, *global_values]
+      default_behavior: reject_unknown
+
+    - name: lock
+      forms:
+        - *help_form
+        - id: check_lock
+          selector: {kind: all, items: [*running, {kind: any, items: [*immutable_lock, {kind: has_modifier, modifier: preview}]}]}
+          effects: [*execution_directory, *config_read, *implicit_config]
+        - id: update_lock
+          selector: {kind: all, items: [*running, {kind: not, item: *immutable_lock}, *not_preview]}
+          effects: [*execution_directory, *config_read, *implicit_config, *lock_write, *cache_write]
+      modifiers: *sync_options
+      default_behavior: reject_unknown
+    - name: add
+      forms:
+        - *help_form
+        - id: add_without_sync
+          selector: {kind: all, items: [*running, *no_sync_enabled]}
+          parameters: *package_parameters
+          effects: [*execution_directory, *config_read, *lock_write, *import_packages]
+        - id: add
+          selector: {kind: all, items: [*running, *sync_enabled]}
+          parameters: *package_parameters
+          effects: [*execution_directory, *config_read, *lock_write, *environment_write, *environment_delete, *cache_write, *import_packages, *execute_packages]
+      modifiers: *run_options
+      default_behavior: reject_unknown
+    - name: remove
+      forms:
+        - *help_form
+        - id: remove_without_sync
+          selector: {kind: all, items: [*running, *no_sync_enabled]}
+          parameters: [{name: packages, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: required_many}]
+          effects: [*execution_directory, *config_read, *lock_write]
+        - id: remove
+          selector: {kind: all, items: [*running, *sync_enabled]}
+          parameters: [{name: packages, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: required_many}]
+          effects: [*execution_directory, *config_read, *lock_write, *environment_write, *environment_delete, *cache_write]
+      modifiers: *run_options
+      default_behavior: reject_unknown
+    - name: help
+      forms: [{id: show_help, parameters: [{name: topic, semantic: *plain, binding: {kind: remaining_args}, cardinality: optional_many}]}]
+      modifiers: [*help, *global_flags]
+      default_behavior: reject_unknown
+
+extensions:
+  caushell.profile/known_limitations:
+    - Project/workspace root discovery, Python installation discovery and hidden TOML/requirements/script contents are not evaluated. A default/relative project environment and lockfile therefore remain unresolved.
+    - Package source strings preserve their complete spelling; composite comma-separated, named direct-reference and hidden index configuration grammars are not expanded.
+    - Automatic Python acquisition, uv tool/python/auth/cache/self management, build/publish, project init/export/tree/format/check/audit are separate scopes, not claimed as covered by this profile.

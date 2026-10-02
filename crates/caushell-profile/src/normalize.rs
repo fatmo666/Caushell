@@ -149,7 +149,11 @@ fn validate_configured_path_references(
                     )));
                 }
             }
-            for modifier in &target.clear_environment_when {
+            for modifier in target
+                .clear_environment_when
+                .iter()
+                .chain(&target.unknown_environment_when)
+            {
                 if !modifier_names.contains(modifier.as_str()) {
                     return Err(NormalizeError::InvalidConfiguredPath(format!(
                         "undeclared environment-reset modifier: {}",
@@ -892,6 +896,7 @@ fn normalize_endpoint_usage(raw: RawEndpointUsage) -> EndpointUsage {
 fn normalize_package_manager_kind(raw: RawPackageManagerKind) -> PackageManagerKind {
     match raw {
         RawPackageManagerKind::Pip => PackageManagerKind::Pip,
+        RawPackageManagerKind::Uv => PackageManagerKind::Uv,
         RawPackageManagerKind::Apt => PackageManagerKind::Apt,
         RawPackageManagerKind::Conan => PackageManagerKind::Conan,
         RawPackageManagerKind::Conda => PackageManagerKind::Conda,
@@ -936,6 +941,13 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if kind == EffectKind::SetExecutionWorkingDirectory
+        && !matches!(target, EffectTarget::ConfiguredPath(_))
+    {
+        return Err(NormalizeError::InvalidConfiguredPath(
+            "set_execution_working_directory requires a configured_path target".into(),
+        ));
+    }
     if (kind == EffectKind::ListenNetwork) != matches!(target, EffectTarget::NetworkListener(_)) {
         return Err(NormalizeError::InvalidConfiguredPath(
             "listen_network requires a network_listener target, exclusively".into(),
@@ -949,6 +961,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
                 | EffectKind::DeletePath
                 | EffectKind::TargetPath
                 | EffectKind::LoadConfig
+                | EffectKind::SetExecutionWorkingDirectory
         ) {
             return Err(NormalizeError::InvalidConfiguredPath(
                 "configured_path requires a filesystem effect".into(),
@@ -1101,6 +1114,7 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::ExecutePayload => EffectKind::ExecutePayload,
         RawEffectKind::SourceScriptIntoCurrentShell => EffectKind::SourceScriptIntoCurrentShell,
         RawEffectKind::SetCurrentWorkingDirectory => EffectKind::SetCurrentWorkingDirectory,
+        RawEffectKind::SetExecutionWorkingDirectory => EffectKind::SetExecutionWorkingDirectory,
         RawEffectKind::ExecuteRemoteCommand => EffectKind::ExecuteRemoteCommand,
         RawEffectKind::ExecuteHook => EffectKind::ExecuteHook,
         RawEffectKind::ExecuteConfigDefinedTask => EffectKind::ExecuteConfigDefinedTask,
@@ -1230,15 +1244,25 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             sources,
             environment,
             relative_to,
+            unresolved_relative_base,
             expand_environment,
             expand_user,
             missing,
             default_value,
             purpose,
         } => {
-            if sources.is_empty() {
+            if sources.is_empty()
+                && environment.is_none()
+                && default_value.is_none()
+                && missing != crate::RawConfiguredPathMissing::Unknown
+            {
                 return Err(NormalizeError::InvalidConfiguredPath(
-                    "sources must not be empty".into(),
+                    "configured path must declare a source, default, or unresolved fallback".into(),
+                ));
+            }
+            if unresolved_relative_base && relative_to.is_some() {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "unresolved_relative_base cannot be combined with relative_to".into(),
                 ));
             }
             if let Some(value) = &default_value {
@@ -1283,6 +1307,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 sources,
                 environment: environment.map(normalize_environment_source).transpose()?,
                 relative_to,
+                unresolved_relative_base,
                 expand_environment,
                 expand_user,
                 default_value,
@@ -1353,14 +1378,33 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
         )),
         RawEffectTarget::Dispatch {
             command,
+            command_literal,
+            argv_prefix,
             argv,
             environment,
             clear_environment_when,
             unset_environment,
+            unknown_environment_when,
+            unknown_environment_from,
         } => {
-            ensure_non_empty(&command, "effects.target.command")?;
+            let command = match (command, command_literal) {
+                (Some(slot), None) => {
+                    ensure_non_empty(&slot, "effects.target.command")?;
+                    crate::DispatchCommandSource::Slot(SlotName::new(slot))
+                }
+                (None, Some(command)) => {
+                    ensure_non_empty(&command, "effects.target.command_literal")?;
+                    crate::DispatchCommandSource::Literal(command)
+                }
+                _ => {
+                    return Err(NormalizeError::InvalidConfiguredPath(
+                        "dispatch requires exactly one of command and command_literal".into(),
+                    ));
+                }
+            };
             Ok(EffectTarget::Dispatch(DispatchTarget {
-                command: SlotName::new(command),
+                command,
+                argv_prefix,
                 argv: normalize_slot_names(argv, "effects.target.argv")?,
                 environment: normalize_slot_names(environment, "effects.target.environment")?,
                 clear_environment_when: clear_environment_when
@@ -1374,6 +1418,17 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     unset_environment,
                     "effects.target.unset_environment",
                 )?,
+                unknown_environment_when: unknown_environment_when
+                    .into_iter()
+                    .map(|name| {
+                        ensure_non_empty(&name, "effects.target.unknown_environment_when")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
+                unknown_environment_from: unknown_environment_from
+                    .into_iter()
+                    .map(normalize_environment_source)
+                    .collect::<Result<Vec<_>, _>>()?,
             }))
         }
         RawEffectTarget::None => Ok(EffectTarget::None),

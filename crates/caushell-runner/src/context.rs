@@ -259,6 +259,7 @@ pub struct RunnerContext {
     nested_payload_records: Vec<NestedPayloadRecord>,
     execution_unit_resolve_records: Vec<ExecutionUnitResolveRecord>,
     effective_cwds: BTreeMap<NodeId, EffectiveCwd>,
+    execution_cwd_overrides: BTreeMap<NodeId, EffectiveCwd>,
     request_exit_cwd: Option<EffectiveCwd>,
     pub executed_passes: Vec<String>,
     pub findings: Vec<Finding>,
@@ -284,6 +285,7 @@ impl RunnerContext {
             nested_payload_records: Vec::new(),
             execution_unit_resolve_records: Vec::new(),
             effective_cwds: BTreeMap::new(),
+            execution_cwd_overrides: BTreeMap::new(),
             request_exit_cwd: None,
             executed_passes: Vec::new(),
             findings: Vec::new(),
@@ -316,6 +318,7 @@ impl RunnerContext {
         self.nested_payload_records.clear();
         self.execution_unit_resolve_records.clear();
         self.effective_cwds.clear();
+        self.execution_cwd_overrides.clear();
         self.request_exit_cwd = None;
     }
 
@@ -356,6 +359,7 @@ impl RunnerContext {
     ) {
         self.execution_unit_resolve_records = execution_unit_resolve_records;
         self.effective_cwds.clear();
+        self.execution_cwd_overrides.clear();
         self.request_exit_cwd = None;
     }
 
@@ -367,6 +371,17 @@ impl RunnerContext {
         self.effective_cwds.get(node_id)
     }
 
+    /// Process-local cwd, distinct from the shell cwd used to open redirections.
+    pub fn execution_cwd_for_node(&self, node_id: &NodeId) -> Option<&EffectiveCwd> {
+        self.execution_cwd_overrides
+            .get(node_id)
+            .or_else(|| self.effective_cwd_for_node(node_id))
+    }
+
+    pub fn set_execution_cwd_overrides(&mut self, overrides: BTreeMap<NodeId, EffectiveCwd>) {
+        self.execution_cwd_overrides = overrides;
+    }
+
     pub fn known_effective_cwd_for_node(&self, node_id: &NodeId) -> Option<&str> {
         self.effective_cwd_for_node(node_id)
             .and_then(EffectiveCwd::as_known)
@@ -374,10 +389,12 @@ impl RunnerContext {
 
     pub fn set_effective_cwds(&mut self, effective_cwds: BTreeMap<NodeId, EffectiveCwd>) {
         self.effective_cwds = effective_cwds;
+        self.execution_cwd_overrides.clear();
     }
 
     pub fn clear_effective_cwds(&mut self) {
         self.effective_cwds.clear();
+        self.execution_cwd_overrides.clear();
         self.request_exit_cwd = None;
     }
 
@@ -709,6 +726,41 @@ mod tests {
             Some(&EffectiveCwd::Known("/".to_string()))
         );
         assert_eq!(ctx.known_request_exit_cwd(), Some("/"));
+    }
+
+    #[test]
+    fn process_cwd_overrides_are_distinct_and_invalidated_with_analysis_inputs() {
+        let node = NodeId::new("command:sess-1:1");
+        for invalidation in 0..4 {
+            let mut ctx = RunnerContext::new(sample_request());
+            ctx.set_effective_cwds(std::collections::BTreeMap::from([(
+                node.clone(),
+                EffectiveCwd::known("/tmp/project"),
+            )]));
+            ctx.set_execution_cwd_overrides(std::collections::BTreeMap::from([(
+                node.clone(),
+                EffectiveCwd::known("/opt"),
+            )]));
+            assert_eq!(
+                ctx.known_effective_cwd_for_node(&node),
+                Some("/tmp/project")
+            );
+            assert_eq!(
+                ctx.execution_cwd_for_node(&node)
+                    .and_then(EffectiveCwd::as_known),
+                Some("/opt")
+            );
+            match invalidation {
+                0 => ctx.clear_effective_cwds(),
+                1 => ctx.set_execution_unit_resolve_records(Vec::new()),
+                2 => ctx.set_effective_cwds(std::collections::BTreeMap::new()),
+                _ => ctx.set_parsed_command(
+                    caushell_parse::parse_command("echo ok", caushell_types::ShellKind::Bash)
+                        .unwrap(),
+                ),
+            }
+            assert!(ctx.execution_cwd_for_node(&node).is_none());
+        }
     }
 
     #[test]

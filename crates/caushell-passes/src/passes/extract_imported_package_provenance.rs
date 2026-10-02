@@ -51,60 +51,81 @@ fn collect_imported_package_provenance_mutations(
             continue;
         };
 
-        for effect in &resolved.bound.effects {
-            if !matches!(
-                effect.kind,
-                EffectKind::ImportPackage | EffectKind::ExecuteImportedPackageLogic
-            ) {
-                continue;
-            }
+        for cwd_option in record.cwd_options(cwd) {
+            let resolution_cwd = cwd_option.unwrap_or(cwd);
+            for effect in &resolved.bound.effects {
+                if !matches!(
+                    effect.kind,
+                    EffectKind::ImportPackage | EffectKind::ExecuteImportedPackageLogic
+                ) {
+                    continue;
+                }
 
-            let EffectTarget::Slot(slot_name) = &effect.target else {
-                continue;
-            };
+                let EffectTarget::Slot(slot_name) = &effect.target else {
+                    continue;
+                };
 
-            let Some(parameter) = resolved
-                .bound
-                .bound_parameters
-                .iter()
-                .find(|parameter| parameter.name == *slot_name)
-            else {
-                continue;
-            };
+                for parameter in resolved
+                    .bound
+                    .bound_parameters
+                    .iter()
+                    .filter(|parameter| parameter.name == *slot_name)
+                {
+                    let SemanticType::PackageLocator(locator_semantic) = &parameter.semantic else {
+                        continue;
+                    };
 
-            let SemanticType::PackageLocator(locator_semantic) = &parameter.semantic else {
-                continue;
-            };
+                    for value in &parameter.values {
+                        let (mut locator_kind, text) =
+                            classify_locator_value(locator_semantic, value, resolution_cwd, home);
+                        if cwd_option.is_none()
+                            && matches!(
+                                locator_kind,
+                                PackageLocatorKind::LocalPath | PackageLocatorKind::RequirementFile
+                            )
+                            && !text.starts_with('/')
+                        {
+                            locator_kind = PackageLocatorKind::UnknownDynamic;
+                        }
 
-            for value in &parameter.values {
-                let (locator_kind, text) =
-                    classify_locator_value(locator_semantic, value, cwd, home);
+                        let manager = package_manager_kind(locator_semantic.manager);
+                        let artifact =
+                            imported_package_artifact(manager, locator_kind, &text, resolution_cwd);
+                        // A relative spelling is not a session-wide identity: two
+                        // invocations can refer to different files with the same
+                        // argument. Absolute/remote/registry spellings remain stable.
+                        let identity = match &artifact {
+                            ProvenanceArtifact::ImportedPackage {
+                                source_path: Some(path),
+                                ..
+                            } if !text.starts_with('/') => format!("{text}@{path}"),
+                            _ => text.clone(),
+                        };
+                        let artifact_node_id =
+                            imported_package_artifact_node_id(manager, locator_kind, &identity);
 
-                let manager = package_manager_kind(locator_semantic.manager);
-                let artifact_node_id =
-                    imported_package_artifact_node_id(manager, locator_kind, &text);
-                let artifact = imported_package_artifact(manager, locator_kind, &text, cwd);
+                        mutations.push(PendingMutation::AddProvenanceArtifact {
+                            source_node_id: record.source_node_id().clone(),
+                            node_id: artifact_node_id.clone(),
+                            artifact,
+                            relation: effect_edge_kind(effect.kind),
+                            semantics: effect_edge_semantics(
+                                effect.kind,
+                                parameter.name.as_str(),
+                                resolved.normalized_command_name.as_str(),
+                            ),
+                        });
 
-                mutations.push(PendingMutation::AddProvenanceArtifact {
-                    source_node_id: record.source_node_id().clone(),
-                    node_id: artifact_node_id.clone(),
-                    artifact,
-                    relation: effect_edge_kind(effect.kind),
-                    semantics: effect_edge_semantics(
-                        effect.kind,
-                        parameter.name.as_str(),
-                        resolved.normalized_command_name.as_str(),
-                    ),
-                });
-
-                mutations.extend(source_provenance_mutations(
-                    record.source_node_id(),
-                    parameter.name.as_str(),
-                    resolved.normalized_command_name.as_str(),
-                    locator_kind,
-                    &text,
-                    cwd,
-                ));
+                        mutations.extend(source_provenance_mutations(
+                            record.source_node_id(),
+                            parameter.name.as_str(),
+                            resolved.normalized_command_name.as_str(),
+                            locator_kind,
+                            &text,
+                            resolution_cwd,
+                        ));
+                    }
+                }
             }
         }
     }
@@ -237,7 +258,7 @@ fn manager_ambiguous_locator_precedence(
     manager: caushell_profile::PackageManagerKind,
 ) -> &'static [PackageLocatorKind] {
     match manager {
-        caushell_profile::PackageManagerKind::Pip => &[
+        caushell_profile::PackageManagerKind::Pip | caushell_profile::PackageManagerKind::Uv => &[
             PackageLocatorKind::LocalPath,
             PackageLocatorKind::RegistryRef,
             PackageLocatorKind::RequirementFile,
@@ -375,6 +396,7 @@ fn source_provenance_mutations(
 fn package_manager_kind(kind: caushell_profile::PackageManagerKind) -> PackageManagerKind {
     match kind {
         caushell_profile::PackageManagerKind::Pip => PackageManagerKind::Pip,
+        caushell_profile::PackageManagerKind::Uv => PackageManagerKind::Uv,
         caushell_profile::PackageManagerKind::Apt => PackageManagerKind::Apt,
         caushell_profile::PackageManagerKind::Conan => PackageManagerKind::Conan,
         caushell_profile::PackageManagerKind::Conda => PackageManagerKind::Conda,
@@ -398,6 +420,7 @@ fn package_locator_kind(kind: caushell_profile::PackageLocatorKind) -> PackageLo
 fn package_manager_slug(manager: PackageManagerKind) -> &'static str {
     match manager {
         PackageManagerKind::Pip => "pip",
+        PackageManagerKind::Uv => "uv",
         PackageManagerKind::Apt => "apt",
         PackageManagerKind::Conan => "conan",
         PackageManagerKind::Conda => "conda",
@@ -864,7 +887,7 @@ mod tests {
                 .contains(&PendingMutation::AddProvenanceArtifact {
                     source_node_id: NodeId::new("command:sess-1:2:0"),
                     node_id: NodeId::new(
-                        "artifact:imported-package:pip:requirement_file:requirements.txt"
+                        "artifact:imported-package:pip:requirement_file:requirements.txt@/tmp/project/requirements.txt"
                     ),
                     artifact: ProvenanceArtifact::ImportedPackage {
                         manager: caushell_types::PackageManagerKind::Pip,
@@ -909,7 +932,7 @@ mod tests {
             ctx.pending_mutations()
                 .contains(&PendingMutation::AddProvenanceArtifact {
                     source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new("artifact:imported-package:pip:local_path:."),
+                    node_id: NodeId::new("artifact:imported-package:pip:local_path:.@/tmp/project"),
                     artifact: ProvenanceArtifact::ImportedPackage {
                         manager: caushell_types::PackageManagerKind::Pip,
                         locator: ".".to_string(),
@@ -1146,7 +1169,9 @@ mod tests {
             ctx.pending_mutations()
                 .contains(&PendingMutation::AddProvenanceArtifact {
                     source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new("artifact:imported-package:conan:local_path:."),
+                    node_id: NodeId::new(
+                        "artifact:imported-package:conan:local_path:.@/tmp/project"
+                    ),
                     artifact: ProvenanceArtifact::ImportedPackage {
                         manager: caushell_types::PackageManagerKind::Conan,
                         locator: ".".to_string(),

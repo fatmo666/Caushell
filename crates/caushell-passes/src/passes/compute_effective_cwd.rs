@@ -23,7 +23,7 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
     }
 
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
-        let (effective_cwds, request_exit_cwd) = {
+        let (effective_cwds, execution_cwd_overrides, request_exit_cwd) = {
             let records_by_node = ctx
                 .execution_unit_resolve_records()
                 .iter()
@@ -32,6 +32,7 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
             let function_records_by_parent =
                 function_records_by_parent(ctx.execution_unit_resolve_records());
             let mut effective_cwds = BTreeMap::new();
+            let mut execution_cwd_overrides = BTreeMap::new();
             let known_existing_dirs = known_existing_dirs(ctx);
 
             let initial_cwd = initial_cwd(ctx, _session);
@@ -44,6 +45,7 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                     &function_records_by_parent,
                     &known_existing_dirs,
                     &mut effective_cwds,
+                    &mut execution_cwd_overrides,
                 )
             } else {
                 EffectiveCwd::known(initial_cwd)
@@ -55,11 +57,13 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                 &records_by_node,
                 &known_existing_dirs,
                 &mut effective_cwds,
+                &mut execution_cwd_overrides,
             );
-            (effective_cwds, request_exit_cwd)
+            (effective_cwds, execution_cwd_overrides, request_exit_cwd)
         };
 
         ctx.set_effective_cwds(effective_cwds);
+        ctx.set_execution_cwd_overrides(execution_cwd_overrides);
         ctx.set_request_exit_cwd(request_exit_cwd);
     }
 }
@@ -314,6 +318,7 @@ fn compute_request_scope_cwds(
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
     known_existing_dirs: &BTreeSet<String>,
     effective_cwds: &mut BTreeMap<NodeId, EffectiveCwd>,
+    execution_cwd_overrides: &mut BTreeMap<NodeId, EffectiveCwd>,
 ) -> EffectiveCwd {
     let mut flow = CwdFlow::new(CwdState::known(initial_cwd));
     let home = ctx.request().home.as_deref();
@@ -331,6 +336,11 @@ fn compute_request_scope_cwds(
             .get(&source_node_id)
             .copied()
             .filter(|record| record.origin_kind == ExecutionUnitOriginKind::TopLevel);
+        if let Some(override_cwd) = record.and_then(|record| {
+            execution_cwd_override_for_record(record, &cwd_state_for_scoped_states(&states), home)
+        }) {
+            execution_cwd_overrides.insert(source_node_id.clone(), override_cwd.to_effective());
+        }
         let function_records = function_records_by_parent
             .get(&source_node_id)
             .map(Vec::as_slice);
@@ -363,6 +373,7 @@ fn compute_derived_scope_cwds(
     records_by_node: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
     known_existing_dirs: &BTreeSet<String>,
     effective_cwds: &mut BTreeMap<NodeId, EffectiveCwd>,
+    execution_cwd_overrides: &mut BTreeMap<NodeId, EffectiveCwd>,
 ) {
     let mut single_records = Vec::new();
     let mut grouped_records: BTreeMap<ScopeKey, Vec<&ExecutionUnitResolveRecord>> = BTreeMap::new();
@@ -405,9 +416,21 @@ fn compute_derived_scope_cwds(
             .copied()
             .filter(|record| record.depth == depth)
         {
-            let state =
-                base_cwd_for_record(ctx, record, initial_cwd, records_by_node, effective_cwds);
+            let state = base_cwd_for_record(
+                ctx,
+                record,
+                initial_cwd,
+                records_by_node,
+                effective_cwds,
+                execution_cwd_overrides,
+            );
             effective_cwds.insert(record.source_node_id.clone(), state.to_effective());
+            if let Some(override_cwd) =
+                execution_cwd_override_for_record(record, &state, ctx.request().home.as_deref())
+            {
+                execution_cwd_overrides
+                    .insert(record.source_node_id.clone(), override_cwd.to_effective());
+            }
         }
 
         for records in grouped_records
@@ -423,6 +446,7 @@ fn compute_derived_scope_cwds(
                 initial_cwd,
                 records_by_node,
                 effective_cwds,
+                execution_cwd_overrides,
             ));
             let home = ctx.request().home.as_deref();
 
@@ -439,6 +463,14 @@ fn compute_derived_scope_cwds(
                     record.source_node_id.clone(),
                     cwd_state_for_scoped_states(&states).to_effective(),
                 );
+                if let Some(override_cwd) = execution_cwd_override_for_record(
+                    record,
+                    &cwd_state_for_scoped_states(&states),
+                    home,
+                ) {
+                    execution_cwd_overrides
+                        .insert(record.source_node_id.clone(), override_cwd.to_effective());
+                }
                 let outcome = record_command_outcome_for_scoped_states(
                     record,
                     command,
@@ -831,7 +863,24 @@ fn base_cwd_for_record(
     initial_cwd: &str,
     records_by_node: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
     effective_cwds: &BTreeMap<NodeId, EffectiveCwd>,
+    execution_cwd_overrides: &BTreeMap<NodeId, EffectiveCwd>,
 ) -> CwdState {
+    if record.origin_kind == ExecutionUnitOriginKind::Dispatch
+        && let Some(dispatch_cwd) = &record.inherited_scope.dispatch_working_directory
+    {
+        return CwdState::from(dispatch_cwd);
+    }
+    if matches!(
+        record.origin_kind,
+        ExecutionUnitOriginKind::Dispatch
+            | ExecutionUnitOriginKind::NestedPayload
+            | ExecutionUnitOriginKind::ShellCommandStringPayload
+            | ExecutionUnitOriginKind::RecursivePayload
+    ) && let Some(parent_execution_cwd) =
+        execution_cwd_overrides.get(&record.parent_execution_node_id)
+    {
+        return CwdState::from(parent_execution_cwd);
+    }
     let parent_state = parent_cwd_for_record(ctx, record, effective_cwds)
         .unwrap_or_else(|| CwdState::known(initial_cwd));
 
@@ -839,15 +888,65 @@ fn base_cwd_for_record(
         return parent_state;
     }
 
-    if let Some(dispatch_cwd) = &record.inherited_scope.dispatch_working_directory {
-        return CwdState::from(dispatch_cwd);
-    }
-
     let Some(parent_record) = records_by_node.get(&record.parent_execution_node_id) else {
         return parent_state;
     };
     cwd_anchor_override(parent_record, &parent_state, ctx.request().home.as_deref())
         .unwrap_or(parent_state)
+}
+
+/// Process-local chdir affects tool operands and descendants, while the caller
+/// shell and its redirections retain the entry cwd.
+fn execution_cwd_override_for_record(
+    record: &ExecutionUnitResolveRecord,
+    base: &CwdState,
+    home: Option<&str>,
+) -> Option<CwdState> {
+    let bound = match &record.result {
+        ResolveInvocationArtifactResult::Resolved(resolved) => &resolved.bound,
+        ResolveInvocationArtifactResult::SelectionError {
+            partial_bound: Some(bound),
+            ..
+        } => bound,
+        _ => return None,
+    };
+    let effect = bound
+        .effects
+        .iter()
+        .find(|effect| effect.kind == EffectKind::SetExecutionWorkingDirectory)?;
+    let EffectTarget::ConfiguredPath(target) = &effect.target else {
+        return Some(CwdState::unknown());
+    };
+    if base.is_empty() {
+        return Some(CwdState::empty());
+    }
+    let mut result = CwdState::empty();
+    let mut applicable = false;
+    for cwd in base
+        .known
+        .iter()
+        .map(Some)
+        .chain(base.unknown.then_some(None))
+    {
+        let Some(path) = crate::path::resolve_configured_path(
+            bound,
+            target,
+            cwd.map(String::as_str).unwrap_or("/"),
+            home,
+            Some(crate::support::ExecutionResolveRecordRef::new(record)),
+        ) else {
+            continue;
+        };
+        applicable = true;
+        if path.cwd_dependent && cwd.is_none() {
+            result.add_unknown();
+        } else if let Some(path) = path.resolution.concrete_path() {
+            result.add_known(path);
+        } else {
+            result.add_unknown();
+        }
+    }
+    applicable.then_some(result)
 }
 
 fn parent_cwd_for_record(
@@ -1328,6 +1427,64 @@ mod tests {
             ctx.request_exit_cwd(),
             Some(&EffectiveCwd::Known("/".to_string()))
         );
+    }
+
+    #[test]
+    fn declarative_process_chdir_is_generic_and_does_not_change_caller_shell() {
+        let profile = caushell_profile::load_command_profile_from_str(
+            r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: arbitrary-wrapper}
+forms:
+  - id: run
+    effects:
+      - kind: set_execution_working_directory
+        target: {kind: configured_path, sources: [], default_value: /opt}
+      - kind: dispatch_command
+        target: {kind: dispatch, command_literal: rm, argv_prefix: ['-f', victim]}
+"#,
+        )
+        .unwrap();
+        let mut profiles = ProfileRegistry::built_in().unwrap().profiles().to_vec();
+        profiles.push(profile);
+        let profiles = ProfileRegistry::from_profiles(profiles).unwrap();
+        let mut runner = PassRunner::new();
+        runner.register_request_transform_pass(ParseCommandPass);
+        runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+        runner.register_session_transform_pass(ResolveInvocationPass::new(profiles));
+        runner.register_session_transform_pass(ComputeEffectiveCwdPass);
+        let graph = SessionGraph::new();
+        let summary = SessionSummary::default();
+        let mut ctx = RunnerContext::new(sample_request(
+            "arbitrary-wrapper > output; echo ok",
+            "/tmp/project",
+        ));
+        runner.run(SessionView::new(&graph, &summary), &mut ctx);
+        let wrapper = ctx.execution_unit_resolve_records().iter().find(|r| matches!(&r.result,
+            caushell_profile::ResolveInvocationArtifactResult::Resolved(result) if result.normalized_command_name == "arbitrary-wrapper"
+        )).expect("resolved arbitrary wrapper");
+        assert_eq!(
+            ctx.effective_cwd_for_node(&wrapper.source_node_id)
+                .and_then(EffectiveCwd::as_known),
+            Some("/tmp/project")
+        );
+        assert_eq!(
+            ctx.execution_cwd_for_node(&wrapper.source_node_id)
+                .and_then(EffectiveCwd::as_known),
+            Some("/opt")
+        );
+        let child = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .find(|r| r.depth == 1)
+            .unwrap();
+        assert_eq!(
+            ctx.execution_cwd_for_node(&child.source_node_id)
+                .and_then(EffectiveCwd::as_known),
+            Some("/opt")
+        );
+        assert_eq!(ctx.known_request_exit_cwd(), Some("/tmp/project"));
     }
 
     #[test]

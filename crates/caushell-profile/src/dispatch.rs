@@ -25,6 +25,8 @@ pub struct DispatchCommandCandidate {
     pub argv: Vec<DispatchArgument>,
     pub environment: Vec<DispatchArgument>,
     pub clear_environment: bool,
+    pub unknown_environment: bool,
+    pub unknown_environment_from: Vec<crate::EnvironmentValueSource>,
     pub unset_environment: Vec<DispatchArgument>,
     pub execution_cwd_unknown: bool,
 }
@@ -119,26 +121,42 @@ pub fn collect_dispatch_command_projection(
             continue;
         };
 
-        let Some(parameter) = parameter_for_slot(invocation, &target.command) else {
-            continue;
-        };
-
-        let Some(command) = single_argument_for_parameter(&target.command, parameter) else {
-            unresolved.push(UnresolvedDispatchCommand {
-                dispatch_index: current_dispatch_index,
-                command_slot: target.command.clone(),
-            });
-            continue;
-        };
-
         let mut next_synthetic_span_byte = maximum_bound_source_span_end(invocation)
             .saturating_add(1)
             .saturating_add(current_dispatch_index);
+        let command = match &target.command {
+            crate::DispatchCommandSource::Literal(command) => {
+                literal_dispatch_argument(command, &mut next_synthetic_span_byte)
+            }
+            crate::DispatchCommandSource::Slot(slot) => {
+                let Some(parameter) = parameter_for_slot(invocation, slot) else {
+                    continue;
+                };
+                let Some(command) = single_argument_for_parameter(slot, parameter) else {
+                    unresolved.push(UnresolvedDispatchCommand {
+                        dispatch_index: current_dispatch_index,
+                        command_slot: slot.clone(),
+                    });
+                    continue;
+                };
+                command
+            }
+        };
+        let mut argv: Vec<_> = target
+            .argv_prefix
+            .iter()
+            .map(|text| literal_dispatch_argument(text, &mut next_synthetic_span_byte))
+            .collect();
+        argv.extend(arguments_for_slots(
+            invocation,
+            &target.argv,
+            &mut next_synthetic_span_byte,
+        ));
 
         resolved.push(DispatchCommandCandidate {
             dispatch_index: current_dispatch_index,
             command,
-            argv: arguments_for_slots(invocation, &target.argv, &mut next_synthetic_span_byte),
+            argv,
             environment: arguments_for_slots(
                 invocation,
                 &target.environment,
@@ -149,6 +167,11 @@ pub fn collect_dispatch_command_projection(
                 .clear_environment_when
                 .iter()
                 .any(|modifier| invocation.applied_modifiers.contains(modifier)),
+            unknown_environment: target
+                .unknown_environment_when
+                .iter()
+                .any(|modifier| invocation.applied_modifiers.contains(modifier)),
+            unknown_environment_from: target.unknown_environment_from.clone(),
             unset_environment: arguments_for_slots(
                 invocation,
                 &target.unset_environment,
@@ -160,6 +183,29 @@ pub fn collect_dispatch_command_projection(
     DispatchCommandProjection {
         resolved,
         unresolved,
+    }
+}
+
+fn literal_dispatch_argument(text: &str, next_byte: &mut usize) -> DispatchArgument {
+    let start = *next_byte;
+    *next_byte = start.saturating_add(text.len().max(1));
+    DispatchArgument {
+        slot: SlotName::new("profile_literal"),
+        text: text.into(),
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: true,
+        quoted: true,
+        node_kind: "profile_literal".into(),
+        span: SourceSpan {
+            start_byte: start,
+            end_byte: *next_byte,
+            start_row: 0,
+            end_row: 0,
+            start_column: start,
+            end_column: *next_byte,
+        },
+        binding_source: ArgumentBindingSource::RemainingArg,
     }
 }
 
@@ -350,11 +396,14 @@ mod tests {
         Effect {
             kind: EffectKind::DispatchCommand,
             target: EffectTarget::Dispatch(DispatchTarget {
-                command: SlotName::new(command),
+                command: crate::DispatchCommandSource::Slot(SlotName::new(command)),
+                argv_prefix: Vec::new(),
                 argv: argv.iter().copied().map(SlotName::new).collect(),
                 environment: environment.iter().copied().map(SlotName::new).collect(),
                 clear_environment_when: Vec::new(),
                 unset_environment: Vec::new(),
+                unknown_environment_when: Vec::new(),
+                unknown_environment_from: Vec::new(),
             }),
             interactive_escape_surface: None,
             catastrophic: Default::default(),
