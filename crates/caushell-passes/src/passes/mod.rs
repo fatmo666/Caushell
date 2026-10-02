@@ -67,3 +67,5 @@ pub use resolve_policy::ResolvePolicyPass;
 pub use sensitive_data_exfiltration_guard::SensitiveDataExfiltrationGuardPass;
 pub use sequence_integrity::SequenceIntegrityPass;
 pub use tainted_execution_guard::TaintedExecutionGuardPass;
+mod network_listener_guard;
+pub use network_listener_guard::NetworkListenerGuardPass;

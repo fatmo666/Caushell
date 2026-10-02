@@ -476,6 +476,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
+    runner.register_session_analysis_pass(caushell_passes::NetworkListenerGuardPass);
     runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);
     runner.register_session_analysis_pass(TaintedExecutionGuardPass);
     runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);

@@ -813,6 +813,10 @@ impl<'a> ExecutionSemanticsRef<'a> {
         self.semantics
     }
 
+    pub fn network_listeners(&self) -> &'a [caushell_types::NetworkListener] {
+        &self.semantics.network_listeners
+    }
+
     pub fn normalized_command_name(&self) -> &'a str {
         self.semantics.normalized_command_name.as_str()
     }
@@ -909,6 +913,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
 
     pub fn to_execution_semantics_fact(&self) -> ExecutionSemanticsFact {
         ExecutionSemanticsFact {
+            network_listeners: self.semantics.network_listeners.clone(),
             node_id: self.node_id.0.clone(),
             source: self.source.to_execution_unit(),
             normalized_command_name: self.normalized_command_name().to_string(),
@@ -1623,6 +1628,7 @@ mod tests {
         assert_eq!(
             semantics.to_execution_semantics_fact(),
             ExecutionSemanticsFact {
+                network_listeners: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:2".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:2".to_string(),

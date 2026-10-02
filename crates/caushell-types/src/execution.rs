@@ -61,6 +61,8 @@ pub enum ProcessControlTargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionSemantics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_listeners: Vec<NetworkListener>,
     pub normalized_command_name: String,
     pub form_id: String,
     pub payload_mode: Option<ExecutionPayloadMode>,
@@ -89,6 +91,7 @@ pub struct ExecutionSemantics {
 impl ExecutionSemantics {
     pub fn new(normalized_command_name: impl Into<String>, form_id: impl Into<String>) -> Self {
         Self {
+            network_listeners: Vec::new(),
             normalized_command_name: normalized_command_name.into(),
             form_id: form_id.into(),
             payload_mode: None,
@@ -205,8 +208,71 @@ impl ExecutionSemantics {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkListenScope {
+    Loopback,
+    NonLoopback,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum NetworkListener {
+    Internet {
+        host: Option<String>,
+        port: Option<String>,
+        scope: NetworkListenScope,
+    },
+    Unix {
+        path: String,
+    },
+    InheritedFd {
+        fd: Option<String>,
+    },
+    Unknown {
+        reason: String,
+    },
+}
+
+impl NetworkListener {
+    pub fn has_local_scope(&self) -> bool {
+        matches!(
+            self,
+            Self::Internet {
+                scope: NetworkListenScope::Loopback,
+                ..
+            } | Self::Unix { .. }
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn listener_semantics_roundtrip_and_legacy_semantics_default_empty() {
+        use super::*;
+        let mut semantics = ExecutionSemantics::new("listener", "run");
+        // Empty listeners are omitted, so the same JSON also exercises the
+        // backward-compatible read of old stored execution semantics.
+        let old = serde_json::to_string(&semantics).unwrap();
+        assert!(!old.contains("network_listeners"));
+        assert_eq!(
+            serde_json::from_str::<ExecutionSemantics>(&old).unwrap(),
+            semantics
+        );
+        semantics.network_listeners.push(NetworkListener::Internet {
+            host: Some("0.0.0.0".into()),
+            port: Some("8000".into()),
+            scope: NetworkListenScope::NonLoopback,
+        });
+        let encoded = serde_json::to_string(&semantics).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ExecutionSemantics>(&encoded).unwrap(),
+            semantics
+        );
+    }
+
     use super::{
         ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,
         InteractiveEscapeCapability, InteractiveEscapeSurfaceKind,

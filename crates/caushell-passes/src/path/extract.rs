@@ -333,7 +333,9 @@ pub(crate) fn collect_effect_mutation_targets(
         let start = targets.len();
         match &effect.target {
             EffectTarget::ConfiguredPath(target) => {
-                if let Some(path) = resolve_configured_path(&resolved.bound, target, cwd, home) {
+                if let Some(path) =
+                    resolve_configured_path(&resolved.bound, target, cwd, home, Some(record))
+                {
                     targets.push(MutationTargetCandidate {
                         operation: effect.kind,
                         slot_name: format!("configured_path_{effect_index}"),
@@ -415,7 +417,10 @@ pub(crate) fn collect_effect_mutation_targets(
                     ),
                 });
             }
-            EffectTarget::ImplicitInput(_) | EffectTarget::Dispatch(_) | EffectTarget::None => {}
+            EffectTarget::ImplicitInput(_)
+            | EffectTarget::Dispatch(_)
+            | EffectTarget::None
+            | EffectTarget::NetworkListener(_) => {}
         }
 
         if targets.len() == start {
@@ -704,7 +709,9 @@ fn collect_effect_target_path_facts(
 
         match &effect.target {
             EffectTarget::ConfiguredPath(target) => {
-                if let Some(path) = resolve_configured_path(invocation, target, cwd, home) {
+                if let Some(path) =
+                    resolve_configured_path(invocation, target, cwd, home, Some(record))
+                {
                     out.push(PathFactCandidate {
                         source_node_id: record.source_node_id().clone(),
                         command_index: record.command_index(),
@@ -743,7 +750,8 @@ fn collect_effect_target_path_facts(
             | EffectTarget::MutationScope(_)
             | EffectTarget::ImplicitInput(_)
             | EffectTarget::Dispatch(_)
-            | EffectTarget::None => {}
+            | EffectTarget::None
+            | EffectTarget::NetworkListener(_) => {}
         }
     }
 }
@@ -1392,6 +1400,7 @@ fn metadata_mutation_kinds(
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
+        | EffectKind::ListenNetwork
         | EffectKind::TransformData
         | EffectKind::ImportPackage
         | EffectKind::ExecuteImportedPackageLogic
@@ -1573,6 +1582,7 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
+        | EffectKind::ListenNetwork
         | EffectKind::TransformData
         | EffectKind::ImportPackage
         | EffectKind::ExecuteImportedPackageLogic
@@ -1606,6 +1616,7 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
+        | EffectKind::ListenNetwork
         | EffectKind::TransformData
         | EffectKind::ImportPackage
         | EffectKind::ExecuteImportedPackageLogic

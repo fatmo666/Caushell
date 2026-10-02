@@ -784,6 +784,7 @@ pub enum EffectKind {
     BindVariableFromRuntimeInput,
     PrivilegeModifier,
     NetworkEndpoint,
+    ListenNetwork,
     TransformData,
     ImportPackage,
     ExecuteImportedPackageLogic,
@@ -805,6 +806,8 @@ pub struct DispatchTarget {
     pub command: SlotName,
     pub argv: Vec<SlotName>,
     pub environment: Vec<SlotName>,
+    pub clear_environment_when: Vec<ModifierId>,
+    pub unset_environment: Vec<SlotName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,6 +842,7 @@ pub enum MutationScopeTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectTarget {
+    NetworkListener(NetworkListenerTarget),
     ConfiguredPath(ConfiguredPathTarget),
     Slot(SlotName),
     ToolConventionPath(ToolConventionPathTarget),
@@ -875,12 +879,36 @@ pub enum ConfiguredPathMissing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfiguredPathTarget {
     pub sources: Vec<ConfiguredPathSource>,
+    pub environment: Option<EnvironmentValueSource>,
     pub relative_to: Option<ConfiguredPathAnchor>,
     pub expand_environment: bool,
     pub expand_user: bool,
     pub missing: ConfiguredPathMissing,
     pub default_value: Option<String>,
     pub purpose: Option<PathPurpose>,
+}
+
+/// A tool-level default, not shell expansion. Empty-value handling is declared
+/// explicitly because CLI libraries differ on whether an empty env var is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentValueSource {
+    pub name: String,
+    pub empty_is_unset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredScalar {
+    pub slot: SlotName,
+    pub environment: Option<EnvironmentValueSource>,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkListenerTarget {
+    pub host: ConfiguredScalar,
+    pub port: Option<ConfiguredScalar>,
+    pub unix_socket: Option<ConfiguredScalar>,
+    pub inherited_fd: Option<ConfiguredScalar>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

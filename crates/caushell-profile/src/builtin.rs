@@ -7,6 +7,10 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "uvicorn",
+        content: include_str!("../profiles/uvicorn.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "conda",
         content: include_str!("../profiles/conda.yaml"),
     },

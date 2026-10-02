@@ -91,6 +91,17 @@ pub struct SessionBindings {
     session_variables: BTreeMap<String, SessionValue>,
     inherited_environment: BTreeMap<String, SessionValue>,
     positional_parameters: Vec<SessionValue>,
+    // Separate child-environment view: unexported shell locals are not defaults
+    // for an external program. None records a proven absence (e.g. unset).
+    child_environment: BTreeMap<String, Option<SessionValue>>,
+    child_environment_complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentValueRef<'a> {
+    Present(&'a SessionValue),
+    Absent,
+    Unknown,
 }
 
 impl SessionBindings {
@@ -105,6 +116,12 @@ impl SessionBindings {
             bindings.session_variables.insert(
                 binding.name.clone(),
                 SessionValue::from_session_variable_value(&binding.value),
+            );
+            bindings.child_environment.insert(
+                binding.name.clone(),
+                binding
+                    .exported
+                    .then(|| SessionValue::from_session_variable_value(&binding.value)),
             );
         }
 
@@ -131,8 +148,17 @@ impl SessionBindings {
             }
         };
 
+        if shell_state.observability.variables != ShellStateKnowledge::Unknown {
+            bindings.child_environment.clear();
+            bindings.child_environment_complete = true;
+        }
+
         for variable in &shell_state.variables {
             if let Some(value) = shell_value_to_session_value(&variable.value) {
+                bindings.child_environment.insert(
+                    variable.name.clone(),
+                    variable.exported.then(|| value.clone()),
+                );
                 match shell_state.observability.variables {
                     ShellStateKnowledge::Complete => {
                         bindings
@@ -185,6 +211,8 @@ impl SessionBindings {
     }
 
     pub fn insert_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        let value = value.into();
+        self.update_exported_value(name, SessionValue::exact_scalar(value.clone()));
         self.session_variables
             .insert(name.to_string(), SessionValue::exact_scalar(value));
     }
@@ -195,6 +223,8 @@ impl SessionBindings {
         value: impl Into<String>,
         kind: RuntimeProducedValueKind,
     ) {
+        let value = value.into();
+        self.update_exported_value(name, SessionValue::runtime_produced(value.clone(), kind));
         self.session_variables.insert(
             name.to_string(),
             SessionValue::runtime_produced(value, kind),
@@ -202,6 +232,8 @@ impl SessionBindings {
     }
 
     pub fn insert_opaque_dynamic(&mut self, name: &str, repr: impl Into<String>) {
+        let repr = repr.into();
+        self.update_exported_value(name, SessionValue::opaque_dynamic(repr.clone()));
         self.session_variables
             .insert(name.to_string(), SessionValue::opaque_dynamic(repr));
     }
@@ -222,6 +254,7 @@ impl SessionBindings {
         source: RuntimeInputSource,
         capture: RuntimeInputCapture,
     ) {
+        self.update_exported_value(name, SessionValue::runtime_input(source, capture.clone()));
         self.session_variables.insert(
             name.to_string(),
             SessionValue::runtime_input(source, capture),
@@ -234,6 +267,9 @@ impl SessionBindings {
     }
 
     pub fn insert_inherited_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        let value = value.into();
+        self.child_environment
+            .insert(name.into(), Some(SessionValue::exact_scalar(value.clone())));
         self.inherited_environment
             .insert(name.to_string(), SessionValue::exact_scalar(value));
     }
@@ -268,6 +304,72 @@ impl SessionBindings {
     pub fn remove(&mut self, name: &str) {
         self.session_variables.remove(name);
         self.inherited_environment.remove(name);
+        self.child_environment.insert(name.into(), None);
+    }
+
+    pub fn environment_value(&self, name: &str) -> EnvironmentValueRef<'_> {
+        match self.child_environment.get(name) {
+            Some(Some(value)) => EnvironmentValueRef::Present(value),
+            Some(None) => EnvironmentValueRef::Absent,
+            None if self.child_environment_complete => EnvironmentValueRef::Absent,
+            None => EnvironmentValueRef::Unknown,
+        }
+    }
+
+    pub fn export(&mut self, name: &str) {
+        let value = self
+            .get(name)
+            .map(|binding| binding.value.clone())
+            .unwrap_or_else(|| SessionValue::opaque_dynamic("exported value unavailable"));
+        self.child_environment.insert(name.into(), Some(value));
+    }
+
+    pub fn unexport(&mut self, name: &str) {
+        self.child_environment.insert(name.into(), None);
+    }
+
+    pub fn forget_environment(&mut self) {
+        self.child_environment.clear();
+        self.child_environment_complete = false;
+    }
+
+    /// Enter a child process after a wrapper resets (or obscures) its env.
+    /// Its old shell locals must not survive as facts for a nested shell.
+    pub fn reset_child_environment(&mut self, complete: bool) {
+        self.session_variables.clear();
+        self.inherited_environment.clear();
+        self.child_environment.clear();
+        self.child_environment_complete = complete;
+    }
+
+    pub fn set_environment_value(&mut self, name: &str, value: SessionValue) {
+        self.child_environment.insert(name.into(), Some(value));
+    }
+
+    pub fn set_child_environment_value(&mut self, name: &str, value: SessionValue) {
+        self.session_variables.remove(name);
+        self.inherited_environment
+            .insert(name.into(), value.clone());
+        self.set_environment_value(name, value);
+    }
+
+    pub fn enter_child_shell_environment(&mut self) {
+        // Keep the origin of exported session values: converting all of them
+        // into anonymous inherited values would sever their Graph provenance.
+        self.session_variables.retain(|name, value| {
+            self.child_environment.get(name).and_then(Option::as_ref) == Some(value)
+        });
+        self.inherited_environment = self
+            .child_environment
+            .iter()
+            .filter_map(|(name, value)| value.as_ref().map(|value| (name.clone(), value.clone())))
+            .collect();
+    }
+
+    fn update_exported_value(&mut self, name: &str, value: SessionValue) {
+        if matches!(self.child_environment.get(name), Some(Some(_))) {
+            self.child_environment.insert(name.into(), Some(value));
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<BindingValueRef<'_>> {

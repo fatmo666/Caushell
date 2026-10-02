@@ -633,6 +633,7 @@ pub enum RawEffectKind {
     BindVariableFromRuntimeInput,
     PrivilegeModifier,
     NetworkEndpoint,
+    ListenNetwork,
     TransformData,
     ImportPackage,
     ExecuteImportedPackageLogic,
@@ -709,8 +710,19 @@ pub enum RawMutationScopeKind {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawEffectTarget {
+    NetworkListener {
+        host: RawConfiguredScalar,
+        #[serde(default)]
+        port: Option<RawConfiguredScalar>,
+        #[serde(default)]
+        unix_socket: Option<RawConfiguredScalar>,
+        #[serde(default)]
+        inherited_fd: Option<RawConfiguredScalar>,
+    },
     ConfiguredPath {
         sources: Vec<RawConfiguredPathSource>,
+        #[serde(default)]
+        environment: Option<RawEnvironmentValueSource>,
         #[serde(default)]
         relative_to: Option<RawConfiguredPathAnchor>,
         #[serde(default)]
@@ -758,8 +770,30 @@ pub enum RawEffectTarget {
         argv: Vec<String>,
         #[serde(default)]
         environment: Vec<String>,
+        #[serde(default)]
+        clear_environment_when: Vec<String>,
+        #[serde(default)]
+        unset_environment: Vec<String>,
     },
     None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawEnvironmentValueSource {
+    pub name: String,
+    #[serde(default)]
+    pub empty_is_unset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawConfiguredScalar {
+    pub slot: String,
+    #[serde(default)]
+    pub environment: Option<RawEnvironmentValueSource>,
+    #[serde(default)]
+    pub default_value: Option<String>,
 }
 
 impl Default for RawEffectTarget {

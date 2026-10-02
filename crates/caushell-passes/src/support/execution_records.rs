@@ -27,6 +27,21 @@ impl<'a> ExecutionResolveRecordRef<'a> {
     pub(crate) fn bindings(&self) -> &'a caushell_profile::SessionBindings {
         &self.0.bindings
     }
+
+    pub(crate) fn command(&self) -> Option<&'a caushell_parse::CommandFact> {
+        self.0
+            .parsed_scope
+            .commands
+            .get(self.0.command_ref.command_index)
+            .filter(|command| command.span == self.0.command_ref.span)
+            .or_else(|| {
+                self.0
+                    .parsed_scope
+                    .commands
+                    .iter()
+                    .find(|command| command.span == self.0.command_ref.span)
+            })
+    }
 }
 
 pub(crate) fn graph_backed_execution_resolve_records(

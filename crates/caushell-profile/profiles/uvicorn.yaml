@@ -1,0 +1,98 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_matching: exact_names
+identity: {canonical_name: uvicorn, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+
+# Upstream: Kludex/uvicorn @ 724f82fdba1765fe5f821a3ebed6da5c1ddcb386
+# Click CLI values override UVICORN_*; an empty env value is unset.
+# --env-file configures the application, not these already-parsed CLI defaults.
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: serve
+    selector: {kind: not, item: {kind: has_modifier, modifier: information}}
+    parameters:
+      - name: app
+        semantic: {kind: in_process_code_load, load_kind: module_name}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+    effects:
+      # Startup always loads application/framework code; APP may itself come
+      # from UVICORN_APP. No Python body is parsed or claimed to be Bash.
+      - {kind: load_in_process_code, target: {kind: none}}
+      - {kind: load_in_process_code, target: {kind: slot, name: app}}
+      - kind: listen_network
+        target:
+          kind: network_listener
+          host: {slot: host, environment: {name: UVICORN_HOST, empty_is_unset: true}, default_value: '127.0.0.1'}
+          port: {slot: port, environment: {name: UVICORN_PORT, empty_is_unset: true}, default_value: '8000'}
+          unix_socket: {slot: uds, environment: {name: UVICORN_UDS, empty_is_unset: true}}
+          inherited_fd: {slot: fd, environment: {name: UVICORN_FD, empty_is_unset: true}}
+      # A filesystem socket can be created, chmodded and removed on shutdown.
+      # Keep the path effects even when --fd is also supplied: cleanup still
+      # touches --uds, and binding precedence differs across startup modes.
+      - kind: write_path
+        target: &uds_path
+          kind: configured_path
+          sources: [{slot: uds, projection: {kind: identity}}]
+          environment: {name: UVICORN_UDS, empty_is_unset: true}
+          purpose: generic_operand
+      - {kind: delete_path, target: *uds_path}
+      - kind: load_config
+        target:
+          kind: configured_path
+          sources: [{slot: env_file, projection: {kind: identity}}]
+          environment: {name: UVICORN_ENV_FILE, empty_is_unset: true}
+          purpose: tool_config
+      - kind: load_config
+        target:
+          kind: configured_path
+          sources: [{slot: log_config, projection: {kind: identity}}]
+          environment: {name: UVICORN_LOG_CONFIG, empty_is_unset: true}
+          purpose: tool_config
+      - {kind: load_in_process_code, target: {kind: slot, name: protocols}}
+
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: ['--help', '--version']}
+  - id: host
+    matcher: {kind: any_flag, flags: ['--host']}
+    parameters:
+      - {name: host, semantic: &plain {kind: plain_value}, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+  - id: port
+    matcher: {kind: any_flag, flags: ['--port']}
+    parameters: [{name: port, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - id: uds
+    matcher: {kind: any_flag, flags: ['--uds']}
+    parameters: [{name: uds, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - id: fd
+    matcher: {kind: any_flag, flags: ['--fd']}
+    parameters: [{name: fd, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - id: env_file
+    matcher: {kind: any_flag, flags: ['--env-file']}
+    parameters: [{name: env_file, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - id: log_config
+    matcher: {kind: any_flag, flags: ['--log-config']}
+    parameters: [{name: log_config, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - id: protocols
+    matcher: {kind: any_flag, flags: ['--loop', '--http', '--ws']}
+    parameters: [{name: protocols, semantic: *plain, binding: *following, cardinality: optional_many}]
+  - id: read_paths
+    matcher: {kind: any_flag, flags: ['--ssl-keyfile', '--ssl-certfile', '--ssl-ca-certs']}
+    parameters:
+      - {name: read_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *following, cardinality: optional_many}
+  - id: search_paths
+    matcher: {kind: any_flag, flags: ['--app-dir', '--reload-dir']}
+    parameters:
+      - {name: search_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *following, cardinality: optional_many}
+  - id: switches
+    matcher:
+      kind: any_flag
+      flags: ['--reload', '--factory', '--http2', '--reset-contextvars', '--access-log', '--no-access-log', '--use-colors', '--no-use-colors', '--proxy-headers', '--no-proxy-headers', '--server-header', '--no-server-header', '--date-header', '--no-date-header']
+  - id: values
+    matcher:
+      kind: any_flag
+      flags: ['--workers', '--reload-include', '--reload-exclude', '--reload-delay', '--ws-max-size', '--ws-max-queue', '--ws-ping-interval', '--ws-ping-timeout', '--ws-per-message-deflate', '--lifespan', '--interface', '--log-level', '--forwarded-allow-ips', '--root-path', '--limit-concurrency', '--backlog', '--limit-max-requests', '--limit-max-requests-jitter', '--timeout-keep-alive', '--timeout-graceful-shutdown', '--timeout-worker-healthcheck', '--ssl-keyfile-password', '--ssl-version', '--ssl-cert-reqs', '--ssl-ciphers', '--header', '--h11-max-incomplete-event-size']
+    parameters: [{name: values, semantic: *plain, binding: *following, cardinality: optional_many}]

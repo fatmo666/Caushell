@@ -739,6 +739,7 @@ fn parse_declaration_command(node: Node<'_>, source: &[u8]) -> DeclarationComman
     }
 
     DeclarationCommandFact {
+        unconditional_current_shell: unconditional_current_shell(node),
         kind: kind.expect("declaration_command should have a declaration keyword"),
         options,
         names,
@@ -774,6 +775,7 @@ fn parse_assignment_command(node: Node<'_>, source: &[u8]) -> AssignmentCommandF
     }
 
     AssignmentCommandFact {
+        unconditional_current_shell: unconditional_current_shell(node),
         assignments,
         text: source_text(node, source),
         top_level_span: top_level_command_span(node),
@@ -861,6 +863,7 @@ fn parse_unset_command(node: Node<'_>, source: &[u8]) -> UnsetCommandFact {
     }
 
     UnsetCommandFact {
+        unconditional_current_shell: unconditional_current_shell(node),
         options,
         names,
         text: source_text(node, source),
@@ -1053,6 +1056,12 @@ fn is_statement_wrapper(kind: &str) -> bool {
         kind,
         "redirected_statement" | "pipeline" | "list" | "negated_command"
     )
+}
+
+fn unconditional_current_shell(node: Node<'_>) -> bool {
+    !is_guarded_command(node)
+        && find_ancestor_kind(node, "pipeline").is_none()
+        && statement_terminator_for(node) != Some(StatementTerminator::Background)
 }
 
 fn is_guarded_command(mut node: Node<'_>) -> bool {

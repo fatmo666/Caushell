@@ -597,6 +597,8 @@ pub struct DerivedInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionSemanticsFact {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_listeners: Vec<crate::NetworkListener>,
     // Semantic labels attached to one execution unit via a structure edge.
     pub node_id: String,
     pub source: ExecutionUnit,
@@ -2153,6 +2155,7 @@ mod tests {
                     shell_kind: ShellKind::Bash,
                 },
                 semantics: Some(ExecutionSemanticsFact {
+                    network_listeners: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:2".to_string(),
                     source: ExecutionUnit {
                         node_id: "command:sess-1:2".to_string(),
@@ -2315,6 +2318,7 @@ mod tests {
                         shell_kind: ShellKind::Bash,
                     },
                     semantics: Some(ExecutionSemanticsFact {
+                        network_listeners: Vec::new(),
                         node_id: "execution-semantics:command:sess-1:2".to_string(),
                         source: ExecutionUnit {
                             node_id: "command:sess-1:2".to_string(),
@@ -2725,6 +2729,7 @@ mod tests {
     fn execution_semantics_query_response_uses_tagged_json_contract() {
         let response = QueryResponse::ExecutionSemantics(ExecutionSemanticsQueryResponse {
             semantics: vec![ExecutionSemanticsFact {
+                network_listeners: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:5".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:5".to_string(),

@@ -293,6 +293,7 @@ impl RulePolicyEntry {
 
 fn default_rule_action(rule_id: RuleId) -> RuleAction {
     match rule_id {
+        RuleId::NetworkListenerExposure => RuleAction::NeedApproval,
         RuleId::CommandParseFailure => RuleAction::NeedApproval,
         RuleId::InteractiveEscapeSurface => RuleAction::Observe,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,

@@ -213,6 +213,63 @@ The default expansion depth is 8; the top-level command is depth 0. Reaching dep
 
 Runtime shell state also indicates whether information such as cwd, variables, aliases, and functions is visible and whether it persists across actions. Information supplied by the Harness and confirmed by the runtime can participate in command modeling for later actions; information that cannot be confirmed is recorded as unknown.
 
+## Network listeners and Uvicorn
+
+`listen_network` is distinct from an outbound `network_endpoint`. A Profile
+declares a `network_listener` target whose host, port, UNIX socket and inherited
+FD settings each select the last CLI slot value, then a declared environment
+default, then a literal default. An unresolved higher-priority value never falls
+back to a known lower-priority value. The generic `configured_path` target also
+accepts an `environment: {name: ..., empty_is_unset: true}` fallback so socket
+creation and cleanup retain the same path semantics.
+
+The extracted `ExecutionSemantics.network_listeners` facts are available through
+the semantic Query, decision trace and session snapshot. The independent
+`network_listener_guard` applies `network_listener_exposure` (family
+`network_safety`, default `NeedApproval`):
+
+- Numeric loopback IPv4/IPv6 addresses, including IPv4-mapped loopback, are exempt
+  from this rule. LAN addresses, machine-owned non-loopback addresses and wildcard
+  binds are not local for this policy.
+- Hostnames (including `localhost`), dynamic addresses, unavailable environment
+  facts and inherited sockets with unknown scope require approval. No DNS,
+  process/socket discovery, host environment or new Harness field is used.
+- A known filesystem UNIX socket is checked by existing filesystem mutation
+  rules. A local listener never exempts redirections or other effects.
+
+The pass first checks already-extracted current-request facts. If no non-local or
+unknown listener candidate exists it returns without querying the graph. When
+needed, the semantic Query uses the current sequence's indexed window, not the
+entire history. Historical listener facts alone do not retrigger later actions.
+
+The first built-in consumer is `uvicorn`, including declarative
+`python[3] -m uvicorn` dispatch. Its Profile preserves application code loading,
+`--host`/`--port`, `--uds` creation and cleanup, `--fd`, configuration inputs,
+certificate reads and ordinary option arities. `--app-dir` is a search path, not
+a cwd change; `--root-path` is an HTTP prefix, not a filesystem target. Uvicorn's
+CLI defaults use `UVICORN_*` environment variables; `--env-file` is an application
+input and is not scanned for server settings. When FD and UDS settings coexist,
+startup-mode-dependent precedence is conservatively reviewed and the UDS cleanup
+effects remain present.
+
+The existing shell-state snapshot supplies environment observability and export
+attributes. Complete/exported-only snapshots can prove a variable absent;
+unavailable facts cannot. Child-environment facts are kept separate from shell
+locals. Prefix assignments, exports, unset, and declared wrapper environment
+reset/removal are propagated without command-name cases in the listener code.
+`env` declares `clear_environment_when: [ignore_environment]` and
+`unset_environment: [unset_names]` on its dispatch target. Conditional or isolated
+exports and unsupported export-mode changes retain uncertainty. A child shell
+does not inherit unexported locals; exported session values keep their Graph
+provenance.
+
+This is static listener admission, not application-code analysis, firewall
+reachability analysis or live process tracking. Other server commands need their
+own Profile declarations; generic endpoint effects are not silently reclassified.
+Source: [Uvicorn CLI](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/main.py),
+[server startup](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/server.py),
+[socket binding](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/config.py).
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

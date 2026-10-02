@@ -25,14 +25,16 @@ pub use evidence::{
     NestedPayloadInputEvidence, NestedPayloadInputFragmentEvidence, NestedPayloadLanguageEvidence,
     NestedPayloadOriginEvidence, NestedPayloadParentEvidence, NestedPayloadParsedEvidence,
     NestedPayloadSourceEvidence, NestedPayloadTruncatedEvidence, NestedPayloadUnresolvedEvidence,
-    NestedPayloadUnresolvedReasonEvidence, OutsideWorkspacePathEvidence, PriorPathWriteEvidence,
-    RepositoryOperationEvidence, TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence,
-    TaintedExecutionSinkEvidence, TaintedExecutionSourceEvidence,
-    TaintedExecutionUnresolvedOriginEvidence, TaintedExecutionUnresolvedReasonEvidence,
+    NestedPayloadUnresolvedReasonEvidence, NetworkListenerExposureEvidence,
+    OutsideWorkspacePathEvidence, PriorPathWriteEvidence, RepositoryOperationEvidence,
+    TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence, TaintedExecutionSinkEvidence,
+    TaintedExecutionSourceEvidence, TaintedExecutionUnresolvedOriginEvidence,
+    TaintedExecutionUnresolvedReasonEvidence,
 };
 pub use execution::{
     ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind, InteractiveEscapeCapability,
-    InteractiveEscapeSurfaceKind, ProcessControlAction, ProcessControlTargetKind,
+    InteractiveEscapeSurfaceKind, NetworkListenScope, NetworkListener, ProcessControlAction,
+    ProcessControlTargetKind,
 };
 pub use finding::{Finding, FindingEnforcementClass};
 pub use path::{

@@ -49,14 +49,16 @@ fn project_execution_semantics_mutation(
         return None;
     };
 
+    let mut semantics = execution_semantics_for_bound(
+        &resolved.normalized_command_name,
+        &resolved.bound,
+        has_implicit_startup_config,
+    );
+    semantics.network_listeners = crate::support::network_listeners(record);
     Some(PendingMutation::AddExecutionSemantics {
         source_node_id: record.source_node_id().clone(),
         node_id: execution_semantics_node_id(record.source_node_id()),
-        semantics: execution_semantics_for_bound(
-            &resolved.normalized_command_name,
-            &resolved.bound,
-            has_implicit_startup_config,
-        ),
+        semantics,
     })
 }
 
@@ -223,7 +225,8 @@ fn config_purpose_for_effect_target(
         EffectTarget::MutationScope(_)
         | EffectTarget::ImplicitInput(_)
         | EffectTarget::Dispatch(_)
-        | EffectTarget::None => None,
+        | EffectTarget::None
+        | EffectTarget::NetworkListener(_) => None,
     }
 }
 
@@ -362,7 +365,8 @@ fn payload_mode_for_effect(
         EffectTarget::ConfiguredPath(_)
         | EffectTarget::MutationScope(_)
         | EffectTarget::Dispatch(_)
-        | EffectTarget::None => None,
+        | EffectTarget::None
+        | EffectTarget::NetworkListener(_) => None,
     }
 }
 

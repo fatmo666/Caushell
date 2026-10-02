@@ -9,6 +9,7 @@ pub enum RuleFamily {
     SemanticExpansion,
     SessionIntegrity,
     HostSafety,
+    NetworkSafety,
     RepositorySafety,
     Taint,
 }
@@ -16,6 +17,7 @@ pub enum RuleFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleId {
+    NetworkListenerExposure,
     CommandParseFailure,
     InteractiveEscapeSurface,
     CwdOutsideWorkspaceRoot,
@@ -51,6 +53,7 @@ pub enum RuleId {
 impl RuleId {
     pub const fn family(self) -> RuleFamily {
         match self {
+            Self::NetworkListenerExposure => RuleFamily::NetworkSafety,
             Self::CommandParseFailure => RuleFamily::ResolveGap,
             Self::InteractiveEscapeSurface => RuleFamily::InteractiveControl,
             Self::CwdOutsideWorkspaceRoot => RuleFamily::Path,

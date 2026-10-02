@@ -117,6 +117,8 @@ pub struct VariableAssignmentFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclarationCommandFact {
+    /// False for conditional, isolated, pipeline or background execution.
+    pub unconditional_current_shell: bool,
     pub kind: DeclarationCommandKind,
     pub options: Vec<String>,
     pub names: Vec<String>,
@@ -128,6 +130,7 @@ pub struct DeclarationCommandFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignmentCommandFact {
+    pub unconditional_current_shell: bool,
     pub assignments: Vec<VariableAssignmentFact>,
     pub text: String,
     pub top_level_span: SourceSpan,
@@ -136,6 +139,7 @@ pub struct AssignmentCommandFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsetCommandFact {
+    pub unconditional_current_shell: bool,
     pub options: Vec<String>,
     pub names: Vec<String>,
     pub text: String,

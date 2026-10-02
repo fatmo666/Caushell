@@ -344,7 +344,7 @@ fn payload_input_scope(effects: &[caushell_profile::Effect]) -> PayloadInputScop
                     scope.implicit_input_sources.insert(runtime_input_source);
                 }
             }
-            EffectTarget::Dispatch(_) | EffectTarget::None => {}
+            EffectTarget::Dispatch(_) | EffectTarget::None | EffectTarget::NetworkListener(_) => {}
         }
     }
 

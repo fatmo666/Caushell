@@ -213,6 +213,45 @@ Command Profile 描述命令可能分派到哪里，以及参数如何绑定。�
 
 运行时 shell 状态还会标明 cwd、变量、别名和函数等信息是否可见，以及是否跨 action 保留。由 Harness 提供并经 runtime 确认的信息可以参与后续 action 的命令建模；无法确认的信息会记为未知。
 
+## 网络监听与 Uvicorn
+
+新增 `listen_network` 效果，与外发请求的 `network_endpoint` 分开。
+Profile 使用 `network_listener` 声明 host、port、UNIX socket 和继承 FD 的来源：
+同一 CLI slot 的最后一个参数优先，其次是声明的环境变量，最后是字面默认值。
+高优先级值未知时不能退回已知默认值。通用 `configured_path` 同样支持
+`environment: {name: ..., empty_is_unset: true}`，让 socket 创建及清理进入既有文件路径语义。
+
+提取结果写入 `ExecutionSemantics.network_listeners`，可以从语义 Query、决策 trace
+及会话快照读取。独立 `network_listener_guard` 使用 `network_listener_exposure`
+规则（`network_safety` 家族，默认 `NeedApproval`）：
+
+- 静态确定的 IPv4／IPv6 回环地址，包括 IPv4-mapped 回环地址，不因监听本身审批。
+  局域网地址、本机非回环 IP、`0.0.0.0`／`::` 不属于这项“本地”豁免。
+- 域名（包括 `localhost`）、动态地址、环境事实缺失，以及无法确认范围的继承 socket，要求审批。
+  不做 DNS、进程／socket 探测，不读护栏宿主机环境，也不增加 Harness 字段。
+- 已知文件系统 UNIX socket 交给既有文件修改护栏。本地监听不会豁免重定向或其他操作。
+
+Pass 先检查本次请求已经提取的事实，没有非本地或未知监听候选就直接返回，不查询 Graph。
+需要判断时使用当前 sequence 的索引窗口，不扫描全会话历史。历史监听事实不会单独触发后续 action 审批。
+
+首个内置使用者是 `uvicorn`，同时通过 Profile 声明支持 `python[3] -m uvicorn` 分派。
+保留应用代码加载、`--host`／`--port`、`--uds` 创建和清理、`--fd`、配置输入、证书读取及常用参数的绑定。
+`--app-dir` 是搜索路径而非 cwd 变化；`--root-path` 是 HTTP 前缀而非文件路径。
+服务器默认参数可来自 `UVICORN_*`；`--env-file` 是应用配置输入，不读取其内容推测监听设置。
+同时提供 FD 和 UDS 时，绑定优先级取决于启动模式，因此保守审批，并保留 UDS 清理效果。
+
+环境事实复用现有 shell-state 的可观测性和 exported 标记。Complete／ExportedOnly 快照可以证明环境变量缺失；
+未知快照不能。子进程环境与 shell 局部变量分开保存，传递前缀赋值、export、unset 以及 Profile 声明的环境清空／移除。
+`env` 的 dispatch target 声明 `clear_environment_when: [ignore_environment]` 和
+`unset_environment: [unset_names]`，监听代码不按命令名特判。
+条件／隔离作用域中的导出和未解析的导出选项保持未知；新 shell 不继承未导出的局部变量，已导出会话变量仍保留 Graph 来源关系。
+
+本轮实现静态监听准入，不分析 Python 应用体、防火墙可达性或运行中进程存活状态。
+其他服务命令仍需各自的 Profile 声明，不把现有通用 endpoint 自动视为监听。
+依据：[Uvicorn CLI](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/main.py)、
+[服务启动](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/server.py)、
+[socket 绑定](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/config.py)。
+
 ## 进一步阅读
 
 - [工作原理总览](how-it-works.zh-CN.md)

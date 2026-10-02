@@ -91,11 +91,18 @@ pub(super) fn resolve_configured_path(
     target: &ConfiguredPathTarget,
     cwd: &str,
     home: Option<&str>,
+    record: Option<crate::support::ExecutionResolveRecordRef<'_>>,
 ) -> Option<ConfiguredPathResolution> {
     let selected = target
         .sources
         .iter()
         .find_map(|source| last_value(invocation, source.slot.as_str(), &source.projection))
+        .or_else(|| {
+            target
+                .environment
+                .as_ref()
+                .and_then(|env| crate::support::environment_default(env, record))
+        })
         .or_else(|| {
             target
                 .default_value
@@ -229,15 +236,15 @@ modifiers:
     #[test]
     fn missing_unknown_and_inapplicable_are_distinct() {
         let (bound, mut target) = bound("configured-tool --ini unrelated=anything");
-        assert!(resolve_configured_path(&bound, &target, "/work", None).is_none());
+        assert!(resolve_configured_path(&bound, &target, "/work", None, None).is_none());
         target.purpose = Some(caushell_profile::PathPurpose::IncidentalCache);
         target.missing = ConfiguredPathMissing::Unknown;
-        let path = resolve_configured_path(&bound, &target, "/work", None).unwrap();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
         assert!(path.resolution.concrete_path().is_none());
         assert!(!path.implicit_incidental_cache); // Purpose alone is not a bypass.
         target.missing = ConfiguredPathMissing::IncidentalCache;
         assert!(
-            resolve_configured_path(&bound, &target, "/work", None)
+            resolve_configured_path(&bound, &target, "/work", None, None)
                 .unwrap()
                 .implicit_incidental_cache
         );
@@ -249,13 +256,13 @@ modifiers:
             bound("configured-tool --output \"$UNKNOWN\" --ini path=/work/safe");
         target.missing = ConfiguredPathMissing::IncidentalCache;
         target.purpose = Some(caushell_profile::PathPurpose::IncidentalCache);
-        let path = resolve_configured_path(&bound, &target, "/work", None).unwrap();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
         assert!(path.resolution.concrete_path().is_none());
         assert!(!path.implicit_incidental_cache);
         target.missing = ConfiguredPathMissing::Skip;
         target.default_value = Some("safe-default".into());
         assert!(
-            resolve_configured_path(&bound, &target, "/work", None)
+            resolve_configured_path(&bound, &target, "/work", None, None)
                 .unwrap()
                 .resolution
                 .concrete_path()
@@ -269,7 +276,7 @@ modifiers:
             "configured-tool --ini path=/outside --ini path=/work/cache --ini unrelated=value",
         );
         let original = bound.clone();
-        let path = resolve_configured_path(&bound, &target, "/work", None).unwrap();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
         assert_eq!(path.resolution.concrete_path(), Some("/work/cache"));
         assert_eq!(bound, original);
     }
@@ -278,7 +285,7 @@ modifiers:
     fn tool_expansion_is_opt_in_and_literal_argv_is_not_shell_source() {
         let (bound, mut target) = bound("configured-tool --output '/work/$TOKEN*'");
         assert_eq!(
-            resolve_configured_path(&bound, &target, "/work", None)
+            resolve_configured_path(&bound, &target, "/work", None, None)
                 .unwrap()
                 .resolution
                 .concrete_path(),
@@ -286,7 +293,7 @@ modifiers:
         );
         target.expand_environment = true;
         assert!(
-            resolve_configured_path(&bound, &target, "/work", None)
+            resolve_configured_path(&bound, &target, "/work", None, None)
                 .unwrap()
                 .resolution
                 .concrete_path()
@@ -306,7 +313,7 @@ modifiers:
         }];
         target.missing = ConfiguredPathMissing::IncidentalCache;
         target.purpose = Some(caushell_profile::PathPurpose::IncidentalCache);
-        let path = resolve_configured_path(&bound, &target, "/work", None).unwrap();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
         assert!(matches!(
             path.resolution,
             PathResolution::UnsupportedDynamicText { .. }

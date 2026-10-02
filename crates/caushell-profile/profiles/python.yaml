@@ -21,6 +21,24 @@ platform:
   requires_features: []
 
 forms:
+  - id: uvicorn_module_dispatch
+    selector:
+      kind: all
+      items:
+        - {kind: has_flag, flag: '-m'}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: uvicorn}}
+    parameters:
+      - name: module_name
+        semantic: {kind: command_ref, dispatch: interpreter_module}
+        binding: {kind: following_flag, flag: '-m', operand_mode: next_arg}
+        cardinality: required_one
+      - name: module_args
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - {kind: load_in_process_code, target: {kind: slot, name: module_name}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: module_name, argv: [module_args]}}
   - id: pip_module_dispatch
     selector:
       kind: all
@@ -160,6 +178,8 @@ forms:
     selector:
       kind: all
       items:
+        - kind: not
+          item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: uvicorn}}
         - kind: has_flag
           flag: "-m"
         - kind: not

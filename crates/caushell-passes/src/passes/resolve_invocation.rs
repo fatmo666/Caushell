@@ -767,8 +767,13 @@ fn collect_top_level_dispatch_derived_commands(
 
         for candidate in projection.resolved {
             let command = materialized_dispatch_child_command_fact(resolved, &candidate);
+            let parent_bindings = crate::support::command_environment_bindings(
+                &parent_bindings,
+                parsed,
+                &record.command_ref,
+            );
             let child_bindings =
-                dispatch_child_session_bindings(&parent_bindings, &candidate.environment, &command);
+                dispatch_child_session_bindings(&parent_bindings, &candidate, &command);
             commands.push(TopLevelDispatchDerivedCommand {
                 source_command_index: record.command_ref.command_index,
                 dispatch_index: candidate.dispatch_index,
@@ -999,6 +1004,8 @@ fn find_dispatch_candidates(
             command,
             argv,
             environment: Vec::new(),
+            clear_environment: false,
+            unset_environment: Vec::new(),
             execution_cwd_unknown: execdir,
         });
         index = end + 1;
@@ -1053,7 +1060,17 @@ fn dispatch_child_bindings(
         if let Some(value) =
             materialize_environment_assignment_value(value, base, assignment.runtime_data)
         {
-            bindings.insert_inherited_exact_scalar(name, value);
+            bindings.set_child_environment_value(
+                name,
+                caushell_profile::SessionValue::exact_scalar(value),
+            );
+        } else {
+            bindings.set_child_environment_value(
+                name,
+                caushell_profile::SessionValue::opaque_dynamic(
+                    "unresolved dispatched environment assignment",
+                ),
+            );
         }
     }
 
@@ -1062,10 +1079,29 @@ fn dispatch_child_bindings(
 
 fn dispatch_child_session_bindings(
     base: &SessionBindings,
-    environment: &[caushell_profile::DispatchArgument],
+    candidate: &caushell_profile::DispatchCommandCandidate,
     command: &caushell_parse::CommandFact,
 ) -> SessionBindings {
-    let bindings = dispatch_child_bindings(base, environment);
+    let mut bindings = base.clone();
+    if candidate.clear_environment {
+        bindings.reset_child_environment(true);
+    }
+    for unset in &candidate.unset_environment {
+        let name = if unset.runtime_data {
+            Some(unset.text.clone())
+        } else {
+            caushell_parse::decode_static_shell_argument(
+                &unset.text,
+                unset.quoted,
+                &unset.node_kind,
+            )
+        };
+        match name {
+            Some(name) => bindings.remove(&name),
+            None => bindings.reset_child_environment(false),
+        }
+    }
+    let bindings = dispatch_child_bindings(&bindings, &candidate.environment);
     let Some(positional_args) = shell_dispatch_positional_arguments(command) else {
         return bindings;
     };
@@ -1787,8 +1823,12 @@ fn expanded_dispatch_children(
         child_inherited_scope.dispatch_working_directory =
             child.execution_cwd_unknown.then_some(EffectiveCwd::Unknown);
         let command = materialized_dispatch_child_command_fact(resolved, &child);
-        let child_bindings =
-            dispatch_child_session_bindings(&entry.bindings, &child.environment, &command);
+        let parent_bindings = crate::support::command_environment_bindings(
+            &entry.bindings,
+            &entry.parsed_scope,
+            &entry.command_ref,
+        );
+        let child_bindings = dispatch_child_session_bindings(&parent_bindings, &child, &command);
         let Some((parsed_scope, command)) = parsed_dispatch_scope(command, entry.shell_kind) else {
             continue;
         };
@@ -1853,7 +1893,12 @@ fn expanded_shell_payload_children(
         return Vec::new();
     };
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
-    let shell_bindings = shell_payload_session_bindings(&entry.bindings, &positional_args);
+    let parent_bindings = crate::support::command_environment_bindings(
+        &entry.bindings,
+        &entry.parsed_scope,
+        &entry.command_ref,
+    );
+    let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
 
     let mut children: Vec<ExpandedFrontierEntry> = parsed_payload
         .commands
@@ -3113,6 +3158,7 @@ fn shell_payload_session_bindings(
     positional_args: &[caushell_profile::ProjectedArg],
 ) -> SessionBindings {
     let mut bindings = base.clone();
+    bindings.enter_child_shell_environment();
     let values = positional_args
         .iter()
         .skip(1) // The first argument after SCRIPT becomes $0, not a positional parameter.

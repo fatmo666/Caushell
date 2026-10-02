@@ -1099,7 +1099,8 @@ fn cwd_update_for_effect(
         | EffectTarget::DerivedPath(_)
         | EffectTarget::MutationScope(_)
         | EffectTarget::ImplicitInput(_)
-        | EffectTarget::Dispatch(_) => CwdState::unknown(),
+        | EffectTarget::Dispatch(_)
+        | EffectTarget::NetworkListener(_) => CwdState::unknown(),
     }
 }
 

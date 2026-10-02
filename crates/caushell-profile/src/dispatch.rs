@@ -24,6 +24,8 @@ pub struct DispatchCommandCandidate {
     pub command: DispatchArgument,
     pub argv: Vec<DispatchArgument>,
     pub environment: Vec<DispatchArgument>,
+    pub clear_environment: bool,
+    pub unset_environment: Vec<DispatchArgument>,
     pub execution_cwd_unknown: bool,
 }
 
@@ -143,6 +145,15 @@ pub fn collect_dispatch_command_projection(
                 &mut next_synthetic_span_byte,
             ),
             execution_cwd_unknown: false,
+            clear_environment: target
+                .clear_environment_when
+                .iter()
+                .any(|modifier| invocation.applied_modifiers.contains(modifier)),
+            unset_environment: arguments_for_slots(
+                invocation,
+                &target.unset_environment,
+                &mut next_synthetic_span_byte,
+            ),
         });
     }
 
@@ -342,6 +353,8 @@ mod tests {
                 command: SlotName::new(command),
                 argv: argv.iter().copied().map(SlotName::new).collect(),
                 environment: environment.iter().copied().map(SlotName::new).collect(),
+                clear_environment_when: Vec::new(),
+                unset_environment: Vec::new(),
             }),
             interactive_escape_surface: None,
             catastrophic: Default::default(),

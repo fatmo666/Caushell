@@ -82,10 +82,14 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .transpose()?;
     let option_scope = normalize_option_scope(raw.option_scope);
     validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
-    validate_configured_path_references(&forms, &modifiers, &BTreeSet::new())?;
+    validate_configured_path_references(&forms, &modifiers, &BTreeSet::new(), &BTreeSet::new())?;
     if let Some(tree) = &subcommands {
         let names = declared_parameter_names(&forms, &modifiers, &BTreeSet::new());
-        validate_subcommand_configured_paths(&tree.roots, &names)?;
+        let modifier_names = modifiers
+            .iter()
+            .map(|modifier| modifier.id.as_str().to_string())
+            .collect();
+        validate_subcommand_configured_paths(&tree.roots, &names, &modifier_names)?;
     }
 
     Ok(CommandProfile {
@@ -121,14 +125,53 @@ fn validate_configured_path_references(
     forms: &[Form],
     modifiers: &[Modifier],
     inherited: &BTreeSet<String>,
+    inherited_modifiers: &BTreeSet<String>,
 ) -> Result<(), NormalizeError> {
     // Validate declarations once at load time, not during each guard check.
     let names = declared_parameter_names(forms, modifiers, inherited);
+    let mut modifier_names = inherited_modifiers.clone();
+    modifier_names.extend(
+        modifiers
+            .iter()
+            .map(|modifier| modifier.id.as_str().to_string()),
+    );
     for effect in forms
         .iter()
         .flat_map(|form| &form.effects)
         .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
     {
+        if let EffectTarget::Dispatch(target) = &effect.target {
+            for slot in &target.unset_environment {
+                if !names.contains(slot.as_str()) {
+                    return Err(NormalizeError::InvalidConfiguredPath(format!(
+                        "undeclared environment-removal slot: {}",
+                        slot.as_str()
+                    )));
+                }
+            }
+            for modifier in &target.clear_environment_when {
+                if !modifier_names.contains(modifier.as_str()) {
+                    return Err(NormalizeError::InvalidConfiguredPath(format!(
+                        "undeclared environment-reset modifier: {}",
+                        modifier.as_str()
+                    )));
+                }
+            }
+        }
+        if let EffectTarget::NetworkListener(listener) = &effect.target {
+            for scalar in std::iter::once(&listener.host)
+                .chain(listener.port.iter())
+                .chain(listener.unix_socket.iter())
+                .chain(listener.inherited_fd.iter())
+            {
+                if !names.contains(scalar.slot.as_str()) {
+                    return Err(NormalizeError::InvalidConfiguredPath(format!(
+                        "undeclared listener slot: {}",
+                        scalar.slot.as_str()
+                    )));
+                }
+            }
+        }
         let EffectTarget::ConfiguredPath(path) = &effect.target else {
             continue;
         };
@@ -157,11 +200,23 @@ fn validate_configured_path_references(
 fn validate_subcommand_configured_paths(
     nodes: &[SubcommandNode],
     inherited: &BTreeSet<String>,
+    inherited_modifiers: &BTreeSet<String>,
 ) -> Result<(), NormalizeError> {
     for node in nodes {
-        validate_configured_path_references(&node.forms, &node.modifiers, inherited)?;
+        validate_configured_path_references(
+            &node.forms,
+            &node.modifiers,
+            inherited,
+            inherited_modifiers,
+        )?;
         let names = declared_parameter_names(&node.forms, &node.modifiers, inherited);
-        validate_subcommand_configured_paths(&node.children, &names)?;
+        let mut modifier_names = inherited_modifiers.clone();
+        modifier_names.extend(
+            node.modifiers
+                .iter()
+                .map(|modifier| modifier.id.as_str().to_string()),
+        );
+        validate_subcommand_configured_paths(&node.children, &names, &modifier_names)?;
     }
     Ok(())
 }
@@ -881,6 +936,11 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if (kind == EffectKind::ListenNetwork) != matches!(target, EffectTarget::NetworkListener(_)) {
+        return Err(NormalizeError::InvalidConfiguredPath(
+            "listen_network requires a network_listener target, exclusively".into(),
+        ));
+    }
     if let EffectTarget::ConfiguredPath(path) = &target {
         if !matches!(
             kind,
@@ -1049,6 +1109,7 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::BindVariableFromRuntimeInput => EffectKind::BindVariableFromRuntimeInput,
         RawEffectKind::PrivilegeModifier => EffectKind::PrivilegeModifier,
         RawEffectKind::NetworkEndpoint => EffectKind::NetworkEndpoint,
+        RawEffectKind::ListenNetwork => EffectKind::ListenNetwork,
         RawEffectKind::TransformData => EffectKind::TransformData,
         RawEffectKind::ImportPackage => EffectKind::ImportPackage,
         RawEffectKind::ExecuteImportedPackageLogic => EffectKind::ExecuteImportedPackageLogic,
@@ -1116,10 +1177,58 @@ fn normalize_interactive_escape_capability(
     }
 }
 
+fn normalize_environment_source(
+    raw: crate::raw::RawEnvironmentValueSource,
+) -> Result<crate::EnvironmentValueSource, NormalizeError> {
+    if raw.name.is_empty()
+        || !raw
+            .name
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
+    {
+        return Err(NormalizeError::InvalidConfiguredPath(
+            "invalid environment variable name".into(),
+        ));
+    }
+    Ok(crate::EnvironmentValueSource {
+        name: raw.name,
+        empty_is_unset: raw.empty_is_unset,
+    })
+}
+
+fn normalize_configured_scalar(
+    raw: crate::raw::RawConfiguredScalar,
+) -> Result<crate::ConfiguredScalar, NormalizeError> {
+    ensure_non_empty(&raw.slot, "listener.slot")?;
+    Ok(crate::ConfiguredScalar {
+        slot: SlotName::new(raw.slot),
+        environment: raw
+            .environment
+            .map(normalize_environment_source)
+            .transpose()?,
+        default_value: raw.default_value,
+    })
+}
+
 fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, NormalizeError> {
     match raw {
+        RawEffectTarget::NetworkListener {
+            host,
+            port,
+            unix_socket,
+            inherited_fd,
+        } => Ok(EffectTarget::NetworkListener(
+            crate::NetworkListenerTarget {
+                host: normalize_configured_scalar(host)?,
+                port: port.map(normalize_configured_scalar).transpose()?,
+                unix_socket: unix_socket.map(normalize_configured_scalar).transpose()?,
+                inherited_fd: inherited_fd.map(normalize_configured_scalar).transpose()?,
+            },
+        )),
         RawEffectTarget::ConfiguredPath {
             sources,
+            environment,
             relative_to,
             expand_environment,
             expand_user,
@@ -1172,6 +1281,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 .transpose()?;
             Ok(EffectTarget::ConfiguredPath(crate::ConfiguredPathTarget {
                 sources,
+                environment: environment.map(normalize_environment_source).transpose()?,
                 relative_to,
                 expand_environment,
                 expand_user,
@@ -1245,12 +1355,25 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             command,
             argv,
             environment,
+            clear_environment_when,
+            unset_environment,
         } => {
             ensure_non_empty(&command, "effects.target.command")?;
             Ok(EffectTarget::Dispatch(DispatchTarget {
                 command: SlotName::new(command),
                 argv: normalize_slot_names(argv, "effects.target.argv")?,
                 environment: normalize_slot_names(environment, "effects.target.environment")?,
+                clear_environment_when: clear_environment_when
+                    .into_iter()
+                    .map(|name| {
+                        ensure_non_empty(&name, "effects.target.clear_environment_when")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
+                unset_environment: normalize_slot_names(
+                    unset_environment,
+                    "effects.target.unset_environment",
+                )?,
             }))
         }
         RawEffectTarget::None => Ok(EffectTarget::None),

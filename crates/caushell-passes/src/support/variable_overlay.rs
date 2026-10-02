@@ -63,7 +63,7 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
     }
 
     for unset in &parsed.unset_commands {
-        if unset.span.end_byte <= span_start_byte && unset.options.is_empty() {
+        if unset.span.end_byte <= span_start_byte {
             events.push(VariableOverlayEvent::Unset(unset));
         }
     }
@@ -84,6 +84,21 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                 if declaration.kind != caushell_parse::DeclarationCommandKind::Export
                     || !declaration.options.is_empty()
                 {
+                    // Export-affecting declarations beyond plain `export` are
+                    // not proved absent merely because the scalar overlay does
+                    // not model their option semantics (declare -x, typeset,
+                    // export -n, etc.). Preserve this uncertainty for tools.
+                    for name in declaration
+                        .names
+                        .iter()
+                        .map(String::as_str)
+                        .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
+                    {
+                        bindings.set_environment_value(
+                            name,
+                            SessionValue::opaque_dynamic("unresolved export declaration"),
+                        );
+                    }
                     continue;
                 }
 
@@ -99,10 +114,35 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                         ),
                     );
                 }
+                for name in &declaration.names {
+                    bindings.export(name);
+                }
+                if !declaration.unconditional_current_shell {
+                    for name in declaration
+                        .names
+                        .iter()
+                        .map(String::as_str)
+                        .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
+                    {
+                        bindings.set_environment_value(
+                            name,
+                            SessionValue::opaque_dynamic("conditional or isolated export"),
+                        );
+                    }
+                }
             }
             VariableOverlayEvent::AssignmentCommand(assignment_command) => {
                 for assignment in &assignment_command.assignments {
                     if assignment.operator != caushell_parse::AssignmentOperator::Assign {
+                        if !matches!(
+                            bindings.environment_value(&assignment.name),
+                            caushell_profile::EnvironmentValueRef::Absent
+                        ) {
+                            bindings.set_environment_value(
+                                &assignment.name,
+                                SessionValue::opaque_dynamic("unresolved assignment operator"),
+                            );
+                        }
                         continue;
                     }
 
@@ -116,14 +156,50 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                             observed_at,
                         ),
                     );
+                    if !assignment_command.unconditional_current_shell
+                        && !matches!(
+                            bindings.environment_value(&assignment.name),
+                            caushell_profile::EnvironmentValueRef::Absent
+                        )
+                    {
+                        bindings.set_environment_value(
+                            &assignment.name,
+                            SessionValue::opaque_dynamic("conditional or isolated assignment"),
+                        );
+                    }
                 }
             }
             VariableOverlayEvent::Unset(unset) => {
                 for name in &unset.names {
-                    bindings.remove(name);
+                    if unset.unconditional_current_shell && unset.options.is_empty() {
+                        bindings.remove(name);
+                    } else {
+                        bindings.set_environment_value(
+                            name,
+                            SessionValue::opaque_dynamic("unresolved unset scope/options"),
+                        );
+                    }
                 }
             }
             VariableOverlayEvent::SetPositionalParameters(command) => {
+                if command.command_name.as_deref() == Some("set")
+                    && command
+                        .tokens
+                        .iter()
+                        .take_while(|token| token.text != "--")
+                        .any(|token| {
+                            token.text == "-o"
+                                || token.text == "+o"
+                                || ((token.text.starts_with('-') || token.text.starts_with('+'))
+                                    && token.text[1..].contains('a'))
+                                || token.text.contains('$')
+                        })
+                {
+                    // The request protocol carries variable/export facts, not
+                    // shell option state. After an allexport mode change, do
+                    // not keep asserting that new assignments are unexported.
+                    bindings.forget_environment();
+                }
                 if let Some(mutation) =
                     positional_parameter_mutation_for_command(command, &bindings)
                 {
@@ -309,7 +385,41 @@ fn exact_set_positional_token_value(
     }
 }
 
-fn classify_assignment_value(
+pub(crate) fn command_environment_bindings(
+    base: &SessionBindings,
+    parsed: &ParsedCommandArtifact,
+    command_ref: &caushell_runner::ParsedCommandRef,
+) -> SessionBindings {
+    let mut bindings = base.clone();
+    let command = parsed
+        .commands
+        .get(command_ref.command_index)
+        .filter(|command| command.span == command_ref.span)
+        .or_else(|| {
+            parsed
+                .commands
+                .iter()
+                .find(|command| command.span == command_ref.span)
+        });
+    let Some(command) = command else {
+        bindings.forget_environment();
+        return bindings;
+    };
+    for assignment in &command.prefix_assignments {
+        let value = if assignment.operator == caushell_parse::AssignmentOperator::Assign {
+            classify_assignment_value(&assignment.value, base)
+        } else {
+            SessionVariableValue::opaque_dynamic("unresolved prefix assignment")
+        };
+        bindings.set_child_environment_value(
+            &assignment.name,
+            caushell_profile::SessionValue::from_session_variable_value(&value),
+        );
+    }
+    bindings
+}
+
+pub(crate) fn classify_assignment_value(
     value: &caushell_parse::AssignmentValueFact,
     bindings: &SessionBindings,
 ) -> SessionVariableValue {
@@ -349,6 +459,9 @@ fn apply_binding(bindings: &mut SessionBindings, binding: SessionVariableBinding
         SessionVariableValue::RuntimeInput { source, capture } => {
             bindings.insert_runtime_input(&binding.name, source, capture);
         }
+    }
+    if binding.exported {
+        bindings.export(&binding.name);
     }
 }
 

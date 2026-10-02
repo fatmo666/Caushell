@@ -1521,7 +1521,7 @@ fn emit_effects(
             },
             EffectTarget::ImplicitInput(source) => bound_implicit_sources.contains(source),
             EffectTarget::Dispatch(dispatch) => bound_slots.contains(&dispatch.command),
-            EffectTarget::None => true,
+            EffectTarget::None | EffectTarget::NetworkListener(_) => true,
         };
 
         if should_emit {

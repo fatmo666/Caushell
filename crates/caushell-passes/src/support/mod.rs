@@ -3,6 +3,8 @@ mod execution_records;
 mod function_overlay;
 mod hard_deny;
 mod implicit_startup;
+mod listener;
+pub(crate) use listener::{environment_default, network_listeners};
 mod node_ids;
 mod outside_workspace;
 mod payload_hard_deny;
@@ -64,6 +66,7 @@ pub(crate) use top_level_units::{
 };
 pub(crate) use variable_overlay::{
     PositionalParameterMutation, apply_positional_parameter_mutation,
-    apply_visible_variable_bindings_before_span, positional_parameter_mutation_for_command,
-    request_variable_bindings, visible_variable_bindings_before_span,
+    apply_visible_variable_bindings_before_span, command_environment_bindings,
+    positional_parameter_mutation_for_command, request_variable_bindings,
+    visible_variable_bindings_before_span,
 };
