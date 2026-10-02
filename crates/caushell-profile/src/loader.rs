@@ -1045,7 +1045,7 @@ extensions: {}
                     locator.locator_kinds,
                     vec![
                         crate::PackageLocatorKind::RequirementFile,
-                        crate::PackageLocatorKind::LocalPath,
+                        crate::PackageLocatorKind::DirectUrl,
                         crate::PackageLocatorKind::UnknownDynamic,
                     ]
                 );

@@ -73,7 +73,7 @@ subcommands:
                 manager: pip
                 locator_kinds:
                   - requirement_file
-                  - local_path
+                  - direct_url
                   - unknown_dynamic
               binding:
                 kind: following_matched_flag

@@ -839,6 +839,7 @@ fn normalize_package_manager_kind(raw: RawPackageManagerKind) -> PackageManagerK
         RawPackageManagerKind::Pip => PackageManagerKind::Pip,
         RawPackageManagerKind::Apt => PackageManagerKind::Apt,
         RawPackageManagerKind::Conan => PackageManagerKind::Conan,
+        RawPackageManagerKind::Conda => PackageManagerKind::Conda,
         RawPackageManagerKind::Npm => PackageManagerKind::Npm,
     }
 }

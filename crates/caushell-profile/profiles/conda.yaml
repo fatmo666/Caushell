@@ -1,0 +1,352 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: conda, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+
+# CLI targets checked against Conda 26.7.0. Names/current environments and
+# environment-definition contents are not resolved by probing the host.
+forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: help}
+  - id: show_version
+    selector: {kind: all, items: [{kind: has_modifier, modifier: version}, {kind: not, item: {kind: has_modifier, modifier: help}}]}
+  - id: usage
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: version}}]}
+modifiers:
+  - &help
+    id: help
+    matcher: {kind: any_flag, flags: ['-h', '--help']}
+  - id: version
+    matcher: {kind: any_flag, flags: ['-V', '--version']}
+  - &verbosity
+    id: verbosity
+    matcher: {kind: any_flag, flags: ['-v', '--verbose', '--debug', '--trace']}
+  - id: no_plugins
+    matcher: {kind: any_flag, flags: ['--no-plugins']}
+
+subcommands:
+  roots:
+    - name: install
+      forms: &install_forms
+        - &show_help
+          id: show_help
+          selector: {kind: has_modifier, modifier: help}
+        - &preview
+          id: preview
+          selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: has_modifier, modifier: dry_run}]}
+          parameters: &packages
+            - name: packages
+              semantic: &package_semantic {kind: package_locator, manager: conda, locator_kinds: [registry_ref, local_path, direct_url, unknown_dynamic]}
+              binding: {kind: remaining_positionals}
+              cardinality: optional_many
+          effects:
+            - &import_packages {kind: import_package, target: {kind: slot, name: packages}}
+            - &import_definitions {kind: import_package, target: {kind: slot, name: definitions}}
+            - &import_channels {kind: import_package, target: {kind: slot, name: channels}}
+        - &download
+          id: download
+          selector: {kind: all, items: [*running, &not_dry {kind: not, item: {kind: has_modifier, modifier: dry_run}}, {kind: has_modifier, modifier: download_only}]}
+          parameters: *packages
+          effects: [*import_packages, *import_definitions, *import_channels]
+        - id: modify_environment
+          selector: {kind: all, items: [*running, *not_dry, &not_download {kind: not, item: {kind: has_modifier, modifier: download_only}}]}
+          parameters: *packages
+          effects:
+            - &write_environment
+              kind: write_path
+              target: &environment_target
+                kind: configured_path
+                sources: [{slot: prefix, projection: {kind: identity}}]
+                expand_environment: true
+                expand_user: true
+                missing: unknown
+            - &delete_environment {kind: delete_path, target: *environment_target}
+            - *import_packages
+            - *import_definitions
+            - *import_channels
+            - &execute_packages {kind: execute_imported_package_logic, target: {kind: slot, name: packages}}
+            - &execute_definitions {kind: execute_imported_package_logic, target: {kind: slot, name: definitions}}
+            - &execute_channels {kind: execute_imported_package_logic, target: {kind: slot, name: channels}}
+      modifiers: &transaction_options
+        - *help
+        - *verbosity
+        - &prefix
+          id: prefix
+          matcher: {kind: any_flag, flags: ['-p', '--prefix']}
+          parameters:
+            - {name: prefix, semantic: &plain {kind: plain_value}, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+        - &name
+          id: name
+          matcher: {kind: any_flag, flags: ['-n', '--name']}
+          parameters:
+            - {name: environment_name, semantic: *plain, binding: *following, cardinality: optional_many}
+        - &dry_run
+          id: dry_run
+          matcher: {kind: any_flag, flags: ['-d', '--dry-run']}
+        - &download_only
+          id: download_only
+          matcher: {kind: any_flag, flags: ['--download-only']}
+        - &display_flags
+          id: display_flags
+          matcher: {kind: any_flag, flags: ['--json', '-q', '--quiet', '-y', '--yes']}
+        - &console
+          id: console
+          matcher: {kind: any_flag, flags: ['--console']}
+          parameters:
+            - {name: console, semantic: *plain, binding: *following, cardinality: optional_many}
+        - &transaction_flags
+          id: transaction_flags
+          matcher:
+            kind: any_flag
+            flags: ['--override-frozen', '--use-local', '-O', '--override-channels', '--no-lock', '--repodata-use-zst', '--no-repodata-use-zst', '--repodata-use-shards', '--no-repodata-use-shards', '--strict-channel-priority', '--channel-priority', '--no-channel-priority', '--no-deps', '--only-deps', '--no-pin', '--copy', '--shortcuts', '--no-shortcuts', '--clobber', '-C', '--use-index-cache', '-k', '--insecure', '--offline', '--force', '--force-reinstall', '--freeze-installed', '--no-update-deps', '--update-deps', '-S', '--satisfied-skip-solve', '--update-all', '--all', '--update-specs', '--show-channel-urls', '--no-show-channel-urls', '--prune', '--dev', '--force-pscheck', '--unknown', '--no-default-packages']
+        - &transaction_values
+          id: transaction_values
+          matcher:
+            kind: any_flag
+            flags: ['--revision', '--repodata-fn', '--experimental', '--solver', '--subdir', '--platform', '--environment-specifier', '--env-spec', '--format', '--shortcuts-only', '--exclude-newer']
+          parameters:
+            - {name: option_values, semantic: *plain, binding: *following, cardinality: optional_many}
+        - &definitions
+          id: definitions
+          matcher: {kind: any_flag, flags: ['-f', '--file']}
+          parameters:
+            - name: definitions
+              semantic: {kind: package_locator, manager: conda, locator_kinds: [requirement_file, direct_url, unknown_dynamic]}
+              binding: *following
+              cardinality: optional_many
+        - &channels
+          id: channels
+          matcher: {kind: any_flag, flags: ['-c', '--channel']}
+          parameters:
+            - {name: channels, semantic: *package_semantic, binding: *following, cardinality: optional_many}
+      default_behavior: reject_unknown
+
+    - name: update
+      aliases: [upgrade]
+      forms: *install_forms
+      modifiers: *transaction_options
+      default_behavior: reject_unknown
+
+    - name: create
+      forms:
+        - *show_help
+        - *preview
+        - id: download
+          selector: {kind: all, items: [*running, *not_dry, {kind: has_modifier, modifier: download_only}]}
+          parameters: *packages
+          # create may remove an existing prefix before transaction handling,
+          # even with --download-only. Never treat it as a read-only operation.
+          effects: [*delete_environment, *import_packages, *import_definitions, *import_channels]
+        - id: create_environment
+          selector: {kind: all, items: [*running, *not_dry, *not_download]}
+          parameters: *packages
+          effects: [*delete_environment, *write_environment, *import_packages, *import_definitions, *import_channels, *execute_packages, *execute_definitions, *execute_channels]
+      modifiers:
+        - *help
+        - *verbosity
+        - *prefix
+        - *name
+        - *dry_run
+        - *download_only
+        - *display_flags
+        - *console
+        - *transaction_flags
+        - *transaction_values
+        - *definitions
+        - *channels
+        - id: clone
+          matcher: {kind: any_flag, flags: ['--clone']}
+          parameters:
+            - {name: clone_source, semantic: *plain, binding: *following, cardinality: optional_many}
+      default_behavior: reject_unknown
+
+    - name: remove
+      aliases: [uninstall]
+      forms: &remove_forms
+        - *show_help
+        - id: preview
+          selector: {kind: all, items: [*running, {kind: has_modifier, modifier: dry_run}]}
+          parameters: &remove_parameters
+            - {name: removed_packages, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: []
+        - id: remove_environment_content
+          selector: {kind: all, items: [*running, *not_dry]}
+          parameters: *remove_parameters
+          effects: [*delete_environment, *write_environment]
+      modifiers: &remove_options
+        - *help
+        - *verbosity
+        - *prefix
+        - *name
+        - *dry_run
+        - *display_flags
+        - *console
+        - *channels
+        - id: remove_flags
+          matcher: {kind: any_flag, flags: ['--all', '--keep-env', '--force', '--force-remove', '--features', '--no-pin', '--override-frozen', '--offline', '-k', '--insecure', '-C', '--use-index-cache', '--use-local', '-O', '--override-channels', '--dev']}
+        - *transaction_values
+      default_behavior: reject_unknown
+
+    - name: list
+      forms:
+        - *show_help
+        - id: list_packages
+          selector: *running
+          parameters:
+            - {name: filter, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: []
+      modifiers:
+        - *help
+        - *verbosity
+        - *prefix
+        - *name
+        - *display_flags
+        - *console
+        - id: list_flags
+          matcher: {kind: any_flag, flags: ['-c', '--canonical', '-f', '--full-name', '--explicit', '--md5', '--sha256', '-e', '--export', '-r', '--revisions', '--size', '--no-pip', '--auth', '--reverse']}
+        - id: fields
+          matcher: {kind: any_flag, flags: ['--fields']}
+          parameters:
+            - {name: fields, semantic: *plain, binding: *following, cardinality: optional_many}
+      default_behavior: reject_unknown
+
+    - name: info
+      forms: [{id: info, effects: []}]
+      modifiers:
+        - *help
+        - *verbosity
+        - *display_flags
+        - id: info_flags
+          matcher: {kind: any_flag, flags: ['--offline', '-a', '--all', '--base', '-e', '--envs', '-s', '--system', '--size', '--unsafe-channels']}
+      default_behavior: reject_unknown
+
+    - name: search
+      forms:
+        - *show_help
+        - id: search_packages
+          selector: *running
+          parameters:
+            - {name: query, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: [*import_channels]
+      modifiers:
+        - *help
+        - *verbosity
+        - *display_flags
+        - *console
+        - *channels
+        - id: search_flags
+          matcher: {kind: any_flag, flags: ['--envs', '-i', '--info', '--skip-flexible-search', '--canonical', '-f', '--full-name', '--names-only', '-o', '--outdated', '--spec', '--reverse-dependency', '--offline', '-k', '--insecure', '-C', '--use-index-cache', '--use-local', '-O', '--override-channels']}
+        - *transaction_values
+      default_behavior: reject_unknown
+
+    - name: export
+      forms: &export_forms
+        - *show_help
+        - id: export_environment
+          selector: *running
+          effects:
+            - kind: write_path
+              target:
+                kind: configured_path
+                sources: [{slot: export_file, projection: {kind: identity}}]
+      modifiers: &export_options
+        - *help
+        - *verbosity
+        - *prefix
+        - *name
+        - *display_flags
+        - *console
+        - *channels
+        - id: export_file
+          matcher: {kind: any_flag, flags: ['-f', '--file']}
+          parameters:
+            - {name: export_file, semantic: *plain, binding: *following, cardinality: optional_many}
+        - id: export_flags
+          matcher: {kind: any_flag, flags: ['--no-builds', '--ignore-channels', '--from-history', '--override-platforms', '-O', '--override-channels']}
+        - *transaction_values
+      default_behavior: reject_unknown
+
+    - name: env
+      forms:
+        - *show_help
+        - id: usage
+          selector: {kind: all, items: [{kind: no_positional_args}, *running]}
+      modifiers: [*help]
+      children:
+        - name: create
+          forms:
+            - *show_help
+            - id: preview_default_definition
+              selector: {kind: all, items: [*running, {kind: has_modifier, modifier: dry_run}, &no_definitions {kind: not, item: {kind: has_modifier, modifier: definitions}}]}
+              parameters: &additional_definitions
+                - name: extra_definitions
+                  semantic: {kind: package_locator, manager: conda, locator_kinds: [requirement_file, direct_url, unknown_dynamic]}
+                  binding: {kind: remaining_positionals}
+                  cardinality: optional_many
+              effects:
+                - &default_definition
+                  kind: load_config
+                  target: {kind: tool_convention_path, path: environment.yml, convention: conda_default_environment_definition, purpose: tool_config}
+                - &import_extra {kind: import_package, target: {kind: slot, name: extra_definitions}}
+            - id: preview_explicit_definitions
+              selector: {kind: all, items: [*running, {kind: has_modifier, modifier: dry_run}, &has_definitions {kind: has_modifier, modifier: definitions}]}
+              parameters: *additional_definitions
+              # Package-source provenance records each file/URL. Do not
+              # manufacture a filesystem path from a remote definition URL.
+              effects: [*import_definitions, *import_extra]
+            - id: create_from_default_definition
+              selector: {kind: all, items: [*running, *not_dry, *no_definitions]}
+              parameters: *additional_definitions
+              effects: [*default_definition, *delete_environment, *write_environment, *import_extra, &execute_extra {kind: execute_imported_package_logic, target: {kind: slot, name: extra_definitions}}]
+            - id: create_from_definition
+              selector: {kind: all, items: [*running, *not_dry, *has_definitions]}
+              parameters: *additional_definitions
+              effects: [*delete_environment, *write_environment, *import_definitions, *import_extra, *execute_definitions, *execute_extra]
+          modifiers: *transaction_options
+          default_behavior: reject_unknown
+        - name: update
+          forms:
+            - *show_help
+            - id: update_from_default_definition
+              selector: {kind: all, items: [*running, *no_definitions]}
+              effects: [*default_definition, *delete_environment, *write_environment]
+            - id: update_from_definition
+              selector: {kind: all, items: [*running, *has_definitions]}
+              effects: [*delete_environment, *write_environment, *import_definitions, *execute_definitions]
+          modifiers:
+            - *help
+            - *verbosity
+            - *prefix
+            - *name
+            - *display_flags
+            - *console
+            - *definitions
+            - *transaction_values
+            - id: update_flags
+              matcher: {kind: any_flag, flags: ['--prune', '--override-frozen']}
+          default_behavior: reject_unknown
+        - name: remove
+          forms: *remove_forms
+          modifiers: *remove_options
+          default_behavior: reject_unknown
+        - name: export
+          forms: *export_forms
+          modifiers: *export_options
+          default_behavior: reject_unknown
+        - name: list
+          forms: [{id: list_environments, effects: []}]
+          modifiers: [*help, *verbosity, *display_flags, *console]
+          default_behavior: reject_unknown
+      default_behavior: reject_unknown
+
+extensions:
+  caushell.profile/scope: Direct CLI package/environment transactions, definitions, channels, queries and explicit exports. Explicit prefix paths are resolved statically; names, active environments and targets selected inside definition/config files remain unknown and need outside-workspace modification approval. Existing package-source rules are reused independently.
+  caushell.profile/known_limitations:
+    - Conda run/activate/deactivate and their environment/activation-script semantics remain pending; they are not transparent-wrapper claims.
+    - Config/clean/init/rename, environment-variable configuration, plugin-defined commands and Python module dispatch are not covered by this transaction scope.
+    - Configuration content, solver results, transitive packages, activation/link script bodies, plugin code and environment registry/cache locations are not dynamically discovered or interpreted.
+    - Condarc content is opaque tool configuration, not shell startup code; this scope does not fabricate an executable startup-config effect for it.
+    - CLI dry-run removes transaction effects only in the declared standard transaction forms. Conda 26.7.0 env update does not expose that option; plugin behavior is not inferred.
+    - Advanced MatchSpec bracket syntax, plugin package extensions and package-cache/download destinations are outside this CLI target scope; package locators use the existing shared classifier.

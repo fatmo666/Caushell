@@ -130,6 +130,7 @@ pub enum PackageManagerKind {
     Pip,
     Apt,
     Conan,
+    Conda,
     Npm,
 }
 

@@ -511,6 +511,7 @@ pub enum RawPackageManagerKind {
     Pip,
     Apt,
     Conan,
+    Conda,
     Npm,
 }
 

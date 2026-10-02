@@ -1,7 +1,8 @@
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_profile::{
-    BoundValue, EffectKind, EffectTarget, PackageLocatorSemantic, ResolveInvocationArtifactResult,
-    SemanticType,
+    BoundArgumentMaterialization, BoundValue, EffectKind, EffectTarget, PackageLocatorSemantic,
+    ResolveInvocationArtifactResult, SemanticType, SemanticValueResolution, ValueProjection,
+    project_value,
 };
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
@@ -76,34 +77,13 @@ fn collect_imported_package_provenance_mutations(
             };
 
             for value in &parameter.values {
-                let BoundValue::Argument {
-                    text,
-                    quoted,
-                    node_kind,
-                    ..
-                } = value
-                else {
-                    continue;
-                };
-
-                let Some(locator_kind) =
-                    classify_locator_kind(locator_semantic, text, *quoted, node_kind, cwd, home)
-                else {
-                    continue;
-                };
+                let (locator_kind, text) =
+                    classify_locator_value(locator_semantic, value, cwd, home);
 
                 let manager = package_manager_kind(locator_semantic.manager);
                 let artifact_node_id =
-                    imported_package_artifact_node_id(manager, locator_kind, text);
-                let artifact = imported_package_artifact(
-                    manager,
-                    locator_kind,
-                    text,
-                    *quoted,
-                    node_kind,
-                    cwd,
-                    home,
-                );
+                    imported_package_artifact_node_id(manager, locator_kind, &text);
+                let artifact = imported_package_artifact(manager, locator_kind, &text, cwd);
 
                 mutations.push(PendingMutation::AddProvenanceArtifact {
                     source_node_id: record.source_node_id().clone(),
@@ -122,11 +102,8 @@ fn collect_imported_package_provenance_mutations(
                     parameter.name.as_str(),
                     resolved.normalized_command_name.as_str(),
                     locator_kind,
-                    text,
-                    *quoted,
-                    node_kind,
+                    &text,
                     cwd,
-                    home,
                 ));
             }
         }
@@ -135,86 +112,125 @@ fn collect_imported_package_provenance_mutations(
     mutations
 }
 
-fn classify_locator_kind(
+fn classify_locator_value(
     semantic: &PackageLocatorSemantic,
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
+    value: &BoundValue,
     cwd: &str,
     home: Option<&str>,
-) -> Option<PackageLocatorKind> {
-    let allowed: Vec<PackageLocatorKind> = semantic
-        .locator_kinds
-        .iter()
-        .copied()
-        .map(package_locator_kind)
-        .collect();
-
-    if allowed.is_empty() {
-        return None;
+) -> (PackageLocatorKind, String) {
+    if let Some(SemanticValueResolution::Known(text)) =
+        project_value(&ValueProjection::Identity, value)
+    {
+        return (classify_static_locator_kind(semantic, &text), text);
     }
 
-    if is_vcs_locator(text) {
+    // The shared argv view deliberately leaves shell tilde expansion unknown.
+    // Its simple unquoted form can use the home already supplied in the request;
+    // no filesystem lookup, named-user lookup or tool environment probing occurs.
+    if let BoundValue::Argument {
+        text,
+        quoted: false,
+        node_kind,
+        materialization: BoundArgumentMaterialization::Literal,
+        ..
+    } = value
+    {
+        if node_kind == "word" && (text == "~" || text.starts_with("~/")) {
+            if let Some(path) = resolve_path_operand(text, false, node_kind, cwd, home) {
+                return (classify_static_locator_kind(semantic, &path), path);
+            }
+        }
+    }
+
+    let text = match value {
+        BoundValue::Argument { text, .. } => text.clone(),
+        BoundValue::ImplicitInput { source, .. } => {
+            format!("<unresolved package argument from {source:?}>")
+        }
+    };
+    // Unknown is an analysis result, not a valid-input alternative that a
+    // profile can disable. Never discard an unresolved source or call it a
+    // registry reference just because that is the only declared concrete kind.
+    (PackageLocatorKind::UnknownDynamic, text)
+}
+
+fn classify_static_locator_kind(
+    semantic: &PackageLocatorSemantic,
+    text: &str,
+) -> PackageLocatorKind {
+    if text.is_empty() || text.starts_with('-') {
+        return PackageLocatorKind::UnknownDynamic;
+    }
+
+    // A filesystem spelling still has to agree with the declared input role.
+    // In particular, -r/-f definition inputs remain RequirementFile even when
+    // absolute or extensionless. Conflicting local roles remain unresolved.
+    if has_explicit_local_path_syntax(text) {
+        return unique_local_kind(semantic).unwrap_or(PackageLocatorKind::UnknownDynamic);
+    }
+
+    if is_vcs_locator(text) && text.contains("://") {
         return first_allowed_kind(
-            &allowed,
+            semantic,
             &[PackageLocatorKind::VcsUrl, PackageLocatorKind::DirectUrl],
-        );
+        )
+        .unwrap_or(PackageLocatorKind::UnknownDynamic);
     }
 
     if is_http_url(text) {
-        return first_allowed_kind(&allowed, &[PackageLocatorKind::DirectUrl]);
+        return allowed_kind(semantic, PackageLocatorKind::DirectUrl)
+            .unwrap_or(PackageLocatorKind::UnknownDynamic);
     }
 
-    if is_requirement_file_candidate(text, quoted, node_kind, cwd, home) {
+    // Unsupported URI/composite URL syntax cannot fall through to a local
+    // filename or a registry package. It requires its own declared grammar.
+    if text.contains("://") || is_vcs_locator(text) {
+        return PackageLocatorKind::UnknownDynamic;
+    }
+
+    if allowed_kind(semantic, PackageLocatorKind::RegistryRef).is_none() {
+        return unique_local_kind(semantic).unwrap_or(PackageLocatorKind::UnknownDynamic);
+    }
+
+    if text.contains('/') {
         return first_allowed_kind(
-            &allowed,
-            &[
-                PackageLocatorKind::RequirementFile,
-                PackageLocatorKind::LocalPath,
-            ],
-        );
-    }
-
-    if is_explicit_local_path_candidate(text, quoted, node_kind, cwd, home) {
-        return first_allowed_kind(&allowed, &[PackageLocatorKind::LocalPath]);
-    }
-
-    if is_dynamic_locator(text, node_kind) {
-        return first_allowed_kind(
-            &allowed,
-            &[
-                PackageLocatorKind::UnknownDynamic,
-                PackageLocatorKind::RegistryRef,
-            ],
-        );
-    }
-
-    if is_ambiguous_local_path_candidate(text) {
-        return first_allowed_kind(
-            &allowed,
+            semantic,
             manager_ambiguous_locator_precedence(semantic.manager),
-        );
+        )
+        .unwrap_or(PackageLocatorKind::UnknownDynamic);
     }
 
-    allowed_kind(&allowed, PackageLocatorKind::RegistryRef)
-        .or_else(|| (allowed.len() == 1).then_some(allowed[0]))
-        .or_else(|| allowed_kind(&allowed, PackageLocatorKind::UnknownDynamic))
+    PackageLocatorKind::RegistryRef
 }
 
 fn allowed_kind(
-    allowed: &[PackageLocatorKind],
+    semantic: &PackageLocatorSemantic,
     kind: PackageLocatorKind,
 ) -> Option<PackageLocatorKind> {
-    allowed.contains(&kind).then_some(kind)
+    semantic
+        .locator_kinds
+        .iter()
+        .any(|declared| package_locator_kind(*declared) == kind)
+        .then_some(kind)
+}
+
+fn unique_local_kind(semantic: &PackageLocatorSemantic) -> Option<PackageLocatorKind> {
+    match (
+        allowed_kind(semantic, PackageLocatorKind::RequirementFile),
+        allowed_kind(semantic, PackageLocatorKind::LocalPath),
+    ) {
+        (Some(kind), None) | (None, Some(kind)) => Some(kind),
+        _ => None,
+    }
 }
 
 fn first_allowed_kind(
-    allowed: &[PackageLocatorKind],
+    semantic: &PackageLocatorSemantic,
     precedence: &[PackageLocatorKind],
 ) -> Option<PackageLocatorKind> {
     precedence
         .iter()
-        .find_map(|kind| allowed_kind(allowed, *kind))
+        .find_map(|kind| allowed_kind(semantic, *kind))
 }
 
 fn manager_ambiguous_locator_precedence(
@@ -235,6 +251,11 @@ fn manager_ambiguous_locator_precedence(
             PackageLocatorKind::RegistryRef,
             PackageLocatorKind::LocalPath,
         ],
+        caushell_profile::PackageManagerKind::Conda => &[
+            PackageLocatorKind::RegistryRef,
+            PackageLocatorKind::LocalPath,
+            PackageLocatorKind::RequirementFile,
+        ],
         caushell_profile::PackageManagerKind::Npm => &[
             PackageLocatorKind::RegistryRef,
             PackageLocatorKind::LocalPath,
@@ -246,10 +267,7 @@ fn imported_package_artifact(
     manager: PackageManagerKind,
     locator_kind: PackageLocatorKind,
     text: &str,
-    quoted: bool,
-    node_kind: &str,
     cwd: &str,
-    home: Option<&str>,
 ) -> ProvenanceArtifact {
     ProvenanceArtifact::ImportedPackage {
         manager,
@@ -264,7 +282,7 @@ fn imported_package_artifact(
         },
         source_path: match locator_kind {
             PackageLocatorKind::LocalPath | PackageLocatorKind::RequirementFile => {
-                resolve_path_operand(text, quoted, node_kind, cwd, home)
+                resolve_path_operand(text, true, "raw_string", cwd, None)
             }
             PackageLocatorKind::RegistryRef
             | PackageLocatorKind::DirectUrl
@@ -311,10 +329,7 @@ fn source_provenance_mutations(
     normalized_command_name: &str,
     locator_kind: PackageLocatorKind,
     text: &str,
-    quoted: bool,
-    node_kind: &str,
     cwd: &str,
-    home: Option<&str>,
 ) -> Vec<PendingMutation> {
     match locator_kind {
         PackageLocatorKind::DirectUrl | PackageLocatorKind::VcsUrl => {
@@ -336,7 +351,7 @@ fn source_provenance_mutations(
             }]
         }
         PackageLocatorKind::LocalPath | PackageLocatorKind::RequirementFile => {
-            resolve_path_operand(text, quoted, node_kind, cwd, home)
+            resolve_path_operand(text, true, "raw_string", cwd, None)
                 .map(|path: String| {
                     vec![PendingMutation::AddProvenanceArtifact {
                         source_node_id: source_node_id.clone(),
@@ -362,6 +377,7 @@ fn package_manager_kind(kind: caushell_profile::PackageManagerKind) -> PackageMa
         caushell_profile::PackageManagerKind::Pip => PackageManagerKind::Pip,
         caushell_profile::PackageManagerKind::Apt => PackageManagerKind::Apt,
         caushell_profile::PackageManagerKind::Conan => PackageManagerKind::Conan,
+        caushell_profile::PackageManagerKind::Conda => PackageManagerKind::Conda,
         caushell_profile::PackageManagerKind::Npm => PackageManagerKind::Npm,
     }
 }
@@ -384,6 +400,7 @@ fn package_manager_slug(manager: PackageManagerKind) -> &'static str {
         PackageManagerKind::Pip => "pip",
         PackageManagerKind::Apt => "apt",
         PackageManagerKind::Conan => "conan",
+        PackageManagerKind::Conda => "conda",
         PackageManagerKind::Npm => "npm",
     }
 }
@@ -418,17 +435,6 @@ fn network_endpoint_artifact_node_id(endpoint: &str) -> NodeId {
     ))
 }
 
-fn is_dynamic_locator(text: &str, node_kind: &str) -> bool {
-    matches!(
-        node_kind,
-        "simple_expansion"
-            | "command_substitution"
-            | "process_substitution"
-            | "arithmetic_expansion"
-    ) || text.contains('$')
-        || text.contains('`')
-}
-
 fn is_http_url(text: &str) -> bool {
     text.starts_with("http://") || text.starts_with("https://")
 }
@@ -438,31 +444,6 @@ fn is_vcs_locator(text: &str) -> bool {
         || text.starts_with("hg+")
         || text.starts_with("svn+")
         || text.starts_with("bzr+")
-}
-
-fn is_local_path_candidate(
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
-    cwd: &str,
-    home: Option<&str>,
-) -> bool {
-    is_explicit_local_path_candidate(text, quoted, node_kind, cwd, home)
-        || is_ambiguous_local_path_candidate(text)
-}
-
-fn is_explicit_local_path_candidate(
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
-    cwd: &str,
-    home: Option<&str>,
-) -> bool {
-    if !has_explicit_local_path_syntax(text) {
-        return false;
-    }
-
-    resolve_path_operand(text, quoted, node_kind, cwd, home).is_some()
 }
 
 fn has_explicit_local_path_syntax(text: &str) -> bool {
@@ -475,42 +456,26 @@ fn has_explicit_local_path_syntax(text: &str) -> bool {
         || text.starts_with("../")
 }
 
-fn is_ambiguous_local_path_candidate(text: &str) -> bool {
-    text.contains('/') && !text.contains("://") && !has_explicit_local_path_syntax(text)
-}
-
-fn is_requirement_file_candidate(
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
-    cwd: &str,
-    home: Option<&str>,
-) -> bool {
-    (text.ends_with(".txt")
-        || text.ends_with(".in")
-        || text.ends_with(".lock")
-        || text.contains("requirements"))
-        && !is_dynamic_locator(text, node_kind)
-        && !is_http_url(text)
-        && !is_vcs_locator(text)
-        && !text.starts_with('-')
-        && (is_local_path_candidate(text, quoted, node_kind, cwd, home) || !text.contains("://"))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ExtractImportedPackageProvenancePass;
+    use super::{
+        ExtractImportedPackageProvenancePass, classify_locator_value, classify_static_locator_kind,
+    };
     use crate::{
         ParseCommandPass, ProjectTopLevelCommandsPass, ResolveInvocationPass,
         path::provenance_artifact_for_path,
     };
     use caushell_graph::{EdgeKind, NodeId, SessionGraph};
-    use caushell_profile::ProfileRegistry;
+    use caushell_profile::{
+        BoundValue, ImplicitInputSource, PackageLocatorKind as DeclaredKind,
+        PackageLocatorSemantic, PackageManagerKind as DeclaredManager, ProfileRegistry,
+    };
     use caushell_runner::{PassRunner, PendingMutation, RunnerContext, SessionView};
     use caushell_types::{
-        CheckRequest, CommandSequenceNo, ProvenanceArtifact, ProvenanceConsumeKind,
-        ProvenanceEdgeSemantics, ProvenanceEndpointKind, ProvenanceEndpointUsage,
-        ProvenanceProduceKind, RuntimeMetadata, SessionId, SessionSummary, ShellKind,
+        CheckRequest, CommandSequenceNo, PackageLocatorKind, ProvenanceArtifact,
+        ProvenanceConsumeKind, ProvenanceEdgeSemantics, ProvenanceEndpointKind,
+        ProvenanceEndpointUsage, ProvenanceProduceKind, RuntimeMetadata, SessionId, SessionSummary,
+        ShellKind,
     };
 
     fn sample_request(command: &str) -> CheckRequest {
@@ -548,6 +513,244 @@ mod tests {
 
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
+    }
+
+    fn assert_locator(
+        command: &str,
+        kind: PackageLocatorKind,
+        path: Option<&str>,
+        endpoint: Option<&str>,
+    ) {
+        let ctx = run_pass(command);
+        let packages: Vec<_> = ctx
+            .pending_mutations()
+            .iter()
+            .filter_map(|m| match m {
+                PendingMutation::AddProvenanceArtifact {
+                    artifact: artifact @ ProvenanceArtifact::ImportedPackage { .. },
+                    relation: EdgeKind::Produces,
+                    ..
+                } => Some(artifact),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(packages.len(), 1, "{command}: {packages:?}");
+        let ProvenanceArtifact::ImportedPackage {
+            locator_kind,
+            source_path,
+            source_endpoint,
+            ..
+        } = packages[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(*locator_kind, kind, "{command}: {packages:?}");
+        assert_eq!(source_path.as_deref(), path, "{command}");
+        assert_eq!(source_endpoint.as_deref(), endpoint, "{command}");
+    }
+
+    #[test]
+    fn definition_role_is_independent_of_filename_and_suffix() {
+        for name in [
+            "input",
+            "environment.yml",
+            "dependencies.toml",
+            "packages.lock",
+            "requirements.txt",
+            "config/custom.spec",
+        ] {
+            for prefix in ["pip install -r", "conda env create -p env -f"] {
+                assert_locator(
+                    &format!("{prefix} {name}"),
+                    PackageLocatorKind::RequirementFile,
+                    Some(&format!("/tmp/project/{name}")),
+                    None,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_definition_paths_keep_the_definition_role() {
+        for (name, path) in [
+            ("./input", "/tmp/project/input"),
+            ("/etc/custom", "/etc/custom"),
+            ("../deps", "/tmp/deps"),
+        ] {
+            for prefix in ["pip install -r", "conda install -p env --file"] {
+                assert_locator(
+                    &format!("{prefix} {name}"),
+                    PackageLocatorKind::RequirementFile,
+                    Some(path),
+                    None,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_name_uses_the_declared_parameter_role() {
+        assert_locator(
+            "pip install requests.txt",
+            PackageLocatorKind::RegistryRef,
+            None,
+            None,
+        );
+        assert_locator(
+            "pip install -r requests.txt",
+            PackageLocatorKind::RequirementFile,
+            Some("/tmp/project/requests.txt"),
+            None,
+        );
+        assert_locator(
+            "pip install -e requests.txt",
+            PackageLocatorKind::LocalPath,
+            Some("/tmp/project/requests.txt"),
+            None,
+        );
+        for name in ["foo.in", "foo.lock", "requirements-helper"] {
+            for prefix in ["pip install", "npm install", "conda install -p env"] {
+                assert_locator(
+                    &format!("{prefix} {name}"),
+                    PackageLocatorKind::RegistryRef,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn definition_urls_have_network_provenance_not_fake_filesystem_paths() {
+        for prefix in ["pip install -r", "conda env create -p env -f"] {
+            assert_locator(
+                &format!("{prefix} https://example.test/input"),
+                PackageLocatorKind::DirectUrl,
+                None,
+                Some("https://example.test/input"),
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_source_forms_are_retained_as_unknown_artifacts() {
+        for command in [
+            "pip install -r s3://bucket/input",
+            "pip install -r file:///tmp/input",
+            "conan install --requires https://example.test/pkg",
+            "apt-get install ./pkg",
+            "pip install 'pkg @ https://example.test/archive'",
+        ] {
+            assert_locator(command, PackageLocatorKind::UnknownDynamic, None, None);
+        }
+    }
+
+    #[test]
+    fn unresolved_shell_values_cannot_be_classified_from_their_static_prefix_or_suffix() {
+        for command in [
+            "pip install -r \"$FILE\"",
+            "pip install -r \"$ROOT/requirements.txt\"",
+            "conda env create -p env -f \"$ROOT/environment.yml\"",
+            "pip install -r \"https://example.test/$FILE\"",
+            "pip install -r *.txt",
+        ] {
+            assert_locator(command, PackageLocatorKind::UnknownDynamic, None, None);
+        }
+    }
+
+    #[test]
+    fn quoted_literals_are_not_reinterpreted_as_shell_expansion() {
+        for (argument, expected) in [
+            ("'input$NAME'", "input$NAME"),
+            ("'*.txt'", "*.txt"),
+            ("'`input`'", "`input`"),
+            ("input\\$NAME", "input$NAME"),
+        ] {
+            assert_locator(
+                &format!("pip install -r {argument}"),
+                PackageLocatorKind::RequirementFile,
+                Some(&format!("/tmp/project/{expected}")),
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn simple_shell_home_expansion_preserves_local_definition_provenance() {
+        assert_locator(
+            "pip install -r ~/input",
+            PackageLocatorKind::RequirementFile,
+            Some("/home/alice/input"),
+            None,
+        );
+        assert_locator(
+            "pip install -r ~missing/input",
+            PackageLocatorKind::UnknownDynamic,
+            None,
+            None,
+        );
+    }
+
+    #[test]
+    fn definition_resolution_uses_metadata_for_every_manager() {
+        for manager in [
+            DeclaredManager::Pip,
+            DeclaredManager::Apt,
+            DeclaredManager::Conan,
+            DeclaredManager::Conda,
+            DeclaredManager::Npm,
+        ] {
+            let semantic = PackageLocatorSemantic {
+                manager,
+                locator_kinds: vec![
+                    DeclaredKind::RequirementFile,
+                    DeclaredKind::DirectUrl,
+                    DeclaredKind::UnknownDynamic,
+                ],
+            };
+            for name in ["input", "arbitrary.ext", "/etc/no-extension"] {
+                assert_eq!(
+                    classify_static_locator_kind(&semantic, name),
+                    PackageLocatorKind::RequirementFile
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ambiguous_or_url_only_declarations_do_not_invent_a_file_role() {
+        for kinds in [
+            vec![DeclaredKind::RequirementFile, DeclaredKind::LocalPath],
+            vec![DeclaredKind::DirectUrl],
+            vec![],
+        ] {
+            let semantic = PackageLocatorSemantic {
+                manager: DeclaredManager::Pip,
+                locator_kinds: kinds,
+            };
+            for name in ["input", "requirements.txt", "./environment.yml"] {
+                assert_eq!(
+                    classify_static_locator_kind(&semantic, name),
+                    PackageLocatorKind::UnknownDynamic
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_input_does_not_disappear_when_only_a_concrete_kind_is_declared() {
+        let semantic = PackageLocatorSemantic {
+            manager: DeclaredManager::Apt,
+            locator_kinds: vec![DeclaredKind::RegistryRef],
+        };
+        let (kind, text) = classify_locator_value(
+            &semantic,
+            &BoundValue::implicit_input(ImplicitInputSource::StdinData),
+            "/tmp/project",
+            None,
+        );
+        assert_eq!(kind, PackageLocatorKind::UnknownDynamic);
+        assert!(text.contains("StdinData"));
     }
 
     #[test]
