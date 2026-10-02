@@ -1,8 +1,11 @@
+use std::collections::BTreeSet;
+
 use caushell_graph::{EdgeKind, GraphRead, NodeKind};
 use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{
     Evidence, ExecutionRiskSubtype, FindingEnforcementClass, ImportedPackageExecutionSinkEvidence,
-    PackageLocatorKind, ProvenanceArtifact, RuleId, RulePolicy,
+    PackageLocatorKind, ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceEdgeSemantics, RuleId,
+    RulePolicy,
 };
 
 use crate::support::{
@@ -59,8 +62,21 @@ fn collect_imported_package_sinks(
     graph: &dyn GraphRead,
 ) -> Vec<ImportedPackageExecutionSinkEvidence> {
     let mut sinks = Vec::new();
+    let mut seen = BTreeSet::new();
 
     for record in graph_backed_execution_resolve_records(ctx) {
+        let semantics_node_id = execution_semantics_node_id(record.source_node_id());
+        let Some(semantics_node) = graph.get_node(&semantics_node_id) else {
+            continue;
+        };
+        // Reuse the existing execution fact as the trigger; downloads, queries
+        // and other calls do not traverse package-source edges for this guard.
+        if !matches!(&semantics_node.kind, NodeKind::ExecutionSemantics { semantics }
+            if semantics.executes_imported_package_logic)
+        {
+            continue;
+        }
+
         let Some(execution_info) = execution_unit_info(graph, record.source_node_id()) else {
             continue;
         };
@@ -68,24 +84,52 @@ fn collect_imported_package_sinks(
             continue;
         }
 
-        let Some(artifact) = imported_package_artifact_for_sink(graph, record.source_node_id())
-        else {
-            continue;
-        };
-
-        sinks.push(ImportedPackageExecutionSinkEvidence {
-            node_id: execution_info.node_id,
-            sequence_no: execution_info.sequence_no,
-            depth: execution_info.depth,
-            command: execution_info.command,
-            package_manager: artifact.manager,
-            risk_subtype: ExecutionRiskSubtype::ImportedPackage,
-            source_class: RulePolicy::imported_package_source_class_for_locator_kind(
-                artifact.locator_kind,
-            ),
-            locator: artifact.locator,
-            locator_kind: artifact.locator_kind,
-        });
+        for edge in graph.outgoing_edges(record.source_node_id()) {
+            if edge.kind != EdgeKind::Consumes
+                || !matches!(
+                    &edge.semantics,
+                    Some(ProvenanceEdgeSemantics::Consume {
+                        consume_kind: ProvenanceConsumeKind::ImportedPackageLogic,
+                        ..
+                    })
+                )
+            {
+                continue;
+            }
+            let Some(node) = graph.get_node(&edge.to) else {
+                continue;
+            };
+            let NodeKind::ProvenanceArtifact {
+                artifact:
+                    ProvenanceArtifact::ImportedPackage {
+                        manager,
+                        locator,
+                        locator_kind,
+                        ..
+                    },
+            } = &node.kind
+            else {
+                continue;
+            };
+            // Repeated argv/slots may consume the same artifact several times.
+            // Deduplicate per invocation, never across separate executions.
+            if !seen.insert((record.source_node_id(), &edge.to)) {
+                continue;
+            }
+            sinks.push(ImportedPackageExecutionSinkEvidence {
+                node_id: execution_info.node_id.clone(),
+                sequence_no: execution_info.sequence_no,
+                depth: execution_info.depth,
+                command: execution_info.command.clone(),
+                package_manager: *manager,
+                risk_subtype: ExecutionRiskSubtype::ImportedPackage,
+                source_class: RulePolicy::imported_package_source_class_for_locator_kind(
+                    *locator_kind,
+                ),
+                locator: locator.clone(),
+                locator_kind: *locator_kind,
+            });
+        }
     }
 
     sinks
@@ -97,13 +141,6 @@ struct ExecutionUnitInfo {
     sequence_no: caushell_types::CommandSequenceNo,
     depth: u8,
     command: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ImportedPackageArtifactInfo {
-    manager: caushell_types::PackageManagerKind,
-    locator: String,
-    locator_kind: PackageLocatorKind,
 }
 
 fn execution_unit_info(
@@ -138,46 +175,6 @@ fn execution_unit_info(
     }
 }
 
-fn imported_package_artifact_for_sink(
-    graph: &dyn GraphRead,
-    source_node_id: &caushell_graph::NodeId,
-) -> Option<ImportedPackageArtifactInfo> {
-    let semantics_node_id = execution_semantics_node_id(source_node_id);
-    graph.get_node(&semantics_node_id)?;
-
-    for edge in graph.outgoing_edges(source_node_id) {
-        if edge.kind != EdgeKind::Consumes {
-            continue;
-        }
-
-        let Some(node) = graph.get_node(&edge.to) else {
-            continue;
-        };
-
-        let NodeKind::ProvenanceArtifact { artifact } = &node.kind else {
-            continue;
-        };
-
-        let ProvenanceArtifact::ImportedPackage {
-            manager,
-            locator,
-            locator_kind,
-            ..
-        } = artifact
-        else {
-            continue;
-        };
-
-        return Some(ImportedPackageArtifactInfo {
-            manager: *manager,
-            locator: locator.clone(),
-            locator_kind: *locator_kind,
-        });
-    }
-
-    None
-}
-
 fn imported_package_source_summary(sink: &ImportedPackageExecutionSinkEvidence) -> String {
     match sink.locator_kind {
         PackageLocatorKind::RegistryRef => format!(
@@ -197,17 +194,19 @@ fn imported_package_source_summary(sink: &ImportedPackageExecutionSinkEvidence) 
 
 #[cfg(test)]
 mod tests {
-    use super::ImportedPackageExecutionGuardPass;
+    use super::{ImportedPackageExecutionGuardPass, collect_imported_package_sinks};
     use crate::{
         DecisionAssemblyPass, ExtractExecutionSemanticsPass, ExtractImportedPackageProvenancePass,
         ParseCommandPass, ProjectTopLevelCommandsPass, ResolveInvocationPass,
     };
-    use caushell_graph::SessionGraph;
+    use caushell_graph::{Edge, EdgeKind, GraphNode, NodeId, NodeKind, SessionGraph, SessionRead};
     use caushell_profile::ProfileRegistry;
-    use caushell_runner::{PassRunner, RunnerContext, SessionView};
+    use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
     use caushell_types::{
-        CheckRequest, CommandSequenceNo, Decision, EvidenceKind, PolicyConfig, RuleAction, RuleId,
-        RulePolicyEntry, RuntimeMetadata, SessionId, SessionSummary, ShellKind,
+        CheckRequest, CommandSequenceNo, Decision, EvidenceKind, ExecutionSemantics,
+        PackageLocatorKind, PackageManagerKind, PolicyConfig, ProvenanceArtifact,
+        ProvenanceConsumeKind, ProvenanceEdgeSemantics, RuleAction, RuleId, RulePolicyEntry,
+        RuntimeMetadata, SessionId, SessionSummary, ShellKind,
     };
 
     fn sample_request(command: &str, sequence_no: u64) -> CheckRequest {
@@ -255,6 +254,116 @@ mod tests {
         let summary = SessionSummary::new();
         runner_with_action(action).run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
+    }
+
+    fn modeled_graph() -> (RunnerContext, SessionGraph, NodeId) {
+        let ctx = run_with_policy("pip install numpy", RuleAction::Observe);
+        let base = SessionGraph::new();
+        let summary = SessionSummary::new();
+        let staged = StagedSession::new(&base, ctx.request(), &summary, ctx.pending_mutations());
+        let mut graph = SessionGraph::new();
+        for node in staged.graph().nodes() {
+            graph.add_node(node.clone());
+        }
+        for edge in staged.graph().edges() {
+            graph.add_edge(edge.clone()).unwrap();
+        }
+        let source = super::graph_backed_execution_resolve_records(&ctx)[0]
+            .source_node_id()
+            .clone();
+        (ctx, graph, source)
+    }
+
+    fn consume(kind: ProvenanceConsumeKind) -> ProvenanceEdgeSemantics {
+        ProvenanceEdgeSemantics::Consume {
+            consume_kind: kind,
+            slot_name: None,
+            normalized_command_name: None,
+            domain_label: None,
+        }
+    }
+
+    #[test]
+    fn only_imported_package_logic_consumption_is_an_execution_source() {
+        let (ctx, mut graph, source) = modeled_graph();
+        let target = NodeId::new("test:additional-package");
+        graph.add_node(GraphNode::new(
+            target.clone(),
+            NodeKind::ProvenanceArtifact {
+                artifact: ProvenanceArtifact::ImportedPackage {
+                    manager: PackageManagerKind::Pip,
+                    locator: "https://example.test/pkg".into(),
+                    locator_kind: PackageLocatorKind::DirectUrl,
+                    source_endpoint: Some("https://example.test/pkg".into()),
+                    source_path: None,
+                    version: 1,
+                },
+            },
+        ));
+        for kind in [
+            ProvenanceConsumeKind::PackageLocator,
+            ProvenanceConsumeKind::NetworkEndpoint,
+        ] {
+            graph
+                .add_edge(Edge::with_semantics(
+                    source.clone(),
+                    target.clone(),
+                    EdgeKind::Consumes,
+                    consume(kind),
+                ))
+                .unwrap();
+        }
+        graph
+            .add_edge(Edge::new(
+                source.clone(),
+                target.clone(),
+                EdgeKind::Consumes,
+            ))
+            .unwrap();
+        graph
+            .add_edge(Edge::with_semantics(
+                source.clone(),
+                target.clone(),
+                EdgeKind::Produces,
+                consume(ProvenanceConsumeKind::ImportedPackageLogic),
+            ))
+            .unwrap();
+        let sinks = collect_imported_package_sinks(&ctx, &graph);
+        assert_eq!(sinks.len(), 1, "{sinks:?}");
+        assert_eq!(sinks[0].locator, "numpy");
+
+        for _ in 0..2 {
+            graph
+                .add_edge(Edge::with_semantics(
+                    source.clone(),
+                    target.clone(),
+                    EdgeKind::Consumes,
+                    consume(ProvenanceConsumeKind::ImportedPackageLogic),
+                ))
+                .unwrap();
+        }
+        let sinks = collect_imported_package_sinks(&ctx, &graph);
+        assert_eq!(sinks.len(), 2, "{sinks:?}");
+        assert_eq!(
+            sinks
+                .iter()
+                .filter(|s| s.locator_kind == PackageLocatorKind::DirectUrl)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn package_edges_do_not_trigger_the_guard_without_the_execution_flag() {
+        let (ctx, mut graph, source) = modeled_graph();
+        assert_eq!(collect_imported_package_sinks(&ctx, &graph).len(), 1);
+        graph.add_node(GraphNode::new(
+            super::execution_semantics_node_id(&source),
+            NodeKind::ExecutionSemantics {
+                semantics: ExecutionSemantics::new("pip", "download_only"),
+            },
+        ));
+        assert!(collect_imported_package_sinks(&ctx, &graph).is_empty());
     }
 
     #[test]

@@ -141,6 +141,8 @@ For example, `pip install requests.txt` treats the operand as a registry referen
 
 Known local inputs retain path-content provenance and known URLs retain network-source provenance. Literal `$` characters in a quoted or already materialized filename are not re-expanded. Simple shell `~/` expansion can use the request's supplied home; named-user lookup and host-state probing are not performed. Source classification does not itself grant approval: existing guards and policy configuration still decide the action. This contract does not claim complete package-manager locator grammars or interpretation of definition-file contents.
 
+The existing imported-package execution guard checks every source consumed by the current invocation, not just its first package. Its trigger is the existing `executes_imported_package_logic` fact; calls without that fact skip source-edge traversal. Only `Consumes` edges labeled `ImportedPackageLogic` to imported-package artifacts participate. Each distinct invocation/artifact pair receives its own evidence and existing source policy, and ordinary decision assembly retains `Deny > NeedApproval > Allow`. Repeated operands or slots consuming the same artifact do not duplicate findings, while separate invocations and distinct source kinds remain separate. Pure downloads, previews and queries are not package execution merely because their Graph contains package artifacts. This adds no pass, Profile-name special case or full-session graph scan.
+
 ## Session Graph Extension
 
 Each session maintains a continuously updated execution graph. When analyzing the current action, Caushell first layers its new commands, state, and provenance relationships onto the existing graph to form the view used for this analysis.
