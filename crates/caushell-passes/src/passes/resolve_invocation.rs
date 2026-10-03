@@ -1328,6 +1328,9 @@ struct StaticPayloadLookupScope {
     command_index: usize,
     bindings: SessionBindings,
     scope_base_bindings: SessionBindings,
+    /// A dispatcher supplies its output, not its own original stdin. Preserve
+    /// this distinction through transparent wrapper chains for data decoders.
+    stdin_is_parent_output: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1348,6 +1351,63 @@ struct ExpandedFrontierEntry {
     origin_index: usize,
     origin_locator: ExecutionUnitOriginLocator,
     inherited_scope: ExecutionUnitInheritedScope,
+}
+
+/// A single opt-in gate for top-level and expanded executions. Data formats do
+/// not become recursive shell payloads, and no command-name special case lives here.
+fn refresh_execution_payload_projections(
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &mut ExpandedFrontierEntry,
+    max_nested_parse_depth: u8,
+) {
+    let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
+        return;
+    };
+    let Some(max_bytes) = resolved
+        .bound
+        .payload_projections
+        .iter()
+        .filter(|p| p.source == caushell_profile::PayloadInputSource::Stdin)
+        .map(|p| p.max_bytes)
+        .max()
+    else {
+        return;
+    };
+    if entry.static_payload_scope.stdin_is_parent_output {
+        if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result {
+            caushell_profile::refresh_payload_projections(&mut resolved.bound, None);
+        }
+        return;
+    }
+    let (cwd, reliable) = match &entry.inherited_scope.dispatch_working_directory {
+        None => (request.shell_state_before.cwd(), true),
+        Some(EffectiveCwd::Known(cwd)) => (cwd.as_str(), true),
+        _ => (request.shell_state_before.cwd(), false),
+    };
+    let evidence = static_stdin_evidence_for_scoped_command(
+        caushell_query::QuerySession::from_session(&session),
+        &entry.static_payload_scope.parsed_scope,
+        entry.static_payload_scope.command_index,
+        request.sequence_no,
+        &entry.static_payload_scope.bindings,
+        &entry.static_payload_scope.scope_base_bindings,
+        cwd,
+        reliable,
+        request.home.as_deref(),
+        max_nested_parse_depth.saturating_sub(entry.depth),
+    );
+    // Partial fragments are not a complete protocol, even if they contain end markers.
+    let payload = (evidence.complete
+        && evidence
+            .known_fragments
+            .iter()
+            .try_fold(0usize, |n, s| n.checked_add(s.len()))
+            .is_some_and(|n| n <= max_bytes))
+    .then(|| evidence.known_fragments.concat());
+    if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result {
+        caushell_profile::refresh_payload_projections(&mut resolved.bound, payload.as_deref());
+    }
 }
 
 fn collect_execution_unit_resolve_records(
@@ -1403,6 +1463,7 @@ fn collect_execution_unit_resolve_records(
                 command_index: record.command_ref.command_index,
                 bindings: command_bindings,
                 scope_base_bindings: request_scope_base_bindings.clone(),
+                stdin_is_parent_output: false,
             },
             history_anchor_node_id: record.source_node_id.clone(),
             origin_kind: ExecutionUnitOriginKind::TopLevel,
@@ -1432,6 +1493,7 @@ fn collect_execution_unit_resolve_records(
                 command_index: record.command_ref.command_index,
                 bindings: command.bindings.clone(),
                 scope_base_bindings: command.bindings.clone(),
+                stdin_is_parent_output: false,
             },
             history_anchor_node_id: command.parent_node_id.clone(),
             origin_kind: ExecutionUnitOriginKind::FunctionExpansion,
@@ -1503,6 +1565,7 @@ fn collect_execution_unit_resolve_records(
                     command_index: derived_command_index,
                     bindings: command_bindings,
                     scope_base_bindings: record.bindings.clone(),
+                    stdin_is_parent_output: false,
                 },
                 history_anchor_node_id,
                 origin_kind: ExecutionUnitOriginKind::NestedPayload,
@@ -1521,7 +1584,7 @@ fn collect_execution_unit_resolve_records(
     ));
 
     let mut visited = std::collections::BTreeSet::new();
-    while let Some(entry) = frontier.pop() {
+    while let Some(mut entry) = frontier.pop() {
         let visit_key = (
             entry.source_node_id.clone(),
             entry.origin_index,
@@ -1548,6 +1611,8 @@ fn collect_execution_unit_resolve_records(
             ));
             continue;
         }
+
+        refresh_execution_payload_projections(session, request, &mut entry, max_nested_parse_depth);
 
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();
@@ -1810,6 +1875,7 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                             command_index,
                             bindings: command_bindings,
                             scope_base_bindings: assignment_bindings.clone(),
+                            stdin_is_parent_output: false,
                         },
                         history_anchor_node_id: history_anchor_node_id.clone(),
                         origin_kind: ExecutionUnitOriginKind::CommandSubstitutionBody,
@@ -1895,6 +1961,7 @@ fn expanded_dispatch_children(
         };
         let mut static_payload_scope = entry.static_payload_scope.clone();
         static_payload_scope.bindings = child_bindings.clone();
+        static_payload_scope.stdin_is_parent_output |= child.stdin_from_parent;
         children.push(ExpandedFrontierEntry {
             source_node_id,
             command_ref: ParsedCommandRef::new(child.dispatch_index, command.span.clone()),
@@ -1987,6 +2054,7 @@ fn expanded_shell_payload_children(
                     command_index,
                     bindings: command_bindings,
                     scope_base_bindings: entry.bindings.clone(),
+                    stdin_is_parent_output: false,
                 },
                 history_anchor_node_id: entry.history_anchor_node_id.clone(),
                 origin_kind: ExecutionUnitOriginKind::ShellCommandStringPayload,
@@ -2129,6 +2197,7 @@ fn expanded_recursive_payload_children(
                     command_index,
                     bindings: command_bindings,
                     scope_base_bindings: entry.bindings.clone(),
+                    stdin_is_parent_output: false,
                 },
                 history_anchor_node_id: entry.history_anchor_node_id.clone(),
                 origin_kind: ExecutionUnitOriginKind::RecursivePayload,
@@ -2200,6 +2269,7 @@ fn expanded_command_substitution_body_children(
                         command_index,
                         bindings: command_bindings,
                         scope_base_bindings: entry.bindings.clone(),
+                        stdin_is_parent_output: false,
                     },
                     history_anchor_node_id: entry.history_anchor_node_id.clone(),
                     origin_kind: ExecutionUnitOriginKind::CommandSubstitutionBody,
@@ -2309,6 +2379,7 @@ fn expanded_command_substitution_materialization_children(
                     command_index,
                     bindings: command_bindings,
                     scope_base_bindings: entry.bindings.clone(),
+                    stdin_is_parent_output: false,
                 },
                 history_anchor_node_id: entry.history_anchor_node_id.clone(),
                 origin_kind: ExecutionUnitOriginKind::CommandSubstitutionMaterialization,
@@ -2394,6 +2465,7 @@ fn expanded_process_substitution_body_children(
                             command_index,
                             bindings: command_bindings,
                             scope_base_bindings: entry.bindings.clone(),
+                            stdin_is_parent_output: false,
                         },
                         history_anchor_node_id: entry.history_anchor_node_id.clone(),
                         origin_kind: ExecutionUnitOriginKind::ProcessSubstitutionBody,
@@ -2500,6 +2572,7 @@ fn expanded_process_substitution_body_children(
                             command_index,
                             bindings: command_bindings,
                             scope_base_bindings: entry.bindings.clone(),
+                            stdin_is_parent_output: false,
                         },
                         history_anchor_node_id: entry.history_anchor_node_id.clone(),
                         origin_kind: ExecutionUnitOriginKind::ProcessSubstitutionBody,
@@ -2601,6 +2674,7 @@ fn expanded_process_substitution_body_children(
                         command_index,
                         bindings: command_bindings,
                         scope_base_bindings: entry.bindings.clone(),
+                        stdin_is_parent_output: false,
                     },
                     history_anchor_node_id: entry.history_anchor_node_id.clone(),
                     origin_kind: ExecutionUnitOriginKind::ProcessSubstitutionBody,
@@ -2824,6 +2898,7 @@ fn expanded_static_xargs_children(
                 command_index: 0,
                 bindings: entry.bindings.clone(),
                 scope_base_bindings: entry.bindings.clone(),
+                stdin_is_parent_output: false,
             },
             history_anchor_node_id: entry.history_anchor_node_id.clone(),
             origin_kind: ExecutionUnitOriginKind::StaticXargs,

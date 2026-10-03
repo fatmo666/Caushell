@@ -7,6 +7,10 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "apply_patch",
+        content: include_str!("../profiles/apply_patch.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "ss",
         content: include_str!("../profiles/ss.yaml"),
     },

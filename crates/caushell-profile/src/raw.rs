@@ -122,10 +122,45 @@ pub struct RawForm {
     pub selector: RawSelectorExpr,
     pub remaining_selector: RawSelectorExpr,
     pub parameters: Vec<RawParameter>,
+    pub payload_projections: Vec<RawPayloadProjection>,
     pub implicit_inputs: Vec<RawImplicitInput>,
     pub effects: Vec<RawEffect>,
     pub stream_contract: Option<RawStreamContract>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawPayloadFormat {
+    CodexApplyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawPayloadInputSource {
+    Slot { name: String },
+    Stdin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawPayloadProjection {
+    pub format: RawPayloadFormat,
+    pub source: RawPayloadInputSource,
+    pub reads: String,
+    pub writes: String,
+    pub deletes: String,
+    #[serde(default = "default_payload_max_bytes")]
+    pub max_bytes: usize,
+    #[serde(default = "default_payload_max_operations")]
+    pub max_operations: usize,
+}
+
+fn default_payload_max_bytes() -> usize {
+    1024 * 1024
+}
+fn default_payload_max_operations() -> usize {
+    4096
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -182,6 +217,7 @@ pub enum RawSelectorExpr {
         matcher: RawValueMatcher,
     },
     NoPositionalArgs,
+    NoArguments,
     HasDashDash,
     NoDashDash,
     StdinPayloadAvailable,

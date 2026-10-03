@@ -308,7 +308,7 @@ fn attach_bound_argument_materialization(
     bindings: &SessionBindings,
 ) -> BoundInvocation {
     for parameter in &mut bound.bound_parameters {
-        if parameter.structured_source.is_some() {
+        if parameter.structured_source.is_some() || parameter.payload_generated {
             continue;
         }
         for value in &mut parameter.values {
@@ -370,6 +370,7 @@ fn attach_bound_argument_materialization(
     }
 
     crate::structured_projection::refresh_structured_parameters(&mut bound);
+    crate::refresh_payload_projections(&mut bound, None);
     bound
 }
 

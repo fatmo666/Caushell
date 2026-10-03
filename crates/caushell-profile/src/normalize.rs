@@ -63,6 +63,7 @@ pub enum NormalizeError {
     InvalidConfiguredPath(String),
     InvalidStructuredProjection(String),
     InvalidArgumentFileRule(String),
+    InvalidPayloadProjection(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -169,6 +170,12 @@ fn declared_parameter_names(
             );
         }
     }
+    for projection in forms.iter().flat_map(|form| &form.payload_projections) {
+        names.extend(
+            [&projection.reads, &projection.writes, &projection.deletes]
+                .map(|slot| slot.as_str().to_string()),
+        );
+    }
     names
 }
 
@@ -181,6 +188,7 @@ fn validate_configured_path_references(
     // Validate declarations once at load time, not during each guard check.
     let names = declared_parameter_names(forms, modifiers, inherited);
     validate_structured_projection_references(forms, modifiers, inherited)?;
+    validate_payload_projection_references(forms, modifiers, inherited)?;
     let mut modifier_names = inherited_modifiers.clone();
     modifier_names.extend(
         modifiers
@@ -405,6 +413,11 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .into_iter()
             .map(normalize_parameter)
             .collect::<Result<Vec<_>, _>>()?,
+        payload_projections: raw
+            .payload_projections
+            .into_iter()
+            .map(normalize_payload_projection)
+            .collect::<Result<Vec<_>, _>>()?,
         implicit_inputs: raw
             .implicit_inputs
             .into_iter()
@@ -508,6 +521,7 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
         RawSelectorExpr::NoPositionalArgs => {
             Ok(SelectorExpr::Predicate(SelectorPredicate::NoPositionalArgs))
         }
+        RawSelectorExpr::NoArguments => Ok(SelectorExpr::Predicate(SelectorPredicate::NoArguments)),
         RawSelectorExpr::HasDashDash => Ok(SelectorExpr::Predicate(SelectorPredicate::HasDashDash)),
         RawSelectorExpr::NoDashDash => Ok(SelectorExpr::Predicate(SelectorPredicate::NoDashDash)),
         RawSelectorExpr::StdinPayloadAvailable => Ok(SelectorExpr::Predicate(
@@ -795,6 +809,115 @@ fn validate_structured_projection_references(
                             source.as_str()
                         )));
                     }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_payload_projection(
+    raw: crate::RawPayloadProjection,
+) -> Result<crate::PayloadProjection, NormalizeError> {
+    for name in [&raw.reads, &raw.writes, &raw.deletes] {
+        ensure_non_empty(name, "payload_projections.target")?;
+    }
+    if raw.max_bytes == 0 || raw.max_operations == 0 {
+        return Err(NormalizeError::InvalidPayloadProjection(
+            "budgets must be positive".into(),
+        ));
+    }
+    let source = match raw.source {
+        crate::RawPayloadInputSource::Slot { name } => {
+            ensure_non_empty(&name, "payload_projections.source.name")?;
+            crate::PayloadInputSource::Slot(SlotName::new(name))
+        }
+        crate::RawPayloadInputSource::Stdin => crate::PayloadInputSource::Stdin,
+    };
+    Ok(crate::PayloadProjection {
+        format: match raw.format {
+            crate::RawPayloadFormat::CodexApplyPatch => crate::PayloadFormat::CodexApplyPatch,
+        },
+        source,
+        reads: SlotName::new(raw.reads),
+        writes: SlotName::new(raw.writes),
+        deletes: SlotName::new(raw.deletes),
+        max_bytes: raw.max_bytes,
+        max_operations: raw.max_operations,
+    })
+}
+
+fn validate_payload_projection_references(
+    forms: &[Form],
+    modifiers: &[Modifier],
+    inherited: &BTreeSet<String>,
+) -> Result<(), NormalizeError> {
+    for form in forms {
+        let parameters: Vec<_> = form
+            .parameters
+            .iter()
+            .chain(modifiers.iter().flat_map(|m| &m.parameters))
+            .collect();
+        let mut names = inherited.clone();
+        for parameter in &parameters {
+            names.insert(parameter.name.as_str().to_string());
+            if let Some(grammar) = &parameter.structured_projection {
+                names.extend(
+                    grammar
+                        .branches
+                        .iter()
+                        .filter_map(|b| b.target.as_ref())
+                        .chain(grammar.fallback.iter())
+                        .map(|t| t.name.as_str().to_string()),
+                );
+            }
+        }
+        for projection in &form.payload_projections {
+            match &projection.source {
+                crate::PayloadInputSource::Slot(slot) => {
+                    if !parameters.iter().any(|p| {
+                        p.name == *slot
+                            && p.semantic == SemanticType::PlainValue
+                            && p.value_projection.is_none()
+                            && p.structured_projection.is_none()
+                    }) {
+                        return Err(NormalizeError::InvalidPayloadProjection(format!(
+                            "source must be a declared unprojected plain-value slot in this form: {}",
+                            slot.as_str()
+                        )));
+                    }
+                }
+                crate::PayloadInputSource::Stdin => {
+                    if !form.implicit_inputs.iter().any(|i| {
+                        i.source == ImplicitInputSource::StdinData
+                            && i.semantic == SemanticType::PlainValue
+                    }) {
+                        return Err(NormalizeError::InvalidPayloadProjection(
+                            "stdin source requires plain stdin_data declaration".into(),
+                        ));
+                    }
+                }
+            }
+            for (slot, kind) in [
+                (&projection.reads, EffectKind::ReadPath),
+                (&projection.writes, EffectKind::WritePath),
+                (&projection.deletes, EffectKind::DeletePath),
+            ] {
+                if !names.insert(slot.as_str().to_string()) {
+                    return Err(NormalizeError::InvalidPayloadProjection(format!(
+                        "projected slot collision: {}",
+                        slot.as_str()
+                    )));
+                }
+                if !form
+                    .effects
+                    .iter()
+                    .any(|e| e.kind == kind && e.target == EffectTarget::Slot(slot.clone()))
+                {
+                    return Err(NormalizeError::InvalidPayloadProjection(format!(
+                        "missing {kind:?} effect for {}",
+                        slot.as_str()
+                    )));
                 }
             }
         }
@@ -1923,6 +2046,7 @@ mod tests {
             platform: Default::default(),
             forms: vec![RawForm {
                 id: "command_string".to_string(),
+                payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasFlag {
                     flag: "-c".to_string(),
                 },
@@ -2082,6 +2206,7 @@ mod tests {
             platform: RawPlatformConstraints::default(),
             forms: vec![RawForm {
                 id: "copy".to_string(),
+                payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 1 },
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
@@ -2168,6 +2293,7 @@ mod tests {
             platform: RawPlatformConstraints::default(),
             forms: vec![RawForm {
                 id: "interactive".to_string(),
+                payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 0 },
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
@@ -2254,6 +2380,7 @@ mod tests {
             platform: RawPlatformConstraints::default(),
             forms: vec![RawForm {
                 id: "retargeted".to_string(),
+                payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 2 },
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
@@ -2299,6 +2426,7 @@ mod tests {
             },
             forms: vec![RawForm {
                 id: "change_mode".to_string(),
+                payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 1 },
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
                 parameters: vec![
@@ -2422,6 +2550,7 @@ mod tests {
             platform: Default::default(),
             forms: vec![RawForm {
                 id: "require_hook".to_string(),
+                payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasFlag {
                     flag: "-r".to_string(),
                 },

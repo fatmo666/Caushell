@@ -1,0 +1,60 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: apply_patch
+  aliases: [applypatch]
+trust:
+  tier: tier_a
+  source: built_in
+  review_notes: "Codex apply-patch protocol at f6fd7f17ed2ef4bf28e5b320789d764350ce4529; Shell invocation only, not native editor tools."
+forms:
+  - id: patch_argument
+    selector:
+      kind: not
+      item: {kind: no_arguments}
+    parameters:
+      - name: patch
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: required_one
+    payload_projections:
+      - format: codex_apply_patch
+        source: {kind: slot, name: patch}
+        reads: patch_reads
+        writes: patch_writes
+        deletes: patch_deletes
+    effects:
+      - kind: read_path
+        target: {kind: slot, name: patch_reads}
+      - kind: write_path
+        target: {kind: slot, name: patch_writes}
+        catastrophic: {semantic_class: raw_write_target}
+      - kind: delete_path
+        target: {kind: slot, name: patch_deletes}
+        catastrophic: {semantic_class: delete_path}
+  - id: patch_stdin
+    selector: {kind: no_arguments}
+    implicit_inputs:
+      - source: stdin_data
+        semantic: {kind: plain_value}
+    payload_projections:
+      - format: codex_apply_patch
+        source: {kind: stdin}
+        reads: patch_reads
+        writes: patch_writes
+        deletes: patch_deletes
+    stream_contract:
+      stdin_mode: data_required
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: consume_stdin
+        target: {kind: implicit_input, source: stdin_data}
+      - kind: read_path
+        target: {kind: slot, name: patch_reads}
+      - kind: write_path
+        target: {kind: slot, name: patch_writes}
+        catastrophic: {semantic_class: raw_write_target}
+      - kind: delete_path
+        target: {kind: slot, name: patch_deletes}
+        catastrophic: {semantic_class: delete_path}

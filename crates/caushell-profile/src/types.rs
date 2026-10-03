@@ -185,6 +185,7 @@ pub enum SelectorPredicate {
     NoPositionalAfterLeadingMatcher(ValueMatcher),
     LastPositionalMatches(ValueMatcher),
     NoPositionalArgs,
+    NoArguments,
     HasDashDash,
     NoDashDash,
     StdinPayloadAvailable,
@@ -599,6 +600,33 @@ pub enum ProjectionUnknownReason {
     DynamicArgument,
     MissingDelimiter,
     EmptyValue,
+    InvalidPayload,
+    PayloadBudgetExceeded,
+    UnknownPayloadContext,
+    PayloadUnavailable,
+}
+
+/// Opt-in decoding of data protocols, never executable shell payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadFormat {
+    CodexApplyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayloadInputSource {
+    Slot(SlotName),
+    Stdin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayloadProjection {
+    pub format: PayloadFormat,
+    pub source: PayloadInputSource,
+    pub reads: SlotName,
+    pub writes: SlotName,
+    pub deletes: SlotName,
+    pub max_bytes: usize,
+    pub max_operations: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -702,6 +730,7 @@ pub struct Form {
     pub selector: SelectorExpr,
     pub remaining_selector: SelectorExpr,
     pub parameters: Vec<Parameter>,
+    pub payload_projections: Vec<PayloadProjection>,
     pub implicit_inputs: Vec<ImplicitInput>,
     pub effects: Vec<Effect>,
     pub stream_contract: Option<StreamContract>,
@@ -715,6 +744,7 @@ impl Form {
             selector: SelectorExpr::new(),
             remaining_selector: SelectorExpr::new(),
             parameters: Vec::new(),
+            payload_projections: Vec::new(),
             implicit_inputs: Vec::new(),
             effects: Vec::new(),
             stream_contract: None,
@@ -1292,6 +1322,8 @@ pub struct BoundParameter {
     pub structured_projection: Option<StructuredProjection>,
     /// Virtual semantic slot; its source values must not be reinterpreted as shell text.
     pub structured_source: Option<SlotName>,
+    /// Protocol-decoded data must not undergo a second shell expansion.
+    pub payload_generated: bool,
 }
 
 impl BoundParameter {
@@ -1304,6 +1336,7 @@ impl BoundParameter {
             projected_values: None,
             structured_projection: None,
             structured_source: None,
+            payload_generated: false,
         }
     }
 
@@ -1354,6 +1387,7 @@ pub struct BoundInvocation {
     pub subcommand_path: Vec<String>,
     pub form_id: FormId,
     pub bound_parameters: Vec<BoundParameter>,
+    pub payload_projections: Vec<PayloadProjection>,
     pub bound_implicit_inputs: Vec<BoundImplicitInput>,
     pub applied_modifiers: Vec<ModifierId>,
     pub effects: Vec<Effect>,
@@ -1367,6 +1401,7 @@ impl BoundInvocation {
             subcommand_path: Vec::new(),
             form_id,
             bound_parameters: Vec::new(),
+            payload_projections: Vec::new(),
             bound_implicit_inputs: Vec::new(),
             applied_modifiers: Vec::new(),
             effects: Vec::new(),

@@ -418,6 +418,8 @@ pub fn bind_invocation(
             .filter(|t| t.modifier.is_none() || !form_suppresses_modifier_effects(selection.form))
             .map(|t| t.parameter),
     );
+    bound.payload_projections = selection.form.payload_projections.clone();
+    crate::refresh_payload_projections(&mut bound, None);
 
     let bound_slots: BTreeSet<_> = bound
         .bound_parameters
@@ -1604,6 +1606,7 @@ fn bind_parameter_target(
         projected_values: None,
         structured_projection: None,
         structured_source: None,
+        payload_generated: false,
     })
 }
 
@@ -2797,6 +2800,9 @@ fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> 
             .last()
             .is_some_and(|text| argument_matches_value_matcher(text, matcher)),
         SelectorPredicate::NoPositionalArgs => shape.positional_args.is_empty(),
+        SelectorPredicate::NoArguments => {
+            shape.positional_args.is_empty() && shape.flags.is_empty() && !shape.has_dashdash
+        }
         SelectorPredicate::HasDashDash => shape.has_dashdash,
         SelectorPredicate::NoDashDash => !shape.has_dashdash,
         SelectorPredicate::StdinPayloadAvailable => shape.stdin_payload_available,

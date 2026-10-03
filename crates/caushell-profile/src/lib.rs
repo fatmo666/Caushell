@@ -6,6 +6,8 @@ mod lookup;
 mod materialize;
 mod normalize;
 mod option_scope;
+mod patch_payload;
+mod payload_projection;
 mod projection;
 mod raw;
 mod recursive;
@@ -44,6 +46,7 @@ pub use materialize::{
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
+pub use payload_projection::refresh_payload_projections;
 pub use projection::{
     InvocationRuntimeContext, ProjectedArg, ProjectedArgKind, ProjectedInvocation,
     project_invocation,
@@ -67,6 +70,7 @@ pub use raw::{
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
     RawValueMatcher, RawValueProjection,
 };
+pub use raw::{RawPayloadFormat, RawPayloadInputSource, RawPayloadProjection};
 pub use raw::{
     RawStructuredProjection, RawStructuredProjectionBranch, RawStructuredProjectionMatcher,
     RawStructuredProjectionTarget,
@@ -108,6 +112,7 @@ pub use types::{
     SubcommandNode, SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
     ValueProjection,
 };
+pub use types::{PayloadFormat, PayloadInputSource, PayloadProjection};
 pub use types::{
     StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher,
     StructuredProjectionTarget,

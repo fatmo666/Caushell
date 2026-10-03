@@ -120,6 +120,35 @@ This scope does not cover persistent collection sessions, profile/start/launch/s
 
 Reference: [NVIDIA CLI documentation](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options).
 
+### Structured patch data and modification targets
+
+A form may opt into `payload_projections`. This decodes a complete tool-owned data protocol, not Bash or another executable language. An undeclared form is not scanned. The first format is `codex_apply_patch`; the Profile, not the generic binder, selects it:
+
+```yaml
+payload_projections:
+  - format: codex_apply_patch
+    source: {kind: slot, name: patch}
+    reads: patch_reads
+    writes: patch_writes
+    deletes: patch_deletes
+    max_bytes: 1048576
+    max_operations: 4096
+effects:
+  - {kind: read_path, target: {kind: slot, name: patch_reads}}
+  - {kind: write_path, target: {kind: slot, name: patch_writes}}
+  - {kind: delete_path, target: {kind: slot, name: patch_deletes}}
+```
+
+The source must be an unprojected plain-value parameter. Alternatively, `source: {kind: stdin}` requires a plain `stdin_data` declaration. Output slot names must be distinct, must not collide with existing slots, and must have matching effects in that form. Omitted budgets default to 1 MiB and 4096 operations; both must be positive. `no_arguments` distinguishes no arguments from flags and `--`, unlike `no_positional_args`.
+
+The built-in `apply_patch`/`applypatch` Profile accepts exactly one patch argument, or effective stdin with no arguments. Add emits write; update emits read and write; delete emits deletion; update with move emits source read/deletion and destination write. Multiple operations retain all targets. Empty patches and proven absent effect classes have explicit empty semantic views, not unknown mutations. The existing workspace and catastrophic guards decide the action; no new risk pass or Harness request field is added.
+
+The decoder validates the whole envelope, operation headers and update chunks, without applying the patch or interpreting inserted/context lines as commands. It preserves literal path bytes, Unicode and spaces; filenames are not shell-expanded a second time. Materialization of the *outer* shell argument still precedes projection. Truncated, malformed, dynamic, over-budget or environment-tagged payloads retain unknown writes/deletions rather than proving a safe prefix. The pure decoder is linear and copies original source metadata once per effect class, not once per file.
+
+Canonical execution resolution supplies stdin only when existing static evidence proves the complete stream. Explicit redirections override pipes, and the last stdin redirection wins. Ambient input, missing file contents, partial fragments and opaque dispatcher output stay unknown, including through wrapper chains. No host file or process is probed. File application success, exact resulting file contents and native non-Shell editor tools are outside this scope. Any limitations in upstream shell argument materialization remain conservative unknowns.
+
+Protocol reference: [pinned Codex apply-patch parser](https://github.com/openai/codex/tree/f6fd7f17ed2ef4bf28e5b320789d764350ce4529/codex-rs/apply-patch/src). This is a pinned implementation contract, not a claim about every future version.
+
 ### Opaque argument files and Ruff effects
 
 Profiles may opt into whole-argv argument-file recognition:
