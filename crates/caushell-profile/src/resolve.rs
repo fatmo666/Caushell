@@ -164,6 +164,7 @@ pub fn resolve_invocation_with_bindings<'a>(
             let bound = bind_invocation(profile, &materialized_projection.invocation, &selection);
             let bound =
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
+            let bound = attach_argument_file_effects(profile, &materialized_projection, bound);
 
             ResolveInvocationResult::Resolved(ResolvedInvocation {
                 normalized_command_name,
@@ -182,6 +183,14 @@ pub fn resolve_invocation_with_bindings<'a>(
                 profile,
                 &materialized_projection.invocation,
             )
+            .or_else(|| {
+                argument_file_effects(profile, &materialized_projection).then(|| {
+                    BoundInvocation::new(
+                        profile.identity.canonical_name.clone(),
+                        crate::FormId::new("__opaque_argument_file__"),
+                    )
+                })
+            })
             .map(|bound| {
                 if bound
                     .bound_parameters
@@ -195,13 +204,86 @@ pub fn resolve_invocation_with_bindings<'a>(
                         matches!(effect.target, crate::EffectTarget::ConfiguredPath(_))
                     })
                 {
-                    attach_bound_argument_materialization(bound, &materialized_projection, bindings)
+                    attach_argument_file_effects(
+                        profile,
+                        &materialized_projection,
+                        attach_bound_argument_materialization(
+                            bound,
+                            &materialized_projection,
+                            bindings,
+                        ),
+                    )
                 } else {
-                    bound
+                    attach_argument_file_effects(profile, &materialized_projection, bound)
                 }
             }),
         },
     }
+}
+
+fn argument_file_effects(
+    profile: &CommandProfile,
+    projection: &MaterializedProjectedInvocation,
+) -> bool {
+    profile
+        .argument_files
+        .iter()
+        .any(|rule| argument_file_rule_matches(rule, projection))
+}
+
+fn argument_file_rule_matches(
+    rule: &crate::ArgumentFileRule,
+    projection: &MaterializedProjectedInvocation,
+) -> bool {
+    // Match the complete argv before tool option binding: even an option value,
+    // a subcommand, or an argument after `--` may be expanded. No filesystem read
+    // is used to disambiguate tools with an existing-literal-path fallback.
+    projection
+        .invocation
+        .args
+        .iter()
+        .zip(&projection.arg_resolutions)
+        .any(|(arg, resolution)| {
+            if !matches!(
+                resolution,
+                ValueMaterialization::Static
+                    | ValueMaterialization::ResolvedExactScalar { .. }
+                    | ValueMaterialization::ResolvedRuntimeProduced { .. }
+            ) {
+                return true;
+            }
+            let mut value = BoundValue::argument_with_node_kind(
+                arg.text.clone(),
+                arg.quoted,
+                arg.node_kind.clone(),
+                arg.span.clone(),
+                crate::ArgumentBindingSource::RemainingArg,
+            );
+            if arg.runtime_data || !matches!(resolution, ValueMaterialization::Static) {
+                value = value.with_materialization(BoundArgumentMaterialization::RuntimeData);
+            }
+            match crate::project_value(&crate::ValueProjection::Identity, &value) {
+                Some(crate::SemanticValueResolution::Known(value)) => {
+                    value.starts_with(&rule.prefix)
+                }
+                _ => true,
+            }
+        })
+}
+
+fn attach_argument_file_effects(
+    profile: &CommandProfile,
+    projection: &MaterializedProjectedInvocation,
+    mut bound: BoundInvocation,
+) -> BoundInvocation {
+    for rule in &profile.argument_files {
+        if argument_file_rule_matches(rule, projection) {
+            for kind in &rule.possible_effects {
+                bound.effects.push(crate::Effect::new(*kind));
+            }
+        }
+    }
+    bound
 }
 
 fn materialize_command_word(

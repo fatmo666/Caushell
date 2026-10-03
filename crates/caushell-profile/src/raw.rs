@@ -11,12 +11,21 @@ pub struct RawCommandProfile {
     pub identity: RawCommandIdentity,
     pub trust: RawProfileTrustMetadata,
     pub platform: RawPlatformConstraints,
+    pub argument_files: Vec<RawArgumentFileRule>,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
     pub option_matching: RawOptionMatchingPolicy,
     pub subcommands: Option<RawSubcommandTree>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+/// A tool expands matching argv before parsing its ordinary options.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawArgumentFileRule {
+    pub prefix: String,
+    pub possible_effects: Vec<RawEffectKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -272,6 +281,9 @@ pub struct RawParameter {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawValueProjection {
     Identity,
+    TomlString {
+        key: String,
+    },
     PrefixBefore {
         delimiter: String,
         #[serde(default)]

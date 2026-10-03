@@ -539,6 +539,10 @@ impl Parameter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueProjection {
     Identity,
+    /// Decode a top-level string from an opaque file-or-TOML operand.
+    TomlString {
+        key: String,
+    },
     PrefixBefore {
         delimiter: String,
         if_absent: ProjectionAbsentPolicy,
@@ -1402,6 +1406,7 @@ pub struct CommandProfile {
     pub identity: CommandIdentity,
     pub trust: ProfileTrustMetadata,
     pub platform: PlatformConstraints,
+    pub argument_files: Vec<ArgumentFileRule>,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
@@ -1416,6 +1421,7 @@ impl CommandProfile {
             identity: CommandIdentity::new(name),
             trust: ProfileTrustMetadata::default(),
             platform: PlatformConstraints::default(),
+            argument_files: Vec::new(),
             forms: Vec::new(),
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),
@@ -1462,6 +1468,13 @@ impl CommandProfile {
                 .iter()
                 .any(|candidate| candidate.as_str() == name)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentFileRule {
+    pub prefix: String,
+    /// Unknown targets: never reinterpret a response file as shell code.
+    pub possible_effects: Vec<EffectKind>,
 }
 
 #[cfg(test)]

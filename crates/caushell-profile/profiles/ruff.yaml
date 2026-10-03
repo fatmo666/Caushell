@@ -1,0 +1,269 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ruff}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+option_scope: leading_options
+# Ruff expands argv before parsing it; existing literal @paths cannot be
+# distinguished without filesystem probing. Keep both interpretations possible.
+argument_files:
+  - {prefix: '@', possible_effects: [read_path, write_path, delete_path]}
+forms:
+  - &help_form
+    id: show_help
+    selector: &help {kind: has_modifier, modifier: information}
+  - id: show_usage
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: *help}]}
+modifiers:
+  - &information
+    id: information
+    matcher: {kind: any_flag, flags: [-h, --help, -V, --version]}
+  - &config
+    id: config
+    matcher: {kind: any_flag, flags: [--config]}
+    parameters:
+      - {name: configs, semantic: {kind: plain_value}, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+    # A file wins over inline TOML if it exists. Do not guess by extension.
+    effects: [{kind: load_config, target: {kind: slot, name: configs}}]
+  - &isolated {id: isolated, matcher: {kind: any_flag, flags: [--isolated]}}
+  - &logging {id: logging, matcher: {kind: any_flag, flags: [-q, --quiet, -s, --silent, -v, --verbose]}}
+  - &color
+    id: color
+    matcher: {kind: any_flag, flags: [--color]}
+    parameters: [{name: color, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many}]
+subcommands:
+  roots:
+    - name: check
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: stdin
+          selector: {kind: all, items: [{kind: not, item: *help}, &stdin_input {kind: any, items: [{kind: has_modifier, modifier: stdin_identity}, {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}]}, {kind: not, item: {kind: has_modifier, modifier: watch}}, {kind: not, item: {kind: has_modifier, modifier: add_suppression}}]}
+          effects: [{kind: consume_stdin, target: {kind: none}}, {kind: transform_data, target: {kind: none}}, &implicit_config {kind: load_config, target: {kind: none}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: data}
+        - id: files_may_write_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: has_positional_at, index: 0}, {kind: not, item: &source_readonly {kind: any, items: [{kind: has_modifier, modifier: inspect}, {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: add_suppression}}, {kind: any, items: [{kind: has_modifier, modifier: diff}, {kind: all, items: [{kind: has_flag, flag: '--no-fix'}, {kind: has_flag, flag: '--no-fix-only'}, {kind: lacks_flag, flag: '--fix'}, {kind: lacks_flag, flag: '--fix-only'}]}]}]}]}}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: &file_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: files_may_write_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: has_positional_at, index: 0}, {kind: not, item: *source_readonly}, {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: files_readonly_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: has_positional_at, index: 0}, *source_readonly, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: files_readonly_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: has_positional_at, index: 0}, *source_readonly, {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: default_may_write_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: no_positional_args}, {kind: not, item: *source_readonly}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: default_may_write_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: no_positional_args}, {kind: not, item: *source_readonly}, {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: default_readonly_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: no_positional_args}, *source_readonly, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: default_readonly_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: any, items: [{kind: not, item: *stdin_input}, {kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: add_suppression}]}, {kind: no_positional_args}, *source_readonly, {kind: any, items: [{kind: has_modifier, modifier: no_cache}, {kind: has_modifier, modifier: inspect}]}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_output_file, projection: {kind: identity}}], environment: {name: RUFF_OUTPUT_FILE, empty_is_unset: false}, missing: skip}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+      modifiers:
+        - *information
+        - *config
+        - *isolated
+        - *logging
+        - *color
+        - &no_cache {id: no_cache, matcher: {kind: any_flag, flags: [-n, --no-cache]}}
+        - &cache_dir
+          id: cache_dir
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: cache_dir, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many, structured_projection: {branches: [], fallback: {name: selected_cache_dir, semantic: {kind: plain_value}}}}]
+        - &stdin_identity
+          id: stdin_identity
+          matcher: {kind: any_flag, flags: [--stdin-filename]}
+          parameters: [{name: stdin_identity, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many}]
+        - id: fixes
+          matcher: {kind: any_flag, flags: [--fix, --no-fix, --fix-only, --no-fix-only, --unsafe-fixes, --no-unsafe-fixes]}
+        - id: diff
+          matcher: {kind: any_flag, flags: [--diff]}
+        - id: inspect
+          matcher: {kind: any_flag, flags: [--show-files, --show-settings]}
+        - id: watch
+          matcher: {kind: any_flag, flags: [-w, --watch]}
+        - id: add_suppression
+          matcher: {kind: any_flag, flags: [--add-noqa, --add-ignore]}
+          parameters: [{name: suppression_reason, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: inline_only}, cardinality: optional_many}]
+        - id: output
+          matcher: {kind: any_flag, flags: [-o, --output-file]}
+          parameters: [{name: output_file, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many, structured_projection: {branches: [], fallback: {name: selected_output_file, semantic: {kind: plain_value}}}}]
+        - &file_values
+          id: file_values
+          matcher: {kind: any_flag, flags: [--target-version, --extension, --exclude, --extend-exclude, --line-length]}
+          parameters: [{name: file_values, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many}]
+        - id: rule_values
+          matcher: {kind: any_flag, flags: [--select, --ignore, --extend-select, --extend-ignore, --fixable, --unfixable, --extend-fixable, --extend-unfixable, --per-file-ignores, --extend-per-file-ignores, --dummy-variable-rgx, --output-format]}
+          parameters: [{name: rule_values, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many}]
+        - &file_switches
+          id: file_switches
+          matcher: {kind: any_flag, flags: [--preview, --no-preview, --respect-gitignore, --no-respect-gitignore, --force-exclude, --no-force-exclude]}
+        - id: display_switches
+          matcher: {kind: any_flag, flags: [--ignore-noqa, --show-fixes, --no-show-fixes, --statistics, -e, --exit-zero, --exit-non-zero-on-fix]}
+      default_behavior: reject_unknown
+    - name: format
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: stdin
+          selector: {kind: all, items: [{kind: not, item: *help}, *stdin_input]}
+          effects: [{kind: consume_stdin, target: {kind: none}}, {kind: transform_data, target: {kind: none}}, *implicit_config]
+          stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: data}
+        - id: files_write_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: no_write}}, {kind: not, item: {kind: has_modifier, modifier: no_cache}}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}]
+          stream_contract: *file_stream
+        - id: files_write_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: no_write}}, {kind: has_modifier, modifier: no_cache}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: slot, name: targets}}]
+          stream_contract: *file_stream
+        - id: files_readonly_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: no_write}, {kind: not, item: {kind: has_modifier, modifier: no_cache}}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}]
+          stream_contract: *file_stream
+        - id: files_readonly_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: no_write}, {kind: has_modifier, modifier: no_cache}]}
+          parameters: [{name: targets, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_projection: {kind: identity}}]
+          effects: [*implicit_config, {kind: read_path, target: {kind: slot, name: targets}}]
+          stream_contract: *file_stream
+        - id: default_write_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: no_write}}, {kind: not, item: {kind: has_modifier, modifier: no_cache}}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}]
+          stream_contract: *file_stream
+        - id: default_write_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: no_write}}, {kind: has_modifier, modifier: no_cache}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}]
+          stream_contract: *file_stream
+        - id: default_readonly_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: no_positional_args}, {kind: has_modifier, modifier: no_write}, {kind: not, item: {kind: has_modifier, modifier: no_cache}}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}, {kind: write_path, target: {kind: configured_path, sources: [{slot: selected_cache_dir, projection: {kind: identity}}, {slot: configs, projection: {kind: toml_string, key: cache-dir}}], environment: {name: RUFF_CACHE_DIR}, expand_environment: true, expand_user: true, missing: incidental_cache, purpose: incidental_cache}}]
+          stream_contract: *file_stream
+        - id: default_readonly_no_cache
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: not, item: *stdin_input}, {kind: no_positional_args}, {kind: has_modifier, modifier: no_write}, {kind: has_modifier, modifier: no_cache}]}
+          effects: [*implicit_config, {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}]
+          stream_contract: *file_stream
+      modifiers:
+        - *information
+        - *config
+        - *isolated
+        - *logging
+        - *color
+        - *no_cache
+        - *cache_dir
+        - *stdin_identity
+        - *file_values
+        - *file_switches
+        - id: no_write
+          matcher: {kind: any_flag, flags: [--check, --diff]}
+        - id: formatter_values
+          matcher: {kind: any_flag, flags: [--range, --output-format]}
+          parameters: [{name: formatter_values, semantic: {kind: plain_value}, binding: *following, cardinality: optional_many}]
+      default_behavior: reject_unknown
+    - name: clean
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: clean
+          selector: {kind: all, items: [{kind: not, item: *help}, {kind: no_positional_args}]}
+          effects:
+            - {kind: read_path, target: {kind: tool_convention_path, path: '.', convention: default_input, purpose: generic_operand}}
+            - {kind: delete_path, target: {kind: none}}
+      modifiers: [*information, *config, *isolated, *logging, *color]
+      default_behavior: reject_unknown
+    - name: rule
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: query
+          selector: {kind: not, item: *help}
+          parameters: [{name: query, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          stream_contract: *file_stream
+      modifiers:
+        - *information
+        - *logging
+        - *color
+        - {id: query_flags, matcher: {kind: any_flag, flags: [--all, --output-format]}, parameters: [{name: query_format, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '--output-format', operand_mode: next_arg}, cardinality: optional_many}]}
+      default_behavior: reject_unknown
+    - name: config
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: query
+          selector: {kind: not, item: *help}
+          parameters: [{name: query, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          stream_contract: *file_stream
+      modifiers:
+        - *information
+        - *logging
+        - *color
+        - {id: query_flags, matcher: {kind: any_flag, flags: [--all, --output-format]}, parameters: [{name: query_format, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '--output-format', operand_mode: next_arg}, cardinality: optional_many}]}
+      default_behavior: reject_unknown
+    - name: linter
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: query
+          selector: {kind: not, item: *help}
+          parameters: [{name: query, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          stream_contract: *file_stream
+      modifiers:
+        - *information
+        - *logging
+        - *color
+      default_behavior: reject_unknown
+    - name: version
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: query
+          selector: {kind: not, item: *help}
+          parameters: [{name: query, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          stream_contract: *file_stream
+      modifiers:
+        - *information
+        - *logging
+        - *color
+      default_behavior: reject_unknown
+    - name: help
+      option_scope: all_arguments
+      forms:
+        - *help_form
+        - id: query
+          selector: {kind: not, item: *help}
+          parameters: [{name: query, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          stream_contract: *file_stream
+      modifiers:
+        - *information
+        - *logging
+        - *color
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/sources:
+    - https://github.com/astral-sh/ruff/tree/127e77ef8bee49f21c0e7c2ff1e38ccf27fb522a/crates/ruff/src
+  caushell.profile/scope: Static builtin check/format targets, stdin, outputs, caches, clean and information. Undiscovered config may enable fixing, so ordinary checks retain potential source writes. Default incidental cache uncertainty is allowed, but explicit cache values, output files and unknown deletions are not exempt.
+  caushell.profile/known_limitations:
+    - Configuration files and response files are not read. File-or-TOML ambiguity is retained; inline cache strings are potential explicit settings, not proof that the operand is not a filename.
+    - Opposing flags are not resolved by presence alone; conflicting fix/no-fix sequences conservatively retain source writes. --no-fix alone does not disable configured fix-only.
+    - Environment RUFF_NO_CACHE and future watch changes may cause conservative cache candidates. Hidden cache configuration is covered only by the agreed default incidental-cache policy.
+    - clean discovers caches recursively at runtime and retains an unknown deletion target. analyze and server remain unmodeled and are not claimed covered.

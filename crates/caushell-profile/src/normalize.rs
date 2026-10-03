@@ -62,6 +62,7 @@ pub enum NormalizeError {
     InvalidValueProjection(String),
     InvalidConfiguredPath(String),
     InvalidStructuredProjection(String),
+    InvalidArgumentFileRule(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -74,6 +75,38 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     }
 
     let identity = normalize_identity(raw.identity)?;
+    let argument_files = raw
+        .argument_files
+        .into_iter()
+        .map(|rule| {
+            ensure_non_empty(&rule.prefix, "argument_files.prefix")?;
+            let mut possible_effects = Vec::new();
+            for kind in rule.possible_effects {
+                let kind = match kind {
+                    RawEffectKind::ReadPath => EffectKind::ReadPath,
+                    RawEffectKind::WritePath => EffectKind::WritePath,
+                    RawEffectKind::DeletePath => EffectKind::DeletePath,
+                    _ => {
+                        return Err(NormalizeError::InvalidArgumentFileRule(
+                            "argument file effects must be filesystem reads/writes/deletions with unknown targets".into(),
+                        ));
+                    }
+                };
+                if !possible_effects.contains(&kind) {
+                    possible_effects.push(kind);
+                }
+            }
+            if possible_effects.is_empty() {
+                return Err(NormalizeError::InvalidArgumentFileRule(
+                    "argument file effects cannot be empty".into(),
+                ));
+            }
+            Ok(crate::ArgumentFileRule {
+                prefix: rule.prefix,
+                possible_effects,
+            })
+        })
+        .collect::<Result<Vec<_>, NormalizeError>>()?;
     let forms = normalize_forms(raw.forms)?;
     let modifiers = normalize_modifiers(raw.modifiers)?;
     let option_matching = normalize_option_matching(raw.option_matching);
@@ -97,6 +130,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         identity,
         trust: normalize_trust(raw.trust),
         platform: normalize_platform(raw.platform),
+        argument_files,
         forms,
         modifiers,
         option_scope,
@@ -776,6 +810,10 @@ fn normalize_value_projection(
     };
     match raw {
         RawValueProjection::Identity => Ok(ValueProjection::Identity),
+        RawValueProjection::TomlString { key } => {
+            ensure_non_empty(&key, "parameters.value_projection.key")?;
+            Ok(ValueProjection::TomlString { key })
+        }
         RawValueProjection::PrefixBefore {
             delimiter,
             if_absent,
@@ -1859,6 +1897,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2017,6 +2056,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2102,6 +2142,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2187,6 +2228,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2240,6 +2282,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_metadata_mutation_semantics() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2308,6 +2351,7 @@ mod tests {
     #[test]
     fn normalize_rejects_invalid_dsl_version() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2327,6 +2371,7 @@ mod tests {
     #[test]
     fn normalize_rejects_duplicate_form_ids() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2356,6 +2401,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
+            argument_files: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),

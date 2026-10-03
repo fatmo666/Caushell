@@ -59,6 +59,29 @@ pub fn project_value(
         ));
     }
     let selected = match projection {
+        ValueProjection::TomlString { key } => {
+            if !complete {
+                return Some(SemanticValueResolution::Unknown(
+                    ProjectionUnknownReason::DynamicArgument,
+                ));
+            }
+            return match value.parse::<toml::Table>() {
+                Ok(table) => table.get(key).map(|value| match value.as_str() {
+                    Some(value) if !value.is_empty() => {
+                        SemanticValueResolution::Known(value.into())
+                    }
+                    _ => SemanticValueResolution::Unknown(ProjectionUnknownReason::EmptyValue),
+                }),
+                // A file operand is not an explicit value for this setting.
+                // Assignment-shaped or incomplete TOML stays unknown, not absent.
+                Err(_) if value.contains('=') || value.starts_with('[') || value.is_empty() => {
+                    Some(SemanticValueResolution::Unknown(
+                        ProjectionUnknownReason::DynamicArgument,
+                    ))
+                }
+                Err(_) => None,
+            };
+        }
         ValueProjection::Identity => {
             if !complete {
                 return Some(SemanticValueResolution::Unknown(

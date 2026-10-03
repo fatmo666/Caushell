@@ -11,6 +11,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/nsys.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "ruff",
+        content: include_str!("../profiles/ruff.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "uv",
         content: include_str!("../profiles/uv.yaml"),
     },

@@ -298,12 +298,22 @@ pub(crate) fn collect_effect_mutation_targets(
     cwd: &str,
     home: Option<&str>,
 ) -> Vec<MutationTargetCandidate> {
-    let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
-        return Vec::new();
+    let (bound, resolved, command_name) = match record.result() {
+        ResolveInvocationArtifactResult::Resolved(resolved) => (
+            &resolved.bound,
+            Some(resolved),
+            resolved.normalized_command_name.as_str(),
+        ),
+        ResolveInvocationArtifactResult::SelectionError {
+            normalized_command_name,
+            partial_bound: Some(bound),
+            ..
+        } => (bound, None, normalized_command_name.as_str()),
+        _ => return Vec::new(),
     };
 
     let mut targets = Vec::new();
-    for (effect_index, effect) in resolved.bound.effects.iter().enumerate() {
+    for (effect_index, effect) in bound.effects.iter().enumerate() {
         if !matches!(
             effect.kind,
             EffectKind::WritePath
@@ -328,15 +338,14 @@ pub(crate) fn collect_effect_mutation_targets(
 
         // A proven nonmatching key means this path effect is inapplicable,
         // unlike a missing/unresolved operand that still needs the fallback.
-        if path_target_is_inapplicable(&resolved.bound, &effect.target) {
+        if path_target_is_inapplicable(bound, &effect.target) {
             continue;
         }
 
         let start = targets.len();
         match &effect.target {
             EffectTarget::ConfiguredPath(target) => {
-                if let Some(path) =
-                    resolve_configured_path(&resolved.bound, target, cwd, home, Some(record))
+                if let Some(path) = resolve_configured_path(bound, target, cwd, home, Some(record))
                 {
                     targets.push(MutationTargetCandidate {
                         operation: effect.kind,
@@ -351,10 +360,10 @@ pub(crate) fn collect_effect_mutation_targets(
                 continue;
             }
             EffectTarget::Slot(slot) => {
-                if let Some(parameter) = bound_parameter(&resolved.bound, slot.as_str()) {
+                if let Some(parameter) = bound_parameter(bound, slot.as_str()) {
                     for value in parameter.semantic_values() {
                         let (resolution, cwd_dependent) =
-                            semantic_path_resolution(value, Some(resolved), cwd, home);
+                            semantic_path_resolution(value, resolved, cwd, home);
                         targets.push(MutationTargetCandidate {
                             implicit_incidental_cache: false,
                             operation: effect.kind,
@@ -378,9 +387,9 @@ pub(crate) fn collect_effect_mutation_targets(
                 let mut derived = Vec::new();
                 collect_derived_target_path_facts(
                     record,
-                    &resolved.normalized_command_name,
-                    &resolved.bound,
-                    Some(resolved),
+                    command_name,
+                    bound,
+                    resolved,
                     effect_index,
                     target,
                     PathRole::Target,
@@ -388,8 +397,11 @@ pub(crate) fn collect_effect_mutation_targets(
                     home,
                     &mut derived,
                 );
-                let cwd_dependent =
-                    projected_derived_target_depends_on_cwd(target, resolved, cwd, home);
+                let cwd_dependent = resolved
+                    .map(|resolved| {
+                        projected_derived_target_depends_on_cwd(target, resolved, cwd, home)
+                    })
+                    .unwrap_or(true);
                 targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
                     implicit_incidental_cache: false,
                     operation: effect.kind,
@@ -400,7 +412,7 @@ pub(crate) fn collect_effect_mutation_targets(
             }
             EffectTarget::MutationScope(scope) => {
                 let (slot_name, scope_resolution) =
-                    resolve_mutation_scope_target(scope, &resolved.bound, cwd, home, true);
+                    resolve_mutation_scope_target(scope, bound, cwd, home, true);
                 let resolution = match scope_resolution {
                     MutationScopeResolution::RepositoryWorktree { root, scope, .. } => {
                         match scope {
@@ -414,9 +426,11 @@ pub(crate) fn collect_effect_mutation_targets(
                     operation: effect.kind,
                     slot_name,
                     resolution,
-                    cwd_dependent: projected_mutation_scope_depends_on_cwd(
-                        scope, resolved, cwd, home,
-                    ),
+                    cwd_dependent: resolved
+                        .map(|resolved| {
+                            projected_mutation_scope_depends_on_cwd(scope, resolved, cwd, home)
+                        })
+                        .unwrap_or(true),
                 });
             }
             EffectTarget::ImplicitInput(_)
@@ -808,8 +822,39 @@ fn collect_effect_target_path_facts(
                 home,
                 out,
             ),
-            EffectTarget::Slot(_)
-            | EffectTarget::MutationScope(_)
+            EffectTarget::Slot(slot) => {
+                let Some(parameter) = bound_parameter(invocation, slot.as_str()) else {
+                    continue;
+                };
+                let SemanticType::Path(path) = &parameter.semantic else {
+                    continue;
+                };
+                // Parameters provide a base role, not an exclusive role. A
+                // declared read/modify effect on the same file must also enter
+                // the graph. Avoid duplicating the parameter's existing role.
+                if path.role == role {
+                    continue;
+                }
+                for value in parameter.semantic_values() {
+                    let (resolution, cwd_dependent) =
+                        semantic_path_resolution(value, resolved, cwd, home);
+                    out.push(PathFactCandidate {
+                        source_node_id: record.source_node_id().clone(),
+                        command_index: record.command_index(),
+                        slot_name: format!("{}_effect_{effect_index}", slot.as_str()),
+                        normalized_command_name: normalized_command_name.into(),
+                        resolution,
+                        cwd_dependent,
+                        role,
+                        purpose: path.purpose,
+                        metadata_mutation: metadata_mutation_for_path_slot(
+                            invocation,
+                            slot.as_str(),
+                        ),
+                    });
+                }
+            }
+            EffectTarget::MutationScope(_)
             | EffectTarget::ImplicitInput(_)
             | EffectTarget::Dispatch(_)
             | EffectTarget::None

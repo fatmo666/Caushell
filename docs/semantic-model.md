@@ -120,6 +120,28 @@ This scope does not cover persistent collection sessions, profile/start/launch/s
 
 Reference: [NVIDIA CLI documentation](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options).
 
+### Opaque argument files and Ruff effects
+
+Profiles may opt into whole-argv argument-file recognition:
+
+```yaml
+argument_files:
+  - prefix: '@'
+    possible_effects: [read_path, write_path, delete_path]
+```
+
+Recognition runs on materialized argv before tool option binding, including option values and arguments after `--`. Unknown argv retains the possibility of expansion. Declared filesystem effects have unknown targets; the existing mutation guard requests approval for writes/deletions. Neither file contents nor the filesystem are queried. An existing literal `@path` fallback is therefore conservatively ambiguous. Profiles without this declaration do not scan argv for argument files. Empty prefixes, empty effect lists and non-filesystem effects are rejected during loading.
+
+Effects retained in a partial binding remain subject to the mutation guard even if form selection fails. A path parameter's base role is not exclusive: a declared write effect on a read parameter also contributes a write PathFact to the Graph. These are command-independent preservation rules, not new policies or passes.
+
+The Ruff Profile covers direct `check`, `format`, `clean` and information queries. A normal `check` retains potential source writes because uninspected configuration can enable `fix` or `fix-only`. `--no-fix` alone is insufficient to prove read-only operation. `--diff`, inspection modes, or both `--no-fix --no-fix-only` without conflicting fixing/suppression switches remove source writes. `format --check/--diff` does likewise. Default source selection is cwd. `--stdin-filename` supplies stdin identity, not a disk output target; check watch/suppression modes retain file-processing effects.
+
+Ruff rejects `--diff` combined with `--add-noqa/--add-ignore`; the Profile conservatively retains source-write candidates for conflicting fixing/suppression combinations rather than treating them as valid read-only forms. Inspection modes return before suppression processing. Source read-only modes do not remove independent check report writes. Explicit cache/report destinations use configured paths; implicit unknown cache writes retain the agreed incidental-cache exemption. Cache clearing is an unknown deletion, not exempt incidental writing. Environment uncertainty is not absence: without sufficient shell-state observability, an optional `RUFF_OUTPUT_FILE` may still exist and require approval. A CLI output destination takes precedence.
+
+`toml_string` is an opt-in value projection for a top-level TOML string key, for example `{kind: toml_string, key: cache-dir}`. It parses TOML rather than stripping quotes, preserving escaped characters and unknown malformed/dynamic values. Ruff's `--config` may denote either a file or inline TOML, with an existing file taking precedence. Without probing existence, an assignment-shaped operand contributes a potential inline cache destination; file contents and their hidden settings remain uninspected. No extension-based classification is used. `analyze`, `server`, Python-module entrypoints and arbitrary config/code behavior are not claimed as covered.
+
+References: [Ruff configuration](https://docs.astral.sh/ruff/configuration/), [settings](https://docs.astral.sh/ruff/settings/), [pinned CLI implementation](https://github.com/astral-sh/ruff/tree/127e77ef8bee49f21c0e7c2ff1e38ccf27fb522a/crates/ruff/src).
+
 ### Configured paths and incidental cache writes
 
 An effect may declare `configured_path` when its destination comes from multiple options or keyed configuration overrides. Sources are checked in declaration order; the first applicable source wins, and its last applicable argv value wins within that source. An explicit unknown value does not fall back to a lower-priority source or an implicit default. Raw operands and their ownership and materialization metadata remain unchanged.
