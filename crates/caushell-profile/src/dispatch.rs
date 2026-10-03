@@ -29,6 +29,7 @@ pub struct DispatchCommandCandidate {
     pub unknown_environment_from: Vec<crate::EnvironmentValueSource>,
     pub unset_environment: Vec<DispatchArgument>,
     pub execution_cwd_unknown: bool,
+    pub stdin_from_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,7 @@ impl DispatchCommandCandidate {
 
         CommandFact {
             command_name: Some(self.command.text.clone()),
+            command_name_runtime_data: self.command.runtime_data,
             text: self.render_text(),
             prefix_assignments: Vec::new(),
             tokens,
@@ -114,12 +116,84 @@ pub fn collect_dispatch_command_projection(
             continue;
         }
 
-        let current_dispatch_index = dispatch_index;
-        dispatch_index += 1;
-
         let EffectTarget::Dispatch(target) = &effect.target else {
             continue;
         };
+
+        if let crate::DispatchCommandSource::WhitespaceArgv(slot) = &target.command {
+            // Each entry has a distinct identity, including unresolved entries.
+            if let Some(parameter) = parameter_for_slot(invocation, slot) {
+                for value in parameter.semantic_values() {
+                    let index = dispatch_index;
+                    dispatch_index += 1;
+                    let resolution = match value {
+                        crate::SemanticValueRef::Projected { value, .. } => {
+                            Some(value.resolution.clone())
+                        }
+                        crate::SemanticValueRef::Original(source) => {
+                            crate::project_value(&crate::ValueProjection::Identity, source)
+                        }
+                    };
+                    let Some(crate::SemanticValueResolution::Known(text)) = resolution else {
+                        unresolved.push(UnresolvedDispatchCommand {
+                            dispatch_index: index,
+                            command_slot: slot.clone(),
+                        });
+                        continue;
+                    };
+                    let mut words = text.split_whitespace();
+                    let Some(executable) = words.next() else {
+                        unresolved.push(UnresolvedDispatchCommand {
+                            dispatch_index: index,
+                            command_slot: slot.clone(),
+                        });
+                        continue;
+                    };
+                    let mut next_span = maximum_bound_source_span_end(invocation)
+                        .saturating_add(1)
+                        .saturating_add(index);
+                    let mut command = literal_dispatch_argument(executable, &mut next_span);
+                    command.slot = slot.clone();
+                    let argv = words
+                        .map(|word| {
+                            let mut argument = literal_dispatch_argument(word, &mut next_span);
+                            argument.slot = slot.clone();
+                            argument
+                        })
+                        .collect();
+                    resolved.push(DispatchCommandCandidate {
+                        dispatch_index: index,
+                        command,
+                        argv,
+                        environment: arguments_for_slots(
+                            invocation,
+                            &target.environment,
+                            &mut next_span,
+                        ),
+                        clear_environment: target
+                            .clear_environment_when
+                            .iter()
+                            .any(|m| invocation.applied_modifiers.contains(m)),
+                        unknown_environment: target
+                            .unknown_environment_when
+                            .iter()
+                            .any(|m| invocation.applied_modifiers.contains(m)),
+                        unknown_environment_from: target.unknown_environment_from.clone(),
+                        unset_environment: arguments_for_slots(
+                            invocation,
+                            &target.unset_environment,
+                            &mut next_span,
+                        ),
+                        execution_cwd_unknown: false,
+                        stdin_from_parent: target.stdin_from_parent,
+                    });
+                }
+            }
+            continue;
+        }
+
+        let current_dispatch_index = dispatch_index;
+        dispatch_index += 1;
 
         let mut next_synthetic_span_byte = maximum_bound_source_span_end(invocation)
             .saturating_add(1)
@@ -141,6 +215,7 @@ pub fn collect_dispatch_command_projection(
                 };
                 command
             }
+            crate::DispatchCommandSource::WhitespaceArgv(_) => unreachable!("handled above"),
         };
         let mut argv: Vec<_> = target
             .argv_prefix
@@ -177,6 +252,7 @@ pub fn collect_dispatch_command_projection(
                 &target.unset_environment,
                 &mut next_synthetic_span_byte,
             ),
+            stdin_from_parent: target.stdin_from_parent,
         });
     }
 
@@ -404,6 +480,7 @@ mod tests {
                 unset_environment: Vec::new(),
                 unknown_environment_when: Vec::new(),
                 unknown_environment_from: Vec::new(),
+                stdin_from_parent: false,
             }),
             interactive_escape_surface: None,
             catastrophic: Default::default(),

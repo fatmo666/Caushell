@@ -410,6 +410,15 @@ pub fn bind_invocation(
             .push(selected_modifier.modifier.id.clone());
     }
 
+    bind_runtime_argument_sources(&mut bound, projection);
+    crate::structured_projection::project_parameters(
+        &mut bound,
+        targets
+            .iter()
+            .filter(|t| t.modifier.is_none() || !form_suppresses_modifier_effects(selection.form))
+            .map(|t| t.parameter),
+    );
+
     let bound_slots: BTreeSet<_> = bound
         .bound_parameters
         .iter()
@@ -441,7 +450,6 @@ pub fn bind_invocation(
     }
 
     bound.residuals = residuals;
-    bind_runtime_argument_sources(&mut bound, projection);
     bound
 }
 
@@ -534,6 +542,12 @@ pub(crate) fn bind_modifier_only_invocation(
             .push(selected_modifier.modifier.id.clone());
     }
 
+    bind_runtime_argument_sources(&mut bound, projection);
+    crate::structured_projection::project_parameters(
+        &mut bound,
+        targets.iter().map(|t| t.parameter),
+    );
+
     let bound_slots: BTreeSet<_> = bound
         .bound_parameters
         .iter()
@@ -551,7 +565,6 @@ pub(crate) fn bind_modifier_only_invocation(
     }
 
     bound.residuals = residuals;
-    bind_runtime_argument_sources(&mut bound, projection);
     Some(bound)
 }
 
@@ -1521,7 +1534,8 @@ fn emit_effects(
             },
             EffectTarget::ImplicitInput(source) => bound_implicit_sources.contains(source),
             EffectTarget::Dispatch(dispatch) => match &dispatch.command {
-                crate::DispatchCommandSource::Slot(slot) => bound_slots.contains(slot),
+                crate::DispatchCommandSource::Slot(slot)
+                | crate::DispatchCommandSource::WhitespaceArgv(slot) => bound_slots.contains(slot),
                 crate::DispatchCommandSource::Literal(_) => true,
             },
             EffectTarget::None | EffectTarget::NetworkListener(_) => true,
@@ -1588,6 +1602,8 @@ fn bind_parameter_target(
         values,
         value_projection: target.parameter.value_projection.clone(),
         projected_values: None,
+        structured_projection: None,
+        structured_source: None,
     })
 }
 

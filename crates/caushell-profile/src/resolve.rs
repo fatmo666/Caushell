@@ -187,6 +187,10 @@ pub fn resolve_invocation_with_bindings<'a>(
                     .bound_parameters
                     .iter()
                     .any(|p| p.value_projection.is_some())
+                    || bound
+                        .bound_parameters
+                        .iter()
+                        .any(|p| p.structured_projection.is_some())
                     || bound.effects.iter().any(|effect| {
                         matches!(effect.target, crate::EffectTarget::ConfiguredPath(_))
                     })
@@ -205,7 +209,11 @@ fn materialize_command_word(
     bindings: &SessionBindings,
 ) -> Option<CommandFact> {
     let command_name = command.command_name.as_deref()?;
-    let materialized = materialize_command_name(command_name, bindings)?;
+    let materialized = if command.command_name_runtime_data {
+        command_name.to_string()
+    } else {
+        materialize_command_name(command_name, bindings)?
+    };
 
     let mut command = command.clone();
     command.command_name = Some(materialized);
@@ -218,6 +226,9 @@ fn attach_bound_argument_materialization(
     bindings: &SessionBindings,
 ) -> BoundInvocation {
     for parameter in &mut bound.bound_parameters {
+        if parameter.structured_source.is_some() {
+            continue;
+        }
         for value in &mut parameter.values {
             let BoundValue::Argument {
                 text,
@@ -276,6 +287,7 @@ fn attach_bound_argument_materialization(
         crate::refresh_parameter_semantic_values(parameter);
     }
 
+    crate::structured_projection::refresh_structured_parameters(&mut bound);
     bound
 }
 
@@ -14747,6 +14759,7 @@ mod tests {
         let registry = built_in_registry();
         let command = CommandFact {
             command_name: None,
+            command_name_runtime_data: false,
             text: "$USER_CMD".to_string(),
             prefix_assignments: Vec::new(),
             tokens: Vec::new(),

@@ -55,6 +55,8 @@ pub struct CommandToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandFact {
     pub command_name: Option<String>,
+    /// The executable has already been decoded as argv data, not shell source.
+    pub command_name_runtime_data: bool,
     pub text: String,
     pub prefix_assignments: Vec<VariableAssignmentFact>,
     pub tokens: Vec<CommandToken>,

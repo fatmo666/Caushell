@@ -137,10 +137,28 @@ impl SessionTransformPass for ResolveInvocationPass {
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
-        ctx.set_unresolved_dispatch_records(project_unresolved_dispatch_records(
-            ctx.request(),
-            &unresolved_dispatches,
-        ));
+        let mut unresolved_records =
+            project_unresolved_dispatch_records(ctx.request(), &unresolved_dispatches);
+        for record in &execution_unit_resolve_records {
+            if record.origin_kind == ExecutionUnitOriginKind::TopLevel {
+                continue;
+            }
+            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+                continue;
+            };
+            if should_skip_generic_dispatch_projection(resolved) {
+                continue;
+            }
+            for candidate in collect_dispatch_command_projection(&resolved.bound).unresolved {
+                unresolved_records.push(UnresolvedDispatchRecord::new(
+                    record.source_node_id.clone(),
+                    record.command_ref.clone(),
+                    candidate.dispatch_index,
+                    candidate.command_slot.as_str().to_string(),
+                ));
+            }
+        }
+        ctx.set_unresolved_dispatch_records(unresolved_records);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
         ctx.set_parsed_command_scopes(project_parsed_command_scopes(
             ctx.request(),
@@ -357,6 +375,7 @@ struct TopLevelDispatchDerivedCommand {
     parent_node_id: caushell_graph::NodeId,
     bindings: SessionBindings,
     command: caushell_parse::CommandFact,
+    stdin_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -775,6 +794,8 @@ fn collect_top_level_dispatch_derived_commands(
             let child_bindings =
                 dispatch_child_session_bindings(&parent_bindings, &candidate, &command);
             commands.push(TopLevelDispatchDerivedCommand {
+                stdin_available: candidate.stdin_from_parent
+                    || resolved.projection.stdin_payload_available,
                 source_command_index: record.command_ref.command_index,
                 dispatch_index: candidate.dispatch_index,
                 command_slot: candidate.command.slot.as_str().to_string(),
@@ -1000,6 +1021,7 @@ fn find_dispatch_candidates(
             .collect();
 
         candidates.push(DispatchCommandCandidate {
+            stdin_from_parent: false,
             dispatch_index: candidates.len(),
             command,
             argv,
@@ -1218,7 +1240,10 @@ fn collect_top_level_dispatch_command_resolve_records(
                 resolve_invocation_artifact_with_bindings(
                     registry,
                     &command.command,
-                    InvocationRuntimeContext::new(),
+                    InvocationRuntimeContext {
+                        stdin_payload_available: command.stdin_available,
+                        interactive_session: false,
+                    },
                     &command.bindings,
                 ),
             )
@@ -1847,10 +1872,15 @@ fn expanded_dispatch_children(
         let Some((parsed_scope, command)) = parsed_dispatch_scope(command, entry.shell_kind) else {
             continue;
         };
+        let stdin_available =
+            child.stdin_from_parent || resolved.projection.stdin_payload_available;
         let resolved_child = resolve_invocation_artifact_with_bindings(
             registry,
             &command,
-            InvocationRuntimeContext::new(),
+            InvocationRuntimeContext {
+                stdin_payload_available: stdin_available,
+                interactive_session: false,
+            },
             &child_bindings,
         );
         let source_node_id = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
@@ -1880,7 +1910,13 @@ fn expanded_dispatch_children(
             history_anchor_node_id: entry.history_anchor_node_id.clone(),
             origin_kind: ExecutionUnitOriginKind::Dispatch,
             origin_index: child.dispatch_index,
-            origin_locator: ExecutionUnitOriginLocator::None,
+            origin_locator: if child.stdin_from_parent {
+                ExecutionUnitOriginLocator::DispatchStdinFromParent
+            } else if stdin_available {
+                ExecutionUnitOriginLocator::DispatchInheritedStdin
+            } else {
+                ExecutionUnitOriginLocator::None
+            },
             inherited_scope: child_inherited_scope,
         });
     }
@@ -4551,6 +4587,11 @@ fn unresolved_execution_payload_subtype(
 fn classify_argument_fragment_payload(
     record: &NestedPayloadRecord,
 ) -> UnresolvedExecutionPayloadSubtype {
+    // A literal name/path can refer to an opaque executable body. It is not
+    // an inline program merely because the reference itself is static.
+    if record.candidate.candidate.source == caushell_profile::PayloadSource::DynamicReference {
+        return UnresolvedExecutionPayloadSubtype::UnknownPayloadShape;
+    }
     match &record.candidate.resolution {
         ValueMaterialization::Static => UnresolvedExecutionPayloadSubtype::StaticInlineLiteral,
         ValueMaterialization::ResolvedExactScalar { .. }

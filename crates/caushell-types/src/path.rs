@@ -93,12 +93,24 @@ pub enum MutationScopeResolution {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DerivedPathRule {
-    AppendSuffix { suffix: String },
-    StripSuffix { suffix: String },
-    ReplaceSuffix { from: String, to: String },
+    AppendSuffix {
+        suffix: String,
+    },
+    StripSuffix {
+        suffix: String,
+    },
+    ReplaceSuffix {
+        from: String,
+        to: String,
+    },
     UrlBasename,
     ArchiveMembers,
-    ChildUnder { relative_path: String },
+    ChildUnder {
+        relative_path: String,
+    },
+    /// Tool-generated filenames sharing a statically known parent directory.
+    /// This is a bounded set, not a fictitious concrete filename.
+    SiblingFiles,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

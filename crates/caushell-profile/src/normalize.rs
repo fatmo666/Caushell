@@ -61,6 +61,7 @@ pub enum NormalizeError {
     InvalidOptionScope(String),
     InvalidValueProjection(String),
     InvalidConfiguredPath(String),
+    InvalidStructuredProjection(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -118,6 +119,22 @@ fn declared_parameter_names(
             .chain(modifiers.iter().flat_map(|modifier| &modifier.parameters))
             .map(|parameter| parameter.name.as_str().to_string()),
     );
+    for parameter in forms
+        .iter()
+        .flat_map(|f| &f.parameters)
+        .chain(modifiers.iter().flat_map(|m| &m.parameters))
+    {
+        if let Some(projection) = &parameter.structured_projection {
+            names.extend(
+                projection
+                    .branches
+                    .iter()
+                    .filter_map(|b| b.target.as_ref())
+                    .chain(projection.fallback.iter())
+                    .map(|t| t.name.as_str().to_string()),
+            );
+        }
+    }
     names
 }
 
@@ -129,6 +146,7 @@ fn validate_configured_path_references(
 ) -> Result<(), NormalizeError> {
     // Validate declarations once at load time, not during each guard check.
     let names = declared_parameter_names(forms, modifiers, inherited);
+    validate_structured_projection_references(forms, modifiers, inherited)?;
     let mut modifier_names = inherited_modifiers.clone();
     modifier_names.extend(
         modifiers
@@ -141,6 +159,14 @@ fn validate_configured_path_references(
         .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
     {
         if let EffectTarget::Dispatch(target) = &effect.target {
+            if let crate::DispatchCommandSource::WhitespaceArgv(slot) = &target.command {
+                if !names.contains(slot.as_str()) {
+                    return Err(NormalizeError::InvalidStructuredProjection(format!(
+                        "undeclared encoded-argv slot: {}",
+                        slot.as_str()
+                    )));
+                }
+            }
             for slot in &target.unset_environment {
                 if !names.contains(slot.as_str()) {
                     return Err(NormalizeError::InvalidConfiguredPath(format!(
@@ -571,6 +597,17 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
         .value_projection
         .map(normalize_value_projection)
         .transpose()?;
+    let structured_projection = raw
+        .structured_projection
+        .map(normalize_structured_projection)
+        .transpose()?;
+    if structured_projection.is_some()
+        && (value_projection.is_some() || semantic != SemanticType::PlainValue)
+    {
+        return Err(NormalizeError::InvalidStructuredProjection(
+            "structured_projection requires an unprojected plain_value source".into(),
+        ));
+    }
     if value_projection.is_some()
         && !matches!(&semantic,
             SemanticType::Path(path) if path.role != PathRole::CwdAnchor
@@ -586,6 +623,7 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
         name: SlotName::new(raw.name),
         semantic,
         value_projection,
+        structured_projection,
         binding: normalize_binding(raw.binding)?,
         cardinality: raw
             .cardinality
@@ -598,6 +636,136 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
             .collect(),
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn normalize_structured_projection(
+    raw: crate::RawStructuredProjection,
+) -> Result<crate::StructuredProjection, NormalizeError> {
+    use crate::{StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher};
+    if let Some(separator) = &raw.separator {
+        ensure_non_empty(separator, "structured_projection.separator")?;
+    }
+    let mut seen = BTreeSet::new();
+    let branches = raw
+        .branches
+        .into_iter()
+        .map(|branch| {
+            let matcher = match branch.matcher {
+                crate::RawStructuredProjectionMatcher::Literal { value } => {
+                    ensure_non_empty(&value, "structured_projection.matcher.literal")?;
+                    if !seen.insert((false, value.clone())) {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "duplicate literal branch".into(),
+                        ));
+                    }
+                    StructuredProjectionMatcher::Literal(value)
+                }
+                crate::RawStructuredProjectionMatcher::Prefix { value } => {
+                    ensure_non_empty(&value, "structured_projection.matcher.prefix")?;
+                    if !seen.insert((true, value.clone())) {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "duplicate prefix branch".into(),
+                        ));
+                    }
+                    StructuredProjectionMatcher::Prefix(value)
+                }
+            };
+            Ok(StructuredProjectionBranch {
+                matcher,
+                target: branch.target.map(normalize_structured_target).transpose()?,
+            })
+        })
+        .collect::<Result<Vec<_>, NormalizeError>>()?;
+    Ok(StructuredProjection {
+        separator: raw.separator,
+        branches,
+        fallback: raw.fallback.map(normalize_structured_target).transpose()?,
+    })
+}
+
+fn normalize_structured_target(
+    raw: crate::RawStructuredProjectionTarget,
+) -> Result<crate::StructuredProjectionTarget, NormalizeError> {
+    ensure_non_empty(&raw.name, "structured_projection.target.name")?;
+    let semantic = normalize_semantic(raw.semantic)?;
+    if !matches!(
+        &semantic,
+        SemanticType::PlainValue
+            | SemanticType::Path(_)
+            | SemanticType::CommandRef(_)
+            | SemanticType::Payload(crate::PayloadSemantic {
+                source: PayloadSource::DynamicReference,
+                ..
+            })
+    ) {
+        return Err(NormalizeError::InvalidStructuredProjection(
+            "target must be plain_value, path, command_ref or a dynamic payload reference".into(),
+        ));
+    }
+    Ok(crate::StructuredProjectionTarget {
+        name: SlotName::new(raw.name),
+        semantic,
+        sources: normalize_slot_names(raw.sources, "structured_projection.target.sources")?,
+    })
+}
+
+fn validate_structured_projection_references(
+    forms: &[Form],
+    modifiers: &[Modifier],
+    inherited: &BTreeSet<String>,
+) -> Result<(), NormalizeError> {
+    let mut available_sources = inherited.clone();
+    available_sources.extend(
+        forms
+            .iter()
+            .flat_map(|f| &f.parameters)
+            .chain(modifiers.iter().flat_map(|m| &m.parameters))
+            .map(|p| p.name.as_str().to_string()),
+    );
+    // Validate each form together with its possible modifiers; alternative forms may reuse names.
+    for form in forms
+        .iter()
+        .map(Some)
+        .chain(forms.is_empty().then_some(None))
+    {
+        let parameters: Vec<_> = form
+            .into_iter()
+            .flat_map(|f| &f.parameters)
+            .chain(modifiers.iter().flat_map(|m| &m.parameters))
+            .collect();
+        let mut source_names = inherited.clone();
+        source_names.extend(parameters.iter().map(|p| p.name.as_str().to_string()));
+        let mut targets = BTreeSet::new();
+        for parameter in &parameters {
+            let Some(projection) = &parameter.structured_projection else {
+                continue;
+            };
+            for target in projection
+                .branches
+                .iter()
+                .filter_map(|b| b.target.as_ref())
+                .chain(projection.fallback.iter())
+            {
+                if source_names.contains(target.name.as_str())
+                    || !targets.insert(target.name.as_str())
+                {
+                    return Err(NormalizeError::InvalidStructuredProjection(format!(
+                        "projected slot collision: {}",
+                        target.name.as_str()
+                    )));
+                }
+                for source in &target.sources {
+                    if !available_sources.contains(source.as_str()) || source == &parameter.name {
+                        return Err(NormalizeError::InvalidStructuredProjection(format!(
+                            "invalid source slot: {}",
+                            source.as_str()
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn normalize_value_projection(
@@ -1379,6 +1547,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
         RawEffectTarget::Dispatch {
             command,
             command_literal,
+            command_whitespace_argv,
             argv_prefix,
             argv,
             environment,
@@ -1386,19 +1555,29 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             unset_environment,
             unknown_environment_when,
             unknown_environment_from,
+            stdin_from_parent,
         } => {
-            let command = match (command, command_literal) {
-                (Some(slot), None) => {
+            let command = match (command, command_literal, command_whitespace_argv) {
+                (Some(slot), None, None) => {
                     ensure_non_empty(&slot, "effects.target.command")?;
                     crate::DispatchCommandSource::Slot(SlotName::new(slot))
                 }
-                (None, Some(command)) => {
+                (None, Some(command), None) => {
                     ensure_non_empty(&command, "effects.target.command_literal")?;
                     crate::DispatchCommandSource::Literal(command)
                 }
+                (None, None, Some(slot)) => {
+                    ensure_non_empty(&slot, "effects.target.command_whitespace_argv")?;
+                    if !argv.is_empty() || !argv_prefix.is_empty() {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "encoded argv cannot be combined with argv or argv_prefix".into(),
+                        ));
+                    }
+                    crate::DispatchCommandSource::WhitespaceArgv(SlotName::new(slot))
+                }
                 _ => {
                     return Err(NormalizeError::InvalidConfiguredPath(
-                        "dispatch requires exactly one of command and command_literal".into(),
+                        "dispatch requires exactly one command source".into(),
                     ));
                 }
             };
@@ -1429,6 +1608,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     .into_iter()
                     .map(normalize_environment_source)
                     .collect::<Result<Vec<_>, _>>()?,
+                stdin_from_parent,
             }))
         }
         RawEffectTarget::None => Ok(EffectTarget::None),
@@ -1488,6 +1668,7 @@ fn normalize_derived_path_rule(
         }
         RawDerivedPathRule::UrlBasename => Ok(caushell_types::DerivedPathRule::UrlBasename),
         RawDerivedPathRule::ArchiveMembers => Ok(caushell_types::DerivedPathRule::ArchiveMembers),
+        RawDerivedPathRule::SiblingFiles => Ok(caushell_types::DerivedPathRule::SiblingFiles),
         RawDerivedPathRule::ChildUnder { relative_path } => {
             ensure_non_empty(&relative_path, "effects.target.rule.relative_path")?;
             Ok(caushell_types::DerivedPathRule::ChildUnder { relative_path })
@@ -1701,6 +1882,7 @@ mod tests {
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "payload".to_string(),
                     semantic: RawSemanticType::Payload {
                         language: RawPayloadLanguage::Bash,
@@ -1739,6 +1921,7 @@ mod tests {
                 },
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "startup_config".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Config,
@@ -1855,6 +2038,7 @@ mod tests {
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "destination".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Write,
@@ -1887,6 +2071,7 @@ mod tests {
                 },
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "security_context".to_string(),
                     semantic: RawSemanticType::PlainValue,
                     binding: RawBindingSpec::FollowingMatchedFlag {
@@ -1938,6 +2123,7 @@ mod tests {
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "target".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Write,
@@ -1970,6 +2156,7 @@ mod tests {
                 },
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "compatibility_mode".to_string(),
                     semantic: RawSemanticType::PlainValue,
                     binding: RawBindingSpec::FollowingMatchedFlag {
@@ -2021,6 +2208,7 @@ mod tests {
                 remaining_selector: RawSelectorExpr::default(),
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "target".to_string(),
                     semantic: RawSemanticType::Path {
                         role: RawPathRole::Write,
@@ -2065,6 +2253,7 @@ mod tests {
                 parameters: vec![
                     RawParameter {
                         value_projection: None,
+                        structured_projection: None,
                         name: "mode".to_string(),
                         semantic: RawSemanticType::PlainValue,
                         binding: RawBindingSpec::NextPositional,
@@ -2074,6 +2263,7 @@ mod tests {
                     },
                     RawParameter {
                         value_projection: None,
+                        structured_projection: None,
                         name: "path_targets".to_string(),
                         semantic: RawSemanticType::Path {
                             role: RawPathRole::MetadataMutation,
@@ -2184,6 +2374,7 @@ mod tests {
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
                 parameters: vec![RawParameter {
                     value_projection: None,
+                    structured_projection: None,
                     name: "require_target".to_string(),
                     semantic: RawSemanticType::InProcessCodeLoad {
                         load_kind: RawInProcessCodeLoadKind::Unknown,

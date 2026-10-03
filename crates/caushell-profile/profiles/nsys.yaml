@@ -1,0 +1,223 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: nsys}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, windows], shell_families: [], requires_features: []}
+option_matching: exact_names
+option_scope: leading_options
+forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: [--help, -h, --version, -v]}
+subcommands:
+  roots:
+    - name: stats
+      option_matching: exact_names
+      forms: &analysis_forms
+        - id: show_help
+          selector: &info {kind: has_modifier, modifier: analysis_information}
+          parameters:
+            - {name: help_tag, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: sqlite_input
+          selector:
+            kind: all
+            items:
+              - &not_info {kind: not, item: *info}
+              - &one_input
+                kind: all
+                items:
+                  - {kind: has_positional_at, index: 0}
+                  - {kind: not, item: {kind: has_positional_at, index: 1}}
+              - &sqlite_input {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.sqlite$'}}
+          parameters: &input_parameters
+            - name: input_report
+              semantic: {kind: path, role: read, purpose: generic_operand}
+              binding: {kind: next_positional}
+              cardinality: required_one
+          effects: &read_effects
+            - {kind: read_path, target: {kind: slot, name: input_report}}
+            - {kind: transform_data, target: {kind: none}}
+          stream_contract: &stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: report_with_explicit_sqlite
+          selector:
+            kind: all
+            items:
+              - *not_info
+              - *one_input
+              - &report_input {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.nsys-rep$'}}
+              - {kind: has_modifier, modifier: sqlite}
+          parameters: *input_parameters
+          effects: *read_effects
+          stream_contract: *stream
+        - id: report_with_implicit_sqlite
+          selector:
+            kind: all
+            items:
+              - *not_info
+              - *one_input
+              - *report_input
+              - {kind: not, item: {kind: has_modifier, modifier: sqlite}}
+          parameters: *input_parameters
+          effects:
+            - {kind: read_path, target: {kind: slot, name: input_report}}
+            - {kind: transform_data, target: {kind: none}}
+            - kind: write_path
+              target: {kind: derived_path, source: {kind: slot, name: input_report}, rule: {kind: replace_suffix, from: '.nsys-rep', to: '.sqlite'}, purpose: generic_operand}
+            - kind: read_path
+              target: {kind: derived_path, source: {kind: slot, name: input_report}, rule: {kind: replace_suffix, from: '.nsys-rep', to: '.sqlite'}, purpose: generic_operand}
+          stream_contract: *stream
+        - id: unresolved_input_type
+          selector:
+            kind: all
+            items:
+              - *not_info
+              - *one_input
+              - {kind: not, item: *sqlite_input}
+              - {kind: not, item: *report_input}
+          parameters: *input_parameters
+          effects:
+            - {kind: read_path, target: {kind: slot, name: input_report}}
+            - {kind: transform_data, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+          stream_contract: *stream
+      modifiers: &analysis_modifiers
+        - id: analysis_information
+          matcher: {kind: any_flag, flags: [--help, -h, --help-formats, --help-reports, --help-rules]}
+        - id: output
+          matcher: {kind: any_flag, flags: [--output, -o]}
+          parameters:
+            - name: output
+              semantic: {kind: plain_value}
+              binding: {kind: following_matched_flag, operand_mode: next_arg}
+              cardinality: required_many
+              structured_projection:
+                separator: ','
+                branches:
+                  - matcher: {kind: literal, value: '-'}
+                  - matcher: {kind: literal, value: '.'}
+                    target:
+                      name: default_report_outputs
+                      semantic: {kind: plain_value}
+                      sources: [sqlite_path, input_report]
+                  - matcher: {kind: prefix, value: '@'}
+                    target:
+                      name: report_commands
+                      semantic: {kind: command_ref, dispatch: wrapper_command}
+                fallback:
+                  name: report_bases
+                  semantic: {kind: plain_value}
+          effects:
+            - kind: dispatch_command
+              target: {kind: dispatch, command_whitespace_argv: report_commands, stdin_from_parent: true}
+            - kind: write_path
+              target: {kind: derived_path, source: {kind: slot, name: report_bases}, rule: {kind: sibling_files}, purpose: generic_operand}
+            - kind: write_path
+              target: {kind: derived_path, source: {kind: slot, name: default_report_outputs}, rule: {kind: sibling_files}, purpose: generic_operand}
+        - id: sqlite
+          matcher: {kind: any_flag, flags: [--sqlite]}
+          parameters:
+            - {name: sqlite_path, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects:
+            - kind: write_path
+              target: {kind: configured_path, sources: [{slot: sqlite_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}
+            - kind: read_path
+              target: {kind: configured_path, sources: [{slot: sqlite_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}
+        - id: analysis_values
+          matcher: {kind: any_flag, flags: [--force-export, --force-overwrite, --timeunit]}
+          parameters:
+            - {name: analysis_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+        - id: reports
+          matcher: {kind: any_flag, flags: [--report, -r, --rule]}
+          parameters:
+            - name: reports
+              semantic: {kind: plain_value}
+              binding: {kind: following_matched_flag, operand_mode: next_arg}
+              cardinality: required_many
+              structured_projection:
+                separator: ','
+                branches:
+                  - {matcher: {kind: literal, value: nvtx_sum}}
+                  - {matcher: {kind: literal, value: osrt_sum}}
+                  - {matcher: {kind: literal, value: cuda_api_sum}}
+                  - {matcher: {kind: literal, value: cuda_gpu_kern_sum}}
+                  - {matcher: {kind: literal, value: cuda_gpu_mem_time_sum}}
+                  - {matcher: {kind: literal, value: cuda_gpu_mem_size_sum}}
+                  - {matcher: {kind: literal, value: openmp_sum}}
+                  - {matcher: {kind: literal, value: opengl_khr_range_sum}}
+                  - {matcher: {kind: literal, value: opengl_khr_gpu_range_sum}}
+                  - {matcher: {kind: literal, value: vulkan_marker_sum}}
+                  - {matcher: {kind: literal, value: vulkan_gpu_marker_sum}}
+                  - {matcher: {kind: literal, value: dx11_pix_sum}}
+                  - {matcher: {kind: literal, value: dx12_pix_sum}}
+                  - {matcher: {kind: literal, value: wddm_queue_sum}}
+                  - {matcher: {kind: literal, value: um_sum}}
+                  - {matcher: {kind: literal, value: um_total_sum}}
+                  - {matcher: {kind: literal, value: um_cpu_page_faults_sum}}
+                  - {matcher: {kind: literal, value: openacc_sum}}
+                  - {matcher: {kind: literal, value: cuda_memcpy_async}}
+                  - {matcher: {kind: literal, value: cuda_memcpy_sync}}
+                  - {matcher: {kind: literal, value: cuda_memset_sync}}
+                  - {matcher: {kind: literal, value: cuda_api_sync}}
+                  - {matcher: {kind: literal, value: gpu_gaps}}
+                  - {matcher: {kind: literal, value: gpu_time_util}}
+                  - {matcher: {kind: literal, value: dx12_mem_ops}}
+                fallback:
+                  name: opaque_reports
+                  semantic: {kind: payload, language: python, source: dynamic_reference, recursive: true}
+          effects: [{kind: execute_payload, target: {kind: slot, name: opaque_reports}}]
+        - id: formats
+          matcher: {kind: any_flag, flags: [--format, -f]}
+          parameters:
+            - name: formats
+              semantic: {kind: plain_value}
+              binding: {kind: following_matched_flag, operand_mode: next_arg}
+              cardinality: required_many
+              structured_projection:
+                separator: ','
+                branches:
+                  - {matcher: {kind: literal, value: column}}
+                  - {matcher: {kind: literal, value: table}}
+                  - {matcher: {kind: literal, value: csv}}
+                  - {matcher: {kind: literal, value: tsv}}
+                  - {matcher: {kind: literal, value: json}}
+                  - {matcher: {kind: literal, value: hdoc}}
+                  - {matcher: {kind: literal, value: htable}}
+                  - {matcher: {kind: literal, value: '.'}}
+                fallback:
+                  name: opaque_formats
+                  semantic: {kind: payload, language: python, source: dynamic_reference, recursive: true}
+          effects: [{kind: execute_payload, target: {kind: slot, name: opaque_formats}}]
+        - id: report_scripts
+          matcher: {kind: any_flag, flags: [--report-dir]}
+          parameters:
+            - name: report_dir
+              semantic: {kind: plain_value}
+              binding: {kind: following_matched_flag, operand_mode: next_arg}
+              cardinality: required_many
+              structured_projection:
+                branches: []
+                fallback:
+                  name: opaque_report_directory
+                  semantic: {kind: payload, language: python, source: dynamic_reference, recursive: true}
+          effects:
+            - {kind: execute_payload, target: {kind: slot, name: opaque_report_directory}}
+        - id: quiet
+          matcher: {kind: any_flag, flags: [--quiet, -q]}
+      default_behavior: reject_unknown
+    - name: analyze
+      option_matching: exact_names
+      forms: *analysis_forms
+      modifiers: *analysis_modifiers
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/sources:
+    - https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options
+    - https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-analyze-command-switch-options
+  caushell.profile/known_limitations:
+    - This scope covers stats/analyze mixed output operands; profile/start/launch/stop callbacks and persistent collection sessions are not modeled.
+    - Reports are bounded sibling-file sets, not fabricated concrete filenames. Runtime input types and output targets remain unresolved.
+    - Custom report code, report/format arguments and search-path environment can have opaque effects; they must not acquire a read-only exemption.

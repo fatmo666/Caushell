@@ -47,7 +47,92 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
         ) {
             ctx.stage_mutation(mutation);
         }
+        for mutation in collect_dispatch_stream_provenance_mutations(ctx) {
+            ctx.stage_mutation(mutation);
+        }
     }
+}
+
+fn collect_dispatch_stream_provenance_mutations(ctx: &RunnerContext) -> Vec<PendingMutation> {
+    let mut mutations = Vec::new();
+    let mut inherited_streams: BTreeMap<NodeId, (NodeId, ProvenanceArtifact)> = BTreeMap::new();
+    for record in ctx.execution_unit_resolve_records() {
+        if record.origin_locator
+            == caushell_runner::ExecutionUnitOriginLocator::DispatchInheritedStdin
+        {
+            if let Some((node_id, artifact)) = inherited_streams
+                .get(&record.parent_execution_node_id)
+                .cloned()
+            {
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: record.source_node_id.clone(),
+                    node_id: node_id.clone(),
+                    artifact: artifact.clone(),
+                    relation: EdgeKind::Consumes,
+                    semantics: ProvenanceEdgeSemantics::Consume {
+                        consume_kind: ProvenanceConsumeKind::StdinImplicit,
+                        slot_name: Some("stdin".into()),
+                        normalized_command_name: None,
+                        domain_label: None,
+                    },
+                });
+                inherited_streams.insert(record.source_node_id.clone(), (node_id, artifact));
+            }
+            continue;
+        }
+        if record.origin_locator
+            != caushell_runner::ExecutionUnitOriginLocator::DispatchStdinFromParent
+        {
+            continue;
+        }
+        // An opaque value: the producer is known, but its actual bytes are not.
+        let artifact = ProvenanceArtifact::MaterializedValue {
+            source_kind: "dispatch_output".into(),
+            state: caushell_types::ProvenanceMaterializedValueState::UnsupportedDynamicText {
+                text: "tool output supplied to dispatched child stdin".into(),
+            },
+            version: ctx.request().sequence_no.0,
+        };
+        let node_id = NodeId::new(format!(
+            "dispatch-stream:{}:{}",
+            record.parent_execution_node_id.0, record.origin_index
+        ));
+        inherited_streams.insert(
+            record.source_node_id.clone(),
+            (node_id.clone(), artifact.clone()),
+        );
+        for (source_node_id, relation, semantics) in [
+            (
+                record.parent_execution_node_id.clone(),
+                EdgeKind::Produces,
+                ProvenanceEdgeSemantics::Produce {
+                    produce_kind: ProvenanceProduceKind::MaterializedValue,
+                    slot_name: None,
+                    normalized_command_name: None,
+                    domain_label: None,
+                },
+            ),
+            (
+                record.source_node_id.clone(),
+                EdgeKind::Consumes,
+                ProvenanceEdgeSemantics::Consume {
+                    consume_kind: ProvenanceConsumeKind::StdinImplicit,
+                    slot_name: Some("stdin".into()),
+                    normalized_command_name: None,
+                    domain_label: None,
+                },
+            ),
+        ] {
+            mutations.push(PendingMutation::AddProvenanceArtifact {
+                source_node_id,
+                node_id: node_id.clone(),
+                artifact: artifact.clone(),
+                relation,
+                semantics,
+            });
+        }
+    }
+    mutations
 }
 
 fn collect_top_level_pipeline_stream_provenance_mutations(

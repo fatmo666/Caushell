@@ -486,6 +486,7 @@ pub struct Parameter {
     pub semantic: SemanticType,
     pub binding: BindingSpec,
     pub value_projection: Option<ValueProjection>,
+    pub structured_projection: Option<StructuredProjection>,
     pub cardinality: Cardinality,
     pub value_constraints: Vec<ValueConstraint>,
     pub extensions: ExtensionMap,
@@ -498,6 +499,7 @@ impl Parameter {
             semantic,
             binding,
             value_projection: None,
+            structured_projection: None,
             cardinality: Cardinality::RequiredOne,
             value_constraints: Vec::new(),
             extensions: ExtensionMap::new(),
@@ -545,6 +547,36 @@ pub enum ValueProjection {
         separator: String,
         key: String,
     },
+}
+
+/// A tool-owned operand grammar. Original argv and scalar projections are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredProjection {
+    pub separator: Option<String>,
+    pub branches: Vec<StructuredProjectionBranch>,
+    pub fallback: Option<StructuredProjectionTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredProjectionBranch {
+    pub matcher: StructuredProjectionMatcher,
+    pub target: Option<StructuredProjectionTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuredProjectionMatcher {
+    Literal(String),
+    /// Matched prefixes are consumed before emitting the semantic value.
+    Prefix(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredProjectionTarget {
+    pub name: SlotName,
+    pub semantic: SemanticType,
+    /// Prefer the first present source slot, including an unresolved value.
+    /// Empty means use this operand's matched value.
+    pub sources: Vec<SlotName>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -808,6 +840,8 @@ pub struct InteractiveEscapeSurface {
 pub enum DispatchCommandSource {
     Slot(SlotName),
     Literal(String),
+    /// Each semantic value is a separate whitespace-delimited argv, not shell source.
+    WhitespaceArgv(SlotName),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -822,6 +856,7 @@ pub struct DispatchTarget {
     /// A file/configuration can replace child env values but its body is opaque.
     pub unknown_environment_when: Vec<ModifierId>,
     pub unknown_environment_from: Vec<EnvironmentValueSource>,
+    pub stdin_from_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1246,6 +1281,9 @@ pub struct BoundParameter {
     /// None is the legacy identity view, with no allocation. Some(empty)
     /// means all operands were proven inapplicable (not unresolved).
     pub projected_values: Option<Vec<ProjectedSemanticValue>>,
+    pub structured_projection: Option<StructuredProjection>,
+    /// Virtual semantic slot; its source values must not be reinterpreted as shell text.
+    pub structured_source: Option<SlotName>,
 }
 
 impl BoundParameter {
@@ -1256,6 +1294,8 @@ impl BoundParameter {
             values: Vec::new(),
             value_projection: None,
             projected_values: None,
+            structured_projection: None,
+            structured_source: None,
         }
     }
 

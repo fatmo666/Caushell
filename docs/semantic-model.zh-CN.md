@@ -92,6 +92,34 @@ bash ./setup.sh
 
 此声明目前只用于 `cwd_anchor` 以外的文件系统 `path` 语义，不用于命令引用或 payload。不声明时沿用已有视图，不分配投影值。投影本身不会激活 Profile 或发现配置；内置 pytest Profile 将它与下面的配置路径声明结合使用。
 
+### 结构化参数与编码 argv
+
+`structured_projection` 为 plain-value 参数声明工具自己的小语法：可选的列表分隔符、按顺序匹配的 literal／prefix 分支，以及 fallback。prefix 匹配会消费前缀；没有 target 的分支表示已确认无相关效果。各 target 声明不同的虚拟 slot 和语义，原始 argv 不变，源码位置及物化来源仍保留。`sources` 按顺序选择首个存在的原始 slot；显式未知不会退回后面的默认值。分隔符、slot 引用与命名冲突在加载时验证。
+
+```yaml
+structured_projection:
+  separator: ','
+  branches:
+    - matcher: {kind: literal, value: '-'}
+    - matcher: {kind: prefix, value: '@'}
+      target:
+        name: child_commands
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+  fallback:
+    name: output_bases
+    semantic: {kind: plain_value}
+```
+
+分派 target 可声明 `command_whitespace_argv: child_commands`，将每个语义值按空白拆成 executable／argv，而不是再解析为 Bash。程序名与参数都标为 argv 数据；字面量 `$`、引号、管道和分号不会被二次解释。解析失败保留未解析子调用，未知写入目标也不会变成“没有修改”。原有标量 `value_projection` 不变；只有声明这种语法的参数才进行结构化解码。
+
+`stdin_from_parent: true` 表示父工具将生成的数据交给子调用 stdin。现有分派、执行上下文和流来源提取记录这条关系，内容保持不透明，并沿包装分派保留；`@bash` 因此需要审批。包装层内未解析的分派也保留到既有审批兜底，无需新增风险 pass 或 Harness 字段。
+
+首个使用者为 `nsys stats/analyze --output`，区分控制台、文件 basename、默认 basename 和 `@command`。生成的报告用 `sibling_files` 表示为确定目录下的 `BoundedPathSet`，不虚构一个名为 basename 的实际文件；目录在拼接报告名之前归一化。读取 `.nsys-rep` 时的潜在 SQLite 创建及显式 `--sqlite` 目标独立保留；帮助不触发这些效果。
+
+本轮不覆盖持久采集会话、profile/start/launch/stop、回调和报告模板。已列出的内置报告／规则及格式可静态接受；其他报告或格式、附加参数及自定义目录作为不透明代码引用送审。列表对齐和执行次数不作精确重演，所有输出项均保留为候选，可能增加审批。没有读取报告内容或动态探测进程。
+
+依据：[NVIDIA CLI 文档](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options)。
+
 ### 配置路径与附带缓存写入
 
 当路径来自多个选项或配置覆盖项时，效果可以声明 `configured_path`。来源按声明顺序检查，采用第一个适用来源；同一来源中采用最后一个适用的 argv 值。显式未知值不会退回低优先级来源或隐含默认值。完整操作数、绑定归属及物化元数据仍保留。
@@ -276,8 +304,9 @@ Pass 先检查本次请求已经提取的事实，没有非本地或未知监听
 - `configured_path.unresolved_relative_base: true` 用于基准目录需文件系统发现的相对目标，
   不允许与 `relative_to` 同时声明。空 `sources` 只允许有环境／字面默认来源，或
   `missing: unknown`；空来源且只有 incidental-cache 豁免的声明仍无效。
-- dispatch 在 `command`（slot）和 `command_literal`（固定可执行名）中必须选且只选一个，
-  可用 `argv_prefix` 加入固定 argv 数据。例如
+- dispatch 在 `command`（slot）、`command_literal`（固定可执行名）和上文的
+  `command_whitespace_argv`（编码 argv）中必须选且只选一个；前两种可用 `argv_prefix`
+  加入固定 argv 数据。例如
   `{kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [module, args]}`
   形成带类型的解释器调用，不把字面参数重新当 shell 源码解析。
   `unknown_environment_when`（modifier ID）和 `unknown_environment_from`（声明的环境来源）

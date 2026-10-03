@@ -113,7 +113,7 @@ pub fn project_value(
 /// A completed delimiter in that static prefix can prove a key mismatch or a
 /// prefix path. No characters after the unresolved fragment are inspected.
 /// Raw/ANSI strings have already been decoded by the existing Bash parser.
-fn decode_argument_prefix(text: &str, quoted: bool, node_kind: &str) -> (String, bool) {
+pub(crate) fn decode_argument_prefix(text: &str, quoted: bool, node_kind: &str) -> (String, bool) {
     if matches!(node_kind, "raw_string" | "ansi_c_string") {
         return (text.to_string(), true);
     }

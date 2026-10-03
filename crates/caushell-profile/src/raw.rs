@@ -259,6 +259,8 @@ pub struct RawParameter {
     #[serde(default)]
     pub value_projection: Option<RawValueProjection>,
     #[serde(default)]
+    pub structured_projection: Option<RawStructuredProjection>,
+    #[serde(default)]
     pub cardinality: Option<RawCardinality>,
     #[serde(default)]
     pub value_constraints: Vec<RawValueConstraint>,
@@ -279,6 +281,40 @@ pub enum RawValueProjection {
         separator: String,
         key: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawStructuredProjection {
+    #[serde(default)]
+    pub separator: Option<String>,
+    pub branches: Vec<RawStructuredProjectionBranch>,
+    #[serde(default)]
+    pub fallback: Option<RawStructuredProjectionTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawStructuredProjectionBranch {
+    pub matcher: RawStructuredProjectionMatcher,
+    #[serde(default)]
+    pub target: Option<RawStructuredProjectionTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawStructuredProjectionMatcher {
+    Literal { value: String },
+    Prefix { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawStructuredProjectionTarget {
+    pub name: String,
+    pub semantic: RawSemanticType,
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -690,6 +726,7 @@ pub enum RawDerivedPathRule {
     UrlBasename,
     ArchiveMembers,
     ChildUnder { relative_path: String },
+    SiblingFiles,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -774,6 +811,8 @@ pub enum RawEffectTarget {
         #[serde(default)]
         command_literal: Option<String>,
         #[serde(default)]
+        command_whitespace_argv: Option<String>,
+        #[serde(default)]
         argv_prefix: Vec<String>,
         #[serde(default)]
         argv: Vec<String>,
@@ -787,6 +826,8 @@ pub enum RawEffectTarget {
         unknown_environment_when: Vec<String>,
         #[serde(default)]
         unknown_environment_from: Vec<RawEnvironmentValueSource>,
+        #[serde(default)]
+        stdin_from_parent: bool,
     },
     None,
 }

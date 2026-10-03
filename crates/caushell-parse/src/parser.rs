@@ -599,6 +599,7 @@ fn extract_test_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
 
     Some(CommandFact {
         command_name: Some(command_name),
+        command_name_runtime_data: false,
         text: source_text(node, source),
         prefix_assignments: Vec::new(),
         tokens,
@@ -940,6 +941,7 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
 
     Some(CommandFact {
         command_name,
+        command_name_runtime_data: false,
         text: source_text(node, source),
         prefix_assignments,
         tokens,

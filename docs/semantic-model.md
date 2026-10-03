@@ -92,6 +92,34 @@ Path facts, path-content provenance, mutation targets, derived paths and catastr
 
 The declaration currently supports filesystem `path` semantics except `cwd_anchor`, not command references or payloads. Omitting it preserves the existing identity view without allocating projected values. Projection alone does not activate a Profile or discover configuration. The built-in pytest Profile combines projections with the configured-path declaration below.
 
+### Structured operands and encoded argv
+
+`structured_projection` declares a tool-owned grammar on a plain-value parameter: an optional separator, ordered literal/prefix branches, and a fallback. Prefix matching consumes the prefix; a branch without a target proves that no associated effect applies. Targets emit distinct virtual slots with declared semantics without rewriting argv. Source spans and materialization provenance are retained. Ordered `sources` select the first present original slot, never replacing an explicit unknown with a later default. Separators, references and name collisions are validated at load time.
+
+```yaml
+structured_projection:
+  separator: ','
+  branches:
+    - matcher: {kind: literal, value: '-'}
+    - matcher: {kind: prefix, value: '@'}
+      target:
+        name: child_commands
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+  fallback:
+    name: output_bases
+    semantic: {kind: plain_value}
+```
+
+`command_whitespace_argv: child_commands` dispatches each semantic value as executable/argv split on whitespace, not Bash source. Executables and arguments retain their argv-data status: dollar signs, quotes, pipes and semicolons are not interpreted again. Unresolved entries remain child-call gaps, and unknown writes remain mutation candidates. Existing scalar `value_projection` is unchanged. Only declared operands are structurally decoded.
+
+`stdin_from_parent: true` declares delivery of generated tool data to child stdin. Existing dispatch, execution-context and stream-provenance machinery retain the opaque input, including wrapper dispatch; `@bash` therefore requires approval. Unresolved calls inside wrappers reach the existing approval fallback. No new risk pass, dynamic probing or Harness field is involved.
+
+The first built-in user is `nsys stats/analyze --output`, distinguishing console output, file basenames, default basenames and `@command`. `sibling_files` produces a `BoundedPathSet` under the known output directory instead of inventing a concrete file named after the basename; only its directory is normalized before appending report filenames. Potential SQLite creation from `.nsys-rep` and explicit `--sqlite` targets remain separate effects. Help does not trigger them.
+
+This scope does not cover persistent collection sessions, profile/start/launch/stop, callbacks or report templates. Listed built-in reports/rules and formats are statically accepted; other code references, report/format arguments and custom directories require approval. List alignment and execution counts are not replayed exactly: all output candidates are retained, potentially increasing approvals. Report content and process state are not dynamically inspected.
+
+Reference: [NVIDIA CLI documentation](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options).
+
 ### Configured paths and incidental cache writes
 
 An effect may declare `configured_path` when its destination comes from multiple options or keyed configuration overrides. Sources are checked in declaration order; the first applicable source wins, and its last applicable argv value wins within that source. An explicit unknown value does not fall back to a lower-priority source or an implicit default. Raw operands and their ownership and materialization metadata remain unchanged.
@@ -304,8 +332,9 @@ in the risk passes:
   unresolved when its base needs filesystem discovery. It cannot coexist with
   `relative_to`. Empty `sources` are allowed with an environment/default source or
   `missing: unknown`; an empty incidental-cache-only declaration is invalid.
-- Dispatch targets accept exactly one of `command` (a slot) or `command_literal`
-  (fixed executable), and optional `argv_prefix` data. For example,
+- Dispatch targets accept exactly one of `command` (a slot), `command_literal`
+  (fixed executable), or `command_whitespace_argv` (encoded argv as described above).
+  The first two forms accept optional `argv_prefix` data. For example,
   `{kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [module, args]}`
   produces a typed interpreter call, not shell source. `unknown_environment_when`
   (modifier IDs) and `unknown_environment_from` (declared environment sources)

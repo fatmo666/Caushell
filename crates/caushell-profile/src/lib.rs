@@ -11,6 +11,7 @@ mod raw;
 mod recursive;
 mod registry;
 mod resolve;
+mod structured_projection;
 mod types;
 mod value_projection;
 mod value_shape;
@@ -65,6 +66,10 @@ pub use raw::{
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
     RawValueMatcher, RawValueProjection,
 };
+pub use raw::{
+    RawStructuredProjection, RawStructuredProjectionBranch, RawStructuredProjectionMatcher,
+    RawStructuredProjectionTarget,
+};
 pub use recursive::{
     ParsedRecursivePayload, RecursivePayloadArgumentFragment, RecursivePayloadCandidate,
     RecursivePayloadFragmentMaterialization, RecursivePayloadInput, RecursivePayloadOrigin,
@@ -100,6 +105,10 @@ pub use types::{
     StreamInputMode, StreamOutputMode, StructuredValueContext, StructuredValueSemantic,
     SubcommandNode, SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
     ValueProjection,
+};
+pub use types::{
+    StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher,
+    StructuredProjectionTarget,
 };
 pub use value_projection::{project_value, refresh_parameter_semantic_values};
 pub use value_shape::parse_owner_group_spec;

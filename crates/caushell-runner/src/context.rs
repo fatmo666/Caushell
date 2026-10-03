@@ -223,6 +223,8 @@ pub struct ExecutionUnitResolveRecord {
 pub enum ExecutionUnitOriginLocator {
     #[default]
     None,
+    DispatchStdinFromParent,
+    DispatchInheritedStdin,
     CommandSubstitutionBody {
         token_index: usize,
         substitution_index: usize,

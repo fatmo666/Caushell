@@ -1063,6 +1063,33 @@ fn derive_semantic_slot_path_resolution(
     slot_name: &str,
     rule: &DerivedPathRule,
 ) -> Option<PathResolution> {
+    if *rule == DerivedPathRule::SiblingFiles {
+        let known = match value {
+            SemanticValueRef::Projected { value, .. } => match &value.resolution {
+                SemanticValueResolution::Known(text) => Some(text.clone()),
+                _ => None,
+            },
+            SemanticValueRef::Original(source) => match caushell_profile::project_value(
+                &caushell_profile::ValueProjection::Identity,
+                source,
+            ) {
+                Some(SemanticValueResolution::Known(text)) => Some(text),
+                _ => None,
+            },
+        };
+        if let Some(text) = known {
+            // A basename is a prefix, not an existing path: `..` becomes
+            // `.._report.csv`, so normalize its parent, not the prefix itself.
+            let directory = text
+                .rsplit_once('/')
+                .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
+                .unwrap_or(".");
+            return Some(PathResolution::BoundedPathSet {
+                roots: vec![lexical_path_from_argv(directory, cwd)],
+                may_escape: false,
+            });
+        }
+    }
     match value {
         SemanticValueRef::Original(BoundValue::Argument {
             text,
@@ -1162,6 +1189,7 @@ fn derive_path_resolution_from_concrete_source(
     };
 
     match rule {
+        DerivedPathRule::SiblingFiles => sibling_file_resolution(source_path, false),
         DerivedPathRule::AppendSuffix { suffix } => PathResolution::DerivedConcrete {
             path: format!("{source_path}{suffix}"),
             basis,
@@ -1204,6 +1232,21 @@ fn derive_path_resolution_from_concrete_source(
             rule: rule.clone(),
             reason: DerivedPathUnresolvedReason::UnsupportedRuntimeRule,
         },
+    }
+}
+
+fn sibling_file_resolution(source_path: &str, is_directory: bool) -> PathResolution {
+    let root = if is_directory {
+        source_path
+    } else {
+        source_path
+            .rsplit_once('/')
+            .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
+            .unwrap_or("/")
+    };
+    PathResolution::BoundedPathSet {
+        roots: vec![root.to_string()],
+        may_escape: false,
     }
 }
 
@@ -1972,6 +2015,7 @@ fn derived_path_rule_id_suffix(rule: &DerivedPathRule) -> String {
         }
         DerivedPathRule::UrlBasename => "url-basename".to_string(),
         DerivedPathRule::ArchiveMembers => "archive-members".to_string(),
+        DerivedPathRule::SiblingFiles => "sibling-files".to_string(),
         DerivedPathRule::ChildUnder { relative_path } => {
             format!("child-under:{relative_path}")
         }
