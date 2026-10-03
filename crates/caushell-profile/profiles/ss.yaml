@@ -1,0 +1,150 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ss, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+# iproute2 uses getopt_long: POSIX short clusters/attached operands are valid.
+# Socket filters select existing objects; they are not paths being opened,
+# outgoing network requests, shell programs, or process-control targets.
+forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: &filters
+      - &filter_parameter
+        name: socket_filter
+        semantic: &plain {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: socket_query
+    selector:
+      kind: all
+      items:
+        - &not_information {kind: not, item: *information}
+        - &not_close {kind: not, item: {kind: has_modifier, modifier: close_sockets}}
+        - &not_stdin_filter
+          kind: not
+          item: &stdin_filter
+            kind: has_modifier_parameter_matching
+            modifier: filter_input
+            parameter: filter_operand
+            matcher: {kind: regex_pattern, pattern: '^-'}
+    parameters: &query_parameters
+      # Preserve compact operands that the legacy all-arguments matcher may
+      # leave unmatched when their letters resemble other declared flags.
+      # Matched options were already consumed, so this does not bind twice.
+      - name: residual_diagnostic_operand
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: args_with_prefix, prefix: '-D', before_dash_dash: true}
+        cardinality: optional_many
+      - name: residual_filter_operand
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: args_with_prefix, prefix: '-F', before_dash_dash: true}
+        cardinality: optional_many
+      - *filter_parameter
+    stream_contract: *query_stream
+    effects: &residual_file_effects
+      - &residual_write {kind: write_path, target: {kind: slot, name: residual_diagnostic_operand}}
+      - &residual_read {kind: read_path, target: {kind: slot, name: residual_filter_operand}}
+  - id: socket_query_stdin_filter
+    selector: {kind: all, items: [*not_information, *not_close, *stdin_filter]}
+    parameters: *query_parameters
+    implicit_inputs: &stdin_inputs [{source: stdin_data, semantic: *plain}]
+    stream_contract: &stdin_stream {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque}
+    effects: &consume_filter
+      - *residual_write
+      - *residual_read
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+  - id: close_sockets_unchecked
+    selector:
+      kind: all
+      items:
+        - *not_information
+        - &close {kind: has_modifier, modifier: close_sockets}
+        - *not_stdin_filter
+    parameters: *query_parameters
+    stream_contract: *query_stream
+    effects: *residual_file_effects
+    extensions: &close_scope
+      caushell.profile/risk_scope: Socket closure is deliberately outside the current approval-triggering scope. This form is not read-only and does not model a process kill; file outputs and shell composition remain independently checked.
+  - id: close_sockets_stdin_filter_unchecked
+    selector: {kind: all, items: [*not_information, *close, *stdin_filter]}
+    parameters: *query_parameters
+    implicit_inputs: *stdin_inputs
+    stream_contract: *stdin_stream
+    effects: *consume_filter
+    extensions: *close_scope
+
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: [-h, --help, -v, -V, --version]}
+  - id: close_sockets
+    matcher: {kind: any_flag, flags: [-K, --kill]}
+  - id: query_switches
+    matcher:
+      kind: any_flag
+      flags: [-H, --no-header, -Q, --no-queues, -O, --oneline, -n, --numeric, -r, --resolve, -a, --all, -l, --listening, -B, --bound-inactive, -o, --options, -e, --extended, -m, --memory, -p, --processes, -T, --threads, -i, --info, --tos, --cgroup, --tipcinfo, -s, --summary, -E, --events, -Z, --context, -z, --contexts, -b, --bpf, '-4', --ipv4, '-6', --ipv6, '-0', --packet, -t, --tcp, -u, --udp, -d, --dccp, -w, --raw, -x, --unix, -S, --sctp, --tipc, --vsock, --xdp, -M, --mptcp, --inet-sockopt, --bpf-maps]
+  - id: socket_family
+    matcher: {kind: any_flag, flags: [-f, --family]}
+    parameters:
+      - name: socket_family
+        semantic: *plain
+        binding: &option_value {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: socket_tables
+    matcher: {kind: any_flag, flags: [-A, --query, --socket]}
+    parameters:
+      - {name: socket_tables, semantic: *plain, binding: *option_value, cardinality: required_many}
+  - id: network_namespace
+    matcher: {kind: any_flag, flags: [-N, --net]}
+    parameters:
+      - {name: network_namespace, semantic: *plain, binding: *option_value, cardinality: required_one}
+  - id: bpf_map_id
+    matcher: {kind: any_flag, flags: [--bpf-map-id]}
+    parameters:
+      - {name: bpf_map_ids, semantic: *plain, binding: *option_value, cardinality: required_many}
+  - id: diagnostic_output
+    matcher: {kind: any_flag, flags: [-D, --diag]}
+    parameters:
+      - name: diagnostic_operand
+        semantic: *plain
+        binding: *option_value
+        cardinality: required_many
+        structured_projection:
+          branches:
+            # The upstream implementation checks the first byte, not equality.
+            - matcher: {kind: prefix, value: '-'}
+          fallback:
+            name: diagnostic_paths
+            semantic: {kind: path, role: write, purpose: generic_operand}
+    effects: [{kind: write_path, target: {kind: slot, name: diagnostic_paths}}]
+    constraints: [{kind: mutually_exclusive_with, modifier: information}]
+  - id: filter_input
+    matcher: {kind: any_flag, flags: [-F, --filter]}
+    parameters:
+      - name: filter_operand
+        semantic: *plain
+        binding: *option_value
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - matcher: {kind: prefix, value: '-'}
+          fallback:
+            name: filter_paths
+            semantic: {kind: path, role: read, purpose: generic_operand}
+    effects: [{kind: read_path, target: {kind: slot, name: filter_paths}}]
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://man7.org/linux/man-pages/man8/ss.8.html
+    - https://github.com/iproute2/iproute2/blob/e11870d5b9414b2e0770463bd6fc2399744dc734/misc/ss.c
+  caushell.profile/known_limitations:
+    - Socket closure is intentionally allowed under the current product scope, not asserted safe or read-only. No socket-control effect, process-control surrogate, risk pass, dynamic discovery or runtime-success claim is introduced.
+    - Family/table names, namespace names, BPF map IDs and filter expressions are plain values. Selecting a UNIX socket path does not open that file; selecting a remote address does not send data to it. Resolver and namespace internals are not reconstructed.
+    - Filter files and stdin contain ss filter syntax, not Bash or arbitrary CLI argument files. Their contents are not inspected or expanded into child commands. Unknown filter operands retain an unknown read target; their concrete file-versus-stdin choice is not claimed resolved.
+    - Diagnostic output destinations remain independently checked, including closure forms and unresolved destinations. Repeated diagnostic destinations are conservatively retained rather than replaying last-option precedence.
+    - Help/version suppress deferred diagnostic writing; filter files may already have been opened while processing earlier options, so their read facts are retained.
+    - The upstream first-byte dash convention is preserved for diagnostic/filter operands. A literal dash-prefixed filename must be written as ./-name to refer to a file.
+    - This is semantic binding, not validation of every filter expression, build-specific feature, numeric range, option combination or abbreviated long option. Existing all_arguments binding does not universally report unknown flags as gaps; name registration is not complete CLI coverage.

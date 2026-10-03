@@ -393,6 +393,8 @@ pub enum RawBindingSpec {
     },
     ArgsWithPrefix {
         prefix: String,
+        #[serde(default)]
+        before_dash_dash: bool,
     },
     LeadingPositionalsWhile {
         matcher: RawValueMatcher,

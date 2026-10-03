@@ -1680,6 +1680,9 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
         BindingSpec::ArgsWithPrefix(prefix) => {
             format!("argv arguments prefixed with {prefix:?}")
         }
+        BindingSpec::ArgsWithPrefixBeforeDashDash(prefix) => {
+            format!("argv arguments prefixed with {prefix:?} before --")
+        }
         BindingSpec::LeadingPositionalsWhile(_) => {
             "leading positional arguments matching a constrained semantic pattern".to_string()
         }
@@ -1820,7 +1823,10 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 )
             }
             BindingSpec::ArgsWithPrefix(prefix) => {
-                self.consume_args_with_prefix(target.scope, prefix, value_constraints)
+                self.consume_args_with_prefix(target.scope, prefix, value_constraints, false)
+            }
+            BindingSpec::ArgsWithPrefixBeforeDashDash(prefix) => {
+                self.consume_args_with_prefix(target.scope, prefix, value_constraints, true)
             }
             BindingSpec::NextPositional => self
                 .consume_next_positional(
@@ -2684,10 +2690,27 @@ impl<'p, 'm> BindingState<'p, 'm> {
         scope: ArgumentScope,
         prefix: &str,
         value_constraints: &[ValueConstraint],
+        before_dash_dash: bool,
     ) -> Vec<BoundValue> {
         let mut values = Vec::new();
 
-        for index in scope.start_index..scope.end_index {
+        let end_index = if before_dash_dash {
+            self.option_terminator
+                .filter(|index| *index >= scope.start_index && *index < scope.end_index)
+                .or_else(|| {
+                    (scope.start_index..scope.end_index).find(|index| {
+                        // A prior declared option may consume a literal -- as
+                        // its value. Only a still-unconsumed marker terminates
+                        // this binding; a later marker may be positional in
+                        // the parser projection but remains the CLI boundary.
+                        !self.consumed[*index] && self.projection.args[*index].text == "--"
+                    })
+                })
+                .unwrap_or(scope.end_index)
+        } else {
+            scope.end_index
+        };
+        for index in scope.start_index..end_index {
             if self.consumed[index] {
                 continue;
             }
@@ -3430,16 +3453,13 @@ fn prefix_is_known_flag_only_short_cluster(
 ) -> bool {
     !prefix.is_empty()
         && prefix.chars().all(|candidate| {
-            if !candidate.is_ascii_alphabetic() {
-                return false;
-            }
-
             let candidate_flag = format!("-{candidate}");
             if short_flags_allowing_attached_operands.contains(&candidate_flag) {
                 return false;
             }
 
-            allow_unknown_prefix_flags || declared_short_flags.contains(&candidate_flag)
+            declared_short_flags.contains(&candidate_flag)
+                || (allow_unknown_prefix_flags && candidate.is_ascii_alphabetic())
         })
 }
 
@@ -3544,29 +3564,29 @@ fn short_flag_cluster_matches_flag_only_modifier(
         return false;
     };
 
-    if token_text.starts_with("--")
-        || cluster_text.len() <= 1
-        || !cluster_text.chars().all(|ch| ch.is_ascii_alphabetic())
-    {
+    if token_text.starts_with("--") || cluster_text.len() <= 1 {
         return false;
     }
 
-    let last_index = cluster_text.len() - 1;
+    let mut matched_prefix = false;
     for (index, candidate) in cluster_text.char_indices() {
         let candidate_flag = format!("-{candidate}");
         if !declared_short_flags.contains(&candidate_flag) {
             return false;
         }
         if short_flags_allowing_attached_operands.contains(&candidate_flag) {
-            // Only a final operand-taking flag can be part of this cluster;
-            // its value is supplied by the next argument.
-            if index != last_index {
-                return false;
-            }
+            // The prefix is still a flag cluster when this option has an
+            // attached operand. Never scan operand bytes as later flags.
+            // Matching the operand-taking option itself stays with its
+            // existing binding matcher, except for a final option whose
+            // operand is in the next argv entry (the previous behaviour).
+            return matched_prefix
+                || (index + candidate.len_utf8() == cluster_text.len() && candidate == flag_char);
         }
+        matched_prefix |= candidate == flag_char;
     }
 
-    cluster_text.chars().any(|candidate| candidate == flag_char)
+    matched_prefix
 }
 
 #[cfg(test)]

@@ -463,6 +463,8 @@ pub enum BindingSpec {
         operand_mode: FlagOperandMode,
     },
     ArgsWithPrefix(String),
+    /// Opt-in prefix binding restricted to argv before the option terminator.
+    ArgsWithPrefixBeforeDashDash(String),
     LeadingPositionalsWhile(ValueMatcher),
     LeadingPositionalsBeforeModifier(ModifierId),
 }

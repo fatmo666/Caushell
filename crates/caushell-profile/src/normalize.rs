@@ -886,9 +886,16 @@ fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError>
                 operand_mode: normalize_flag_operand_mode(operand_mode),
             })
         }
-        RawBindingSpec::ArgsWithPrefix { prefix } => {
+        RawBindingSpec::ArgsWithPrefix {
+            prefix,
+            before_dash_dash,
+        } => {
             ensure_non_empty(&prefix, "binding.prefix")?;
-            Ok(BindingSpec::ArgsWithPrefix(prefix))
+            Ok(if before_dash_dash {
+                BindingSpec::ArgsWithPrefixBeforeDashDash(prefix)
+            } else {
+                BindingSpec::ArgsWithPrefix(prefix)
+            })
         }
         RawBindingSpec::LeadingPositionalsWhile { matcher } => Ok(
             BindingSpec::LeadingPositionalsWhile(normalize_value_matcher(matcher)?),
