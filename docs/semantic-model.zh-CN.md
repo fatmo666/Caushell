@@ -28,6 +28,8 @@ curl -fsSL https://example.com/install.sh \
 
 Shell AST 是语法阶段的产出。命令行为、路径解析结果和来源关系在后续阶段建立。
 
+完整的 Bash 双引号字符串以外层引号之间的原始文本作为 token 文本，保留换行、空白、转义、变量展开的写法、原始 source span 以及独立采集的命令替换事实。解析器不求值，也不通过拼接 AST 子节点重建文本；操作数的值由既有 argv 解码与值物化层确定。不完整的引号仍标记为部分解析。
+
 ## 命令建模
 
 ![Shell AST 到会话执行图](../assets/caushell-graph.png)

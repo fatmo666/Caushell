@@ -1441,23 +1441,17 @@ fn extract_token_text(node: Node<'_>, source: &[u8]) -> Option<(String, bool)> {
 }
 
 fn extract_interpolated_string(node: Node<'_>, source: &[u8]) -> String {
-    let mut parts = String::new();
-
-    for i in 0..node.child_count() {
-        let Some(child) = child_at(node, i) else {
-            continue;
-        };
-
-        if child.is_named() {
-            parts.push_str(&source_text(child, source));
-        }
+    // Named AST children do not cover every source byte (notably newlines).
+    // Keep the raw interior, including escapes and expansion syntax, for the
+    // existing argv/materialization layers to interpret exactly once.
+    let text = node.utf8_text(source).unwrap_or_default();
+    if node.has_error() {
+        return text.to_string();
     }
-
-    if parts.is_empty() {
-        strip_wrapping_quotes(source_text(node, source))
-    } else {
-        parts
-    }
+    text.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .unwrap_or(text)
+        .to_string()
 }
 
 fn command_substitutions_for_expansion_node(

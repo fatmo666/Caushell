@@ -1,9 +1,15 @@
 //! Shell strings are static analyser inputs only; no patch or inserted code is executed.
 use caushell_core::ShellQueryCore;
-use caushell_graph::NodeKind;
+use caushell_graph::{NodeKind, SessionGraph, SessionRead};
+use caushell_passes::{
+    ComputeEffectiveCwdPass, ExtractPathFactsPass, ParseCommandPass, ProjectTopLevelCommandsPass,
+    ResolveInvocationPass,
+};
+use caushell_profile::ProfileRegistry;
+use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
 use caushell_types::{
     CheckRequest, CommandSequenceNo, Decision, PolicyConfig, ResolveGapKind, ResolvedPathRole,
-    RuleAction, RuntimeMetadata, SessionId, ShellKind, ShellRuntimeCapabilities,
+    RuleAction, RuntimeMetadata, SessionId, SessionSummary, ShellKind, ShellRuntimeCapabilities,
     ShellStateSnapshot,
 };
 
@@ -56,6 +62,32 @@ fn inspect(command: &str, decision: Decision) -> Vec<(ResolvedPathRole, String)>
     let mut core = strict_core();
     let r = core.check(request(command));
     assert_eq!(r.decision, decision, "{command}: {r:?}");
+    if decision != Decision::Allow {
+        // Approval candidates are staged facts, not executed session history.
+        let mut runner = PassRunner::new();
+        runner.register_request_transform_pass(ParseCommandPass);
+        runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+        runner.register_session_transform_pass(ResolveInvocationPass::new(
+            ProfileRegistry::built_in().unwrap(),
+        ));
+        runner.register_session_transform_pass(ComputeEffectiveCwdPass);
+        runner.register_session_transform_pass(ExtractPathFactsPass);
+        let graph = SessionGraph::new();
+        let summary = SessionSummary::new();
+        let mut ctx = RunnerContext::new(request(command));
+        runner.run(SessionView::new(&graph, &summary), &mut ctx);
+        let staged = StagedSession::new(&graph, ctx.request(), &summary, ctx.pending_mutations());
+        return staged
+            .graph()
+            .nodes()
+            .filter_map(|n| match &n.kind {
+                NodeKind::PathFact {
+                    role, resolution, ..
+                } => resolution.concrete_path().map(|p| (*role, p.to_string())),
+                _ => None,
+            })
+            .collect();
+    }
     core.session_graph(&SessionId::new("patch-profile"))
         .unwrap()
         .nodes()
@@ -330,17 +362,54 @@ fn dispatcher_output_is_not_confused_with_its_original_stdin_through_wrappers() 
 }
 
 #[test]
-fn unsupported_outer_quote_reconstruction_does_not_allow_an_invalid_patch() {
-    // Existing Bash string extraction loses embedded newlines in this form;
-    // repairing that shared parser is a separate user-approval boundary.
-    inspect(
-        &format!("bash -c \"{}\"", argv("*** Add File: safe\n+x")),
-        Decision::NeedApproval,
+fn multiline_double_quoted_patches_keep_targets_directly_and_in_nested_shells() {
+    for (target, expected) in [
+        ("safe", Decision::Allow),
+        ("/etc/outside", Decision::NeedApproval),
+    ] {
+        let body = format!("*** Add File: {target}\n+x");
+        for command in [
+            format!("bash -c \"{}\"", argv(&body)),
+            format!("apply_patch \"{}\"", patch(&body)),
+        ] {
+            let paths = inspect(&command, expected.clone());
+            let concrete = if target.starts_with('/') {
+                target.to_string()
+            } else {
+                format!("/tmp/project/{target}")
+            };
+            assert!(
+                paths.contains(&(ResolvedPathRole::Write, concrete)),
+                "{paths:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn multiline_double_quoted_patch_data_survives_stdin_producers() {
+    for (target, expected) in [
+        ("safe", Decision::Allow),
+        ("/etc/outside", Decision::NeedApproval),
+    ] {
+        let p = patch(&format!("*** Add File: {target}\n+x"));
+        for command in [
+            format!("apply_patch <<< \"{p}\""),
+            format!("printf '%s' \"{p}\" | apply_patch"),
+            format!("PATCH=\"{p}\"; apply_patch \"$PATCH\""),
+        ] {
+            inspect(&command, expected.clone());
+        }
+    }
+}
+
+#[test]
+fn escaped_double_quoted_patch_filenames_are_not_expanded_again() {
+    let paths = inspect(
+        "DEST=/etc; apply_patch \"*** Begin Patch\n*** Add File: \\$DEST/literal\n+\\$(unknown-command)\n*** End Patch\"",
+        Decision::Allow,
     );
-    inspect(
-        "apply_patch \"*** Begin Patch\n*** Add File: safe\n+x\n*** End Patch\"",
-        Decision::NeedApproval,
-    );
+    assert!(paths.contains(&(ResolvedPathRole::Write, "/tmp/project/$DEST/literal".into())));
 }
 
 #[test]

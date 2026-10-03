@@ -28,6 +28,8 @@ The parser converts the raw text into a Shell AST and preserves the syntax struc
 
 The Shell AST is the output of the syntax stage. Command behavior, resolved paths, and provenance are established in later stages.
 
+For a complete Bash double-quoted string, token text is the exact source between the outer quotes. Newlines, whitespace, escapes and expansion spelling are retained, together with the original source span and independently collected substitution facts. The parser does not evaluate this text or reconstruct it by concatenating AST children. Existing argv decoding and value materialization establish the operand value; incomplete quotes remain a partial parse.
+
 ## Command Modeling
 
 ![Shell AST to session execution graph](../assets/caushell-graph.png)
