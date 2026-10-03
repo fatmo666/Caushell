@@ -282,6 +282,8 @@ pub enum PayloadLanguage {
     Python,
     Perl,
     Javascript,
+    /// SQL and SQLite shell dot-commands; never parsed as a shell program.
+    SqliteCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

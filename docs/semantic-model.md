@@ -142,6 +142,18 @@ Ruff rejects `--diff` combined with `--add-noqa/--add-ignore`; the Profile conse
 
 References: [Ruff configuration](https://docs.astral.sh/ruff/configuration/), [settings](https://docs.astral.sh/ruff/settings/), [pinned CLI implementation](https://github.com/astral-sh/ruff/tree/127e77ef8bee49f21c0e7c2ff1e38ccf27fb522a/crates/ruff/src).
 
+### SQLite CLI and opaque executable input
+
+The `sqlite3` Profile models database operands, potential main-file and `-journal`/`-wal`/`-shm` writes, inline SQL/dot-command input, stdin, `-cmd`, startup configuration and VFS code loading. `:memory:` and a missing database operand do not become filesystem paths. URI databases remain opaque rather than being fabricated as cwd-relative `file:` paths. File/script dispatch and database contents are not probed; the first operand is a potential database, not a confirmed database file. Further script-selected targets remain unknown.
+
+`sqlite_cli` is a payload-language metadata value preserved in the Graph, evidence and queries. It denotes SQL plus SQLite dot-commands, not Bash: it does not enable a SQL interpreter or create shell subcalls from `.shell` text. Inline input ignores stdin; stdin forms retain executable-input provenance. `--noinit` suppresses both default and explicit init loading. Otherwise an explicit init path is retained, or the XDG/home startup location remains unknown. Compound/unrecognized options are captured across unconsumed argv as opaque client syntax; flag-shaped values, exact option names and `--` ownership use the shared binder.
+
+All SQL/client execution retains an unknown write candidate and therefore requests approval under the existing mutation guard, including apparent `SELECT`, `--readonly`, `:memory:` and `--safe --noinit` calls. This is an explicit opaque-execution boundary, not a claim that every query writes. Readonly protects the ordinary main database, not arbitrary dot-command/function effects; WAL sidecars and auto-detected ZIP backends also prevent a whole-call read-only proof. Database and sidecar effects remain separately visible even when unknown client effects require approval.
+
+Native safe mode is not a workspace-confinement exemption: startup runs before it is enabled, `-cmd` ordering and nonce can bypass restrictions, and even `--safe --noinit` permits an external `temp_store_directory` pragma. No SQL-body filtering is used to pretend these inputs have been analyzed. Clean `--noinit --help/--version` calls without database operands, early/value-taking or unrecognized options are informational. No risk pass, command-name special case, dynamic probing, new dependency or Harness request field is added.
+
+References: [SQLite CLI](https://sqlite.org/cli.html), [pinned SQLite 3.53.4 CLI source](https://github.com/sqlite/sqlite/blob/b09c88c14082339b66c7b7158d609a771e64ca69/src/shell.c.in).
+
 ### Configured paths and incidental cache writes
 
 An effect may declare `configured_path` when its destination comes from multiple options or keyed configuration overrides. Sources are checked in declaration order; the first applicable source wins, and its last applicable argv value wins within that source. An explicit unknown value does not fall back to a lower-priority source or an implicit default. Raw operands and their ownership and materialization metadata remain unchanged.

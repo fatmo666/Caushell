@@ -7,6 +7,10 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "sqlite3",
+        content: include_str!("../profiles/sqlite3.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "nsys",
         content: include_str!("../profiles/nsys.yaml"),
     },

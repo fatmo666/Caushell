@@ -256,7 +256,8 @@ fn shell_kind_for_payload_language(language: PayloadLanguage) -> Option<ShellKin
         PayloadLanguage::Dash
         | PayloadLanguage::Python
         | PayloadLanguage::Perl
-        | PayloadLanguage::Javascript => None,
+        | PayloadLanguage::Javascript
+        | PayloadLanguage::SqliteCli => None,
     }
 }
 

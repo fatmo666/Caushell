@@ -1,0 +1,168 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: sqlite3}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+option_matching: exact_names
+option_scope: all_arguments
+# SQL and dot-commands remain opaque executable input, including --safe calls.
+# The native safe authorizer still permits temporary-storage directory pragmas.
+forms:
+  - id: information_without_startup
+    selector: &clean_information
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: information}
+        - &noinit {kind: has_modifier, modifier: noinit}
+        - {kind: no_positional_args}
+        # Value-taking/early options can mask a later help/version flag or run
+        # commands before it. Unrecognized options are retained separately.
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: cmd}, {kind: has_modifier, modifier: init}, {kind: has_modifier, modifier: nonce}, {kind: has_modifier, modifier: vfs}, {kind: has_modifier, modifier: special_open}, {kind: has_modifier, modifier: unsafe_testing}, {kind: has_modifier, modifier: tuning}, {kind: has_modifier, modifier: format_values}, {kind: has_modifier, modifier: two_values}, {kind: has_modifier, modifier: trace}, {kind: has_modifier, modifier: interactive}]}}
+    parameters:
+      - &unrecognized
+        name: unrecognized_cli
+        semantic: {kind: payload, language: sqlite_cli, source: dynamic_reference, recursive: true}
+        # Prefix capture visits ALL unconsumed argv, not just the tail after the
+        # final consumed argument. This retains compound -A archive options.
+        binding: {kind: args_with_prefix, prefix: '-'}
+        cardinality: optional_many
+    stream_contract: &ignored_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: inline_without_startup
+    selector: {kind: all, items: [&inline {kind: has_positional_at, index: 1}, *noinit]}
+    parameters: &database_and_inputs
+      - name: database
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: ':memory:'}}
+            - {matcher: {kind: prefix, value: 'file:'}}
+          fallback: {name: database_file, semantic: {kind: path, role: read, purpose: generic_operand}}
+      - name: sql_inputs
+        semantic: {kind: payload, language: sqlite_cli, source: inline_string, recursive: true}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+      - *unrecognized
+    effects: &file_effects
+      - {kind: read_path, target: {kind: slot, name: database_file}}
+      # These are potential writes, not an assertion that every query writes.
+      # readonly does not prove the whole call read-only (WAL/ZIP/client input).
+      - {kind: write_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-journal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-wal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-shm'}, purpose: generic_operand}}
+      - {kind: execute_payload, target: {kind: slot, name: sql_inputs}}
+      - {kind: execute_payload, target: {kind: slot, name: unrecognized_cli}}
+      - {kind: write_path, target: {kind: none}}
+    stream_contract: *ignored_stream
+  - id: inline_with_startup
+    selector: {kind: all, items: [*inline, {kind: not, item: *noinit}]}
+    parameters: *database_and_inputs
+    effects:
+      - {kind: read_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-journal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-wal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-shm'}, purpose: generic_operand}}
+      - {kind: execute_payload, target: {kind: slot, name: sql_inputs}}
+      - {kind: execute_payload, target: {kind: slot, name: unrecognized_cli}}
+      - {kind: write_path, target: {kind: none}}
+      - &startup {kind: load_config, target: {kind: configured_path, sources: [{slot: init_files, projection: {kind: identity}}], missing: unknown, purpose: startup_config}}
+    stream_contract: *ignored_stream
+  - id: database_input_without_startup
+    selector: {kind: all, items: [&database_input {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: *inline}]}, *noinit]}
+    parameters: *database_and_inputs
+    implicit_inputs: &stdin_input
+      - {source: stdin_payload, semantic: {kind: payload, language: sqlite_cli, source: stdin, recursive: true}}
+    effects: &database_input_effects
+      - {kind: read_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-journal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-wal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-shm'}, purpose: generic_operand}}
+      - {kind: execute_payload, target: {kind: slot, name: unrecognized_cli}}
+      - &consume_stdin {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - &execute_stdin {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+      - &unknown_write {kind: write_path, target: {kind: none}}
+    stream_contract: &input_stream {stdin_mode: payload_optional, stdout_mode: data, stderr_mode: data}
+  - id: database_input_with_startup
+    selector: {kind: all, items: [*database_input, {kind: not, item: *noinit}]}
+    parameters: *database_and_inputs
+    implicit_inputs: *stdin_input
+    effects:
+      - {kind: read_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: slot, name: database_file}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-journal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-wal'}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: database_file}, rule: {kind: append_suffix, suffix: '-shm'}, purpose: generic_operand}}
+      - {kind: execute_payload, target: {kind: slot, name: unrecognized_cli}}
+      - *consume_stdin
+      - *execute_stdin
+      - *unknown_write
+      - *startup
+    stream_contract: *input_stream
+  - id: default_memory_input_without_startup
+    selector: {kind: all, items: [{kind: no_positional_args}, *noinit, {kind: not, item: *clean_information}]}
+    parameters: [*unrecognized]
+    implicit_inputs: *stdin_input
+    effects: [{kind: execute_payload, target: {kind: slot, name: unrecognized_cli}}, *consume_stdin, *execute_stdin, *unknown_write]
+    stream_contract: *input_stream
+  - id: default_memory_input_with_startup
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: *noinit}]}
+    parameters: [*unrecognized]
+    implicit_inputs: *stdin_input
+    effects: [{kind: execute_payload, target: {kind: slot, name: unrecognized_cli}}, *consume_stdin, *execute_stdin, *unknown_write, *startup]
+    stream_contract: *input_stream
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-help, --help, -version, --version]}}
+  - {id: safe, matcher: {kind: any_flag, flags: [-safe, --safe]}}
+  - {id: noinit, matcher: {kind: any_flag, flags: [-noinit, --noinit]}}
+  - {id: batch, matcher: {kind: any_flag, flags: [-batch, --batch]}}
+  - {id: interactive, matcher: {kind: any_flag, flags: [-interactive, --interactive]}}
+  - {id: readonly, matcher: {kind: any_flag, flags: [-readonly, --readonly]}}
+  - {id: opening_flags, matcher: {kind: any_flag, flags: [-nofollow, --nofollow, -ifexists, --ifexists, -exclusive, --exclusive]}}
+  - {id: special_open, matcher: {kind: any_flag, flags: [-append, --append, -zip, --zip, -deserialize, --deserialize, -A, --A]}}
+  - {id: unsafe_testing, matcher: {kind: any_flag, flags: [-unsafe-testing, --unsafe-testing]}}
+  - id: cmd
+    matcher: {kind: any_flag, flags: [-cmd, --cmd]}
+    parameters:
+      - {name: startup_commands, semantic: {kind: payload, language: sqlite_cli, source: inline_string, recursive: true}, binding: &next_arg {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: execute_payload, target: {kind: slot, name: startup_commands}}, {kind: write_path, target: {kind: none}}]
+  - id: init
+    matcher: {kind: any_flag, flags: [-init, --init]}
+    parameters: [{name: init_files, semantic: {kind: plain_value}, binding: *next_arg, cardinality: required_many}]
+  - id: nonce
+    matcher: {kind: any_flag, flags: [-nonce, --nonce]}
+    parameters: [{name: nonce, semantic: {kind: plain_value}, binding: *next_arg, cardinality: required_many}]
+  - id: vfs
+    matcher: {kind: any_flag, flags: [-vfs, --vfs]}
+    parameters: [{name: vfs, semantic: {kind: in_process_code_load, load_kind: unknown}, binding: *next_arg, cardinality: required_many}]
+    effects: [{kind: load_in_process_code, target: {kind: slot, name: vfs}}, {kind: write_path, target: {kind: none}}]
+  - id: format_values
+    matcher: {kind: any_flag, flags: [-separator, --separator, -nullvalue, --nullvalue, -newline, --newline, -escape, --escape, -screenwidth, --screenwidth]}
+    parameters: [{name: format_values, semantic: {kind: plain_value}, binding: *next_arg, cardinality: required_many}]
+  - id: tuning
+    matcher: {kind: any_flag, flags: [-heap, --heap, -mmap, --mmap, -maxsize, --maxsize, -threadsafe, --threadsafe, -sorterref, --sorterref]}
+    parameters: [{name: tuning, semantic: {kind: plain_value}, binding: *next_arg, cardinality: required_many}]
+  - id: two_values
+    matcher: {kind: any_flag, flags: [-pagecache, --pagecache, -lookaside, --lookaside]}
+    parameters:
+      # second_arg consumes both operands; sizes remain in the original argv.
+      - {name: allocation_count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: second_arg}, cardinality: required_many}
+  - {id: trace, matcher: {kind: any_flag, flags: [-vfstrace, --vfstrace, -memtrace, --memtrace, -pcachetrace, --pcachetrace, -multiplex, --multiplex]}}
+  - {id: display_flags, matcher: {kind: any_flag, flags: [-ascii, --ascii, -bail, --bail, -box, --box, -column, --column, -csv, --csv, -echo, --echo, -header, --header, -noheader, --noheader, -html, --html, -json, --json, -line, --line, -list, --list, -markdown, --markdown, -psql, --psql, -quote, --quote, -table, --table, -tabs, --tabs, -stats, --stats, -utf8, --utf8, -no-utf8, --no-utf8, -no-rowid-in-view, --no-rowid-in-view]}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://sqlite.org/cli.html
+    - https://github.com/sqlite/sqlite/blob/b09c88c14082339b66c7b7158d609a771e64ca69/src/shell.c.in
+  caushell.profile/known_limitations:
+    - Standard SQLite CLI 3.53.4; not arbitrary vendor builds or custom extensions/VFS.
+    - No SQL or dot-command parser, filesystem probing, URI decoding, or implicit script detection.
+    - Unconstrained SQL/client execution retains unknown writes and requests approval, including apparent SELECT and readonly queries.
+    - Safe mode is recorded as a modifier, not a workspace-confinement exemption; even safe plus noinit retains unknown writes and approval.
+    - Startup config candidates are loaded only without noinit; explicit init is preferred, otherwise the XDG/home startup path is unknown without probing.
+    - Main-file modifications remain possible conservatively even with readonly; auto-detected ZIP and WAL sidecars prevent a whole-call read-only proof.
+    - SqliteCli payload language is metadata only. Unknown/unrecognized argv remains an unresolved dynamic-reference payload, never a Bash subcall.
+    - Native safe mode is not an OS sandbox; SQL-driven temporary-storage pragmas and runtime spill-file locations are not analyzed.

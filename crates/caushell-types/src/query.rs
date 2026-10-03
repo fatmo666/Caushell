@@ -810,6 +810,7 @@ pub enum NestedPayloadLanguage {
     Python,
     Perl,
     Javascript,
+    SqliteCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -921,6 +922,7 @@ impl NestedPayloadLanguage {
             "python" => Ok(Self::Python),
             "perl" => Ok(Self::Perl),
             "javascript" => Ok(Self::Javascript),
+            "sqlite_cli" => Ok(Self::SqliteCli),
             other => Err(NestedPayloadDecodeError::UnknownLanguage(other.to_string())),
         }
     }
@@ -2951,6 +2953,24 @@ mod tests {
         assert_eq!(
             NestedPayloadLanguage::from_storage("javascript"),
             Ok(NestedPayloadLanguage::Javascript)
+        );
+    }
+
+    #[test]
+    fn nested_payload_language_sqlite_cli_roundtrips() {
+        let value = serde_json::to_value(NestedPayloadLanguage::SqliteCli).unwrap();
+        assert_eq!(value, json!("sqlite_cli"));
+        assert_eq!(
+            serde_json::from_value::<NestedPayloadLanguage>(value).unwrap(),
+            NestedPayloadLanguage::SqliteCli
+        );
+        assert_eq!(
+            NestedPayloadLanguage::from_storage("sqlite_cli"),
+            Ok(NestedPayloadLanguage::SqliteCli)
+        );
+        assert_eq!(
+            serde_json::to_value(crate::NestedPayloadLanguageEvidence::SqliteCli).unwrap(),
+            json!("sqlite_cli")
         );
     }
 

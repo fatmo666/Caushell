@@ -1044,6 +1044,7 @@ fn normalize_payload_language(raw: RawPayloadLanguage) -> PayloadLanguage {
         RawPayloadLanguage::Python => PayloadLanguage::Python,
         RawPayloadLanguage::Perl => PayloadLanguage::Perl,
         RawPayloadLanguage::Javascript => PayloadLanguage::Javascript,
+        RawPayloadLanguage::SqliteCli => PayloadLanguage::SqliteCli,
     }
 }
 
