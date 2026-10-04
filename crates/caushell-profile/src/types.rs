@@ -903,6 +903,8 @@ pub struct DispatchTarget {
     pub unknown_environment_when: Vec<ModifierId>,
     pub unknown_environment_from: Vec<EnvironmentValueSource>,
     pub stdin_from_parent: bool,
+    /// Opt-in child stdout contribution; dispatch alone does not imply data flow.
+    pub stdout_to_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1154,6 +1156,9 @@ pub enum OptionScopePolicy {
     /// Parse declared options and their operands, then stop at the first
     /// non-option or an option terminator. Never inspect the child argv.
     LeadingOptions,
+    /// Parse declared options even after non-option data, up to the real
+    /// terminator. Preserve original argv ordering and argument ownership.
+    PermutedOptions,
 }
 
 /// How option names are recognized, independent of where options may occur.

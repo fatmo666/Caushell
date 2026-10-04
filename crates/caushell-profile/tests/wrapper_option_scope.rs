@@ -449,6 +449,69 @@ fn nested_subcommand_nodes_have_independent_option_ownership() {
 }
 
 #[test]
+fn argumentless_subcommands_are_accounted_for_before_the_owned_node_scope() {
+    for policy in [
+        OptionScopePolicy::LeadingOptions,
+        OptionScopePolicy::PermutedOptions,
+    ] {
+        let forms = vec![
+            Form::new("query").with_selector(SelectorExpr::All(vec![
+                SelectorExpr::Predicate(SelectorPredicate::NoArguments),
+                SelectorExpr::Not(Box::new(SelectorExpr::Predicate(
+                    SelectorPredicate::HasModifier(caushell_profile::ModifierId::new("help")),
+                ))),
+            ])),
+            Form::new("show_help").with_selector_predicate(SelectorPredicate::HasModifier(
+                caushell_profile::ModifierId::new("help"),
+            )),
+        ];
+        let node = caushell_profile::SubcommandNode {
+            name: "run".into(),
+            aliases: vec![],
+            forms: forms.clone(),
+            modifiers: vec![Modifier::new("help").with_flag_name("--help")],
+            option_scope: policy,
+            option_matching: Default::default(),
+            children: vec![],
+            default_behavior: None,
+            extensions: Default::default(),
+        };
+        let mut profile = wrapper();
+        profile.forms.clear();
+        profile.opaque_on_unresolved = true;
+        let mut group = node.clone();
+        group.name = "group".into();
+        group.modifiers.clear();
+        group.option_scope = OptionScopePolicy::LeadingOptions;
+        group.children = vec![node.clone()];
+        profile.subcommands = Some(caushell_profile::SubcommandTree {
+            roots: vec![node, group],
+        });
+        for c in [
+            "arbitrary-wrapper run",
+            "arbitrary-wrapper -p ROOT run",
+            "arbitrary-wrapper -p --help run",
+            "arbitrary-wrapper -p -- -v run --help",
+            "arbitrary-wrapper group run",
+            "arbitrary-wrapper -v group run --help",
+        ] {
+            let result = bound(&profile, c);
+            assert!(!result.operation_semantics_unresolved, "{c}: {result:?}");
+            assert_eq!(result.subcommand_path.last().unwrap(), "run");
+        }
+        for c in [
+            "arbitrary-wrapper --unknown run",
+            "arbitrary-wrapper run --unknown",
+        ] {
+            let parsed = parse_command(c, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+            assert!(select_invocation(&profile, &projection).is_err(), "{c}");
+        }
+    }
+}
+
+#[test]
 fn explicit_form_flag_bindings_use_the_same_option_boundary() {
     let mut profile = wrapper();
     profile

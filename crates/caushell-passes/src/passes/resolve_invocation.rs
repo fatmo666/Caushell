@@ -693,6 +693,7 @@ fn project_execution_unit_parsed_command_scopes(
             ExecutionUnitOriginKind::CommandSubstitutionBody
                 | ExecutionUnitOriginKind::CommandSubstitutionMaterialization
                 | ExecutionUnitOriginKind::ProcessSubstitutionBody
+                | ExecutionUnitOriginKind::ShellCommandStringPayload
         ) {
             continue;
         }
@@ -1022,6 +1023,7 @@ fn find_dispatch_candidates(
 
         candidates.push(DispatchCommandCandidate {
             stdin_from_parent: false,
+            stdout_to_parent: false,
             dispatch_index: candidates.len(),
             command,
             argv,
@@ -1928,6 +1930,7 @@ fn expanded_dispatch_children(
         let mut child_inherited_scope = inherited_scope.clone();
         child_inherited_scope.dispatch_working_directory =
             child.execution_cwd_unknown.then_some(EffectiveCwd::Unknown);
+        child_inherited_scope.dispatch_stdout_to_parent = child.stdout_to_parent;
         let command = materialized_dispatch_child_command_fact(resolved, &child);
         let parent_bindings = crate::support::command_environment_bindings(
             &entry.bindings,

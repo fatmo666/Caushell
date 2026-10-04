@@ -133,6 +133,9 @@ pub struct ExecutionUnitInheritedScope {
     pub catastrophic_search_roots: Vec<CatastrophicSearchRootScope>,
     pub block_device_search_scopes: Vec<BlockDeviceSearchScope>,
     pub dispatch_working_directory: Option<EffectiveCwd>,
+    /// Applies only to this direct Dispatch origin, not arbitrary descendant
+    /// shell events. Each new dispatch replaces it from its own declaration.
+    pub dispatch_stdout_to_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

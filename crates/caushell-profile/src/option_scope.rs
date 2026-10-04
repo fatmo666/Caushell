@@ -12,11 +12,24 @@ pub struct ScopedOptions {
     /// Actual option occurrences, excluding option operands and child argv.
     pub flags: Vec<(usize, FlagName)>,
     pub terminator: Option<usize>,
+    /// Sorted non-option argv indices inside a permuted scope. None keeps the
+    /// leading-prefix representation and avoids allocating for old profiles.
+    pub positionals: Option<Vec<usize>>,
     /// An unknown option means its arity (and hence the boundary) is unknown.
     pub error: Option<String>,
 }
 
 type Declarations = BTreeMap<String, Option<FlagOperandMode>>;
+
+impl ScopedOptions {
+    pub(crate) fn is_positional(&self, index: usize) -> bool {
+        index >= self.scope.end_index
+            || self
+                .positionals
+                .as_ref()
+                .is_some_and(|indices| indices.binary_search(&index).is_ok())
+    }
+}
 
 fn declarations(
     modifiers: &[Modifier],
@@ -110,11 +123,13 @@ pub(crate) fn scan_leading_options(
     forms: &[Form],
     matching: OptionMatchingPolicy,
     prefixes: OptionPrefixPolicy,
+    permuted: bool,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         scope: ArgumentScope::new(scope.start_index, scope.start_index),
         flags: Vec::new(),
         terminator: None,
+        positionals: permuted.then(Vec::new),
         error: None,
     };
     let declarations = match declarations(modifiers, forms, matching) {
@@ -133,6 +148,12 @@ pub(crate) fn scan_leading_options(
             return result;
         }
         if !prefixes.is_option(token) {
+            if let Some(positionals) = &mut result.positionals {
+                positionals.push(index);
+                index += 1;
+                result.scope.end_index = index;
+                continue;
+            }
             break;
         }
         let mut token_flags = Vec::new();

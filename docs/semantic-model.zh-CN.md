@@ -395,6 +395,29 @@ Ruby 定义／安装脚本、运行时依赖闭包、任意自定义安装布局
 
 ### 嵌套分派与运行时参数
 
+`option_scope: permuted_options` 复用声明驱动的选项归属扫描，但遇到普通操作数后继续，
+直到真正的终止符。保留原 argv 顺序、span 与来源，不实际重排参数。
+例如 `pv input -F --help -o out` 的 `--help` 是格式值，不是帮助开关；
+必需参数可以消费字面 `--`，之后未被消费的终止符才结束扫描。
+附着值即使重复选项字母也仍是值。根与子命令各自保存实际归属，未知参数个数停止形式确认，
+保留此前已确认的效果，但不把后续词形像选项的值臆断成控制项。
+既有 `all_arguments` 默认与 `leading_options` 的停止边界不变。
+
+分派 target 可声明 `stdout_to_parent: true`。既有流来源 Pass 通过 `dispatch_stdout`
+artifact 记录子命令 `Produces` 与父命令 `Consumes`，实际字节仍是未知，
+子命令已建模的输入来源得以进入父管道、重定向和显式声明的 wrapper 链。
+它与 `stdin_from_parent` 独立，分派／控制边本身不代表数据流；每次直接分派用自己的声明，
+不继承外层 wrapper 的开关，省略默认 false。Canonical Bash command-string scope
+提供真实管道节点映射，避免只连到旧的重复节点。不增加风险 Pass、动态探测或 Harness 字段，
+也不推断任意解释器内部行为或宣称完整重放 FD 路由。
+
+pv 保留普通文件／stdin 传输、显式输出与暂存、PID 文件替换／删除、数字 FD 进度查询，
+以及 monitor 的真实子 argv。`-o -` 是 stdout；`-U -` 是生成临时存储，保留未知写入／删除。
+cursor 锁存储同样未知。远程重配置、会写 IPC 文件并发信号的 query、名称／文件 watch
+及未支持形式走既有未知语义审批。重复显式目标保守保留，不提供隐含缓存豁免。
+Env 同样显式声明 stdout 继承；其他 Profile 没有声明就不会自动获得此连接。
+Curl 的既有 `@file` 内容读取缺口单独记录，本轮不改；pv 暂存来源测试用明确建模的文件读取隔离验证。
+
 采用前置选项语法的 Profile，可以在命令根节点或单个子命令节点声明 `option_scope: leading_options`。共享绑定器先按声明解析选项及其操作数，遇到第一个非选项操作数或选项终止符 `--` 后停止；modifier 匹配、form 选择和参数绑定共同遵守这条边界。例如 `sshpass -e ssh -p 2222 host` 中的 `-p 2222` 属于 `ssh`，不会成为 `sshpass` 的密码参数。长得像选项的值仍然是值，子命令的完整 argv（包括自己的 `--`）保留给既有嵌套分派。位置参数仍覆盖整个调用，因此 `env` 能先消费环境赋值，`timeout` 能先消费时长，再确定子命令。
 
 默认仍为 `all_arguments`，普通 Profile 依然可以描述操作数后面的选项。前置选项的操作数数量来自 modifier/form 的 flag binding 声明；未知选项会产生显式 selection gap，并保留已经确认的 modifier 效果，不猜测子命令边界。这不会改变配置中的解析缺口动作或嵌套展开上限。

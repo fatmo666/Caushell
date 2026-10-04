@@ -366,6 +366,7 @@ fn normalize_option_scope(raw: RawOptionScopePolicy) -> OptionScopePolicy {
     match raw {
         RawOptionScopePolicy::AllArguments => OptionScopePolicy::AllArguments,
         RawOptionScopePolicy::LeadingOptions => OptionScopePolicy::LeadingOptions,
+        RawOptionScopePolicy::PermutedOptions => OptionScopePolicy::PermutedOptions,
     }
 }
 
@@ -375,7 +376,7 @@ fn validate_option_scope(
     modifiers: &[Modifier],
     forms: &[Form],
 ) -> Result<(), NormalizeError> {
-    if policy == OptionScopePolicy::LeadingOptions {
+    if policy != OptionScopePolicy::AllArguments {
         crate::option_scope::validate_declarations(modifiers, forms, matching)
             .map_err(NormalizeError::InvalidOptionScope)?;
     }
@@ -1828,6 +1829,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             unknown_environment_when,
             unknown_environment_from,
             stdin_from_parent,
+            stdout_to_parent,
         } => {
             let command = match (command, command_literal, command_whitespace_argv) {
                 (Some(slot), None, None) => {
@@ -1881,6 +1883,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     .map(normalize_environment_source)
                     .collect::<Result<Vec<_>, _>>()?,
                 stdin_from_parent,
+                stdout_to_parent,
             }))
         }
         RawEffectTarget::None => Ok(EffectTarget::None),

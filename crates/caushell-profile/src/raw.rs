@@ -37,6 +37,7 @@ pub enum RawOptionScopePolicy {
     #[default]
     AllArguments,
     LeadingOptions,
+    PermutedOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -900,6 +901,8 @@ pub enum RawEffectTarget {
         unknown_environment_from: Vec<RawEnvironmentValueSource>,
         #[serde(default)]
         stdin_from_parent: bool,
+        #[serde(default)]
+        stdout_to_parent: bool,
     },
     None,
 }

@@ -1,0 +1,162 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pv, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, macos], shell_families: [], requires_features: []}
+# GNU getopt can permute options past input filenames. Monitor admission
+# requires the documented -- boundary so the child's options stay its own.
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: help}
+    parameters: &information_args [{name: information_args, semantic: &plain {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: &information_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: show_version
+    selector: {kind: all, items: [{kind: has_modifier, modifier: version}, {kind: not, item: {kind: has_modifier, modifier: help}}]}
+    parameters: *information_args
+    stream_contract: *information_stream
+  - id: transfer_files
+    selector:
+      kind: all
+      items:
+        - &transfer
+          kind: all
+          items:
+            - &ordinary
+              kind: not
+              item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: remote}, {kind: has_modifier, modifier: query}]}
+            - {kind: not, item: {kind: has_modifier, modifier: monitor}}
+            - {kind: not, item: {kind: has_modifier, modifier: watch}}
+        - {kind: not, item: &uses_stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}
+        - {kind: not, item: &generated {kind: has_modifier_parameter_matching, modifier: stage, parameter: stage_raw, matcher: {kind: literal, value: '-'}}}
+    parameters: &inputs
+      - name: inputs
+        semantic: *plain
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: input_files, semantic: &read {kind: path, role: read, purpose: generic_operand}}
+    effects: &transfer_effects
+      - &input_read {kind: read_path, target: {kind: slot, name: input_files}}
+      - &transform {kind: transform_data, target: {kind: none}}
+    stream_contract: &data_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: transfer_stream
+    selector: {kind: all, items: [*transfer, *uses_stdin, {kind: not, item: *generated}]}
+    parameters: *inputs
+    implicit_inputs: &stdin [{source: stdin_data, semantic: *plain}]
+    effects: [*input_read, *transform, &consume {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}]
+    stream_contract: &stdin_stream {stdin_mode: data_optional, stdout_mode: data, stderr_mode: data}
+  - id: generated_stage_files
+    selector: {kind: all, items: [*transfer, {kind: not, item: *uses_stdin}, *generated]}
+    parameters: *inputs
+    effects: [*input_read, *transform, &unknown_write {kind: write_path, target: {kind: none}}, &unknown_delete {kind: delete_path, target: {kind: none}}]
+    stream_contract: *data_stream
+  - id: generated_stage_stream
+    selector: {kind: all, items: [*transfer, *uses_stdin, *generated]}
+    parameters: *inputs
+    implicit_inputs: *stdin
+    effects: [*input_read, *transform, *consume, *unknown_write, *unknown_delete]
+    stream_contract: *stdin_stream
+  - id: watch_progress
+    selector:
+      kind: all
+      items:
+        - *ordinary
+        - {kind: has_modifier, modifier: watch}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: monitor}, {kind: has_modifier, modifier: stage}]}}
+        - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: watch, parameter: watched_processes, matcher: &not_pid_fd {kind: regex_pattern, pattern: '(^$|[^0-9:])'}}}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: *not_pid_fd}}
+    parameters: [{name: watched_processes_extra, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data}
+  - id: monitor_command
+    selector:
+      kind: all
+      items:
+        - *ordinary
+        - {kind: has_modifier, modifier: monitor}
+        - {kind: has_dash_dash}
+        - {kind: not, item: {kind: has_positional_before_dash_dash_at, index: 0}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: watch}, {kind: has_modifier, modifier: stage}]}}
+        - {kind: has_modifier_parameter_matching, modifier: monitor, parameter: monitor_side, matcher: {kind: regex_pattern, pattern: '^(in|stdin|out|stdout|both|[012])'}}
+    parameters:
+      - {name: monitored_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional_after_dashdash}, cardinality: required_one}
+      - {name: monitored_args, semantic: *plain, binding: {kind: remaining_args}, cardinality: optional_many}
+    implicit_inputs: *stdin
+    effects:
+      - *consume
+      - *transform
+      - kind: dispatch_command
+        target: {kind: dispatch, command: monitored_command, argv: [monitored_args], environment: [], stdin_from_parent: true, stdout_to_parent: true}
+    stream_contract: *stdin_stream
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}
+  - {id: version, matcher: {kind: any_flag, flags: [-V, --version]}}
+  - id: switches
+    matcher: {kind: any_flag, flags: [-p, --progress, -t, --timer, -e, --eta, -I, --fineta, -r, --rate, -a, --average-rate, -b, --bytes, '-8', --bits, -k, --si, -T, --buffer-percent, -f, --force, -n, --numeric, -q, --quiet, -W, --wait, -g, --gauge, -l, --line-mode, '-0', --null, '-9', --conemu, -v, --stats, -C, --no-splice, -E, --skip-errors, -S, --stop-at-size, -Y, --sync, -K, --direct-io, -O, --sparse, --sparse-output, -X, --discard]}
+  - id: values
+    matcher: {kind: any_flag, flags: [-A, --last-written, -D, --delay-start, -i, --interval, -w, --width, -H, --height, -N, --name, -u, --bar-style, -F, --format, -x, --extra-display, -L, --rate-limit, -B, --buffer-size, -Z, --error-skip-block, -J, --pipe-buffer-size, -m, --average-rate-window]}
+    parameters: [{name: values, semantic: *plain, binding: &value {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: size
+    matcher: {kind: any_flag, flags: [-s, --size]}
+    parameters: [{name: size, semantic: *plain, binding: *value, cardinality: required_many}]
+  - id: output
+    matcher: {kind: any_flag, flags: [-o, --output]}
+    parameters:
+      - name: output_raw
+        semantic: *plain
+        binding: *value
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: output_files, semantic: {kind: path, role: write, purpose: generic_operand}}
+    effects: [{kind: write_path, target: {kind: slot, name: output_files}, catastrophic: {semantic_class: raw_write_target}}]
+  - id: stage
+    matcher: {kind: any_flag, flags: [-U, --store-and-forward]}
+    parameters:
+      - name: stage_raw
+        semantic: *plain
+        binding: *value
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: stage_files, semantic: *read}
+    effects: [{kind: write_path, target: {kind: slot, name: stage_files}, catastrophic: {semantic_class: raw_write_target}}, {kind: read_path, target: {kind: slot, name: stage_files}}]
+  - id: pidfile
+    matcher: {kind: any_flag, flags: [-P, --pidfile]}
+    parameters: [{name: pidfile, semantic: *plain, binding: *value, cardinality: required_many}]
+    effects:
+      - {kind: write_path, target: {kind: slot, name: pidfile}}
+      - {kind: delete_path, target: {kind: slot, name: pidfile}}
+      # Native mkstemp uses a sibling followed by rename; preserve its bounded
+      # directory scope rather than inventing an actual random filename.
+      - {kind: write_path, target: &pid_siblings {kind: derived_path, source: {kind: slot, name: pidfile}, rule: {kind: sibling_files}, purpose: generic_operand}}
+      - {kind: delete_path, target: *pid_siblings}
+  - id: cursor
+    matcher: {kind: any_flag, flags: [-c, --cursor]}
+    effects: [*unknown_write, *unknown_delete]
+  - id: remote
+    matcher: {kind: any_flag, flags: [-R, --remote]}
+    parameters: [{name: remote_pid, semantic: *plain, binding: *value, cardinality: required_many}]
+  - id: query
+    matcher: {kind: any_flag, flags: [-Q, --query]}
+    parameters: [{name: query_pid, semantic: *plain, binding: *value, cardinality: required_many}]
+  - id: watch
+    matcher: {kind: any_flag, flags: [-d, --watchfd]}
+    parameters: [{name: watched_processes, semantic: *plain, binding: *value, cardinality: required_many}]
+  - id: monitor
+    matcher: {kind: any_flag, flags: [-M, --monitor]}
+    parameters: [{name: monitor_side, semantic: *plain, binding: *value, cardinality: required_one}]
+
+extensions:
+  caushell.profile/source: https://ivarch.com/s/pv-1.12.0.tar.gz
+  caushell.profile/source_sha256: 31fdbdb449c7143cd2968567bef7599e9f031950e6158ee7bb76e40aebf6ffb8
+  caushell.profile/manual: https://www.ivarch.com/programs/quickref/pv.shtml
+  caushell.profile/known_limitations:
+    - Remote reconfiguration and --query IPC use existing unresolved-operation approval; they are not modeled as kill or metadata-only reads. Numeric watchfd selectors are metadata queries, but name/list-file selectors remain opaque.
+    - Monitor admission requires an explicit -- separator and an unambiguous side; typed argv dispatch retains opaque parent-output stdin and explicit child stdout inheritance. Detailed bidirectional FD routing is not a native execution replay.
+    - Generated store-and-forward paths and cursor-lock storage retain unknown write/delete targets; no runtime environment/filesystem/process discovery or implicit cache exemption is introduced.
+    - Repeated explicit output/staging/PID destinations retain all candidates conservatively instead of guessing native last-value and early-exit ordering; this may cause additional approvals. Long option abbreviations, custom debug builds and unknown options remain opaque.
+    - Size-by-file is metadata, not content input. Discard, explicit output and monitor FD routing do not provide a proof that generic pipeline provenance suppresses every native-empty stream.

@@ -137,6 +137,9 @@ pub struct SelectedModifier<'a> {
     /// When option ownership is explicit, operand tokens must not be
     /// reconsidered as options by a different modifier.
     pub option_flag_indices: Option<Vec<usize>>,
+    /// Exact owned spellings are local to this modifier's scope, including
+    /// root modifiers when a different subcommand scope is currently bound.
+    pub option_flag_occurrences: Option<Vec<(usize, FlagName)>>,
 }
 
 impl std::ops::Deref for SelectedModifier<'_> {
@@ -232,9 +235,15 @@ fn scoped_options(
 ) -> Option<crate::ScopedOptions> {
     match policy {
         crate::OptionScopePolicy::AllArguments => None,
-        crate::OptionScopePolicy::LeadingOptions => {
+        crate::OptionScopePolicy::LeadingOptions | crate::OptionScopePolicy::PermutedOptions => {
             Some(crate::option_scope::scan_leading_options(
-                projection, scope, modifiers, forms, matching, prefixes,
+                projection,
+                scope,
+                modifiers,
+                forms,
+                matching,
+                prefixes,
+                policy == crate::OptionScopePolicy::PermutedOptions,
             ))
         }
     }
@@ -288,6 +297,14 @@ fn match_owned_modifiers<'a>(
                 .iter()
                 .filter(|(_, flag)| modifier.matcher.flag_names().contains(flag))
                 .map(|(index, _)| *index)
+                .collect(),
+        ),
+        option_flag_occurrences: Some(
+            options
+                .flags
+                .iter()
+                .filter(|(_, flag)| modifier.matcher.flag_names().contains(flag))
+                .cloned()
                 .collect(),
         ),
     })
@@ -518,11 +535,13 @@ fn collect_unresolved_arguments(
             // not an unmodeled short-option cluster. Use argv indices, never spans.
             continue;
         }
-        let positional = state.is_positional(index);
-        if positional && index < selection.form_scope.start_index {
-            // The subcommand path is already accounted for by selection.
+        if arg.kind == ProjectedArgKind::Positional && index < selection.form_scope.start_index {
+            // Selection already accounted for the subcommand path. These
+            // tokens precede the selected node's owned option scope; that
+            // scope must not reclassify them as unmodeled options.
             continue;
         }
+        let positional = state.is_positional(index);
         let unconsumed = !state.consumed[index];
         let partial_cluster = !positional
             && selection.option_matching == OptionMatchingPolicy::ShortClusters
@@ -1189,6 +1208,7 @@ fn match_root_flag_only_modifiers<'a>(
         modifier,
         scope: root_scope,
         option_flag_indices: None,
+        option_flag_occurrences: None,
     })
     .collect()
 }
@@ -1245,6 +1265,7 @@ fn match_leading_parameterized_modifiers<'a>(
         modifier,
         scope: leading_scope,
         option_flag_indices: None,
+        option_flag_occurrences: None,
     })
     .collect()
 }
@@ -1300,6 +1321,7 @@ fn match_scoped_modifiers<'a>(
         modifier,
         scope,
         option_flag_indices: None,
+        option_flag_occurrences: None,
     })
     .collect()
 }
@@ -1374,7 +1396,7 @@ fn shape_for_scope_internal<'a>(
     for modifier in modifiers {
         shape.matched_modifiers.push(modifier.modifier.id.clone());
     }
-    populate_modifier_parameters_for_shape(projection, modifiers, &mut shape);
+    populate_modifier_parameters_for_shape(projection, modifiers, options, &mut shape);
 
     let mut before_dashdash = true;
     if let Some(options) = options {
@@ -1389,7 +1411,7 @@ fn shape_for_scope_internal<'a>(
         }
         // The projector's original `--` classification may itself be an
         // option operand. Explicit ownership is authoritative for this prefix.
-        if options.is_some_and(|options| index < options.scope.end_index) {
+        if options.is_some_and(|options| !options.is_positional(index)) {
             continue;
         }
         if consumed.is_some_and(|consumed| consumed[index]) {
@@ -1428,6 +1450,7 @@ fn shape_for_scope_internal<'a>(
 fn populate_modifier_parameters_for_shape(
     projection: &ProjectedInvocation,
     modifiers: &[SelectedModifier<'_>],
+    options: Option<&crate::ScopedOptions>,
     shape: &mut InvocationShape,
 ) {
     for selected_modifier in modifiers {
@@ -1440,6 +1463,7 @@ fn populate_modifier_parameters_for_shape(
             };
 
             let mut state = BindingState::with_modifier_context(projection, modifiers);
+            state.set_option_scope(options);
             let values = state.bind_parameter_values(&target);
             for value in values {
                 if let BoundValue::Argument { text, .. } = value {
@@ -1497,8 +1521,8 @@ fn next_unconsumed_operand_from<'a>(
             .args
             .iter()
             .enumerate()
-            .skip(start_index.max(options.scope.end_index))
-            .find(|(index, _)| !consumed[*index])
+            .skip(start_index)
+            .find(|(index, _)| !consumed[*index] && options.is_positional(*index))
             .map(|(index, arg)| (index, arg.text.as_str()))
     } else {
         next_unconsumed_positional_from(projection, consumed, start_index)
@@ -1827,7 +1851,9 @@ struct BindingState<'p, 'm> {
     short_flags_allowing_attached_operands: BTreeSet<String>,
     selected_modifiers: Vec<SelectedModifier<'m>>,
     option_flag_indices: Option<Vec<usize>>,
+    option_flag_names: Option<Vec<(usize, FlagName)>>,
     option_boundary: Option<usize>,
+    option_positionals: Option<Vec<usize>>,
     option_terminator: Option<usize>,
 }
 
@@ -1843,7 +1869,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
             short_flags_allowing_attached_operands: BTreeSet::new(),
             selected_modifiers: Vec::new(),
             option_flag_indices: None,
+            option_flag_names: None,
             option_boundary: None,
+            option_positionals: None,
             option_terminator: None,
         }
     }
@@ -1863,7 +1891,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
             short_flags_allowing_attached_operands: BTreeSet::new(),
             selected_modifiers: Vec::new(),
             option_flag_indices: None,
+            option_flag_names: None,
             option_boundary: None,
+            option_positionals: None,
             option_terminator: None,
         };
         state.set_modifier_context(modifiers);
@@ -1888,9 +1918,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
 
     fn set_option_scope(&mut self, options: Option<&crate::ScopedOptions>) {
         self.option_boundary = options.map(|options| options.scope.end_index);
+        self.option_positionals = options.and_then(|options| options.positionals.clone());
         self.option_terminator = options.and_then(|options| options.terminator);
         self.option_flag_indices =
             options.map(|options| options.flags.iter().map(|(index, _)| *index).collect());
+        self.option_flag_names = options.map(|options| options.flags.clone());
         if let Some(index) = options.and_then(|options| options.terminator) {
             self.consumed[index] = true;
         }
@@ -1908,9 +1940,15 @@ impl<'p, 'm> BindingState<'p, 'm> {
     }
 
     fn is_positional(&self, index: usize) -> bool {
-        self.option_boundary
-            .is_some_and(|boundary| index >= boundary)
-            || self.projection.args[index].kind == ProjectedArgKind::Positional
+        if let Some(boundary) = self.option_boundary {
+            index >= boundary
+                || self
+                    .option_positionals
+                    .as_ref()
+                    .is_some_and(|indices| indices.binary_search(&index).is_ok())
+        } else {
+            self.projection.args[index].kind == ProjectedArgKind::Positional
+        }
     }
 
     fn positional_separator(&self, scope: ArgumentScope) -> Option<usize> {
@@ -2063,6 +2101,14 @@ impl<'p, 'm> BindingState<'p, 'm> {
     ) -> Vec<BoundValue> {
         let mut values = Vec::new();
         let owned_indices = self.owned_flag_indices(option_owner);
+        let owned_occurrences = match option_owner {
+            Some(owner) => self
+                .selected_modifiers
+                .iter()
+                .find(|selected| std::ptr::eq(selected.modifier, owner))
+                .and_then(|selected| selected.option_flag_occurrences.clone()),
+            None => self.option_flag_names.clone(),
+        };
         let allow_short_attached = (modifier.is_some()
             || owned_indices.is_some()
             || operand_mode == FlagOperandMode::OptionalNextArg)
@@ -2097,27 +2143,39 @@ impl<'p, 'm> BindingState<'p, 'm> {
             }
 
             let Some((matched_flag_name, flag_match)) = flag_names.iter().find_map(|flag_name| {
-                flag_token_binding_match(
-                    arg.text.as_str(),
-                    flag_name.as_str(),
-                    allow_short_attached && !saw_positional,
-                    matches!(
-                        operand_mode,
-                        FlagOperandMode::InlineOrShortAttached | FlagOperandMode::OptionalNextArg
-                    ),
-                    &declared_short_flags,
-                    &self.declared_short_flags,
-                    &self.short_flags_allowing_attached_operands,
-                    true,
-                    matching,
-                )
-                .or_else(|| {
-                    (matching == OptionMatchingPolicy::ShortClusters
-                        && modifier.is_none()
-                        && short_flag_cluster_contains_name(arg.text.as_str(), flag_name.as_str()))
-                    .then_some(FlagTokenMatch::ClusterMember)
-                })
-                .map(|flag_match| (flag_name, flag_match))
+                let flag_match = if let Some(occurrences) = &owned_occurrences {
+                    occurrences
+                        .iter()
+                        .any(|(i, name)| *i == index && name == flag_name)
+                        .then(|| owned_flag_token_binding_match(&arg.text, flag_name.as_str()))
+                        .flatten()
+                } else {
+                    flag_token_binding_match(
+                        arg.text.as_str(),
+                        flag_name.as_str(),
+                        allow_short_attached && !saw_positional,
+                        matches!(
+                            operand_mode,
+                            FlagOperandMode::InlineOrShortAttached
+                                | FlagOperandMode::OptionalNextArg
+                        ),
+                        &declared_short_flags,
+                        &self.declared_short_flags,
+                        &self.short_flags_allowing_attached_operands,
+                        true,
+                        matching,
+                    )
+                    .or_else(|| {
+                        (matching == OptionMatchingPolicy::ShortClusters
+                            && modifier.is_none()
+                            && short_flag_cluster_contains_name(
+                                arg.text.as_str(),
+                                flag_name.as_str(),
+                            ))
+                        .then_some(FlagTokenMatch::ClusterMember)
+                    })
+                };
+                flag_match.map(|flag_match| (flag_name, flag_match))
             }) else {
                 continue;
             };
@@ -3519,6 +3577,29 @@ fn flag_token_binding_match<'a>(
             allow_unknown_prefix_flags,
         )
         .map(FlagTokenMatch::ShortAttachedOperand)
+    })
+}
+
+/// Once the declaration-driven scan has proved an occurrence, its suffix is
+/// operand data even when it resembles another declared flag. Do not rerun
+/// the legacy lexical ambiguity heuristic or inspect another flag's value.
+fn owned_flag_token_binding_match<'a>(token: &'a str, flag: &str) -> Option<FlagTokenMatch<'a>> {
+    if token == flag {
+        return Some(FlagTokenMatch::Exact);
+    }
+    if let Some(value) = inline_long_flag_operand(token, flag) {
+        return Some(FlagTokenMatch::LongInlineOperand(value));
+    }
+    let ch = short_flag_char(flag)?;
+    let tail = same_prefix_short_cluster(token, flag)?;
+    let (offset, _) = tail
+        .char_indices()
+        .find(|(_, candidate)| *candidate == ch)?;
+    let value = &tail[offset + ch.len_utf8()..];
+    Some(if value.is_empty() {
+        FlagTokenMatch::Exact
+    } else {
+        FlagTokenMatch::ShortAttachedOperand(value)
     })
 }
 

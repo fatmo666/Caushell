@@ -57,6 +57,45 @@ fn collect_dispatch_stream_provenance_mutations(ctx: &RunnerContext) -> Vec<Pend
     let mut mutations = Vec::new();
     let mut inherited_streams: BTreeMap<NodeId, (NodeId, ProvenanceArtifact)> = BTreeMap::new();
     for record in ctx.execution_unit_resolve_records() {
+        if record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
+            && record.inherited_scope.dispatch_stdout_to_parent
+        {
+            // This is declared stdout routing, not a control/dispatch edge.
+            // It feeds any parent output (pipe, redirect or outer wrapper),
+            // while the existing child facts retain the actual data origin.
+            let node_id = NodeId::new(format!("dispatch-stdout:{}", record.source_node_id.0));
+            let artifact = ProvenanceArtifact::MaterializedValue {
+                source_kind: "dispatch_stdout".into(),
+                state: caushell_types::ProvenanceMaterializedValueState::UnsupportedDynamicText {
+                    text: "dispatched child stdout inherited by parent".into(),
+                },
+                version: ctx.request().sequence_no.0,
+            };
+            mutations.push(PendingMutation::AddProvenanceArtifact {
+                source_node_id: record.source_node_id.clone(),
+                node_id: node_id.clone(),
+                artifact: artifact.clone(),
+                relation: EdgeKind::Produces,
+                semantics: ProvenanceEdgeSemantics::Produce {
+                    produce_kind: ProvenanceProduceKind::MaterializedValue,
+                    slot_name: Some("stdout".into()),
+                    normalized_command_name: None,
+                    domain_label: None,
+                },
+            });
+            mutations.push(PendingMutation::AddProvenanceArtifact {
+                source_node_id: record.parent_execution_node_id.clone(),
+                node_id,
+                artifact,
+                relation: EdgeKind::Consumes,
+                semantics: ProvenanceEdgeSemantics::Consume {
+                    consume_kind: ProvenanceConsumeKind::TransformInput,
+                    slot_name: Some("child_stdout".into()),
+                    normalized_command_name: None,
+                    domain_label: None,
+                },
+            });
+        }
         if record.origin_locator
             == caushell_runner::ExecutionUnitOriginLocator::DispatchInheritedStdin
         {
@@ -484,6 +523,79 @@ mod tests {
 
         runner.run(SessionView::new(&graph, summary), &mut ctx);
         ctx
+    }
+
+    fn run_stdout_router(stdout: bool, command: &str) -> RunnerContext {
+        let registry = built_in_registry();
+        let mut router = registry.lookup("env").profile.unwrap().clone();
+        router.identity.canonical_name =
+            caushell_profile::CommandName::new("arbitrary-stdout-router");
+        router.identity.aliases.clear();
+        for form in &mut router.forms {
+            for effect in &mut form.effects {
+                if let caushell_profile::EffectTarget::Dispatch(target) = &mut effect.target {
+                    target.stdout_to_parent = stdout;
+                }
+            }
+        }
+        let mut profiles = registry.profiles().to_vec();
+        profiles.push(router);
+        let mut runner = PassRunner::new();
+        runner.register_request_transform_pass(ParseCommandPass);
+        runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+        runner.register_session_transform_pass(ResolveInvocationPass::new(
+            ProfileRegistry::from_profiles(profiles).unwrap(),
+        ));
+        runner.register_session_transform_pass(ExtractPipelineFlowPass);
+        runner.register_session_transform_pass(ExtractPipelineStreamProvenancePass);
+        let graph = SessionGraph::new();
+        let summary = SessionSummary::default();
+        let mut ctx = RunnerContext::new(sample_request(command));
+        runner.run(SessionView::new(&graph, &summary), &mut ctx);
+        ctx
+    }
+
+    fn stdout_edges(ctx: &RunnerContext) -> Vec<&PendingMutation> {
+        ctx.pending_mutations().iter().filter(|m| matches!(m,
+            PendingMutation::AddProvenanceArtifact { artifact: ProvenanceArtifact::MaterializedValue {source_kind, ..}, .. } if source_kind == "dispatch_stdout")).collect()
+    }
+
+    #[test]
+    fn declared_child_stdout_has_produce_and_parent_consume_edges() {
+        let ctx = run_stdout_router(true, "arbitrary-stdout-router cat .env | cat");
+        let edges = stdout_edges(&ctx);
+        assert_eq!(edges.len(), 2);
+        assert!(edges.iter().any(|m| matches!(m,
+            PendingMutation::AddProvenanceArtifact { source_node_id, relation: EdgeKind::Produces, semantics: ProvenanceEdgeSemantics::Produce { slot_name: Some(slot), .. }, .. }
+            if source_node_id.0.starts_with("derived-dispatch:") && slot == "stdout")));
+        assert!(edges.iter().any(|m| matches!(m,
+            PendingMutation::AddProvenanceArtifact { source_node_id, relation: EdgeKind::Consumes, semantics: ProvenanceEdgeSemantics::Consume { consume_kind: ProvenanceConsumeKind::TransformInput, .. }, .. }
+            if source_node_id.0 == "pipeline-segment:sess-1:4:0")));
+    }
+
+    #[test]
+    fn undeclared_dispatch_has_no_fabricated_stdout_data_flow() {
+        let ctx = run_stdout_router(false, "arbitrary-stdout-router cat .env | cat");
+        assert!(stdout_edges(&ctx).is_empty());
+        assert!(
+            ctx.execution_unit_resolve_records()
+                .iter()
+                .any(|r| r.rendered_command_text == "cat .env")
+        );
+    }
+
+    #[test]
+    fn nested_dispatch_resets_stdout_from_its_own_declaration() {
+        let ctx = run_stdout_router(false, "env arbitrary-stdout-router cat .env | cat");
+        // env captures router stdout, but the router did not declare capturing
+        // cat stdout. An outer true declaration must not leak into that boundary.
+        assert_eq!(stdout_edges(&ctx).len(), 2);
+        let child = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .find(|r| r.rendered_command_text == "cat .env")
+            .unwrap();
+        assert!(!child.inherited_scope.dispatch_stdout_to_parent);
     }
 
     #[test]

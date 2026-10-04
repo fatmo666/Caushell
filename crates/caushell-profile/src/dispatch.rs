@@ -30,6 +30,7 @@ pub struct DispatchCommandCandidate {
     pub unset_environment: Vec<DispatchArgument>,
     pub execution_cwd_unknown: bool,
     pub stdin_from_parent: bool,
+    pub stdout_to_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +187,7 @@ pub fn collect_dispatch_command_projection(
                         ),
                         execution_cwd_unknown: false,
                         stdin_from_parent: target.stdin_from_parent,
+                        stdout_to_parent: target.stdout_to_parent,
                     });
                 }
             }
@@ -253,6 +255,7 @@ pub fn collect_dispatch_command_projection(
                 &mut next_synthetic_span_byte,
             ),
             stdin_from_parent: target.stdin_from_parent,
+            stdout_to_parent: target.stdout_to_parent,
         });
     }
 
@@ -481,6 +484,7 @@ mod tests {
                 unknown_environment_when: Vec::new(),
                 unknown_environment_from: Vec::new(),
                 stdin_from_parent: false,
+                stdout_to_parent: false,
             }),
             interactive_escape_surface: None,
             catastrophic: Default::default(),
