@@ -266,7 +266,8 @@ fn shell_kind_for_payload_language(language: PayloadLanguage) -> Option<ShellKin
         | PayloadLanguage::Python
         | PayloadLanguage::Perl
         | PayloadLanguage::Javascript
-        | PayloadLanguage::SqliteCli => None,
+        | PayloadLanguage::SqliteCli
+        | PayloadLanguage::MysqlCli => None,
     }
 }
 

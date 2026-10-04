@@ -4389,6 +4389,7 @@ fn nested_language_evidence(
         caushell_profile::PayloadLanguage::Perl => NestedPayloadLanguageEvidence::Perl,
         caushell_profile::PayloadLanguage::Javascript => NestedPayloadLanguageEvidence::Javascript,
         caushell_profile::PayloadLanguage::SqliteCli => NestedPayloadLanguageEvidence::SqliteCli,
+        caushell_profile::PayloadLanguage::MysqlCli => NestedPayloadLanguageEvidence::MysqlCli,
     }
 }
 
@@ -4401,6 +4402,7 @@ fn nested_language_string(language: caushell_profile::PayloadLanguage) -> String
         caushell_profile::PayloadLanguage::Perl => "perl",
         caushell_profile::PayloadLanguage::Javascript => "javascript",
         caushell_profile::PayloadLanguage::SqliteCli => "sqlite_cli",
+        caushell_profile::PayloadLanguage::MysqlCli => "mysql_cli",
     }
     .to_string()
 }

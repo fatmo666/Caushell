@@ -817,6 +817,7 @@ pub enum NestedPayloadLanguage {
     Perl,
     Javascript,
     SqliteCli,
+    MysqlCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -929,6 +930,7 @@ impl NestedPayloadLanguage {
             "perl" => Ok(Self::Perl),
             "javascript" => Ok(Self::Javascript),
             "sqlite_cli" => Ok(Self::SqliteCli),
+            "mysql_cli" => Ok(Self::MysqlCli),
             other => Err(NestedPayloadDecodeError::UnknownLanguage(other.to_string())),
         }
     }
@@ -2986,6 +2988,24 @@ mod tests {
         assert_eq!(
             serde_json::to_value(crate::NestedPayloadLanguageEvidence::SqliteCli).unwrap(),
             json!("sqlite_cli")
+        );
+    }
+
+    #[test]
+    fn nested_payload_language_mysql_cli_roundtrips() {
+        let value = serde_json::to_value(NestedPayloadLanguage::MysqlCli).unwrap();
+        assert_eq!(value, json!("mysql_cli"));
+        assert_eq!(
+            serde_json::from_value::<NestedPayloadLanguage>(value).unwrap(),
+            NestedPayloadLanguage::MysqlCli
+        );
+        assert_eq!(
+            NestedPayloadLanguage::from_storage("mysql_cli"),
+            Ok(NestedPayloadLanguage::MysqlCli)
+        );
+        assert_eq!(
+            serde_json::to_value(crate::NestedPayloadLanguageEvidence::MysqlCli).unwrap(),
+            json!("mysql_cli")
         );
     }
 

@@ -220,6 +220,7 @@ pub(crate) fn scan_leading_options(
                             FlagOperandMode::NextArg
                                 | FlagOperandMode::OptionalNextArg
                                 | FlagOperandMode::InlineOrShortAttached
+                                | FlagOperandMode::OptionalInlineOrShortAttached
                         )
                     )))
         {

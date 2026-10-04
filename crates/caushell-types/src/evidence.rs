@@ -663,6 +663,7 @@ pub enum NestedPayloadLanguageEvidence {
     Perl,
     Javascript,
     SqliteCli,
+    MysqlCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

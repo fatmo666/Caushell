@@ -610,6 +610,59 @@ Source: [uv CLI](https://docs.astral.sh/uv/reference/cli/),
 [run implementation](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/run.rs),
 [project environment preparation](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/mod.rs).
 
+## MySQL opaque client protocol
+
+The `mysql` Profile targets the official MySQL 8.4.6 client, not MariaDB.
+SQL, initialization SQL and stdin/interactive client input declare an opaque
+database operation and use the existing database guard. `SELECT`, safe-updates,
+binary-mode and disabled client commands are not whole-call safety proofs.
+`mysql_cli` is language metadata for mixed SQL/local client commands, not a SQL
+interpreter or a Bash parser. Outer Bash substitutions and redirections remain
+independently checked.
+
+Explicit configuration, TLS/plugin paths, tee outputs and host/socket endpoints
+remain independent facts. Database names are plain values, not filesystem paths;
+localhost or a workspace socket does not establish database ownership. Required
+operands retain native option ownership, including flag-shaped values. Optional
+long values use only `--option=value`, never the following word. Path projections
+retain decoded semantic paths alongside the original quoted argument.
+
+Defaults load before help/version processing. `--tee` opens its append target
+during option parsing, before final batch-mode suppression, so batch/help and a
+later disabling flag do not erase that potential write. This version does not
+replay the exact order of native callbacks. Only a pure information call whose
+first two semantic argv words are `--no-defaults --no-login-paths` omits opaque
+startup approval; other declared modifiers, positional data, malformed/unknown
+forms or an unproven prefix retain it. A whitelist-completeness regression
+requires every future modifier to undergo explicit information-admission review.
+Bare `-p` does not consume the following database; `-pVALUE` and `--password=VALUE`
+are optional attached/inline operands, not safety exemptions. These are bounded
+CLI contracts, not a claim of full client coverage.
+
+Two additive DSL declarations express these contracts without command-name
+branches. `operand_mode: optional_inline_or_short_attached` accepts a long-inline
+or short-attached value, never the next argv word after a bare occurrence;
+cardinality, constraints, option scope and residual audits still apply.
+`{kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: --no-defaults}}`
+matches a known semantic value at its original zero-based tool argv position,
+excluding the executable but including subcommands, flags, operands and
+terminators. Consumption and a remaining selector do not reindex it. Only
+referenced positions are projected; argv/source metadata is not rewritten.
+Literal quoting is decoded, already materialized runtime data is not re-expanded,
+empty literal words remain data, and missing/unknown values do not match.
+As with other Boolean matchers, a negated non-match is not proof of absence;
+security admission should use positive known-value predicates. Direct shape
+selection can supply known indexed values through `with_argument_at`.
+
+Potential interactive history retains `MYSQL_HISTFILE` or `~/.mysql_history`;
+its derived temporary target is unknown rather than fabricated. Batch, quick
+and inline-execution forms omit that possible history write. No configuration
+contents, TTY, filesystem, process or database state are dynamically inspected.
+No new risk pass, policy default, dependency or Harness field is added.
+Sources: [client options](https://dev.mysql.com/doc/refman/8.4/en/mysql-command-options.html),
+[client commands](https://dev.mysql.com/doc/refman/8.4/en/mysql-commands.html),
+[pinned client implementation](https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/client/mysql.cc).
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

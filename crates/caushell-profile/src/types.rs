@@ -177,6 +177,9 @@ pub enum SelectorPredicate {
     LacksFlag(FlagName),
     HasModifier(ModifierId),
     HasModifierParameterMatching(ModifierId, SlotName, ValueMatcher),
+    /// Known semantic argv value at a zero-based original tool argument index
+    /// (excluding the executable). Independent of option/positional ownership.
+    HasArgumentAtMatching(usize, ValueMatcher),
     HasPositionalAt(usize),
     HasPositionalBeforeDashDashAt(usize),
     HasPositionalAtMatching(usize, ValueMatcher),
@@ -285,6 +288,8 @@ pub enum PayloadLanguage {
     Javascript,
     /// SQL and SQLite shell dot-commands; never parsed as a shell program.
     SqliteCli,
+    /// MySQL SQL and client commands; opaque, never parsed as Bash.
+    MysqlCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,6 +493,9 @@ pub enum FlagOperandMode {
     /// A value is optional and may only be inline on a long option. A bare
     /// occurrence never owns a following argv token. Cardinality still applies.
     OptionalInlineOnly,
+    /// Optional long-inline or short-attached value. A bare occurrence never
+    /// owns the following argv token; required cardinality still applies.
+    OptionalInlineOrShortAttached,
     InlineOrShortAttached,
     NextPositionalAfterDashDash,
 }

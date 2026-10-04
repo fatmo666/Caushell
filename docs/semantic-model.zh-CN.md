@@ -572,6 +572,47 @@ Pass 先检查本次请求已经提取的事实，没有非本地或未知监听
 [run 实现](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/run.rs)、
 [项目环境准备](https://github.com/astral-sh/uv/blob/a75d26a6abb614d60cdf1947dfaa13d7b9bb2978/crates/uv/src/commands/project/mod.rs)。
 
+## MySQL 不透明客户端协议
+
+`mysql` Profile 固定官方 MySQL 8.4.6 客户端，不自动覆盖 MariaDB。
+SQL、初始化 SQL、stdin／交互客户端输入声明不透明数据库操作，复用既有数据库护栏。
+`SELECT`、safe-updates、binary-mode、关闭客户端命令都不构成整个调用安全的证明。
+`mysql_cli` 只是 SQL／本地客户端命令混合协议的语言元数据，不增加 SQL 解释器，
+也不把协议当作 Bash 解析；外层 Bash 替换和重定向继续独立检查。
+
+显式配置、TLS／插件路径、tee 输出与 host／socket 端点保留独立事实。
+数据库名是普通值，不冒充文件路径；localhost／工作区 socket 不证明数据库所有权。
+必选参数遵循原生归属，包括形似选项的值。长选项的可选值只取 `--option=value`，
+不吞后续词。路径投影保留解码后的语义路径和带引号的原参数。
+
+配置加载早于 help／version 处理；`--tee` 在参数解析期间就打开追加目标，早于最终
+批处理模式抑制，因此 batch／help 或后续关闭选项不抹掉这一潜在写入。
+当前不重放原生 callback 的精确顺序。仅原始语义 argv 前两项为
+`--no-defaults --no-login-paths`、没有其他声明 modifier／位置数据的纯信息调用
+省去不透明启动审批；前缀未证明、混合、未知或畸形调用仍审批。
+白名单完整性回归要求今后每个新 modifier 都明确审查信息准入，不能自动绕过。
+裸 `-p` 不吞后续数据库；`-pVALUE`／`--password=VALUE` 正确绑定为可选附着／内联值，
+不成为安全豁免。这是有界 CLI 契约，不声称覆盖完整客户端。
+
+两项通用 DSL 加法表达这些契约，没有命令名特例。
+`operand_mode: optional_inline_or_short_attached` 只取长选项内联／短选项附着值，
+裸选项不吞下一项；cardinality、约束、选项范围和残留审计继续有效。
+`{kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: --no-defaults}}`
+按原始 tool argv 从零开始的位置匹配已知语义值：不包含可执行名，但包含子命令、
+选项、操作数和终止符；消费参数及 remaining selector 不改变索引。
+只投影声明引用的位置，不重写 argv／原始元数据。字面引号会解码，已物化 runtime
+数据不再次展开；空字面词是数据，缺失／未知不匹配。
+与其他布尔 matcher 一样，否定“不匹配”不证明参数缺失；安全准入应使用正向已知值
+谓词。直接 shape API 可用 `with_argument_at` 提供已知索引值。
+
+可能的交互历史保留 `MYSQL_HISTFILE` 或 `~/.mysql_history`，其派生临时输出保持未知，
+不编造路径；batch、quick、内联执行形式不加入这一潜在历史写入。
+不动态读取配置内容、TTY、文件系统、进程或数据库状态；没有新增风险 Pass、默认策略、
+依赖或 Harness 字段。
+依据：[客户端选项](https://dev.mysql.com/doc/refman/8.4/en/mysql-command-options.html)、
+[客户端命令](https://dev.mysql.com/doc/refman/8.4/en/mysql-commands.html)、
+[固定版本客户端实现](https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/client/mysql.cc)。
+
 ## 进一步阅读
 
 - [工作原理总览](how-it-works.zh-CN.md)

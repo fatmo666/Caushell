@@ -208,6 +208,10 @@ pub enum RawSelectorExpr {
     HasPositionalAt {
         index: usize,
     },
+    HasArgumentAtMatching {
+        index: usize,
+        matcher: RawValueMatcher,
+    },
     HasPositionalBeforeDashDashAt {
         index: usize,
     },
@@ -409,6 +413,7 @@ pub enum RawFlagOperandMode {
     SecondArg,
     InlineOnly,
     OptionalInlineOnly,
+    OptionalInlineOrShortAttached,
     InlineOrShortAttached,
     #[serde(rename = "next_positional_after_dashdash")]
     NextPositionalAfterDashDash,
@@ -556,6 +561,7 @@ pub enum RawPayloadLanguage {
     Perl,
     Javascript,
     SqliteCli,
+    MysqlCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

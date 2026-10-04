@@ -560,6 +560,9 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
                 ),
             ))
         }
+        RawSelectorExpr::HasArgumentAtMatching { index, matcher } => Ok(SelectorExpr::Predicate(
+            SelectorPredicate::HasArgumentAtMatching(index, normalize_value_matcher(matcher)?),
+        )),
         RawSelectorExpr::HasPositionalAt { index } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::HasPositionalAt(index),
         )),
@@ -1113,6 +1116,9 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
         RawFlagOperandMode::SecondArg => FlagOperandMode::SecondArg,
         RawFlagOperandMode::InlineOnly => FlagOperandMode::InlineOnly,
         RawFlagOperandMode::OptionalInlineOnly => FlagOperandMode::OptionalInlineOnly,
+        RawFlagOperandMode::OptionalInlineOrShortAttached => {
+            FlagOperandMode::OptionalInlineOrShortAttached
+        }
         RawFlagOperandMode::InlineOrShortAttached => FlagOperandMode::InlineOrShortAttached,
         RawFlagOperandMode::NextPositionalAfterDashDash => {
             FlagOperandMode::NextPositionalAfterDashDash
@@ -1261,6 +1267,7 @@ fn normalize_payload_language(raw: RawPayloadLanguage) -> PayloadLanguage {
         RawPayloadLanguage::Perl => PayloadLanguage::Perl,
         RawPayloadLanguage::Javascript => PayloadLanguage::Javascript,
         RawPayloadLanguage::SqliteCli => PayloadLanguage::SqliteCli,
+        RawPayloadLanguage::MysqlCli => PayloadLanguage::MysqlCli,
     }
 }
 

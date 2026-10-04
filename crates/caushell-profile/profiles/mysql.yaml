@@ -1,0 +1,197 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: mysql, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+# Official MySQL 8.4.6 client, not MariaDB. Native my_getopt visits options
+# among operands; required values own option-looking words and '--'.
+option_scope: permuted_options
+opaque_on_unresolved: true
+selection_failure_effects:
+  - &opaque {kind: database_operation, database_operation: opaque, target: {kind: none}}
+forms:
+  - id: information_config_free
+    selector: &pure_information
+      kind: all
+      items:
+        - &information {kind: has_modifier, modifier: information}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: --no-defaults}}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: --no-login-paths}}
+        - {kind: no_positional_args}
+        - {kind: no_dash_dash}
+        # Explicitly allow only information/no_defaults/no_login_paths. A test
+        # verifies this list covers every other declared modifier, so future
+        # additions cannot silently enter the pure information admission.
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: defaults_files}
+              - {kind: has_modifier, modifier: defaults_selection}
+              - {kind: has_modifier, modifier: print_defaults}
+              - {kind: has_modifier, modifier: execute}
+              - {kind: has_modifier, modifier: initialization}
+              - {kind: has_modifier, modifier: host}
+              - {kind: has_modifier, modifier: socket}
+              - {kind: has_modifier, modifier: connection_values}
+              - {kind: has_modifier, modifier: passwords}
+              - {kind: has_modifier, modifier: password_prompt}
+              - {kind: has_modifier, modifier: tls_and_local_inputs}
+              - {kind: has_modifier, modifier: plugin_directory}
+              - {kind: has_modifier, modifier: plugin_name}
+              - {kind: has_modifier, modifier: tee_output}
+              - {kind: has_modifier, modifier: disable_tee}
+              - {kind: has_modifier, modifier: pager}
+              - {kind: has_modifier, modifier: disable_pager}
+              - {kind: has_modifier, modifier: debug}
+              - {kind: has_modifier, modifier: short_debug}
+              - {kind: has_modifier, modifier: batch}
+              - {kind: has_modifier, modifier: quick}
+              - {kind: has_modifier, modifier: optional_boolean_values}
+              - {kind: has_modifier, modifier: switches}
+              - {kind: has_modifier, modifier: tuning_and_display_values}
+              - {kind: has_modifier, modifier: local_data_directory}
+    effects: []
+    stream_contract: &ignored {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  # Defaults are loaded BEFORE help/version callbacks; config can enable tee
+  # or debug outputs. Only the positive, position-proven pure form above omits
+  # this unknown startup boundary; mixed calls do not claim callback replay.
+  - id: information_with_unproven_startup
+    selector: {kind: all, items: [*information, {kind: not, item: *pure_information}]}
+    parameters: &database [{name: database_names, semantic: &plain {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [*opaque, &configs {kind: read_path, target: {kind: none}}]
+    stream_contract: *ignored
+  - id: inline_protocol
+    selector: {kind: all, items: [&not_info {kind: not, item: *information}, &inline {kind: has_modifier, modifier: execute}]}
+    parameters: *database
+    effects: [*opaque, *configs]
+    stream_contract: *ignored
+  - id: input_without_history
+    selector:
+      kind: all
+      items:
+        - *not_info
+        - &not_inline {kind: not, item: *inline}
+        - &no_history {kind: any, items: [{kind: has_modifier, modifier: batch}, {kind: has_modifier, modifier: quick}]}
+    parameters: *database
+    implicit_inputs: &protocol_input [{source: stdin_payload, semantic: {kind: payload, language: mysql_cli, source: stdin, recursive: true}}]
+    effects:
+      - *opaque
+      - *configs
+      - &consume {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - &execute_stdin {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+    stream_contract: &input_stream {stdin_mode: payload_optional, stdout_mode: data, stderr_mode: data}
+  - id: input_with_possible_history
+    selector: {kind: all, items: [*not_info, *not_inline, {kind: not, item: *no_history}]}
+    parameters: *database
+    implicit_inputs: *protocol_input
+    effects:
+      - *opaque
+      - *configs
+      - *consume
+      - *execute_stdin
+      # Potential interactive readline history. No TTY/readlink probing; batch,
+      # -e and quick forms above do not fabricate these writes.
+      - {kind: read_path, target: &history {kind: configured_path, sources: [], environment: {name: MYSQL_HISTFILE}, default_value: '~/.mysql_history', expand_user: true, purpose: incidental_cache}}
+      - {kind: write_path, target: *history}
+      # TMP is derived from the selected history pathname. Current DSL cannot
+      # append to a configured env/default target; retain a genuinely unknown
+      # temporary write rather than fabricate a path for MYSQL_HISTFILE.
+      - {kind: write_path, target: {kind: none}}
+    stream_contract: *input_stream
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, '-?', -I, --version, -V]}}
+  - {id: no_defaults, matcher: {kind: any_flag, flags: [--no-defaults]}}
+  - {id: no_login_paths, matcher: {kind: any_flag, flags: [--no-login-paths]}}
+  - id: defaults_files
+    matcher: {kind: any_flag, flags: [--defaults-file, --defaults-extra-file]}
+    parameters: [{name: defaults_files, semantic: &config {kind: path, role: config, purpose: tool_config}, binding: {kind: following_matched_flag, operand_mode: inline_only}, value_projection: &identity {kind: identity}, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: defaults_files}}]
+  - id: defaults_selection
+    matcher: {kind: any_flag, flags: [--defaults-group-suffix, --login-path]}
+    parameters: [{name: defaults_selection, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: inline_only}, cardinality: required_many}]
+  - {id: print_defaults, matcher: {kind: any_flag, flags: [--print-defaults]}}
+  - id: execute
+    matcher: {kind: any_flag, flags: [-e, --execute]}
+    parameters: [{name: execute_protocol, semantic: &protocol {kind: payload, language: mysql_cli, source: inline_string, recursive: true}, binding: &operand {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: execute_protocol}}]
+  - id: initialization
+    matcher: {kind: any_flag, flags: [--init-command, --init-command-add]}
+    parameters: [{name: initialization_sql, semantic: *protocol, binding: *operand, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: initialization_sql}}]
+  - id: host
+    matcher: {kind: any_flag, flags: [-h, --host]}
+    parameters: [{name: hosts, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: hosts}}]
+  - id: socket
+    matcher: {kind: any_flag, flags: [-S, --socket]}
+    parameters: [{name: sockets, semantic: {kind: endpoint, endpoint_kind: socket_path, usage: generic_endpoint}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: sockets}}]
+  - id: connection_values
+    matcher: {kind: any_flag, flags: [-u, --user, -P, --port, -D, --database, --protocol, --bind-address, --dns-srv-name, --network-namespace]}
+    parameters: [{name: connection_values, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: passwords
+    matcher: {kind: any_flag, flags: [-p, --password, --password1, --password2, --password3]}
+    parameters: [{name: passwords, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}]
+  - {id: password_prompt, matcher: {kind: any_flag, flags: [--skip-password, --skip-password1, --skip-password2, --skip-password3]}}
+  - id: tls_and_local_inputs
+    matcher: {kind: any_flag, flags: [--ssl-ca, --ssl-capath, --ssl-cert, --ssl-key, --ssl-crl, --ssl-crlpath, --ssl-session-data, --server-public-key-path, --character-sets-dir, --oci-config-file]}
+    parameters: [{name: local_inputs, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *operand, value_projection: *identity, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: local_inputs}}]
+  - id: plugin_directory
+    matcher: {kind: any_flag, flags: [--plugin-dir, --plugin_dir]}
+    parameters: [{name: plugin_directories, semantic: {kind: path, role: read, purpose: in_process_code}, binding: *operand, value_projection: *identity, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: plugin_directories}}, {kind: load_in_process_code, target: {kind: slot, name: plugin_directories}}]
+  - id: plugin_name
+    matcher: {kind: any_flag, flags: [--default-auth, --default_auth]}
+    parameters: [{name: plugin_names, semantic: {kind: in_process_code_load, load_kind: unknown}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: load_in_process_code, target: {kind: slot, name: plugin_names}}]
+  - id: tee_output
+    matcher: {kind: any_flag, flags: [--tee]}
+    parameters: [{name: tee_outputs, semantic: {kind: path, role: write, purpose: generic_operand}, binding: *operand, value_projection: *identity, cardinality: required_many}]
+    # init_tee runs during option parsing, BEFORE batch disables output copying.
+    # Repeated outputs all open; keep all, not only the final destination.
+    effects: [{kind: write_path, target: {kind: slot, name: tee_outputs}, catastrophic: {semantic_class: raw_write_target}}]
+  - {id: disable_tee, matcher: {kind: any_flag, flags: [--skip-tee, --disable-tee]}}
+  - id: pager
+    matcher: {kind: any_flag, flags: [--pager]}
+    parameters: [{name: pager_commands, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}]
+    # An opaque local client control, not SQL or a proven executed Bash child.
+    effects: [*opaque]
+  - {id: disable_pager, matcher: {kind: any_flag, flags: [--skip-pager, --disable-pager]}}
+  - id: debug
+    matcher: {kind: any_flag, flags: ['-#', --debug]}
+    parameters: [{name: debug_controls, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}]
+    effects: [*opaque, {kind: write_path, target: {kind: none}}]
+  - {id: short_debug, matcher: {kind: any_flag, flags: [--debug-check, --debug-info, -T]}}
+  - {id: batch, matcher: {kind: any_flag, flags: [-B, --batch]}}
+  - {id: quick, matcher: {kind: any_flag, flags: [-q, --quick]}}
+  - id: optional_boolean_values
+    matcher: {kind: any_flag, flags: [--safe-updates, --i-am-a-dummy, --binary-mode, --commands, --system-command, --local-infile, --enable-cleartext-plugin, --enable_cleartext_plugin, --auto-rehash, --auto-vertical-output, --binary-as-hex, --column-type-info, --comments, --compress, --named-commands, --ignore-spaces, --html, --xml, --line-numbers, --unbuffered, --column-names, --sigint-ignore, --reconnect, --silent, --table, --wait, --show-warnings, --connect-expired-password, --get-server-public-key, --ssl-session-data-continue-on-failed-reuse, --telemetry_client]}
+    parameters: [{name: boolean_controls, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}]
+  - {id: switches, matcher: {kind: any_flag, flags: [-A, -b, -c, -C, -E, -f, -G, -i, -H, -X, -L, -n, -N, -o, -r, -s, -t, -U, -v, -w, -j, --no-auto-rehash, --skip-auto-rehash, --disable-auto-rehash, --no-beep, --force, --one-database, --raw, --verbose, --syslog, --skip-safe-updates, --skip-binary-mode, --skip-system-command, --skip-commands, --skip-local-infile, --skip-comments, --skip-line-numbers, --skip-column-names, --skip-named-commands, --disable-named-commands, --skip-reconnect]}}
+  - id: tuning_and_display_values
+    matcher: {kind: any_flag, flags: [--default-character-set, --delimiter, --histignore, --prompt, --connect-timeout, --connect_timeout, --max-allowed-packet, --max_allowed_packet, --net-buffer-length, --net_buffer_length, --select-limit, --select_limit, --max-join-size, --max_join_size, --compression-algorithms, --zstd-compression-level, --ssl-mode, --ssl-cipher, --tls-version, --tls-ciphersuites, --ssl-fips-mode, --tls-sni-servername, --authentication-oci-client-config-profile]}
+    parameters: [{name: display_and_connection_controls, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: local_data_directory
+    matcher: {kind: any_flag, flags: [--load-data-local-dir, --load_data_local_dir]}
+    parameters: [{name: local_data_directories, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *operand, value_projection: *identity, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: local_data_directories}}]
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://dev.mysql.com/doc/refman/8.4/en/mysql-commands.html
+    - https://dev.mysql.com/doc/refman/8.4/en/mysql-command-options.html
+    - https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/client/mysql.cc
+    - https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/mysys/my_getopt.cc
+    - https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/mysys/my_default.cc
+  caushell.profile/known_limitations:
+    - Official MySQL 8.4.6 CLI grammar; no MariaDB alias or vendor replacement guarantee.
+    - SQL, initialization and mixed client input are opaque and require database approval, including SELECT and calls using safe-updates, binary-mode or disabled client commands.
+    - No SQL or client-command parser, server ownership inference, TTY probe, option-file read, plugin discovery or dynamic database inspection.
+    - Defaults load before help/version. Pure information is admitted only with position-proven --no-defaults --no-login-paths and no other modifier/data; flag presence alone is not sufficient.
+    - Explicit file/config/plugin/endpoint candidates are retained; default config paths and default endpoints remain unknown rather than fabricated.
+    - Pager remains an opaque client control; its command is not claimed to run in batch or information modes.
+    - Tee is a potential immediate append even with batch or information options. No exact ordered callback replay is claimed.
+    - Optional long values never consume the next argv word. Native loose prefixes, abbreviations, unlisted option aliases and unsupported forms retain the database opaque fallback.
+    - Potential interactive history keeps configured MYSQL_HISTFILE; its derived TMP output is unknown in the current DSL. No filesystem symlink or native history-disable-prefix inspection.

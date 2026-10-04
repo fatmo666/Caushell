@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use regex::Regex;
 
@@ -20,6 +20,9 @@ pub struct InvocationShape {
     pub matched_modifier_parameters: Vec<MatchedModifierParameter>,
     pub positional_args: Vec<String>,
     pub positional_args_before_dashdash: Vec<String>,
+    /// Only original tool argv positions explicitly requested by selectors.
+    /// Missing/unknown values are not populated; no full argv copy is made.
+    pub argument_values: BTreeMap<usize, String>,
     pub has_dashdash: bool,
     pub subcommand_path: Vec<String>,
     pub stdin_payload_available: bool,
@@ -51,6 +54,12 @@ impl InvocationShape {
 
     pub fn with_subcommand_path(mut self, path: Vec<String>) -> Self {
         self.subcommand_path = path;
+        self
+    }
+
+    /// Supply an already known semantic argv value for direct shape selection.
+    pub fn with_argument_at(mut self, index: usize, value: impl Into<String>) -> Self {
+        self.argument_values.insert(index, value.into());
         self
     }
 
@@ -520,6 +529,7 @@ fn collect_unresolved_arguments(
                     FlagOperandMode::NextArg
                         | FlagOperandMode::OptionalNextArg
                         | FlagOperandMode::InlineOrShortAttached
+                        | FlagOperandMode::OptionalInlineOrShortAttached
                 ) {
                     attached_operands.insert(flag_name.as_str().to_string());
                 }
@@ -1042,7 +1052,7 @@ fn select_form_for_scope<'a>(
     options: Option<&crate::ScopedOptions>,
     matching: OptionMatchingPolicy,
 ) -> Result<&'a Form, BindError> {
-    let shape = shape_for_scope_with_consumed(
+    let mut shape = shape_for_scope_with_consumed(
         projection,
         scope,
         consumed,
@@ -1051,6 +1061,9 @@ fn select_form_for_scope<'a>(
         options,
         matching,
     );
+    for form in forms {
+        populate_argument_selector(&form.selector, projection, &mut shape);
+    }
     let matched_forms: Vec<FormConsumptionPreview<'a>> = forms
         .iter()
         .filter(|form| form_matches(form, &shape))
@@ -1060,7 +1073,7 @@ fn select_form_for_scope<'a>(
             )
         })
         .filter(|preview| {
-            let remaining_shape = shape_for_scope_with_consumed(
+            let mut remaining_shape = shape_for_scope_with_consumed(
                 projection,
                 scope,
                 &preview.consumed,
@@ -1068,6 +1081,11 @@ fn select_form_for_scope<'a>(
                 subcommand_path,
                 options,
                 matching,
+            );
+            populate_argument_selector(
+                &preview.form.remaining_selector,
+                projection,
+                &mut remaining_shape,
             );
 
             remaining_selector_matches(preview.form, &remaining_shape)
@@ -1078,6 +1096,48 @@ fn select_form_for_scope<'a>(
         command_name,
         matched_forms.into_iter().map(|preview| preview.form),
     )
+}
+
+fn populate_argument_selector(
+    selector: &SelectorExpr,
+    projection: &ProjectedInvocation,
+    shape: &mut InvocationShape,
+) {
+    match selector {
+        SelectorExpr::All(items) | SelectorExpr::Any(items) => {
+            for item in items {
+                populate_argument_selector(item, projection, shape);
+            }
+        }
+        SelectorExpr::Not(item) => populate_argument_selector(item, projection, shape),
+        SelectorExpr::Predicate(SelectorPredicate::HasArgumentAtMatching(index, _)) => {
+            if shape.argument_values.contains_key(index) {
+                return;
+            }
+            let Some(arg) = projection.args.get(*index) else {
+                return;
+            };
+            if arg.implicit_input_source.is_some() || arg.runtime_argument_domain.is_some() {
+                return;
+            }
+            let (value, complete) = if arg.runtime_data {
+                // Already materialized argv is data, not shell source. Do not
+                // decode quotes, dollar signs or backslashes a second time.
+                (arg.text.clone(), true)
+            } else {
+                crate::value_projection::decode_argument_prefix(
+                    &arg.text,
+                    arg.quoted,
+                    &arg.node_kind,
+                )
+            };
+            if complete {
+                // An empty argv word is known data, not a missing argument.
+                shape.argument_values.insert(*index, value);
+            }
+        }
+        SelectorExpr::Predicate(_) => {}
+    }
 }
 
 fn resolve_matched_forms<'a>(
@@ -2117,12 +2177,16 @@ impl<'p, 'm> BindingState<'p, 'm> {
         };
         let allow_short_attached = (modifier.is_some()
             || owned_indices.is_some()
-            || operand_mode == FlagOperandMode::OptionalNextArg)
+            || matches!(
+                operand_mode,
+                FlagOperandMode::OptionalNextArg | FlagOperandMode::OptionalInlineOrShortAttached
+            ))
             && matches!(
                 operand_mode,
                 FlagOperandMode::NextArg
                     | FlagOperandMode::OptionalNextArg
                     | FlagOperandMode::InlineOrShortAttached
+                    | FlagOperandMode::OptionalInlineOrShortAttached
             );
         let declared_short_flags = modifier
             .map(|modifier| declared_short_modifier_flags(std::slice::from_ref(modifier)))
@@ -2159,11 +2223,14 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     flag_token_binding_match(
                         arg.text.as_str(),
                         flag_name.as_str(),
-                        allow_short_attached && !saw_positional,
+                        allow_short_attached
+                            && (!saw_positional
+                                || operand_mode == FlagOperandMode::OptionalInlineOrShortAttached),
                         matches!(
                             operand_mode,
                             FlagOperandMode::InlineOrShortAttached
                                 | FlagOperandMode::OptionalNextArg
+                                | FlagOperandMode::OptionalInlineOrShortAttached
                         ),
                         &declared_short_flags,
                         &self.declared_short_flags,
@@ -2206,7 +2273,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     // This opt-in mode accepts a bare flag but must not take
                     // the following positional, option or terminator. Missing
                     // required values are checked by parameter cardinality.
-                    if operand_mode == FlagOperandMode::OptionalInlineOnly {
+                    if matches!(
+                        operand_mode,
+                        FlagOperandMode::OptionalInlineOnly
+                            | FlagOperandMode::OptionalInlineOrShortAttached
+                    ) {
                         continue;
                     }
                     // Optional argv operands must not claim a following flag,
@@ -2306,6 +2377,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             ),
             FlagOperandMode::InlineOnly
             | FlagOperandMode::OptionalInlineOnly
+            | FlagOperandMode::OptionalInlineOrShortAttached
             | FlagOperandMode::InlineOrShortAttached => None,
             FlagOperandMode::NextPositionalAfterDashDash => self
                 .consume_positional_after_optional_dashdash(
@@ -3105,6 +3177,10 @@ fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> 
                 matcher,
             )
         }
+        SelectorPredicate::HasArgumentAtMatching(index, matcher) => shape
+            .argument_values
+            .get(index)
+            .is_some_and(|value| argument_matches_value_matcher(value, matcher)),
         SelectorPredicate::HasPositionalAt(index) => shape.has_positional_at(*index),
         SelectorPredicate::HasPositionalBeforeDashDashAt(index) => {
             shape.positional_args_before_dashdash.get(*index).is_some()
@@ -3841,7 +3917,11 @@ fn modifier_allows_short_attached(modifier: &Modifier) -> bool {
             BindingSpec::FollowingMatchedFlag {
                 operand_mode: FlagOperandMode::NextArg
                     | FlagOperandMode::OptionalNextArg
-                    | FlagOperandMode::InlineOrShortAttached,
+                    | FlagOperandMode::InlineOrShortAttached
+                    | FlagOperandMode::OptionalInlineOrShortAttached,
+            } | BindingSpec::FollowingFlag {
+                operand_mode: FlagOperandMode::OptionalInlineOrShortAttached,
+                ..
             }
         )
     })
@@ -3853,7 +3933,11 @@ fn modifier_uses_inline_or_short_attached(modifier: &Modifier) -> bool {
             parameter.binding,
             BindingSpec::FollowingMatchedFlag {
                 operand_mode: FlagOperandMode::InlineOrShortAttached
-                    | FlagOperandMode::OptionalNextArg,
+                    | FlagOperandMode::OptionalNextArg
+                    | FlagOperandMode::OptionalInlineOrShortAttached,
+            } | BindingSpec::FollowingFlag {
+                operand_mode: FlagOperandMode::OptionalInlineOrShortAttached,
+                ..
             }
         )
     })
