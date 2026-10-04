@@ -10,10 +10,10 @@ use crate::raw::{
     RawHostRiskSemanticClass, RawImplicitInput, RawImplicitInputSource, RawInProcessCodeLoadKind,
     RawInteractiveEscapeCapability, RawInteractiveEscapeSurface, RawInteractiveEscapeSurfaceKind,
     RawModifier, RawModifierConstraint, RawModifierMatcher, RawMutationScopeKind,
-    RawOptionMatchingPolicy, RawOptionScopePolicy, RawOsFamily, RawPackageLocatorKind,
-    RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole, RawPayloadLanguage,
-    RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind, RawProfileSourceKind,
-    RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
+    RawOptionMatchingPolicy, RawOptionPrefixPolicy, RawOptionScopePolicy, RawOsFamily,
+    RawPackageLocatorKind, RawPackageManagerKind, RawParameter, RawPathPurpose, RawPathRole,
+    RawPayloadLanguage, RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind,
+    RawProfileSourceKind, RawProfileTrustMetadata, RawProfileTrustTier, RawRepositoryOperationKind,
     RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr, RawSemanticType,
     RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
@@ -26,14 +26,14 @@ use crate::{
     EffectTarget, EndpointKind, EndpointSemantic, EndpointUsage, ExtensionMap, FlagName,
     FlagOperandMode, Form, FormId, HostRiskEffectMetadata, HostRiskSemanticClass, ImplicitInput,
     ImplicitInputSource, InProcessCodeLoadSemantic, Modifier, ModifierConstraint, ModifierId,
-    ModifierMatcher, MutationScopeTarget, OptionMatchingPolicy, OptionScopePolicy, OsFamily,
-    PackageLocatorKind, PackageLocatorSemantic, PackageManagerKind, Parameter, PathPurpose,
-    PathRole, PathSemantic, PayloadLanguage, PayloadSemantic, PayloadSource, PlatformConstraints,
-    ProcessTargetKind, ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata,
-    ProfileTrustTier, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType, ShellFamily,
-    SlotName, StreamContract, StreamInputMode, StreamOutputMode, StructuredValueContext,
-    StructuredValueSemantic, SubcommandNode, SubcommandTree, ToolConventionPathTarget,
-    ValueConstraint, ValueMatcher,
+    ModifierMatcher, MutationScopeTarget, OptionMatchingPolicy, OptionPrefixPolicy,
+    OptionScopePolicy, OsFamily, PackageLocatorKind, PackageLocatorSemantic, PackageManagerKind,
+    Parameter, PathPurpose, PathRole, PathSemantic, PayloadLanguage, PayloadSemantic,
+    PayloadSource, PlatformConstraints, ProcessTargetKind, ProcessTargetSemantic,
+    ProfileSourceKind, ProfileTrustMetadata, ProfileTrustTier, RuntimeFeature, SelectorExpr,
+    SelectorPredicate, SemanticType, ShellFamily, SlotName, StreamContract, StreamInputMode,
+    StreamOutputMode, StructuredValueContext, StructuredValueSemantic, SubcommandNode,
+    SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
 };
 use caushell_types::{
     InteractiveEscapeCapability, InteractiveEscapeSurfaceKind, RepositoryWorktreePathSet,
@@ -127,12 +127,20 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     }
     let modifiers = normalize_modifiers(raw.modifiers)?;
     let option_matching = normalize_option_matching(raw.option_matching);
+    let option_prefixes = match raw.option_prefixes {
+        RawOptionPrefixPolicy::DashOnly => OptionPrefixPolicy::DashOnly,
+        RawOptionPrefixPolicy::DashAndPlus => OptionPrefixPolicy::DashAndPlus,
+    };
     let subcommands = raw
         .subcommands
         .map(|tree| normalize_subcommand_tree(tree, option_matching))
         .transpose()?;
     let option_scope = normalize_option_scope(raw.option_scope);
     validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
+    validate_option_prefixes(option_prefixes, &modifiers, &forms)?;
+    if let Some(tree) = &subcommands {
+        validate_subcommand_option_prefixes(option_prefixes, &tree.roots)?;
+    }
     validate_configured_path_references(&forms, &modifiers, &BTreeSet::new(), &BTreeSet::new())?;
     if let Some(tree) = &subcommands {
         let names = declared_parameter_names(&forms, &modifiers, &BTreeSet::new());
@@ -154,6 +162,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         modifiers,
         option_scope,
         option_matching,
+        option_prefixes,
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
     })
@@ -307,6 +316,48 @@ fn validate_subcommand_configured_paths(
                 .map(|modifier| modifier.id.as_str().to_string()),
         );
         validate_subcommand_configured_paths(&node.children, &names, &modifier_names)?;
+    }
+    Ok(())
+}
+
+fn validate_option_prefixes(
+    policy: OptionPrefixPolicy,
+    modifiers: &[Modifier],
+    forms: &[Form],
+) -> Result<(), NormalizeError> {
+    if policy == OptionPrefixPolicy::DashAndPlus {
+        return Ok(());
+    }
+    let modifier_names = modifiers.iter().flat_map(|m| m.matcher.flag_names());
+    let parameter_names = forms
+        .iter()
+        .flat_map(|f| &f.parameters)
+        .chain(modifiers.iter().flat_map(|m| &m.parameters))
+        .filter_map(|p| {
+            if let BindingSpec::FollowingFlag { flag_name, .. } = &p.binding {
+                Some(flag_name)
+            } else {
+                None
+            }
+        });
+    if modifier_names
+        .chain(parameter_names)
+        .any(|n| n.as_str().starts_with('+'))
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "plus-prefixed options require option_prefixes: dash_and_plus".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_subcommand_option_prefixes(
+    policy: OptionPrefixPolicy,
+    nodes: &[SubcommandNode],
+) -> Result<(), NormalizeError> {
+    for node in nodes {
+        validate_option_prefixes(policy, &node.modifiers, &node.forms)?;
+        validate_subcommand_option_prefixes(policy, &node.children)?;
     }
     Ok(())
 }
@@ -1054,6 +1105,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
     match raw {
         RawFlagOperandMode::NextPositional => FlagOperandMode::NextPositional,
         RawFlagOperandMode::NextArg => FlagOperandMode::NextArg,
+        RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
         RawFlagOperandMode::SecondArg => FlagOperandMode::SecondArg,
         RawFlagOperandMode::InlineOnly => FlagOperandMode::InlineOnly,
         RawFlagOperandMode::InlineOrShortAttached => FlagOperandMode::InlineOrShortAttached,
@@ -2084,6 +2136,7 @@ mod tests {
             opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            option_prefixes: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2250,6 +2303,7 @@ mod tests {
             opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            option_prefixes: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2341,6 +2395,7 @@ mod tests {
             opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            option_prefixes: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2432,6 +2487,7 @@ mod tests {
             opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            option_prefixes: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2617,6 +2673,7 @@ mod tests {
             opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            option_prefixes: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {

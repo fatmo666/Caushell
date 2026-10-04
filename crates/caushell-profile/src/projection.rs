@@ -1,6 +1,8 @@
 use caushell_parse::{CommandFact, CommandTokenKind, SourceSpan};
 
-use crate::{FlagName, InvocationShape};
+use std::borrow::Cow;
+
+use crate::{FlagName, InvocationShape, OptionPrefixPolicy};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InvocationRuntimeContext {
@@ -45,6 +47,8 @@ pub struct ProjectedArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedInvocation {
+    /// The selected tool's CLI grammar, not shell lexical state.
+    pub option_prefixes: OptionPrefixPolicy,
     pub command_name: Option<String>,
     pub args: Vec<ProjectedArg>,
     pub stdin_payload_available: bool,
@@ -52,6 +56,37 @@ pub struct ProjectedInvocation {
 }
 
 impl ProjectedInvocation {
+    /// Borrow the unchanged legacy projection. Only opted-in CLI grammars may
+    /// reinterpret plus tokens or the plus option terminator, after argv has
+    /// been materialized. Text, spans and runtime-data provenance stay intact.
+    pub(crate) fn with_option_prefixes(&self, policy: OptionPrefixPolicy) -> Cow<'_, Self> {
+        if policy == OptionPrefixPolicy::DashOnly {
+            return Cow::Borrowed(self);
+        }
+        let mut terminated = false;
+        let differs = self.args.iter().any(|arg| {
+            let kind = prefixed_arg_kind(arg, policy, &mut terminated);
+            kind != arg.kind
+        });
+        if !differs && self.option_prefixes == policy {
+            return Cow::Borrowed(self);
+        }
+        let mut projection = self.clone();
+        projection.apply_option_prefixes(policy);
+        Cow::Owned(projection)
+    }
+
+    pub(crate) fn apply_option_prefixes(&mut self, policy: OptionPrefixPolicy) {
+        self.option_prefixes = policy;
+        if policy == OptionPrefixPolicy::DashOnly {
+            return;
+        }
+        let mut terminated = false;
+        for arg in &mut self.args {
+            arg.kind = prefixed_arg_kind(arg, policy, &mut terminated);
+        }
+    }
+
     pub fn shape(&self) -> InvocationShape {
         let mut shape = InvocationShape::new();
         let mut before_dashdash = true;
@@ -80,6 +115,24 @@ impl ProjectedInvocation {
     }
 }
 
+fn prefixed_arg_kind(
+    arg: &ProjectedArg,
+    policy: OptionPrefixPolicy,
+    terminated: &mut bool,
+) -> ProjectedArgKind {
+    if *terminated {
+        return ProjectedArgKind::Positional;
+    }
+    if policy.is_terminator(&arg.text) {
+        *terminated = true;
+        return ProjectedArgKind::DashDash;
+    }
+    if arg.text.len() > 1 && arg.text.starts_with('+') {
+        return ProjectedArgKind::Flag;
+    }
+    arg.kind
+}
+
 pub fn project_invocation(
     command: &CommandFact,
     context: InvocationRuntimeContext,
@@ -100,6 +153,7 @@ pub fn project_invocation(
         .collect();
 
     ProjectedInvocation {
+        option_prefixes: OptionPrefixPolicy::DashOnly,
         command_name: command.command_name.clone(),
         args,
         stdin_payload_available: context.stdin_payload_available,

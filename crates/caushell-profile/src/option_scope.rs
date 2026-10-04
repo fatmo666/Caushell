@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     ArgumentScope, BindingSpec, FlagName, FlagOperandMode, Form, Modifier, OptionMatchingPolicy,
-    ProjectedInvocation,
+    OptionPrefixPolicy, ProjectedInvocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,13 +28,14 @@ fn declarations(
         for flag in modifier.matcher.flag_names() {
             let name = flag.as_str();
             let short = name
-                .strip_prefix('-')
-                .is_some_and(|tail| tail.len() == 1 && !tail.starts_with('-'));
+                .strip_prefix(['-', '+'])
+                .is_some_and(|tail| tail.len() == 1 && !tail.starts_with(['-', '+']));
             let long = name.starts_with("--") && name.len() > 2 && !name.contains('=');
             let exact_word = matching == OptionMatchingPolicy::ExactNames
-                && name.starts_with('-')
+                && name.starts_with(['-', '+'])
                 && name.len() > 1
                 && name != "--"
+                && name != "++"
                 && !name.contains('=')
                 && !name.chars().any(char::is_whitespace);
             if !short && !long && !exact_word {
@@ -108,6 +109,7 @@ pub(crate) fn scan_leading_options(
     modifiers: &[Modifier],
     forms: &[Form],
     matching: OptionMatchingPolicy,
+    prefixes: OptionPrefixPolicy,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         scope: ArgumentScope::new(scope.start_index, scope.start_index),
@@ -125,12 +127,12 @@ pub(crate) fn scan_leading_options(
     let mut index = scope.start_index;
     while index < scope.end_index {
         let token = projection.args[index].text.as_str();
-        if token == "--" {
+        if prefixes.is_terminator(token) {
             result.terminator = Some(index);
             result.scope.end_index = index + 1;
             return result;
         }
-        if token == "-" || !token.starts_with('-') {
+        if !prefixes.is_option(token) {
             break;
         }
         let mut token_flags = Vec::new();
@@ -158,7 +160,7 @@ pub(crate) fn scan_leading_options(
             let mut inline = false;
             let mut error = None;
             for (offset, ch) in token[1..].char_indices() {
-                let name = format!("-{ch}");
+                let name = format!("{}{ch}", &token[..1]);
                 let Some(flag_mode) = declarations.get(&name) else {
                     error = Some(format!("unknown leading option {name:?} in {token:?}"));
                     break;
@@ -193,7 +195,11 @@ pub(crate) fn scan_leading_options(
                 || (short
                     && !matches!(
                         mode,
-                        Some(FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached)
+                        Some(
+                            FlagOperandMode::NextArg
+                                | FlagOperandMode::OptionalNextArg
+                                | FlagOperandMode::InlineOrShortAttached
+                        )
                     )))
         {
             result.error = Some(format!("unsupported inline operand in {token:?}"));
@@ -204,6 +210,12 @@ pub(crate) fn scan_leading_options(
         } else {
             match mode {
                 Some(FlagOperandMode::NextArg | FlagOperandMode::NextPositional) => 1,
+                Some(FlagOperandMode::OptionalNextArg) => usize::from(
+                    index + 1 < scope.end_index
+                        && projection.args.get(index + 1).is_some_and(|arg| {
+                            !prefixes.is_option(&arg.text) && !prefixes.is_terminator(&arg.text)
+                        }),
+                ),
                 Some(FlagOperandMode::SecondArg) => 2,
                 Some(FlagOperandMode::NextPositionalAfterDashDash) => {
                     if projection

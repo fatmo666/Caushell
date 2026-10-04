@@ -224,6 +224,7 @@ impl std::error::Error for BindError {}
 fn scoped_options(
     policy: crate::OptionScopePolicy,
     matching: OptionMatchingPolicy,
+    prefixes: crate::OptionPrefixPolicy,
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
     modifiers: &[Modifier],
@@ -233,7 +234,7 @@ fn scoped_options(
         crate::OptionScopePolicy::AllArguments => None,
         crate::OptionScopePolicy::LeadingOptions => {
             Some(crate::option_scope::scan_leading_options(
-                projection, scope, modifiers, forms, matching,
+                projection, scope, modifiers, forms, matching, prefixes,
             ))
         }
     }
@@ -297,6 +298,8 @@ pub fn select_invocation<'a>(
     profile: &'a CommandProfile,
     projection: &ProjectedInvocation,
 ) -> Result<InvocationSelection<'a>, BindError> {
+    let prefixed = projection.with_option_prefixes(profile.option_prefixes);
+    let projection = prefixed.as_ref();
     if let Some(subcommands) = &profile.subcommands {
         return select_subcommand_invocation(profile, projection, subcommands);
     }
@@ -305,6 +308,7 @@ pub fn select_invocation<'a>(
     let option_scope = scoped_options(
         profile.option_scope,
         profile.option_matching,
+        profile.option_prefixes,
         projection,
         scope,
         &profile.modifiers,
@@ -361,6 +365,8 @@ pub fn bind_invocation(
     projection: &ProjectedInvocation,
     selection: &InvocationSelection<'_>,
 ) -> BoundInvocation {
+    let prefixed = projection.with_option_prefixes(profile.option_prefixes);
+    let projection = prefixed.as_ref();
     let targets = collect_parameter_targets(selection);
     let mut state = BindingState::with_modifier_context(projection, &selection.modifiers);
     state.audit_operation_semantics = profile.opaque_on_unresolved;
@@ -494,7 +500,9 @@ fn collect_unresolved_arguments(
                 declared_short_flags.insert(flag_name.as_str().to_string());
                 if matches!(
                     operand_mode,
-                    FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
+                    FlagOperandMode::NextArg
+                        | FlagOperandMode::OptionalNextArg
+                        | FlagOperandMode::InlineOrShortAttached
                 ) {
                     attached_operands.insert(flag_name.as_str().to_string());
                 }
@@ -518,8 +526,9 @@ fn collect_unresolved_arguments(
         let unconsumed = !state.consumed[index];
         let partial_cluster = !positional
             && selection.option_matching == OptionMatchingPolicy::ShortClusters
-            && arg.text.starts_with('-')
+            && arg.text.starts_with(['-', '+'])
             && !arg.text.starts_with("--")
+            && !arg.text.starts_with("++")
             && arg.text.len() > 2
             && !state.selected_modifiers.iter().any(|selected| {
                 selected
@@ -532,7 +541,7 @@ fn collect_unresolved_arguments(
             && {
                 let mut unknown = false;
                 for ch in arg.text[1..].chars() {
-                    let flag = format!("-{ch}");
+                    let flag = format!("{}{ch}", &arg.text[..1]);
                     if !declared_short_flags.contains(&flag) {
                         unknown = true;
                         break;
@@ -566,6 +575,8 @@ pub(crate) fn bind_modifier_only_invocation(
     profile: &CommandProfile,
     projection: &ProjectedInvocation,
 ) -> Option<BoundInvocation> {
+    let prefixed = projection.with_option_prefixes(profile.option_prefixes);
+    let projection = prefixed.as_ref();
     let scope = ArgumentScope::for_invocation(projection);
     let (modifiers, option_scope, option_terminators, subcommand_path) =
         if let Some(subcommands) = &profile.subcommands {
@@ -585,6 +596,7 @@ pub(crate) fn bind_modifier_only_invocation(
             let root_options = scoped_options(
                 profile.option_scope,
                 profile.option_matching,
+                profile.option_prefixes,
                 projection,
                 scope,
                 &profile.modifiers,
@@ -761,6 +773,7 @@ fn scan_subcommand_path<'p, 'a>(
     let root_options = scoped_options(
         profile.option_scope,
         profile.option_matching,
+        profile.option_prefixes,
         projection,
         root_scope,
         &profile.modifiers,
@@ -819,6 +832,7 @@ fn scan_subcommand_path<'p, 'a>(
         node_options = scoped_options(
             node.option_scope,
             node.option_matching,
+            profile.option_prefixes,
             projection,
             node_scope,
             &node.modifiers,
@@ -2049,10 +2063,14 @@ impl<'p, 'm> BindingState<'p, 'm> {
     ) -> Vec<BoundValue> {
         let mut values = Vec::new();
         let owned_indices = self.owned_flag_indices(option_owner);
-        let allow_short_attached = (modifier.is_some() || owned_indices.is_some())
+        let allow_short_attached = (modifier.is_some()
+            || owned_indices.is_some()
+            || operand_mode == FlagOperandMode::OptionalNextArg)
             && matches!(
                 operand_mode,
-                FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
+                FlagOperandMode::NextArg
+                    | FlagOperandMode::OptionalNextArg
+                    | FlagOperandMode::InlineOrShortAttached
             );
         let declared_short_flags = modifier
             .map(|modifier| declared_short_modifier_flags(std::slice::from_ref(modifier)))
@@ -2083,7 +2101,10 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     arg.text.as_str(),
                     flag_name.as_str(),
                     allow_short_attached && !saw_positional,
-                    matches!(operand_mode, FlagOperandMode::InlineOrShortAttached),
+                    matches!(
+                        operand_mode,
+                        FlagOperandMode::InlineOrShortAttached | FlagOperandMode::OptionalNextArg
+                    ),
                     &declared_short_flags,
                     &self.declared_short_flags,
                     &self.short_flags_allowing_attached_operands,
@@ -2118,6 +2139,14 @@ impl<'p, 'm> BindingState<'p, 'm> {
             let value_count = values.len();
             match flag_match {
                 FlagTokenMatch::Exact | FlagTokenMatch::ClusterMember => {
+                    // Optional argv operands must not claim a following flag,
+                    // terminator or absence. Cardinality still controls whether
+                    // a missing parameter itself is permitted.
+                    if operand_mode == FlagOperandMode::OptionalNextArg
+                        && !self.optional_operand_available(index, scope)
+                    {
+                        continue;
+                    }
                     if matches!(
                         operand_mode,
                         FlagOperandMode::InlineOnly | FlagOperandMode::InlineOrShortAttached
@@ -2187,6 +2216,18 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 binding_source,
                 value_constraints,
             ),
+            FlagOperandMode::OptionalNextArg => {
+                if self.optional_operand_available(flag_index, scope) {
+                    self.consume_immediate_arg_after(
+                        flag_index,
+                        scope,
+                        binding_source,
+                        value_constraints,
+                    )
+                } else {
+                    None
+                }
+            }
             FlagOperandMode::SecondArg => self.consume_second_immediate_arg_after(
                 flag_index,
                 scope,
@@ -2202,6 +2243,18 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     value_constraints,
                 ),
         }
+    }
+
+    fn optional_operand_available(&self, flag_index: usize, scope: ArgumentScope) -> bool {
+        flag_index
+            .checked_add(1)
+            .filter(|index| *index < scope.end_index)
+            .and_then(|index| self.projection.args.get(index).map(|arg| (index, arg)))
+            .is_some_and(|(index, arg)| {
+                !self.consumed[index]
+                    && !self.projection.option_prefixes.is_option(&arg.text)
+                    && !self.projection.option_prefixes.is_terminator(&arg.text)
+            })
     }
 
     fn consume_immediate_arg_after(
@@ -2847,7 +2900,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
                         // its value. Only a still-unconsumed marker terminates
                         // this binding; a later marker may be positional in
                         // the parser projection but remains the CLI boundary.
-                        !self.consumed[*index] && self.projection.args[*index].text == "--"
+                        !self.consumed[*index]
+                            && self
+                                .projection
+                                .option_prefixes
+                                .is_terminator(&self.projection.args[*index].text)
                     })
                 })
                 .unwrap_or(scope.end_index)
@@ -3400,14 +3457,11 @@ fn short_flag_cluster_contains_name(token_text: &str, flag_name: &str) -> bool {
         return false;
     };
 
-    let Some(cluster_text) = token_text.strip_prefix('-') else {
+    let Some(cluster_text) = same_prefix_short_cluster(token_text, flag_name) else {
         return false;
     };
 
-    if token_text.starts_with("--")
-        || cluster_text.len() <= 1
-        || !cluster_text.chars().all(|ch| ch.is_ascii_alphabetic())
-    {
+    if cluster_text.len() <= 1 || !cluster_text.chars().all(|ch| ch.is_ascii_alphabetic()) {
         return false;
     }
 
@@ -3477,10 +3531,10 @@ fn clustered_short_flag_with_next_arg(
     let Some(flag_char) = short_flag_char(flag_name) else {
         return false;
     };
-    let Some(cluster_text) = token_text.strip_prefix('-') else {
+    let Some(cluster_text) = same_prefix_short_cluster(token_text, flag_name) else {
         return false;
     };
-    if token_text.starts_with("--") || cluster_text.chars().count() <= 1 {
+    if cluster_text.chars().count() <= 1 {
         return false;
     }
     let Some(prefix) = cluster_text.strip_suffix(flag_char) else {
@@ -3489,6 +3543,7 @@ fn clustered_short_flag_with_next_arg(
     short_flags_allowing_attached_operands.contains(flag_name)
         && prefix_is_known_flag_only_short_cluster(
             prefix,
+            flag_name.as_bytes()[0] as char,
             declared_short_flags,
             short_flags_allowing_attached_operands,
             false,
@@ -3519,13 +3574,21 @@ fn inline_short_flag_operand<'a>(
     }
 
     if !allow_ambiguous_short_attached
-        && suffix_looks_like_short_flag_cluster(suffix, declared_short_flags)
+        && suffix_looks_like_short_flag_cluster(
+            suffix,
+            flag_name.as_bytes()[0] as char,
+            declared_short_flags,
+        )
     {
         return None;
     }
 
     if allow_ambiguous_short_attached
-        && suffix_looks_like_pure_short_flag_cluster(suffix, declared_short_flags)
+        && suffix_looks_like_pure_short_flag_cluster(
+            suffix,
+            flag_name.as_bytes()[0] as char,
+            declared_short_flags,
+        )
     {
         return None;
     }
@@ -3541,8 +3604,8 @@ fn clustered_short_flag_attached_operand<'a>(
     allow_unknown_prefix_flags: bool,
 ) -> Option<&'a str> {
     let flag_char = short_flag_char(flag_name)?;
-    let cluster_text = token_text.strip_prefix('-')?;
-    if token_text.starts_with("--") || cluster_text.len() <= 2 {
+    let cluster_text = same_prefix_short_cluster(token_text, flag_name)?;
+    if cluster_text.len() <= 2 {
         return None;
     }
 
@@ -3559,6 +3622,7 @@ fn clustered_short_flag_attached_operand<'a>(
         let prefix = &cluster_text[..start];
         if !prefix_is_known_flag_only_short_cluster(
             prefix,
+            flag_name.as_bytes()[0] as char,
             declared_short_flags,
             short_flags_allowing_attached_operands,
             allow_unknown_prefix_flags,
@@ -3577,6 +3641,7 @@ fn clustered_short_flag_attached_operand<'a>(
 
 fn suffix_looks_like_short_flag_cluster(
     suffix: &str,
+    sign: char,
     declared_short_flags: &BTreeSet<String>,
 ) -> bool {
     let mut chars = suffix.chars();
@@ -3585,30 +3650,32 @@ fn suffix_looks_like_short_flag_cluster(
     };
 
     first.is_ascii_alphabetic()
-        && declared_short_flags.contains(format!("-{first}").as_str())
+        && declared_short_flags.contains(format!("{sign}{first}").as_str())
         && chars.all(|candidate| candidate.is_ascii_alphabetic())
 }
 
 fn suffix_looks_like_pure_short_flag_cluster(
     suffix: &str,
+    sign: char,
     declared_short_flags: &BTreeSet<String>,
 ) -> bool {
     suffix.len() > 1
         && suffix.chars().all(|candidate| {
             candidate.is_ascii_alphabetic()
-                && declared_short_flags.contains(format!("-{candidate}").as_str())
+                && declared_short_flags.contains(format!("{sign}{candidate}").as_str())
         })
 }
 
 fn prefix_is_known_flag_only_short_cluster(
     prefix: &str,
+    sign: char,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
     allow_unknown_prefix_flags: bool,
 ) -> bool {
     !prefix.is_empty()
         && prefix.chars().all(|candidate| {
-            let candidate_flag = format!("-{candidate}");
+            let candidate_flag = format!("{sign}{candidate}");
             if short_flags_allowing_attached_operands.contains(&candidate_flag) {
                 return false;
             }
@@ -3623,7 +3690,9 @@ fn modifier_allows_short_attached(modifier: &Modifier) -> bool {
         matches!(
             parameter.binding,
             BindingSpec::FollowingMatchedFlag {
-                operand_mode: FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached,
+                operand_mode: FlagOperandMode::NextArg
+                    | FlagOperandMode::OptionalNextArg
+                    | FlagOperandMode::InlineOrShortAttached,
             }
         )
     })
@@ -3634,7 +3703,8 @@ fn modifier_uses_inline_or_short_attached(modifier: &Modifier) -> bool {
         matches!(
             parameter.binding,
             BindingSpec::FollowingMatchedFlag {
-                operand_mode: FlagOperandMode::InlineOrShortAttached,
+                operand_mode: FlagOperandMode::InlineOrShortAttached
+                    | FlagOperandMode::OptionalNextArg,
             }
         )
     })
@@ -3694,7 +3764,19 @@ fn short_flags_allowing_attached_operands_from_selected(
 }
 
 fn is_single_letter_short_flag(flag_name: &str) -> bool {
-    flag_name.starts_with('-') && !flag_name.starts_with("--") && flag_name.chars().count() == 2
+    flag_name.starts_with(['-', '+'])
+        && flag_name != "--"
+        && flag_name != "++"
+        && flag_name.chars().count() == 2
+}
+
+fn same_prefix_short_cluster<'a>(token: &'a str, name: &str) -> Option<&'a str> {
+    if !is_single_letter_short_flag(name) {
+        return None;
+    }
+    let sign = name.as_bytes()[0] as char;
+    let tail = token.strip_prefix(sign)?;
+    (!tail.starts_with(sign)).then_some(tail)
 }
 
 fn short_flag_char(flag_name: &str) -> Option<char> {
@@ -3715,17 +3797,17 @@ fn short_flag_cluster_matches_flag_only_modifier(
         return false;
     };
 
-    let Some(cluster_text) = token_text.strip_prefix('-') else {
+    let Some(cluster_text) = same_prefix_short_cluster(token_text, flag_name) else {
         return false;
     };
 
-    if token_text.starts_with("--") || cluster_text.len() <= 1 {
+    if cluster_text.len() <= 1 {
         return false;
     }
 
     let mut matched_prefix = false;
     for (index, candidate) in cluster_text.char_indices() {
-        let candidate_flag = format!("-{candidate}");
+        let candidate_flag = format!("{}{candidate}", &flag_name[..1]);
         if !declared_short_flags.contains(&candidate_flag) {
             return false;
         }

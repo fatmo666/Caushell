@@ -18,6 +18,7 @@ pub struct RawCommandProfile {
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
     pub option_matching: RawOptionMatchingPolicy,
+    pub option_prefixes: RawOptionPrefixPolicy,
     pub subcommands: Option<RawSubcommandTree>,
     pub extensions: BTreeMap<String, JsonValue>,
 }
@@ -44,6 +45,14 @@ pub enum RawOptionMatchingPolicy {
     #[default]
     ShortClusters,
     ExactNames,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawOptionPrefixPolicy {
+    #[default]
+    DashOnly,
+    DashAndPlus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -395,6 +404,7 @@ pub enum RawCardinality {
 pub enum RawFlagOperandMode {
     NextPositional,
     NextArg,
+    OptionalNextArg,
     SecondArg,
     InlineOnly,
     InlineOrShortAttached,

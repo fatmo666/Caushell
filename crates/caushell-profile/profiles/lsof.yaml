@@ -1,0 +1,155 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: lsof, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, macos], shell_families: [], requires_features: []}
+option_prefixes: dash_and_plus
+option_scope: leading_options
+opaque_on_unresolved: true
+
+# File/process/socket selectors inspect metadata, not the selected file's
+# contents. Neither selecting a PID nor selecting a socket controls it.
+# Numeric optional arguments are different: native lsof may reconsider a
+# nonnumeric suffix as MORE OPTIONS. Admit complete modeled numeric forms,
+# not a generic opaque string that could conceal -D cache operations.
+forms:
+  - id: query
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item: {kind: has_modifier_parameter_matching, modifier: command_width, parameter: command_width, matcher: &not_digits {kind: regex_pattern, pattern: '[^0-9]'}}
+        - kind: not
+          item: {kind: has_modifier_parameter_matching, modifier: link_count, parameter: link_count, matcher: *not_digits}
+        - kind: not
+          item: {kind: has_modifier_parameter_matching, modifier: offset_digits, parameter: offset_digits, matcher: *not_digits}
+        - kind: not
+          item: {kind: has_modifier_parameter_matching, modifier: timeout, parameter: timeout, matcher: *not_digits}
+        - kind: not
+          item:
+            kind: has_modifier_parameter_matching
+            modifier: repeat
+            parameter: repeat_spec
+            # Complement of decimal delay, optional count, optional m<fmt>.
+            # m consumes the rest as strftime data, not further options.
+            matcher: {kind: regex_pattern, pattern: '(?s)^[^0-9]|^[0-9]+[^0-9 cm]|^[0-9]+ +(?:[^cm]|$)|^[0-9]+ *c(?:[^0-9]|$)|^[0-9]+ *c[0-9]+[^0-9m]'}
+    parameters:
+      - name: file_selectors
+        semantic: &plain {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+
+modifiers:
+  - id: query_switches
+    matcher:
+      kind: any_flag
+      flags: [-a, +a, -b, +b, -C, +C, -E, +E, -H, +H, -h, +h, '-?', '+?', -l, +l, -M, +M, -N, +N, -O, +O, -Q, +Q, -R, +R, -t, +t, -U, +U, -v, +v, -V, +V, -X, +X, -J, -j]
+  - {id: numeric_hosts, matcher: {kind: any_flag, flags: [-n]}}
+  - {id: resolved_hosts, matcher: {kind: any_flag, flags: [+n]}}
+  - {id: numeric_ports, matcher: {kind: any_flag, flags: [-P]}}
+  - {id: resolved_ports, matcher: {kind: any_flag, flags: [+P]}}
+  - {id: warnings, matcher: {kind: any_flag, flags: [-w]}}
+  - {id: suppress_warnings, matcher: {kind: any_flag, flags: [+w]}}
+  - id: command_filter
+    matcher: {kind: any_flag, flags: [-c]}
+    parameters:
+      - {name: command_filter, semantic: *plain, binding: &value {kind: following_matched_flag, operand_mode: optional_next_arg}, cardinality: required_many}
+  - id: command_width
+    matcher: {kind: any_flag, flags: [+c]}
+    parameters:
+      - {name: command_width, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: descriptor_filter
+    matcher: {kind: any_flag, flags: [-d]}
+    parameters:
+      - {name: descriptor_filter, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: directory
+    matcher: {kind: any_flag, flags: [+d]}
+    parameters:
+      - {name: directory_selector, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: recursive_directory
+    matcher: {kind: any_flag, flags: [+D]}
+    parameters:
+      - {name: recursive_directory_selector, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: process_filter
+    matcher: {kind: any_flag, flags: [-p, +p]}
+    parameters:
+      - {name: process_filter, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: user_filter
+    matcher: {kind: any_flag, flags: [-u, +u]}
+    parameters:
+      - {name: user_filter, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: filesystem_exemption
+    matcher: {kind: any_flag, flags: [-e, +e]}
+    parameters:
+      - {name: filesystem_exemption, semantic: *plain, binding: *value, cardinality: required_many}
+  - id: network_filter
+    matcher: {kind: any_flag, flags: [-i, +i]}
+    parameters:
+      - {name: network_filter, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: process_group
+    matcher: {kind: any_flag, flags: [-g, +g]}
+    parameters:
+      - {name: process_group, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: fields
+    matcher: {kind: any_flag, flags: [-F, +F]}
+    parameters:
+      - {name: fields, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: file_structure
+    matcher: {kind: any_flag, flags: [-f, +f]}
+    parameters:
+      - {name: file_structure, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: task_filter
+    matcher: {kind: any_flag, flags: [-K, +K]}
+    parameters:
+      - {name: task_filter, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: link_count
+    matcher: {kind: any_flag, flags: [+L, -L]}
+    parameters:
+      - {name: link_count, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: offset_digits
+    matcher: {kind: any_flag, flags: [-o, +o]}
+    parameters:
+      - {name: offset_digits, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: repeat
+    matcher: {kind: any_flag, flags: [-r, +r]}
+    parameters:
+      - {name: repeat_spec, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: timeout
+    matcher: {kind: any_flag, flags: [-S, +S]}
+    parameters:
+      - {name: timeout, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: state_filter
+    matcher: {kind: any_flag, flags: [-s, +s]}
+    parameters:
+      - {name: state_filter, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: tcp_information
+    matcher: {kind: any_flag, flags: [-T, +T]}
+    parameters:
+      - {name: tcp_information, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: directory_crossovers
+    matcher: {kind: any_flag, flags: [-x, +x]}
+    parameters:
+      - {name: directory_crossovers, semantic: *plain, binding: *value, cardinality: optional_many}
+  - id: mount_supplement
+    matcher: {kind: any_flag, flags: [+m]}
+    parameters:
+      - name: mount_supplement
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: *value
+        cardinality: optional_many
+    effects: [{kind: read_path, target: {kind: slot, name: mount_supplement}}]
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://lsof.readthedocs.io/en/stable/manpage/
+    - https://github.com/lsof-org/lsof/blob/1ebf257c64db1b2ece5e4d5e922ed711c692f161/src/main.c
+    - https://github.com/lsof-org/lsof/blob/1ebf257c64db1b2ece5e4d5e922ed711c692f161/lib/dialects/linux/machine.h
+    - https://github.com/lsof-org/lsof/blob/1ebf257c64db1b2ece5e4d5e922ed711c692f161/lib/dialects/darwin/machine.h
+  caushell.profile/known_limitations:
+    - Ordinary metadata queries are admitted; this is not validation of every selector, option combination, range or build-specific feature, nor a claim that lsof succeeds on every Linux/macOS version.
+    - Selecting process IDs, file descriptors, directories or socket addresses does not read selected file contents, kill a process, start a listener or exfiltrate a file. Name-resolution and kernel/proc metadata internals are not reconstructed as exact network/file traces.
+    - The default proc-based Linux and inspected Darwin builds disable device caches. Explicit -D device-cache forms and unsupported dialect-specific -A/-k/-m/z/Z forms remain unresolved and use existing opaque-invocation approval; customized implicit cache behaviours of other builds are not modeled.
+    - Numeric suffixes that native lsof can reconsider as later options require complete modeled operands. No hidden -D suffix is certified as plain numeric data. Selector validation for other strings is not a full CLI interpreter.
+    - +m without an operand produces mount supplement text on stdout; with an operand it reads that supplement file. Outer redirections/pipelines and nested execution retain their independent effects.

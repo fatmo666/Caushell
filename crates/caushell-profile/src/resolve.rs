@@ -157,7 +157,10 @@ pub fn resolve_invocation_with_bindings<'a>(
     };
 
     let projection = project_invocation(command, context);
-    let materialized_projection = materialize_projected_invocation(&projection, bindings);
+    let mut materialized_projection = materialize_projected_invocation(&projection, bindings);
+    materialized_projection
+        .invocation
+        .apply_option_prefixes(profile.option_prefixes);
 
     match select_invocation(profile, &materialized_projection.invocation) {
         Ok(selection) => {

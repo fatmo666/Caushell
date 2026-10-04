@@ -477,6 +477,9 @@ pub enum BindingSpec {
 pub enum FlagOperandMode {
     NextPositional,
     NextArg,
+    /// Attached/inline value, otherwise the immediate non-option argv value.
+    /// Absence is valid only when the parameter's cardinality is optional.
+    OptionalNextArg,
     SecondArg,
     InlineOnly,
     InlineOrShortAttached,
@@ -1164,6 +1167,27 @@ pub enum OptionMatchingPolicy {
     ExactNames,
 }
 
+/// Opt-in CLI grammar, applied after shell argv materialization. This never
+/// changes Bash tokenization, argv text, or another command's option grammar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OptionPrefixPolicy {
+    #[default]
+    DashOnly,
+    /// Both signs introduce options; `--` and `++` terminate them.
+    DashAndPlus,
+}
+
+impl OptionPrefixPolicy {
+    pub(crate) fn is_option(self, value: &str) -> bool {
+        value.len() > 1
+            && (value.starts_with('-') || (self == Self::DashAndPlus && value.starts_with('+')))
+    }
+
+    pub(crate) fn is_terminator(self, value: &str) -> bool {
+        value == "--" || (self == Self::DashAndPlus && value == "++")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubcommandTree {
     pub roots: Vec<SubcommandNode>,
@@ -1467,6 +1491,7 @@ pub struct CommandProfile {
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
     pub option_matching: OptionMatchingPolicy,
+    pub option_prefixes: OptionPrefixPolicy,
     pub subcommands: Option<SubcommandTree>,
     pub extensions: ExtensionMap,
 }
@@ -1484,6 +1509,7 @@ impl CommandProfile {
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),
             option_matching: OptionMatchingPolicy::default(),
+            option_prefixes: OptionPrefixPolicy::default(),
             subcommands: None,
             extensions: ExtensionMap::new(),
         }
@@ -1511,6 +1537,11 @@ impl CommandProfile {
 
     pub fn with_option_matching(mut self, policy: OptionMatchingPolicy) -> Self {
         self.option_matching = policy;
+        self
+    }
+
+    pub fn with_option_prefixes(mut self, policy: OptionPrefixPolicy) -> Self {
+        self.option_prefixes = policy;
         self
     }
 

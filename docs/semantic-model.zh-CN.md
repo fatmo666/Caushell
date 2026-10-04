@@ -407,6 +407,12 @@ Profile 可选声明 `selection_failure_effects`，在 form 选择失败时保�
 
 例如，Profile 声明 `option_matching: exact_names`，再以 `flags: ["-pl", "--power-limit"]` 绑定后面的普通值 `power_watts`。`-pl 200` 只绑定该选项，不激活 `-p` 或 `-l`；`-pl200` 不会被猜成附着参数。这个模式不是通用 CLI 合法性或覆盖检查：既有 `all_arguments` 绑定器不会为每个未知 flag 生成 residual。已知未支持形式、解析缺口动作与成功建模的调用仍须区分。
 
+命令 Profile 可声明 `option_prefixes: dash_and_plus`，让物化后的 CLI 参数识别两种选项前缀，并保留其区别：`+c` 与 `-c` 可以绑定不同的 modifier／操作数，`++` 与 `--` 均为选项终止符，短选项组合及附着参数也保留原来的符号。这个根节点语法适用于同一 Profile 的子命令，不会继承给另行分派的工具。结合 `leading_options`，选项归属仍在第一个非选项操作数处停止；声明过的选项值不会被重新解释成另一个选项或终止符。默认是 `dash_only`，因此 `date +%F`、`chmod +x` 等参数保持原有数据含义。该声明不改 Bash 词法、参数文本／跨度／来源、风险规则或 Harness 协议；默认投影路径直接返回，不扫描或克隆 argv。
+
+新增 flag binding 模式 `operand_mode: optional_next_arg`：先取短选项附着值或长选项内联值，否则仅取紧邻的非选项参数。后续选项／终止符仍归自己的解析器，前缀判定使用当前 Profile 的语法。`optional_one`／`optional_many` 允许没有值；required cardinality 仍会报告缺失操作数。显式空字符串不是缺失，存在但被约束拒绝的值即使 cardinality 为 optional 也保持未解析，不被当作合法省略。旧 operand mode 不变。例如 `lsof -i`、`lsof -i :8080`、`lsof -i -n` 分别绑定无选择值、`:8080`、无选择值加独立 `-n`。
+
+lsof Profile 将文件／目录、PID、FD 和 socket 选择器当作元数据查询值，不虚构选中文件的内容读取、进程控制或监听器创建。实际的 `+m file` 挂载补充文件读取单独保留；裸 `+m` 不制造文件输出。原生 `-D` 缓存操作和未支持方言形式通过 `opaque_on_unresolved` 走既有审批；会重新进入原生选项解析的数字操作数仅接纳已建模的完整数字／repeat 格式，不把任意尾缀吞成普通数据。外层重定向和派生子调用仍按自身效果检查。这一范围不逐项模拟所有版本／构建的选择器、解析器或隐式缓存实现。
+
 前缀绑定可声明 `binding: {kind: args_with_prefix, prefix: '-D', before_dash_dash: true}`，仅绑定选项终止符之前尚未消费的匹配参数。声明过的选项操作数先绑定，因此作为选项值的字面 `--` 不被误当作分隔符，后面的实际 `--` 仍能终止绑定。该绑定不消费分隔符或后续数据。省略该字段或设为 `false` 时保留原有全范围行为。因此 `ss -Ddump -- state established` 保留 `dump` 写入，而 `ss -- -Ddump` 不从过滤数据中制造写入。这是命令无关、按声明启用的绑定能力，不是新增风险规则。
 
 Command Profile 描述命令可能分派到哪里，以及参数如何绑定。分派层将参数作为带类型的值传递：字面 argv 数据、运行时产生的值，或带保守取值域的隐式输入。消费者可以用有界路径域分类可能的位置，但这些根目录不代表实际操作的具体文件。未知输入与已知空输入始终有区别。

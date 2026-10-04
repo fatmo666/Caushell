@@ -982,6 +982,7 @@ pub fn materialize_projected_invocation(
 
     MaterializedProjectedInvocation {
         invocation: ProjectedInvocation {
+            option_prefixes: projection.option_prefixes,
             command_name: projection.command_name.clone(),
             args,
             stdin_payload_available: projection.stdin_payload_available,
