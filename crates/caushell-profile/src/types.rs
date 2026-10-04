@@ -341,6 +341,7 @@ pub enum EndpointKind {
     HostPort,
     SocketPath,
     RemoteSpec,
+    EmailAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +471,8 @@ pub enum BindingSpec {
     /// Opt-in prefix binding restricted to argv before the option terminator.
     ArgsWithPrefixBeforeDashDash(String),
     LeadingPositionalsWhile(ValueMatcher),
+    /// Select matching unconsumed positionals without stripping or rewriting argv.
+    PositionalsMatching(ValueMatcher),
     LeadingPositionalsBeforeModifier(ModifierId),
 }
 
@@ -482,6 +485,9 @@ pub enum FlagOperandMode {
     OptionalNextArg,
     SecondArg,
     InlineOnly,
+    /// A value is optional and may only be inline on a long option. A bare
+    /// occurrence never owns a following argv token. Cardinality still applies.
+    OptionalInlineOnly,
     InlineOrShortAttached,
     NextPositionalAfterDashDash,
 }
@@ -1251,6 +1257,7 @@ pub enum PositionalBindingSource {
     RemainingPositionals,
     RemainingPositionalsBeforeLast,
     LeadingPositionals,
+    MatchingPositionals,
     LastPositional,
     LastPositionalBeforeLast,
 }

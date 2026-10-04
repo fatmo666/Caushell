@@ -9,6 +9,7 @@ pub enum ProvenanceEndpointKind {
     HostPort,
     SocketPath,
     RemoteSpec,
+    EmailAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -758,5 +759,20 @@ mod tests {
             serde_json::from_value(value).expect("expected network endpoint to deserialize");
 
         assert_eq!(roundtrip, artifact);
+    }
+
+    #[test]
+    fn email_address_endpoint_artifact_roundtrips_with_distinct_wire_kind() {
+        let artifact = ProvenanceArtifact::NetworkEndpoint {
+            endpoint: "Recipient <recipient@example.test>".to_string(),
+            endpoint_kind: ProvenanceEndpointKind::EmailAddress,
+            usage: ProvenanceEndpointUsage::UploadTarget,
+        };
+        let value = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(value["endpoint_kind"], json!("email_address"));
+        assert_eq!(
+            serde_json::from_value::<ProvenanceArtifact>(value).unwrap(),
+            artifact
+        );
     }
 }

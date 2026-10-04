@@ -446,6 +446,42 @@ Command Profile 描述命令可能分派到哪里，以及参数如何绑定。�
 
 默认展开深度为 8，顶层命令计为第 0 层。达到第 8 层本身不代表风险：已经完整分析的叶子仍按正常规则判断。如果预算之外还有执行子调用，展开停止，由现有 resolve-policy pass 通过 `execution_expansion_limit` 提议 `NeedApproval`。决策 trace 保留截断证据、深度预算和待处理候选数量。规范执行 frontier 和嵌套 payload 的截断都进入这个兜底；已解析的祖先、以及不支持的静态字面量默认 Observe 策略，不会掩盖展开未完成的事实。已有 `Deny` 判断仍优先。
 
+## 可选内联参数与位置参数筛选
+
+`operand_mode: optional_inline_only` 接受裸选项或长选项 `--option=value`。
+裸选项不消费后续的位置参数、其他选项或终止符；optional cardinality 允许无值，
+required cardinality 仍要求实际值。显式空内联值不是缺失，被约束拒绝的值仍未解析。
+短选项附着参数不属于该模式，旧 operand mode 行为不变。
+
+`binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^[/.]'}}`
+按既有 matcher 筛选整个归属范围内未消费的位置参数，不要求匹配值连续出现。
+匹配使用解码后的字面语义值，绑定保留原参数、引号、node kind、span 和来源；
+已确认的运行时 argv 数据不再次展开，未知动态值不按可见前缀猜测。
+已被选项占用的操作数不会变成位置参数，未匹配项留给后续绑定。
+正则每次绑定只编译一次，未选择该 Profile 时不运行这一绑定。
+旧 `args_with_prefix` 继续提取前缀之后的负载，不改变原有语义。
+
+## GNU Mailutils mail
+
+`mail` Profile 固定 GNU Mailutils 3.21，不等同于 BSD mail/mailx 或 s-nail。
+非终端正文和附件是数据；`-A` 是附件，GNU `-a` 是邮件头。
+邮箱／本地别名按字面 `email_address`、`upload_target` 记录，不冒充 URL；
+`/` 或 `.` 开头的文件收件人保留完整路径。
+`|` 开头的执行收件人、Mail 语言 `-E`、头部派生／未知目的地及未支持控制形式，
+沿用既有不透明语义审批，不把整个参数伪装成 Bash 源码。
+
+GNU `-f` 是模式开关，邮箱取首个位置参数；裸 `--file` 与 `--file=mbox`
+按各自的可选内联语义绑定。邮箱查询保留真实读写，因为原生打开／扫描会创建邮箱
+或更新 UID 存储头。Mailutils 配置、系统 mailrc 和 MAILRC 分层；`-n` 只禁用
+系统 mailrc。显式输出收件人、失败 DEAD 存储以及真正未知的 compose spill／byname
+目标仍保留修改效果，所以普通发送不承诺免审批。
+不增加动态配置解释、Mail 解释器或自动方言探测。
+
+既有污点执行分析目前把所有网络端点视作输入，在加载启动配置的发送命令上，
+会把上传目的地误认成配置执行来源。这是独立的精度问题，本轮没有改动。
+Graph 专项显式隔离该问题和未知 spill 策略；默认策略诊断、敏感数据外传与不透明
+执行的检查分别保留，测试配置不代表产品默认策略。
+
 ## 会话图生命周期
 
 | 时点 | 图状态 |

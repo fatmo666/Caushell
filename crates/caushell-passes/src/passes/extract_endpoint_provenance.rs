@@ -114,6 +114,7 @@ fn provenance_endpoint_kind(kind: EndpointKind) -> ProvenanceEndpointKind {
         EndpointKind::HostPort => ProvenanceEndpointKind::HostPort,
         EndpointKind::SocketPath => ProvenanceEndpointKind::SocketPath,
         EndpointKind::RemoteSpec => ProvenanceEndpointKind::RemoteSpec,
+        EndpointKind::EmailAddress => ProvenanceEndpointKind::EmailAddress,
     }
 }
 
@@ -132,6 +133,7 @@ fn endpoint_kind_slug(kind: ProvenanceEndpointKind) -> &'static str {
         ProvenanceEndpointKind::HostPort => "host_port",
         ProvenanceEndpointKind::SocketPath => "socket_path",
         ProvenanceEndpointKind::RemoteSpec => "remote_spec",
+        ProvenanceEndpointKind::EmailAddress => "email_address",
     }
 }
 
@@ -270,5 +272,17 @@ mod tests {
                     },
                 })
         );
+    }
+
+    #[test]
+    fn email_recipients_use_the_generic_upload_endpoint_path_without_url_coercion() {
+        let ctx = run_pass(&SessionSummary::new(), 1, "mail receiver@example.test");
+        assert!(ctx.pending_mutations().iter().any(|mutation| matches!(mutation,
+            PendingMutation::AddProvenanceArtifact { node_id, artifact: ProvenanceArtifact::NetworkEndpoint {
+                endpoint, endpoint_kind: ProvenanceEndpointKind::EmailAddress,
+                usage: ProvenanceEndpointUsage::UploadTarget,
+            }, .. } if endpoint == "receiver@example.test"
+                && node_id.0 == "artifact:network-endpoint:email_address:upload_target:receiver@example.test"
+        )));
     }
 }

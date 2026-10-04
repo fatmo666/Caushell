@@ -1,0 +1,263 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: mail, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+# GNU Mailutils 3.21, NOT BSD mail/mailx or s-nail. Arity owns flag-shaped
+# subject/header/attachment values; -f is a switch, --file has inline-only data.
+option_scope: permuted_options
+opaque_on_unresolved: true
+selection_failure_effects:
+  # Client command files may still run before an opaque invocation. A missing
+  # compile-time location is unknown, not a fabricated /etc or workspace path.
+  - {kind: load_config, target: {kind: none}}
+forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: help}
+    parameters: &information_args [{name: information_args, semantic: &plain {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: &information_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: show_version
+    selector: {kind: all, items: [{kind: has_modifier, modifier: version}, {kind: not, item: {kind: has_modifier, modifier: help}}]}
+    parameters: *information_args
+    stream_contract: *information_stream
+  - id: show_usage
+    selector: {kind: all, items: [{kind: has_modifier, modifier: usage}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}]}
+    parameters: *information_args
+    stream_contract: *information_stream
+
+  - id: send_without_default_configs
+    selector: &send_clean
+      kind: all
+      items:
+        - &send
+          kind: all
+          items:
+            - &not_information {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: usage}]}}
+            - &known_controls
+              kind: not
+              item: {kind: any, items: [{kind: has_modifier, modifier: exec}, {kind: has_modifier, modifier: header_recipients}, {kind: has_modifier, modifier: user}, {kind: has_modifier, modifier: set}, {kind: has_modifier, modifier: mailer}, {kind: has_modifier, modifier: config_lint}, {kind: has_modifier, modifier: config_file}]}
+            - {kind: not, item: &file_mode {kind: any, items: [{kind: has_modifier, modifier: file_switch}, {kind: has_modifier, modifier: file_inline}]}}
+            - {kind: has_positional_at, index: 0}
+            # Unknown recipient expansions can become paths or execution
+            # entrances. Do not certify them as harmless literal addresses.
+            - {kind: no_positional_after_leading_matcher, matcher: {kind: regex_pattern, pattern: '(?s)^[^$`|][^$`]*$'}}
+            - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^\|'}}}
+            - &known_fd {kind: not, item: {kind: has_modifier_parameter_matching, modifier: attach_fd, parameter: attachment_fd, matcher: {kind: regex_pattern, pattern: '(^$|[^0])'}}}
+            # Additional recipient headers can create destinations not present
+            # in argv; treat these as opaque, not as a known empty destination.
+            - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: append_header, parameter: appended_headers, matcher: {kind: regex_pattern, pattern: '(?i)^\s*(to|cc|bcc|apparently-to)\s*:'}}}
+            - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: append_header, parameter: appended_headers, matcher: {kind: regex_pattern, pattern: '[$`]'}}}
+        - &no_configs {kind: has_modifier, modifier: no_config}
+        - &no_system_rc {kind: has_modifier, modifier: norc}
+    parameters: &recipients
+      # Select full filesystem recipients without prefix extraction. Options
+      # and their owned values were already bound and cannot become outputs.
+      - {name: absolute_outputs, semantic: &write {kind: path, role: write, purpose: generic_operand}, binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^/'}}, cardinality: optional_many}
+      - {name: relative_outputs, semantic: *write, binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^\.'}}, cardinality: optional_many}
+      - {name: recipients, semantic: {kind: endpoint, endpoint_kind: email_address, usage: upload_target}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    implicit_inputs: &body [{source: stdin_data, semantic: *plain}]
+    effects: &send_effects
+      - &user_rc {kind: load_config, target: {kind: configured_path, sources: [], environment: {name: MAILRC}, default_value: '~/.mailrc', expand_user: true, purpose: startup_config}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: network_endpoint, target: {kind: slot, name: recipients}}
+      - {kind: write_path, target: {kind: slot, name: absolute_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: slot, name: relative_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], environment: {name: DEAD}, default_value: '~/dead.letter', expand_user: true, purpose: generic_operand}}
+      # Compose storage spills to a generated tempfile (default threshold
+      # 4096 bytes). Without message bytes/native tempfile allocation, no
+      # concrete target can be certified. No implicit cache exemption.
+      - &unknown_write {kind: write_path, target: {kind: none}}
+      - &unknown_delete {kind: delete_path, target: {kind: none}}
+    stream_contract: &send_stream {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: data}
+  - id: send_with_system_rc
+    selector: {kind: all, items: [*send, *no_configs, {kind: not, item: *no_system_rc}]}
+    parameters: *recipients
+    implicit_inputs: *body
+    effects:
+      - {kind: load_config, target: &system_rc {kind: configured_path, sources: [], missing: unknown, purpose: startup_config}}
+      - *user_rc
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: network_endpoint, target: {kind: slot, name: recipients}}
+      - {kind: write_path, target: {kind: slot, name: absolute_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: slot, name: relative_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], environment: {name: DEAD}, default_value: '~/dead.letter', expand_user: true, purpose: generic_operand}}
+      - *unknown_write
+      - *unknown_delete
+    stream_contract: *send_stream
+  - id: send_with_mailutils_config
+    selector: {kind: all, items: [*send, {kind: not, item: *no_configs}, *no_system_rc]}
+    parameters: *recipients
+    implicit_inputs: *body
+    effects:
+      - {kind: load_config, target: &mailutils_config {kind: configured_path, sources: [{slot: config_files, projection: {kind: identity}}], missing: unknown, purpose: tool_config}}
+      - *user_rc
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: network_endpoint, target: {kind: slot, name: recipients}}
+      - {kind: write_path, target: {kind: slot, name: absolute_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: slot, name: relative_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], environment: {name: DEAD}, default_value: '~/dead.letter', expand_user: true, purpose: generic_operand}}
+      - *unknown_write
+      - *unknown_delete
+    stream_contract: *send_stream
+  - id: send_with_all_configs
+    selector: {kind: all, items: [*send, {kind: not, item: *no_configs}, {kind: not, item: *no_system_rc}]}
+    parameters: *recipients
+    implicit_inputs: *body
+    effects:
+      - {kind: load_config, target: *system_rc}
+      - {kind: load_config, target: *mailutils_config}
+      - *user_rc
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: network_endpoint, target: {kind: slot, name: recipients}}
+      - {kind: write_path, target: {kind: slot, name: absolute_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: slot, name: relative_outputs}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], environment: {name: DEAD}, default_value: '~/dead.letter', expand_user: true, purpose: generic_operand}}
+      - *unknown_write
+      - *unknown_delete
+    stream_contract: *send_stream
+
+  - id: mailbox_query_without_default_configs
+    selector: &query_clean
+      kind: all
+      items:
+        - &query
+          kind: all
+          items:
+            - *not_information
+            - *known_controls
+            - *file_mode
+            - {kind: has_modifier, modifier: query}
+            - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: subject}, {kind: has_modifier, modifier: append_header}, {kind: has_modifier, modifier: return_address}, {kind: has_modifier, modifier: attach}, {kind: has_modifier, modifier: attach_fd}, {kind: has_modifier, modifier: byname}]}}
+            - {kind: not, item: {kind: has_positional_at, index: 1}}
+            - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: &special_mailbox {kind: regex_pattern, pattern: '^(?:[A-Za-z][A-Za-z0-9+.-]*:|[+%&#]|$)'}}}
+            - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: file_inline, parameter: inline_mailboxes, matcher: *special_mailbox}}
+            # GNU exits before loading configs when an explicit inline mailbox
+            # is combined with positional arguments. Do not invent a mailbox
+            # selection for this conflicting form.
+            - {kind: not, item: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier_parameter_matching, modifier: file_inline, parameter: inline_mailboxes, matcher: {kind: regex_pattern, pattern: '(?s)^.*$'}}]}}
+        - *no_configs
+        - *no_system_rc
+    parameters: &mailboxes [{name: positional_mailbox, semantic: *plain, binding: {kind: next_positional}, cardinality: optional_one}]
+    effects: &query_effects
+      - *user_rc
+      - {kind: read_path, target: &mailbox {kind: configured_path, sources: [{slot: inline_mailboxes, projection: {kind: identity}}, {slot: positional_mailbox, projection: {kind: identity}}], default_value: '~/mbox', expand_user: true, purpose: generic_operand}}
+      # Native MU_STREAM_RDWR|CREAT + scan can create/update UID storage even
+      # for -e/-H/-p; these modes are not whole-program no-write proofs.
+      - {kind: write_path, target: *mailbox}
+      - &inline_mailbox_write {kind: write_path, target: {kind: slot, name: inline_mailboxes}, catastrophic: {semantic_class: raw_write_target}}
+      - &positional_mailbox_write {kind: write_path, target: {kind: slot, name: positional_mailbox}, catastrophic: {semantic_class: raw_write_target}}
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: mailbox_query_with_system_rc
+    selector: {kind: all, items: [*query, *no_configs, {kind: not, item: *no_system_rc}]}
+    parameters: *mailboxes
+    effects:
+      - {kind: load_config, target: *system_rc}
+      - *user_rc
+      - {kind: read_path, target: *mailbox}
+      - {kind: write_path, target: *mailbox}
+      - *inline_mailbox_write
+      - *positional_mailbox_write
+    stream_contract: *query_stream
+  - id: mailbox_query_with_mailutils_config
+    selector: {kind: all, items: [*query, {kind: not, item: *no_configs}, *no_system_rc]}
+    parameters: *mailboxes
+    effects:
+      - {kind: load_config, target: *mailutils_config}
+      - *user_rc
+      - {kind: read_path, target: *mailbox}
+      - {kind: write_path, target: *mailbox}
+      - *inline_mailbox_write
+      - *positional_mailbox_write
+    stream_contract: *query_stream
+  - id: mailbox_query_with_all_configs
+    selector: {kind: all, items: [*query, {kind: not, item: *no_configs}, {kind: not, item: *no_system_rc}]}
+    parameters: *mailboxes
+    effects:
+      - {kind: load_config, target: *system_rc}
+      - {kind: load_config, target: *mailutils_config}
+      - *user_rc
+      - {kind: read_path, target: *mailbox}
+      - {kind: write_path, target: *mailbox}
+      - *inline_mailbox_write
+      - *positional_mailbox_write
+    stream_contract: *query_stream
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-?', --help, --config-help, --show-config-options]}}
+  - {id: version, matcher: {kind: any_flag, flags: [-V, --version]}}
+  - {id: usage, matcher: {kind: any_flag, flags: [--usage]}}
+  - {id: no_config, matcher: {kind: any_flag, flags: [--no-config]}}
+  - {id: norc, matcher: {kind: any_flag, flags: [-n, --norc]}}
+  - {id: file_switch, matcher: {kind: any_flag, flags: [-f]}}
+  - id: file_inline
+    matcher: {kind: any_flag, flags: [--file]}
+    # Repeated explicit values override each other natively. Until last-value
+    # selection is modeled, cardinality exposes this as unresolved semantics
+    # rather than reading only the first mailbox and losing the actual source.
+    parameters: [{name: inline_mailboxes, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_one}]
+  - {id: query, matcher: {kind: any_flag, flags: [-e, --exist, -H, --headers, -p, --print, --read]}}
+  - {id: switches, matcher: {kind: any_flag, flags: [-i, --ignore, -q, --quit, -N, --nosum, -M, --mime, --no-mime, --alternative, --no-alternative, --skip-empty-attachments, --no-skip-empty-attachments, --config-verbose, --debug-line-info, --no-debug-line-info]}}
+  - id: subject
+    matcher: {kind: any_flag, flags: [-s, --subject]}
+    parameters: [{name: subjects, semantic: *plain, binding: &operand {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: append_header
+    matcher: {kind: any_flag, flags: [-a, --append]}
+    parameters: [{name: appended_headers, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: return_address
+    matcher: {kind: any_flag, flags: [-r, --return-address]}
+    parameters: [{name: return_addresses, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: attach
+    matcher: {kind: any_flag, flags: [-A, --attach]}
+    parameters:
+      - name: attachments
+        semantic: *plain
+        binding: *operand
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: attachment_files, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects: [{kind: read_path, target: {kind: slot, name: attachment_files}}]
+  - id: attach_fd
+    matcher: {kind: any_flag, flags: [--attach-fd]}
+    parameters: [{name: attachment_fd, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: byname
+    matcher: {kind: any_flag, flags: [-F, --byname]}
+    effects: [*unknown_write]
+  - id: exec
+    matcher: {kind: any_flag, flags: [-E, --exec]}
+    # Mail command text is retained, not falsely declared Bash source.
+    parameters: [{name: mail_commands, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: header_recipients, matcher: {kind: any_flag, flags: [-t, --to]}}
+  - id: user
+    matcher: {kind: any_flag, flags: [-u, --user]}
+    parameters: [{name: user, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: set
+    matcher: {kind: any_flag, flags: [--set]}
+    parameters: [{name: config_settings, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: mailer
+    matcher: {kind: any_flag, flags: [--mailer]}
+    parameters: [{name: mailer, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: config_lint, matcher: {kind: any_flag, flags: [--config-lint]}}
+  - id: config_file
+    matcher: {kind: any_flag, flags: [--config-file]}
+    parameters: [{name: config_files, semantic: *plain, binding: *operand, cardinality: required_many}]
+    effects: [{kind: load_config, target: {kind: slot, name: config_files}}]
+  - id: mime_metadata
+    matcher: {kind: any_flag, flags: [--encoding, --content-type, --content-name, --content-filename]}
+    parameters: [{name: mime_metadata, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: debug
+    matcher: {kind: any_flag, flags: [--debug-level]}
+    parameters: [{name: debug_level, semantic: *plain, binding: *operand, cardinality: required_many}]
+
+extensions:
+  caushell.profile/source: https://ftp.gnu.org/gnu/mailutils/mailutils-3.21.tar.xz
+  caushell.profile/source_sha256: e47c1edc699b8d6675fdbc77db3a84ae837f18e1f2094fe29d48bb58a97ef5e9
+  caushell.profile/manual: https://mailutils.org/manual/html_node/Invoking-Mail.html
+  caushell.profile/known_limitations:
+    - GNU Mailutils dialect only; no BSD mail/mailx or s-nail alias. GNU -a is a header, -A an attachment. Short -M is the Mailutils mail MIME switch, not the separate long --mailer option.
+    - Mail commands (-E), header-derived or unknown recipients, pipe recipients, nonzero/unknown attachment descriptors, user-spool and remote/special mailbox selectors, explicit mailer/config overrides and unknown CLI forms use existing opaque-invocation approval. No Mail language interpreter or dynamic configuration/filesystem/process discovery.
+    - Ordinary nonterminal body and attachments are data; the profile does not run tilde escapes from piped text. Known mailbox queries retain read/write effects; native tty/pager behavior and config-defined actions are not a replay of the Mail command protocol.
+    - Address endpoints preserve lexical destinations, not resolved aliases, SMTP delivery, transport routing or complete RFC validation. Local filesystem recipients retain full absolute/relative paths, never slash-stripped endpoint projections.
+    - Failure saves to DEAD; generated compose spill storage and configuration-dependent byname outputs retain unknown modification targets and use the existing mutation guard. No claim that ordinary sending is intrinsically read-only or approval-free.
+    - Mailutils configuration, system mailrc and MAILRC are separate layers. Compile-time default system locations remain unknown; -n suppresses only system mailrc. Runtime contents (including record/outfolder, aliases and mailer changes), internal mailbox locking/temp names and native last-option/early-error ordering are not interpreted.
+    - Multiple explicit inline mailbox values and inline-mailbox-plus-positional conflicts are unresolved forms requiring existing approval; no first-value-only read claim hides a last-option override.

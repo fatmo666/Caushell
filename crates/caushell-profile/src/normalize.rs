@@ -1093,6 +1093,9 @@ fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError>
         RawBindingSpec::LeadingPositionalsWhile { matcher } => Ok(
             BindingSpec::LeadingPositionalsWhile(normalize_value_matcher(matcher)?),
         ),
+        RawBindingSpec::PositionalsMatching { matcher } => Ok(BindingSpec::PositionalsMatching(
+            normalize_value_matcher(matcher)?,
+        )),
         RawBindingSpec::LeadingPositionalsBeforeModifier { modifier } => {
             ensure_non_empty(&modifier, "binding.modifier")?;
             Ok(BindingSpec::LeadingPositionalsBeforeModifier(
@@ -1109,6 +1112,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
         RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
         RawFlagOperandMode::SecondArg => FlagOperandMode::SecondArg,
         RawFlagOperandMode::InlineOnly => FlagOperandMode::InlineOnly,
+        RawFlagOperandMode::OptionalInlineOnly => FlagOperandMode::OptionalInlineOnly,
         RawFlagOperandMode::InlineOrShortAttached => FlagOperandMode::InlineOrShortAttached,
         RawFlagOperandMode::NextPositionalAfterDashDash => {
             FlagOperandMode::NextPositionalAfterDashDash
@@ -1300,6 +1304,7 @@ fn normalize_endpoint_kind(raw: RawEndpointKind) -> EndpointKind {
         RawEndpointKind::HostPort => EndpointKind::HostPort,
         RawEndpointKind::SocketPath => EndpointKind::SocketPath,
         RawEndpointKind::RemoteSpec => EndpointKind::RemoteSpec,
+        RawEndpointKind::EmailAddress => EndpointKind::EmailAddress,
     }
 }
 

@@ -444,6 +444,50 @@ Known argv data is never parsed again as shell source. A shell `-c` operand is t
 
 The default expansion depth is 8; the top-level command is depth 0. Reaching depth 8 is not itself a risk: a fully analysed leaf uses the normal decision rules. If child execution remains beyond the budget, expansion stops and the existing resolve-policy pass proposes `NeedApproval` under `execution_expansion_limit`. The decision trace retains the truncation evidence, depth budget and pending candidate count. This applies to both the canonical execution frontier and nested-payload truncation; a parsed ancestor or the default Observe action for unsupported static literals does not hide an incomplete expansion. Existing `Deny` findings still take precedence.
 
+## Optional inline operands and matching positional arguments
+
+`operand_mode: optional_inline_only` accepts either a bare option or a long
+`--option=value`. A bare option never consumes the next argv token, including
+positionals, other options and terminators. Optional cardinality accepts absence;
+required cardinality still requires a value. An explicit empty inline value is
+present, and a value rejected by constraints remains unresolved. Short attached
+values are not part of this mode. Existing operand modes keep their behavior.
+
+`binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^[/.]'}}`
+selects matching, unconsumed positional arguments throughout the owned scope,
+not just a contiguous prefix. It matches the decoded literal semantic value but
+retains the original argument, quote state, node kind, span and binding source.
+Known runtime argv data is not expanded again; unknown dynamic values are not
+guessed from a visible prefix. Declared option operands cannot be reclassified as
+positionals. Unmatched arguments stay available to later bindings. Regex matching
+compiles once per binding; unselected profiles do not execute this binding.
+Legacy `args_with_prefix` still extracts the payload after its prefix.
+
+## GNU Mailutils mail
+
+The `mail` Profile models GNU Mailutils 3.21, not BSD mail/mailx or s-nail.
+Nonterminal body and attachments are data; `-A` attaches a file while GNU `-a`
+adds header metadata. Email/local-alias recipients are lexical `email_address`
+endpoints with `upload_target` usage, not URLs. Filesystem recipients starting
+with `/` or `.` retain full paths. Leading `|`, Mail-language `-E`, header-derived
+or unresolved destinations and unsupported client controls use existing opaque
+approval rather than pretending the entire value is Bash code.
+
+GNU `-f` is a switch selecting the first positional mailbox; optional inline
+`--file=mbox` and bare `--file` retain their distinct argv ownership. Mailbox
+queries keep real read/write effects because native open/scan can create mailboxes
+or update UID headers. `--no-config`, system mailrc and `MAILRC` are separate
+layers; `-n` only disables system mailrc. Explicit output recipients, failure
+`DEAD` storage and genuinely unknown compose-spill/byname targets keep mutation
+effects. Ordinary sending is therefore not promised approval-free. No dynamic
+config interpretation, Mail interpreter or automatic dialect discovery is added.
+
+The existing tainted-execution analysis currently overapproximates all network
+endpoints as inputs, including upload destinations on commands loading startup
+configuration. This independent precision limitation remains unchanged. Graph-only
+tests explicitly isolate it and unknown-spill policy; default-policy diagnostics
+and sensitive-data/opaque-command checks remain separate.
+
 ## Session Graph Lifecycle
 
 | Point in time | Graph state |

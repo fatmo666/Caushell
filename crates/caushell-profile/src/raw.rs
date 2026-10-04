@@ -408,6 +408,7 @@ pub enum RawFlagOperandMode {
     OptionalNextArg,
     SecondArg,
     InlineOnly,
+    OptionalInlineOnly,
     InlineOrShortAttached,
     #[serde(rename = "next_positional_after_dashdash")]
     NextPositionalAfterDashDash,
@@ -446,6 +447,9 @@ pub enum RawBindingSpec {
         before_dash_dash: bool,
     },
     LeadingPositionalsWhile {
+        matcher: RawValueMatcher,
+    },
+    PositionalsMatching {
         matcher: RawValueMatcher,
     },
     LeadingPositionalsBeforeModifier {
@@ -595,6 +599,7 @@ pub enum RawEndpointKind {
     HostPort,
     SocketPath,
     RemoteSpec,
+    EmailAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

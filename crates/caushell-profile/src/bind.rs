@@ -1834,6 +1834,9 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
         BindingSpec::LeadingPositionalsWhile(_) => {
             "leading positional arguments matching a constrained semantic pattern".to_string()
         }
+        BindingSpec::PositionalsMatching(_) => {
+            "unconsumed positional arguments matching a semantic pattern".to_string()
+        }
         BindingSpec::LeadingPositionalsBeforeModifier(modifier_id) => format!(
             "leading positional arguments before modifier {}",
             modifier_id.as_str()
@@ -2051,6 +2054,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
             BindingSpec::LeadingPositionalsWhile(matcher) => {
                 self.consume_leading_positionals_while(target.scope, matcher, value_constraints)
             }
+            BindingSpec::PositionalsMatching(matcher) => {
+                self.consume_positionals_matching(target.scope, matcher, value_constraints)
+            }
             BindingSpec::LeadingPositionalsBeforeModifier(modifier_id) => self
                 .consume_leading_positionals_before_modifier(
                     target.scope,
@@ -2197,6 +2203,12 @@ impl<'p, 'm> BindingState<'p, 'm> {
             let value_count = values.len();
             match flag_match {
                 FlagTokenMatch::Exact | FlagTokenMatch::ClusterMember => {
+                    // This opt-in mode accepts a bare flag but must not take
+                    // the following positional, option or terminator. Missing
+                    // required values are checked by parameter cardinality.
+                    if operand_mode == FlagOperandMode::OptionalInlineOnly {
+                        continue;
+                    }
                     // Optional argv operands must not claim a following flag,
                     // terminator or absence. Cardinality still controls whether
                     // a missing parameter itself is permitted.
@@ -2292,7 +2304,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 binding_source,
                 value_constraints,
             ),
-            FlagOperandMode::InlineOnly | FlagOperandMode::InlineOrShortAttached => None,
+            FlagOperandMode::InlineOnly
+            | FlagOperandMode::OptionalInlineOnly
+            | FlagOperandMode::InlineOrShortAttached => None,
             FlagOperandMode::NextPositionalAfterDashDash => self
                 .consume_positional_after_optional_dashdash(
                     flag_index,
@@ -2937,6 +2951,60 @@ impl<'p, 'm> BindingState<'p, 'm> {
             values.push(value);
         }
 
+        values
+    }
+
+    fn consume_positionals_matching(
+        &mut self,
+        scope: ArgumentScope,
+        matcher: &ValueMatcher,
+        value_constraints: &[ValueConstraint],
+    ) -> Vec<BoundValue> {
+        // Compile once for this binding, not once per argv element. Other
+        // matcher kinds retain their existing interpretation.
+        let pattern = match matcher {
+            ValueMatcher::RegexPattern(pattern) => Some(
+                Regex::new(pattern)
+                    .expect("regex patterns are validated during profile normalization"),
+            ),
+            _ => None,
+        };
+        let mut values = Vec::new();
+        for index in scope.start_index..scope.end_index {
+            if self.consumed[index] || !self.is_positional(index) {
+                continue;
+            }
+            let arg = &self.projection.args[index];
+            let mut value = BoundValue::argument_with_node_kind(
+                arg.text.clone(),
+                arg.quoted,
+                arg.node_kind.clone(),
+                arg.span.clone(),
+                ArgumentBindingSource::Positional {
+                    kind: PositionalBindingSource::MatchingPositionals,
+                },
+            );
+            if arg.runtime_data {
+                value =
+                    value.with_materialization(crate::BoundArgumentMaterialization::RuntimeData);
+            }
+            // Match the literal semantic view, including quoted paths, but
+            // retain the untouched argv and source metadata in the slot.
+            // Dynamic values are not guessed from an apparent prefix.
+            let Some(crate::SemanticValueResolution::Known(text)) =
+                crate::project_value(&crate::ValueProjection::Identity, &value)
+            else {
+                continue;
+            };
+            let matches = pattern.as_ref().map_or_else(
+                || argument_matches_value_matcher(&text, matcher),
+                |pattern| pattern.is_match(&text),
+            );
+            if matches && argument_satisfies_value_constraints(&text, value_constraints) {
+                self.consumed[index] = true;
+                values.push(value);
+            }
+        }
         values
     }
 
