@@ -365,6 +365,7 @@ pub enum PackageManagerKind {
     Conan,
     Conda,
     Npm,
+    Yum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1399,6 +1400,8 @@ pub struct BoundInvocation {
     pub applied_modifiers: Vec<ModifierId>,
     pub effects: Vec<Effect>,
     pub residuals: Vec<Residual>,
+    /// A declared operation may have additional, unmodeled semantics.
+    pub operation_semantics_unresolved: bool,
 }
 
 impl BoundInvocation {
@@ -1413,6 +1416,7 @@ impl BoundInvocation {
             applied_modifiers: Vec::new(),
             effects: Vec::new(),
             residuals: Vec::new(),
+            operation_semantics_unresolved: false,
         }
     }
 
@@ -1455,6 +1459,9 @@ pub struct CommandProfile {
     pub argument_files: Vec<ArgumentFileRule>,
     /// Declared uncertainty effects, retained when no complete form can bind.
     pub selection_failure_effects: Vec<Effect>,
+    /// Opt in to operation uncertainty for failed selection or binding residuals.
+    /// The action is supplied by ResolvePolicy, not by the Profile.
+    pub opaque_on_unresolved: bool,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
@@ -1471,6 +1478,7 @@ impl CommandProfile {
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             forms: Vec::new(),
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),

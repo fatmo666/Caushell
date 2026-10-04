@@ -597,6 +597,8 @@ pub struct DerivedInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionSemanticsFact {
+    #[serde(default, skip_serializing_if = "crate::execution::is_false")]
+    pub operation_semantics_unresolved: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminal_session_operations: Vec<crate::TerminalSessionOperationKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2161,6 +2163,7 @@ mod tests {
                     shell_kind: ShellKind::Bash,
                 },
                 semantics: Some(ExecutionSemanticsFact {
+                    operation_semantics_unresolved: false,
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
                     terminal_session_operations: Vec::new(),
@@ -2326,6 +2329,7 @@ mod tests {
                         shell_kind: ShellKind::Bash,
                     },
                     semantics: Some(ExecutionSemanticsFact {
+                        operation_semantics_unresolved: false,
                         network_listeners: Vec::new(),
                         database_operations: Vec::new(),
                         terminal_session_operations: Vec::new(),
@@ -2739,6 +2743,7 @@ mod tests {
     fn execution_semantics_query_response_uses_tagged_json_contract() {
         let response = QueryResponse::ExecutionSemantics(ExecutionSemanticsQueryResponse {
             semantics: vec![ExecutionSemanticsFact {
+                operation_semantics_unresolved: false,
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
                 terminal_session_operations: Vec::new(),

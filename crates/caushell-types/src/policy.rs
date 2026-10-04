@@ -11,6 +11,8 @@ pub enum ResolveGapKind {
     UnknownSubcommandPath,
     FormSelectionAmbiguous,
     FormSelectionUnmatched,
+    /// An opt-in Profile cannot fully determine the operation's semantics.
+    OpaqueInvocation,
     MissingCommandName,
     DynamicCommandTarget,
     UnresolvedWrapperChild,
@@ -337,6 +339,7 @@ fn default_resolve_gap_action(gap_kind: ResolveGapKind) -> RuleAction {
         ResolveGapKind::UnknownSubcommandPath => RuleAction::Observe,
         ResolveGapKind::FormSelectionAmbiguous => RuleAction::Observe,
         ResolveGapKind::FormSelectionUnmatched => RuleAction::Observe,
+        ResolveGapKind::OpaqueInvocation => RuleAction::NeedApproval,
         ResolveGapKind::MissingCommandName => RuleAction::NeedApproval,
         ResolveGapKind::DynamicCommandTarget => RuleAction::NeedApproval,
         ResolveGapKind::UnresolvedWrapperChild => RuleAction::NeedApproval,
@@ -657,6 +660,10 @@ mod tests {
         );
         assert_eq!(
             policy.action_for_resolve_gap(ResolveGapKind::UnresolvedExecutionPayload),
+            RuleAction::NeedApproval
+        );
+        assert_eq!(
+            policy.action_for_resolve_gap(ResolveGapKind::OpaqueInvocation),
             RuleAction::NeedApproval
         );
     }

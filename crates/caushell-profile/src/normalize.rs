@@ -149,6 +149,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         platform: normalize_platform(raw.platform),
         argument_files,
         selection_failure_effects,
+        opaque_on_unresolved: raw.opaque_on_unresolved,
         forms,
         modifiers,
         option_scope,
@@ -1266,6 +1267,7 @@ fn normalize_package_manager_kind(raw: RawPackageManagerKind) -> PackageManagerK
         RawPackageManagerKind::Conan => PackageManagerKind::Conan,
         RawPackageManagerKind::Conda => PackageManagerKind::Conda,
         RawPackageManagerKind::Npm => PackageManagerKind::Npm,
+        RawPackageManagerKind::Yum => PackageManagerKind::Yum,
     }
 }
 
@@ -2078,6 +2080,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2243,6 +2246,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2333,6 +2337,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2423,6 +2428,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2479,6 +2485,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2552,6 +2559,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2573,6 +2581,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2604,6 +2613,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             selection_failure_effects: Vec::new(),
+            opaque_on_unresolved: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),

@@ -363,6 +363,10 @@ pub fn bind_invocation(
 ) -> BoundInvocation {
     let targets = collect_parameter_targets(selection);
     let mut state = BindingState::with_modifier_context(projection, &selection.modifiers);
+    state.audit_operation_semantics = profile.opaque_on_unresolved;
+    if profile.opaque_on_unresolved {
+        state.flag_operand_indices = vec![false; projection.args.len()];
+    }
     state.set_option_scope(selection.option_scope.as_ref());
     for index in &selection.option_terminators {
         state.consumed[*index] = true;
@@ -451,8 +455,111 @@ pub fn bind_invocation(
         }
     }
 
+    if profile.opaque_on_unresolved {
+        collect_unresolved_arguments(&state, selection, &mut residuals);
+    }
     bound.residuals = residuals;
+    bound.operation_semantics_unresolved =
+        profile.opaque_on_unresolved && !bound.residuals.is_empty();
     bound
+}
+
+/// Whole-argv accounting is opt-in: the legacy binder intentionally tolerates
+/// unconsumed syntax. A token consumed by a known flag-only member of a short
+/// cluster does not prove the rest of that cluster is modeled.
+fn collect_unresolved_arguments(
+    state: &BindingState<'_, '_>,
+    selection: &InvocationSelection<'_>,
+    residuals: &mut Vec<Residual>,
+) {
+    for index in &state.unbound_flag_operands {
+        residuals.push(Residual::new(
+            ResidualKind::UnboundControlSurface,
+            ResidualSurface::Control,
+            format!(
+                "option operand could not be bound at argument {index}: {:?}",
+                state.projection.args[*index].text
+            ),
+        ));
+    }
+    let mut declared_short_flags = state.declared_short_flags.clone();
+    let mut attached_operands = state.short_flags_allowing_attached_operands.clone();
+    for parameter in &selection.form.parameters {
+        if let BindingSpec::FollowingFlag {
+            flag_name,
+            operand_mode,
+        } = &parameter.binding
+        {
+            if short_flag_char(flag_name.as_str()).is_some() {
+                declared_short_flags.insert(flag_name.as_str().to_string());
+                if matches!(
+                    operand_mode,
+                    FlagOperandMode::NextArg | FlagOperandMode::InlineOrShortAttached
+                ) {
+                    attached_operands.insert(flag_name.as_str().to_string());
+                }
+            }
+        }
+    }
+    for (index, arg) in state.projection.args.iter().enumerate() {
+        if arg.kind == ProjectedArgKind::DashDash {
+            continue;
+        }
+        if state.flag_operand_indices[index] {
+            // Option values and explicit argument-prefix bindings are data,
+            // not an unmodeled short-option cluster. Use argv indices, never spans.
+            continue;
+        }
+        let positional = state.is_positional(index);
+        if positional && index < selection.form_scope.start_index {
+            // The subcommand path is already accounted for by selection.
+            continue;
+        }
+        let unconsumed = !state.consumed[index];
+        let partial_cluster = !positional
+            && selection.option_matching == OptionMatchingPolicy::ShortClusters
+            && arg.text.starts_with('-')
+            && !arg.text.starts_with("--")
+            && arg.text.len() > 2
+            && !state.selected_modifiers.iter().any(|selected| {
+                selected
+                    .modifier
+                    .matcher
+                    .flag_names()
+                    .iter()
+                    .any(|name| name.as_str() == arg.text)
+            })
+            && {
+                let mut unknown = false;
+                for ch in arg.text[1..].chars() {
+                    let flag = format!("-{ch}");
+                    if !declared_short_flags.contains(&flag) {
+                        unknown = true;
+                        break;
+                    }
+                    if attached_operands.contains(&flag) {
+                        // Remaining bytes are an operand, not cluster members.
+                        break;
+                    }
+                }
+                unknown
+            };
+        if unconsumed || partial_cluster {
+            residuals.push(Residual::new(
+                if positional {
+                    ResidualKind::UnboundData
+                } else {
+                    ResidualKind::UnmodeledModifier
+                },
+                if positional {
+                    ResidualSurface::Data
+                } else {
+                    ResidualSurface::Control
+                },
+                format!("argument {index} is not fully modeled: {:?}", arg.text),
+            ));
+        }
+    }
 }
 
 pub(crate) fn bind_modifier_only_invocation(
@@ -1697,6 +1804,9 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
 }
 
 struct BindingState<'p, 'm> {
+    audit_operation_semantics: bool,
+    unbound_flag_operands: Vec<usize>,
+    flag_operand_indices: Vec<bool>,
     projection: &'p ProjectedInvocation,
     consumed: Vec<bool>,
     declared_short_flags: BTreeSet<String>,
@@ -1711,6 +1821,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
     fn new(projection: &'p ProjectedInvocation) -> Self {
         Self {
             projection,
+            audit_operation_semantics: false,
+            unbound_flag_operands: Vec::new(),
+            flag_operand_indices: Vec::new(),
             consumed: vec![false; projection.args.len()],
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
@@ -1728,6 +1841,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
     ) -> Self {
         let mut state = Self {
             projection,
+            audit_operation_semantics: false,
+            unbound_flag_operands: Vec::new(),
+            flag_operand_indices: Vec::new(),
             consumed: consumed.to_vec(),
             declared_short_flags: BTreeSet::new(),
             short_flags_allowing_attached_operands: BTreeSet::new(),
@@ -1999,12 +2115,16 @@ impl<'p, 'm> BindingState<'p, 'm> {
 
             self.consumed[index] = true;
 
+            let value_count = values.len();
             match flag_match {
                 FlagTokenMatch::Exact | FlagTokenMatch::ClusterMember => {
                     if matches!(
                         operand_mode,
                         FlagOperandMode::InlineOnly | FlagOperandMode::InlineOrShortAttached
                     ) {
+                        if self.audit_operation_semantics {
+                            self.unbound_flag_operands.push(index);
+                        }
                         continue;
                     }
 
@@ -2021,6 +2141,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 FlagTokenMatch::LongInlineOperand(inline_operand)
                 | FlagTokenMatch::ShortAttachedOperand(inline_operand) => {
                     if matches!(operand_mode, FlagOperandMode::SecondArg) {
+                        if self.audit_operation_semantics {
+                            self.unbound_flag_operands.push(index);
+                        }
                         continue;
                     }
 
@@ -2034,6 +2157,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                         ));
                     }
                 }
+            }
+            if self.audit_operation_semantics && values.len() == value_count {
+                self.unbound_flag_operands.push(index);
             }
         }
 
@@ -2093,6 +2219,10 @@ impl<'p, 'm> BindingState<'p, 'm> {
         let arg = self.projection.args.get(value_index)?;
         self.consumed[value_index] = true;
 
+        if self.audit_operation_semantics {
+            self.flag_operand_indices[value_index] = true;
+        }
+
         argument_satisfies_value_constraints(arg.text.as_str(), value_constraints).then(|| {
             BoundValue::argument_with_node_kind(
                 arg.text.clone(),
@@ -2128,6 +2258,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
         let arg = self.projection.args.get(value_index)?;
         self.consumed[value_index] = true;
 
+        if self.audit_operation_semantics {
+            self.flag_operand_indices[skipped_index] = true;
+            self.flag_operand_indices[value_index] = true;
+        }
+
         argument_satisfies_value_constraints(arg.text.as_str(), value_constraints).then(|| {
             BoundValue::argument_with_node_kind(
                 arg.text.clone(),
@@ -2158,6 +2293,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
         }
 
         self.consumed[value_index] = true;
+        if self.audit_operation_semantics {
+            self.flag_operand_indices[value_index] = true;
+        }
 
         argument_satisfies_value_constraints(arg.text.as_str(), value_constraints).then(|| {
             BoundValue::argument_with_node_kind(
@@ -2197,6 +2335,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
         }
 
         self.consumed[value_index] = true;
+        if self.audit_operation_semantics {
+            self.flag_operand_indices[value_index] = true;
+        }
 
         argument_satisfies_value_constraints(arg.text.as_str(), value_constraints).then(|| {
             BoundValue::argument_with_node_kind(
@@ -2735,6 +2876,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
                         prefix: prefix.to_string(),
                     },
                 ));
+                if self.audit_operation_semantics {
+                    self.flag_operand_indices[index] = true;
+                }
+            } else if self.audit_operation_semantics {
+                self.unbound_flag_operands.push(index);
             }
         }
 

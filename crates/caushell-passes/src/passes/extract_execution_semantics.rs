@@ -53,12 +53,13 @@ fn project_execution_semantics_mutation(
             normalized_command_name,
             partial_bound: Some(bound),
             ..
-        } if bound.effects.iter().any(|effect| {
-            matches!(
-                effect.kind,
-                EffectKind::DatabaseOperation | EffectKind::TerminalSessionOperation
-            )
-        }) =>
+        } if bound.operation_semantics_unresolved
+            || bound.effects.iter().any(|effect| {
+                matches!(
+                    effect.kind,
+                    EffectKind::DatabaseOperation | EffectKind::TerminalSessionOperation
+                )
+            }) =>
         {
             (normalized_command_name, bound)
         }
@@ -81,6 +82,7 @@ fn execution_semantics_for_bound(
 ) -> ExecutionSemantics {
     let mut semantics =
         ExecutionSemantics::new(normalized_command_name, invocation.form_id.as_str());
+    semantics.operation_semantics_unresolved = invocation.operation_semantics_unresolved;
 
     for operation in invocation
         .effects

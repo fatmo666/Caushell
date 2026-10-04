@@ -82,6 +82,8 @@ pub enum ProcessControlTargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionSemantics {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub operation_semantics_unresolved: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminal_session_operations: Vec<TerminalSessionOperationKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -117,6 +119,7 @@ impl ExecutionSemantics {
     pub fn new(normalized_command_name: impl Into<String>, form_id: impl Into<String>) -> Self {
         Self {
             terminal_session_operations: Vec::new(),
+            operation_semantics_unresolved: false,
             database_operations: Vec::new(),
             network_listeners: Vec::new(),
             normalized_command_name: normalized_command_name.into(),
@@ -235,6 +238,10 @@ impl ExecutionSemantics {
     }
 }
 
+pub(crate) fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkListenScope {
@@ -276,6 +283,24 @@ impl NetworkListener {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unresolved_operations_roundtrip_without_changing_legacy_json() {
+        use super::*;
+        let mut semantics = ExecutionSemantics::new("fixture", "run");
+        let old = serde_json::to_value(&semantics).unwrap();
+        assert!(old.get("operation_semantics_unresolved").is_none());
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(old).unwrap(),
+            semantics
+        );
+        semantics.operation_semantics_unresolved = true;
+        let wire = serde_json::to_value(&semantics).unwrap();
+        assert_eq!(wire["operation_semantics_unresolved"], true);
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(wire).unwrap(),
+            semantics
+        );
+    }
     #[test]
     fn terminal_operations_roundtrip_and_legacy_semantics_default_empty() {
         use super::*;

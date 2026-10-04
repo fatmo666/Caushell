@@ -276,6 +276,58 @@ Known local inputs retain path-content provenance and known URLs retain network-
 
 The existing imported-package execution guard checks every source consumed by the current invocation, not just its first package. Its trigger is the existing `executes_imported_package_logic` fact; calls without that fact skip source-edge traversal. Only `Consumes` edges labeled `ImportedPackageLogic` to imported-package artifacts participate. Each distinct invocation/artifact pair receives its own evidence and existing source policy, and ordinary decision assembly retains `Deny > NeedApproval > Allow`. Repeated operands or slots consuming the same artifact do not duplicate findings, while separate invocations and distinct source kinds remain separate. Pure downloads, previews and queries are not package execution merely because their Graph contains package artifacts. This adds no pass, Profile-name special case or full-session graph scan.
 
+### Opt-in unresolved operation semantics
+
+A Profile may declare `opaque_on_unresolved: true` (default `false`). Failed or ambiguous
+form selection, unknown subcommands, binding residuals, unconsumed arguments, partially
+modeled short-option clusters and missing option operands then retain an
+`operation_semantics_unresolved` fact. Option values and data beyond a declared option
+boundary are not reclassified as options. Known effects and operands are retained;
+uncertainty does not erase resolved path or package-source semantics.
+
+The existing `ResolvePolicyPass` handles the `opaque_invocation` resolve-gap category,
+defaulting to `NeedApproval`. Profiles declare uncertainty, not policy actions. Its action
+can be configured through `policy.resolve_gaps.opaque_invocation` (`allow`, `need_approval`,
+`deny`); observing uncertainty does not disable other guards. The fact survives Graph,
+snapshot, decision trace and execution-semantics queries. Old stored facts without this
+field read as `false`; false is omitted from JSON. Profiles without the declaration keep
+the previous selection/binding policy. There is no new Pass or command-name exception;
+whole-argv accounting runs only for opted-in Profiles.
+
+### Yum: independent package sources and installation targets
+
+The Yum Profile declares `manager: yum`, not Apt or an alias for DNF/DNF5.
+The pinned [official source](https://github.com/rpm-software-management/yum/tree/4ed25525ee4781907bd204018c27f44948ed83fe)
+permits options before and after commands. Install/update/reinstall/synchronization/removal
+declare `write_path` on the installation directory, defaulting to `/`; the last explicit
+`--installroot` wins. Unknown, empty and relative roots do not fall back to `/`.
+This represents directory-level modification, including RPM DB updates during uninstall,
+not deletion of the root or an enumeration of package files. Existing workspace and
+package-source guards independently check destinations and executable sources.
+
+Queries keep configuration-selected incidental cache writes, not installation transactions.
+Explicit `--downloaddir` is checked normally: even repository setup for a query may create it
+([setup](https://github.com/rpm-software-management/yum/blob/4ed25525ee4781907bd204018c27f44948ed83fe/yum/repos.py#L152),
+[directory setter](https://github.com/rpm-software-management/yum/blob/4ed25525ee4781907bd204018c27f44948ed83fe/yum/yumRepo.py#L777)).
+`--downloadonly` retains sources and outputs without modeled installation logic;
+`--cacheonly`, `--assumeno` and `--nodeps` are not inferred to be transaction-free.
+Cache deletion keeps an unknown actual target and requires approval, not a cache-write exemption.
+
+Ordinary install selects a local `.rpm` only if it exists or is remote
+([native branch](https://github.com/rpm-software-management/yum/blob/4ed25525ee4781907bd204018c27f44948ed83fe/cli.py#L1013)).
+The unresolved local/registry alternative remains `unknown_dynamic`, not a suffix-guessed
+local classification. `localinstall/localupdate` instead declare an explicit local role;
+URLs remain separately classified. Synchronization modes `full/different` are not package
+sources; whole-environment updates and dependencies do not fabricate concrete package nodes.
+
+Explicit config, arbitrary setopts, plugin selection, unsupported commands, group transactions,
+history replay and Yum's own shell/transaction language use the opt-in
+`opaque_on_unresolved` declaration and existing resolve-gap approval,
+not Bash parsing. No new Pass, dynamic probing, request field or command-name exception is added.
+Opaque configuration, RPM macros, package scriptlets/triggers, GPG key setup, preinstalled plugins
+and filesystem aliases are outside this static CLI scope; installroot is not a sandbox proof.
+This validates traditional Yum, not distribution-specific DNF implementations of a yum entrypoint.
+
 ## Session Graph Extension
 
 Each session maintains a continuously updated execution graph. When analyzing the current action, Caushell first layers its new commands, state, and provenance relationships onto the existing graph to form the view used for this analysis.

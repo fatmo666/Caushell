@@ -92,6 +92,42 @@ mod tests {
     }
 
     #[test]
+    fn opaque_invocation_uses_existing_resolve_gap_configuration() {
+        use caushell_types::ResolveGapKind;
+        for (name, action) in [
+            ("allow", RuleAction::Observe),
+            ("need_approval", RuleAction::NeedApproval),
+            ("deny", RuleAction::Deny),
+        ] {
+            let config = load_config_from_str(&format!(
+                "policy:\n  resolve_gaps:\n    opaque_invocation: {name}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                config
+                    .policy
+                    .rule_policy
+                    .action_for_resolve_gap(ResolveGapKind::OpaqueInvocation),
+                action
+            );
+            assert_eq!(
+                config
+                    .policy
+                    .rule_policy
+                    .action_for_resolve_gap(ResolveGapKind::FormSelectionUnmatched),
+                RuleAction::Observe
+            );
+            assert_eq!(
+                config
+                    .policy
+                    .rule_policy
+                    .action_for(RuleId::OutsideWorkspaceMutation),
+                RuleAction::NeedApproval
+            );
+        }
+    }
+
+    #[test]
     fn database_family_and_rules_use_existing_configuration_precedence() {
         let config = load_config_from_str("policy:\n  families:\n    database_safety: allow\n  rules:\n    database_state_mutation: deny\n").unwrap();
         assert_eq!(

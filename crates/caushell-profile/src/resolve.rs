@@ -177,7 +177,11 @@ pub fn resolve_invocation_with_bindings<'a>(
         }
         Err(error) => ResolveInvocationResult::SelectionError {
             normalized_command_name,
-            gap_kind: gap_kind_for_bind_error(&error),
+            gap_kind: if profile.opaque_on_unresolved {
+                ResolveGapKind::OpaqueInvocation
+            } else {
+                gap_kind_for_bind_error(&error)
+            },
             error,
             partial_bound: bind_modifier_only_invocation(
                 profile,
@@ -185,19 +189,23 @@ pub fn resolve_invocation_with_bindings<'a>(
             )
             .or_else(|| {
                 (argument_file_effects(profile, &materialized_projection)
-                    || !profile.selection_failure_effects.is_empty())
-                .then(|| {
-                    BoundInvocation::new(
-                        profile.identity.canonical_name.clone(),
-                        crate::FormId::new(if profile.selection_failure_effects.is_empty() {
-                            "__opaque_argument_file__"
-                        } else {
-                            "__selection_failure__"
-                        }),
-                    )
-                })
+                    || !profile.selection_failure_effects.is_empty()
+                    || profile.opaque_on_unresolved)
+                    .then(|| {
+                        BoundInvocation::new(
+                            profile.identity.canonical_name.clone(),
+                            crate::FormId::new(if profile.opaque_on_unresolved {
+                                "__unresolved_operation__"
+                            } else if profile.selection_failure_effects.is_empty() {
+                                "__opaque_argument_file__"
+                            } else {
+                                "__selection_failure__"
+                            }),
+                        )
+                    })
             })
             .map(|mut bound| {
+                bound.operation_semantics_unresolved = profile.opaque_on_unresolved;
                 bound
                     .effects
                     .extend(profile.selection_failure_effects.iter().cloned());

@@ -837,6 +837,10 @@ impl<'a> ExecutionSemanticsRef<'a> {
         self.semantics.executes_payload
     }
 
+    pub fn operation_semantics_unresolved(&self) -> bool {
+        self.semantics.operation_semantics_unresolved
+    }
+
     pub fn opens_interactive_escape_surface(&self) -> bool {
         self.semantics.opens_interactive_escape_surface
     }
@@ -917,6 +921,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
 
     pub fn to_execution_semantics_fact(&self) -> ExecutionSemanticsFact {
         ExecutionSemanticsFact {
+            operation_semantics_unresolved: self.operation_semantics_unresolved(),
             terminal_session_operations: self.semantics.terminal_session_operations.clone(),
             database_operations: self.semantics.database_operations.clone(),
             network_listeners: self.semantics.network_listeners.clone(),
@@ -1634,6 +1639,7 @@ mod tests {
         assert_eq!(
             semantics.to_execution_semantics_fact(),
             ExecutionSemanticsFact {
+                operation_semantics_unresolved: false,
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
                 terminal_session_operations: Vec::new(),

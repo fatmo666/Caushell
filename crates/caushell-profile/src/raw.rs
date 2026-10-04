@@ -13,6 +13,7 @@ pub struct RawCommandProfile {
     pub platform: RawPlatformConstraints,
     pub argument_files: Vec<RawArgumentFileRule>,
     pub selection_failure_effects: Vec<RawEffect>,
+    pub opaque_on_unresolved: bool,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
@@ -603,6 +604,7 @@ pub enum RawPackageManagerKind {
     Conan,
     Conda,
     Npm,
+    Yum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

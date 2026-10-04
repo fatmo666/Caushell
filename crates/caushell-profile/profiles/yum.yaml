@@ -1,0 +1,178 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: yum, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_scope: all_arguments
+opaque_on_unresolved: true
+
+# Native Yum (not the DNF compatibility executable), official source
+# 4ed25525ee4781907bd204018c27f44948ed83fe. optparse permits interspersed
+# options. Unsupported command/configuration languages remain resolve gaps.
+forms:
+  - id: show_help
+    selector: {kind: all, items: [{kind: has_modifier, modifier: help}, &known_setup {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: configuration}, {kind: has_modifier, modifier: setopts}, {kind: has_modifier, modifier: plugin_selection}]}}]}
+    parameters: &arguments [{name: arguments, semantic: &plain {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: &streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: show_version
+    selector: {kind: all, items: [*known_setup, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: has_modifier, modifier: version}]}
+    parameters: *arguments
+    stream_contract: *streams
+  - id: query
+    selector:
+      kind: all
+      items:
+        - &running {kind: all, items: [*known_setup, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: version}}]}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(list|info|search|provides|whatprovides|check-update|check|deplist|resolvedep|repolist|repoinfo|version|help)$'}}
+    parameters: *arguments
+    effects:
+      - &cache_write
+        kind: write_path
+        # Repo setup creates an explicit --downloaddir even for queries.
+        target: {kind: configured_path, sources: [{slot: download_directory, projection: {kind: identity}}], missing: incidental_cache, purpose: incidental_cache}
+    stream_contract: *streams
+  - id: history_query
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: history}}, {kind: any, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(info|list|packages-list|packages-info|summary|addon-info|stats)$'}}]}]}
+    parameters: *arguments
+    effects: [*cache_write]
+    stream_contract: *streams
+  - id: group_query
+    selector: {kind: all, items: [*running, {kind: any, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(grouplist|groupinfo)$'}}, {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(group|groups)$'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(list|info|summary)$'}}]}]}]}
+    parameters: *arguments
+    effects: [*cache_write]
+    stream_contract: *streams
+  - id: makecache
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: makecache}}, {kind: not, item: {kind: has_positional_at, index: 2}}, {kind: any, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: fast}}]}]}
+    parameters: *arguments
+    effects: [*cache_write]
+    stream_contract: *streams
+  - id: clean_cache
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: clean}}, {kind: no_positional_after_leading_matcher, matcher: {kind: regex_pattern, pattern: '^(clean|packages|headers|metadata|dbcache|expire-cache|rpmdb|all)$'}}]}
+    parameters: *arguments
+    # Cache deletion is not an incidental write. Without configuration discovery
+    # the actual cache hierarchy remains unknown; do not invent a root deletion.
+    effects:
+      - *cache_write
+      - kind: delete_path
+        target: {kind: configured_path, sources: [{slot: configuration_overrides, projection: {kind: key_value, separator: '=', key: cachedir}}], missing: unknown, purpose: incidental_cache}
+    stream_contract: *streams
+  - id: download_packages
+    selector: {kind: all, items: [&downloading {kind: all, items: [*running, &imports {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(install|install-n|install-na|install-nevra|update|update-to|update-minimal|upgrade|upgrade-to|distribution-synchronization|distro-sync|reinstall|downgrade|localinstall|localupdate)$'}}, {kind: has_modifier, modifier: download_only}]}, {kind: not, item: &local {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(localinstall|localupdate)$'}}}, {kind: not, item: &ambiguous_rpm {kind: has_positional_at_or_after_matching, index: 1, matcher: {kind: regex_pattern, pattern: '\.rpm$'}}}, &not_sync_mode {kind: not, item: &sync_mode {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(distribution-synchronization|distro-sync)$'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(full|different)$'}}]}}]}
+    parameters:
+      - &operation {name: operation, semantic: *plain, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - {name: packages, semantic: &repository_package {kind: package_locator, manager: yum, locator_kinds: [registry_ref, direct_url, unknown_dynamic]}, binding: &remaining {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [*cache_write, &import {kind: import_package, target: {kind: slot, name: packages}}]
+    stream_contract: *streams
+  - id: download_file_or_repository
+    selector: {kind: all, items: [*downloading, {kind: not, item: *local}, *ambiguous_rpm, *not_sync_mode]}
+    parameters:
+      - *operation
+      - {name: packages, semantic: &unknown_rpm {kind: package_locator, manager: yum, locator_kinds: [direct_url, unknown_dynamic]}, binding: *remaining, cardinality: optional_many}
+    effects: [*cache_write, *import]
+    stream_contract: *streams
+  - id: download_local
+    selector: {kind: all, items: [*downloading, *local]}
+    parameters:
+      - *operation
+      - {name: packages, semantic: &local_package {kind: package_locator, manager: yum, locator_kinds: [local_path, direct_url, unknown_dynamic]}, binding: *remaining, cardinality: optional_many}
+    effects: [*cache_write, *import]
+    stream_contract: *streams
+  - id: download_synchronization
+    selector: {kind: all, items: [*downloading, *sync_mode]}
+    parameters: &sync_parameters
+      - *operation
+      - {name: synchronization_mode, semantic: *plain, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: packages, semantic: *repository_package, binding: *remaining, cardinality: optional_many}
+    effects: [*cache_write, *import]
+    stream_contract: *streams
+  - id: repository_transaction
+    selector:
+      kind: all
+      items:
+        - &transaction {kind: all, items: [*running, *imports, {kind: not, item: {kind: has_modifier, modifier: download_only}}]}
+        - {kind: not, item: *local}
+        - {kind: not, item: *ambiguous_rpm}
+        - *not_sync_mode
+    parameters:
+      - *operation
+      - {name: packages, semantic: *repository_package, binding: *remaining, cardinality: optional_many}
+    effects:
+      - *cache_write
+      - &modify_installation
+        kind: write_path
+        # Directory-level modification, including RPM DB changes during removal.
+        # Not DeletePath(root), and not a promise to enumerate installed files.
+        target: {kind: configured_path, sources: [{slot: installroot, projection: {kind: identity}}], default_value: '/', unresolved_relative_base: true, purpose: generic_operand}
+      - *import
+      - &execute {kind: execute_imported_package_logic, target: {kind: slot, name: packages}}
+    stream_contract: *streams
+  - id: file_or_repository_transaction
+    selector: {kind: all, items: [*transaction, {kind: not, item: *local}, *ambiguous_rpm, *not_sync_mode]}
+    parameters:
+      - *operation
+      # Native install chooses a local RPM only when it ends in .rpm AND exists.
+      # Without probing, this is ambiguous, not a suffix-based file classification.
+      - {name: packages, semantic: *unknown_rpm, binding: *remaining, cardinality: optional_many}
+    effects: [*cache_write, *modify_installation, *import, *execute]
+    stream_contract: *streams
+  - id: local_transaction
+    selector: {kind: all, items: [*transaction, *local]}
+    parameters:
+      - *operation
+      # Here the native operand role, not its extension, declares a local source.
+      - {name: packages, semantic: *local_package, binding: *remaining, cardinality: optional_many}
+    effects: [*cache_write, *modify_installation, *import, *execute]
+    stream_contract: *streams
+  - id: synchronize_packages
+    selector: {kind: all, items: [*transaction, *sync_mode]}
+    parameters: *sync_parameters
+    effects: [*cache_write, *modify_installation, *import, *execute]
+    stream_contract: *streams
+  - id: remove_packages
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(remove|erase|autoremove|remove-n|remove-na|remove-nevra|autoremove-n|autoremove-na|autoremove-nevra)$'}}]}
+    parameters: *arguments
+    # Uninstall scriptlets may run, but the selected installed package bodies
+    # are not available statically. No fictitious downloaded-package provenance.
+    effects: [*cache_write, *modify_installation]
+    stream_contract: *streams
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}
+  - {id: version, matcher: {kind: any_flag, flags: [--version]}}
+  - id: installroot
+    matcher: {kind: any_flag, flags: [--installroot]}
+    parameters:
+      - {name: installroot, semantic: *plain, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: download_directory
+    matcher: {kind: any_flag, flags: [--downloaddir]}
+    parameters:
+      - {name: download_directory, semantic: *plain, binding: *following, cardinality: required_many}
+  - {id: download_only, matcher: {kind: any_flag, flags: [--downloadonly]}}
+  - id: configuration
+    matcher: {kind: any_flag, flags: [-c, --config]}
+    parameters:
+      - {name: configuration, semantic: *plain, binding: *following, cardinality: required_many}
+    effects: [{kind: load_config, target: {kind: slot, name: configuration}}]
+  - id: setopts
+    matcher: {kind: any_flag, flags: [--setopt]}
+    parameters:
+      - {name: configuration_overrides, semantic: *plain, binding: *following, cardinality: required_many}
+  - id: plugin_selection
+    matcher: {kind: any_flag, flags: [--enableplugin, --disableplugin]}
+    parameters:
+      - {name: plugin_selection, semantic: *plain, binding: *following, cardinality: required_many}
+  - {id: no_plugins, matcher: {kind: any_flag, flags: [--noplugins]}}
+  - id: standard_flags
+    matcher: {kind: any_flag, flags: [-t, --tolerant, -C, --cacheonly, --showduplicates, --show-duplicates, -q, --quiet, -v, --verbose, -y, --assumeyes, --assumeno, --nodeps, --obsoletes, --nogpgcheck, --skip-broken, --bugfix, --security]}
+  - id: standard_values
+    matcher: {kind: any_flag, flags: [-R, --randomwait, -d, --debuglevel, -e, --errorlevel, --rpmverbosity, --enablerepo, --disablerepo, -x, --exclude, --disableexcludes, --disableincludes, --color, --releasever, --advisory, --advisories, --bzs, --cves, --sec-severity, --secseverity]}
+    parameters:
+      - {name: option_values, semantic: *plain, binding: *following, cardinality: required_many}
+extensions:
+  caushell.profile/scope: Native Yum core query, package transaction, download and cache boundaries; package sources and installation directory modifications are independent. DNF and DNF5 are not aliases.
+  caushell.profile/known_limitations:
+    - A transaction writes its configured installation directory; it does not assert deletion of that directory or enumerate individual package payload files. Runtime RPM macros, filesystem symlinks, package scriptlets and triggers are not interpreted or confined by this static declaration.
+    - Plain queries allow configuration-selected incidental cache writes. Explicit --downloaddir does not get the implicit cache exemption; shell redirections remain independently checked.
+    - Explicit configuration files, arbitrary --setopt and plugin selection are unresolved setup and require approval through the existing resolve-gap policy. Unknown/plugin commands, group transactions, history replay and yum shell/load-transaction are not reinterpreted as Bash.
+    - Ordinary install RPM operands can mean local files or repository references depending on runtime existence. Ambiguous .rpm operands remain unknown; localinstall/localupdate carry an explicit local role. No file/configuration/process probing is performed.
+    - --cacheonly, --assumeno and --nodeps are not assumed to be transaction-free; --downloadonly skips the modeled installation transaction but retains output/cache writes. Repository GPG key setup and preinstalled plugin code are not treated as an independently modeled sandbox.

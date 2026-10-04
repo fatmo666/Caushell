@@ -238,6 +238,7 @@ mod tests {
                     },
                 }],
                 execution_semantics: vec![ExecutionSemanticsFact {
+                    operation_semantics_unresolved: false,
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
                     terminal_session_operations: Vec::new(),

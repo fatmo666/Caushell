@@ -133,6 +133,7 @@ pub enum PackageManagerKind {
     Conan,
     Conda,
     Npm,
+    Yum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -304,6 +305,21 @@ mod tests {
     };
     use crate::{CommandSequenceNo, ResolvedPathPurpose, ResolvedPathRole};
     use serde_json::json;
+
+    #[test]
+    fn yum_package_manager_round_trips_without_changing_existing_variants() {
+        for (manager, name) in [
+            (PackageManagerKind::Yum, "yum"),
+            (PackageManagerKind::Apt, "apt"),
+            (PackageManagerKind::Pip, "pip"),
+        ] {
+            assert_eq!(serde_json::to_value(manager).unwrap(), json!(name));
+            assert_eq!(
+                serde_json::from_value::<PackageManagerKind>(json!(name)).unwrap(),
+                manager
+            );
+        }
+    }
 
     #[test]
     fn provenance_artifact_uses_stable_json_contract() {

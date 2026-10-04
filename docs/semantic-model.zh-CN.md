@@ -264,6 +264,50 @@ cwd 与工作区均为 `/workspace` 时，默认 `pytest tests/` 放行隐含未
 
 该范围是 CLI 事务目标，不等于完整 Conda 执行建模。配置内容、求解结果、传递依赖、缓存／注册表路径、插件及链接／激活脚本均不解释。`run/activate/deactivate`、`config/clean/init/rename`、环境变量配置和 Python 模块分派另行处理。尤其 [Conda run](https://github.com/conda/conda/blob/26.7.0/conda/cli/main_run.py) 先激活环境再执行子命令，未将它声明为透明包装器。
 
+### 可选声明：操作语义未解析
+
+Profile 可声明 `opaque_on_unresolved: true`，缺省为 `false`。形式选择失败／歧义、
+未知子命令、绑定残留、未消费参数、只识别一部分的短选项组合、缺失选项值，
+都会保留 `operation_semantics_unresolved` 事实。选项值及声明的选项边界之后的数据
+不会重新当作选项。已识别的效果与参数不被删除，路径和包来源仍独立检查。
+
+现有 `ResolvePolicyPass` 对 `opaque_invocation` 类别默认要求审批；Profile 只声明未知，
+不决定策略动作。可通过 `policy.resolve_gaps.opaque_invocation` 配置
+`allow/need_approval/deny`，其中 allow 只观察此未知事实，不停用其他护栏。
+事实进入 Graph、快照、决策 Trace 和执行语义 Query；旧记录缺少字段时读为 false，
+false 不写入 JSON。未启用的 Profile 保留原来的选择／绑定策略。
+没有新增 Pass 或命令名特例；全参数核对只在启用该声明的 Profile 上运行。
+
+### Yum：包来源与安装目录分别判断
+
+Yum Profile 独立声明 `manager: yum`，不复用 Apt 身份，也不将 `dnf/dnf5` 注册为别名。
+依据固定[官方源码](https://github.com/rpm-software-management/yum/tree/4ed25525ee4781907bd204018c27f44948ed83fe)，
+CLI 选项可在命令前后出现。安装、更新、重新安装、同步和卸载记录安装目录的 `write_path`，
+默认 `/`，显式 `--installroot` 取最后一个值；未知、空值和非绝对路径不退回默认值。
+这里表示目录级修改（卸载也会修改 RPM 数据库），不是声称删除安装根目录或枚举包内所有文件。
+工作区外目标由既有修改护栏审批；工作区内目标仍独立检查执行的包来源。
+
+查询不声明安装事务，配置决定的隐含缓存写入沿用既有 incidental-cache 策略。
+`--downloaddir` 是显式输出：仓库 setup 会创建它，即使当前命令是查询，见
+[仓库 setup](https://github.com/rpm-software-management/yum/blob/4ed25525ee4781907bd204018c27f44948ed83fe/yum/repos.py#L152)
+和[目录 setter](https://github.com/rpm-software-management/yum/blob/4ed25525ee4781907bd204018c27f44948ed83fe/yum/yumRepo.py#L777)。
+该输出正常检查工作区范围，不享受隐含缓存豁免。`--downloadonly` 保留来源与输出但不声明
+安装包逻辑执行；`--cacheonly/--assumeno/--nodeps` 不被推断成无事务预演。
+`clean` 的真实缓存目标未静态确定时，保留未知删除目标并要求审批，不将删除豁免成缓存写入。
+
+普通 install 的 `.rpm` 操作数只有在运行时文件存在或为远程 URL 时才走本地安装，见
+[原生分支](https://github.com/rpm-software-management/yum/blob/4ed25525ee4781907bd204018c27f44948ed83fe/cli.py#L1013)。
+因此可能的本地／仓库歧义保留 `unknown_dynamic`，不是恢复“猜后缀就是文件”的分类。
+`localinstall/localupdate` 由明确参数角色声明本地来源，URL 仍单独分类。
+同步的 `full/different` 操作模式不是包来源。更新整个环境和传递依赖不虚构具体包节点。
+
+显式配置文件、任意 `--setopt`、插件选择、未知子命令、group 事务、history 重放、
+`yum shell/load-transaction` 通过 `opaque_on_unresolved` 声明走既有 resolve-gap 审批，
+不把 Yum 命令语言解析为 Bash。
+没有新增 Pass、动态探测、请求字段或命令名特例。配置内容、RPM 宏、包脚本／触发器、
+GPG key setup、预装插件代码和真实文件系统别名不在此静态 CLI 范围；`--installroot`
+不是它们的沙箱证明。此声明核查的是传统 Yum，不声称验证各发行版由 DNF 提供的 yum 兼容入口。
+
 ### 按参数角色识别包来源，不猜文件后缀
 
 包来源使用绑定参数的 `package_locator.locator_kinds` 声明和静态确定的 argv 值，不再根据 `.txt`、`.in`、`.lock` 或文件名里的 `requirements` 推断定义文件。

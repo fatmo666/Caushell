@@ -49,6 +49,20 @@ impl RequestAnalysisPass for ResolvePolicyPass {
                             normalized_command_name, error
                         ),
                     )),
+                    ResolveInvocationArtifactResult::Resolved(resolved)
+                        if resolved.bound.operation_semantics_unresolved =>
+                    {
+                        Some((
+                            RuleId::SelectionError,
+                            policy.action_for_resolve_gap(
+                                caushell_types::ResolveGapKind::OpaqueInvocation,
+                            ),
+                            format!(
+                                "command {} has unresolved operation semantics: {:?}",
+                                resolved.normalized_command_name, resolved.bound.residuals
+                            ),
+                        ))
+                    }
                     ResolveInvocationArtifactResult::Resolved(_) => None,
                 })
                 .collect()
