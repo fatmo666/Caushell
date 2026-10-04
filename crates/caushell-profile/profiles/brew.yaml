@@ -1,0 +1,335 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: brew, aliases: [/home/linuxbrew/.linuxbrew/bin/brew]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, macos], shell_families: [], requires_features: []}
+option_matching: exact_names
+option_scope: leading_options
+opaque_on_unresolved: true
+
+# Homebrew/brew 570982948a8a194f0f42f43f4a5bce2d1c9f64cb.
+# The launcher derives prefix/repository from its executable and filesystem,
+# overwriting HOMEBREW_PREFIX. Neither caller env nor a Cask destination proves
+# the complete transaction scope. Do not invent a universal /opt/homebrew root.
+forms:
+  - id: usage
+    selector: {kind: all, items: [{kind: no_arguments}]}
+    stream_contract: &streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: root_information
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: root_verbose}, {kind: has_modifier, modifier: installation_location}]}]}
+    parameters: &plain_args [{name: arguments, semantic: &plain {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: *streams
+modifiers:
+  - &help {id: help, matcher: {kind: any_flag, flags: [-h, --help, --usage, '-?']}}
+  # Only the initial -v is a native global modifier; child --verbose/-v are
+  # declared per command. --version inside an install is not root version.
+  - {id: root_verbose, matcher: {kind: any_flag, flags: [-v]}}
+  - {id: version, matcher: {kind: any_flag, flags: [--version]}}
+  - id: installation_location
+    matcher: {kind: any_flag, flags: [--prefix, --cellar, --caskroom, --repository, --repo, --cache]}
+
+subcommands:
+  roots:
+    - name: help
+      forms:
+        - id: general_help
+          selector: {kind: no_positional_args}
+          stream_contract: *streams
+      default_behavior: reject_unknown
+    - name: list
+      aliases: [ls]
+      option_scope: all_arguments
+      forms: &query_forms
+        - &show_help
+          id: show_help
+          selector: {kind: has_modifier, modifier: help}
+          parameters: *plain_args
+          stream_contract: *streams
+        - id: query
+          selector: &package_query {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(^[./~]|://)'}}}]}
+          parameters: *plain_args
+          effects:
+            - &implicit_config {kind: load_config, target: {kind: none}}
+            - &cache_write {kind: write_path, target: {kind: configured_path, sources: [], environment: {name: HOMEBREW_CACHE}, missing: incidental_cache, purpose: incidental_cache}}
+          stream_contract: *streams
+      modifiers:
+        - *help
+        - &logging {id: logging, matcher: {kind: any_flag, flags: [-q, --quiet, -v, --verbose, -d, --debug]}}
+        - &package_type {id: package_type, matcher: {kind: any_flag, flags: [--formula, --formulae, --cask, --casks]}}
+        - {id: list_flags, matcher: {kind: any_flag, flags: [--full-name, --versions, --json, --multiple, --pinned, --installed-on-request, --no-installed-on-request, --installed-as-dependency, --poured-from-bottle, --built-from-source, '-1', -l, -r, -t]}}
+      default_behavior: reject_unknown
+    - name: info
+      aliases: [abv]
+      option_scope: all_arguments
+      forms: &json_query_forms
+        - *show_help
+        - id: query
+          selector: *package_query
+          parameters:
+            - {name: arguments, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}
+            - {name: json_version, semantic: *plain, binding: {kind: args_with_prefix, prefix: '--json=', before_dash_dash: true}, cardinality: optional_many}
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+      modifiers:
+        - *help
+        - *logging
+        - *package_type
+        - {id: info_flags, matcher: {kind: any_flag, flags: [--analytics, --github-packages-downloads, --fetch-manifest, --installed, --variations, --sizes]}}
+        - id: info_values
+          matcher: {kind: any_flag, flags: [--days, --category]}
+          parameters: [{name: info_values, semantic: *plain, binding: &following {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - &json_optional
+          id: json_optional
+          matcher: {kind: any_flag, flags: [--json]}
+          # Optional values are inline only in native OptionParser. The form
+          # prefix parameter binds --json=value; this modifier accounts for
+          # bare --json without swallowing the next package or requiring value.
+      default_behavior: reject_unknown
+    - name: search
+      option_scope: all_arguments
+      forms:
+        - *show_help
+        - id: search_text
+          selector: *running
+          parameters: *plain_args
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+      modifiers:
+        - *help
+        - *logging
+        - *package_type
+        - {id: search_flags, matcher: {kind: any_flag, flags: [--desc, --pull-request, --open, --closed]}}
+      default_behavior: reject_unknown
+    - name: outdated
+      option_scope: all_arguments
+      forms: *json_query_forms
+      modifiers:
+        - *help
+        - *logging
+        - *package_type
+        - {id: outdated_flags, matcher: {kind: any_flag, flags: [--fetch-HEAD, -g, --greedy, --greedy-latest, --greedy-auto-updates]}}
+        - id: outdated_values
+          matcher: {kind: any_flag, flags: [--minimum-version, --min-version]}
+          parameters: [{name: outdated_values, semantic: *plain, binding: *following, cardinality: required_many}]
+        - *json_optional
+      default_behavior: reject_unknown
+    - name: config
+      forms: &argumentless_queries
+        - *show_help
+        - id: query
+          selector: {kind: all, items: [*running, {kind: no_positional_args}]}
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+      modifiers: &query_modifiers [*help, *logging]
+      default_behavior: reject_unknown
+    - name: formulae
+      forms: *argumentless_queries
+      modifiers: *query_modifiers
+      default_behavior: reject_unknown
+    - name: casks
+      forms: *argumentless_queries
+      modifiers: *query_modifiers
+      default_behavior: reject_unknown
+    - name: shellenv
+      forms:
+        - *show_help
+        - id: print_environment
+          selector: {kind: all, items: [*running, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(bash|zsh|sh|fish|csh|tcsh|pwsh)$'}}]}]}
+          parameters: *plain_args
+          stream_contract: *streams
+      modifiers: [*help]
+      default_behavior: reject_unknown
+    - name: tap
+      forms: *argumentless_queries
+      modifiers: *query_modifiers
+      # tap with operands installs a repository; unknown setup is not a query.
+      default_behavior: reject_unknown
+
+    - name: install
+      aliases: [instal]
+      option_scope: all_arguments
+      forms: &importing_forms
+        - *show_help
+        - id: package_transaction
+          selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: preview}}]}
+          parameters: &packages [{name: packages, semantic: {kind: package_locator, manager: brew, locator_kinds: [registry_ref, direct_url, unknown_dynamic]}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+          effects:
+            - *implicit_config
+            - *cache_write
+            - &modify_state {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+            - &import {kind: import_package, target: {kind: slot, name: packages}}
+            - &execute {kind: execute_imported_package_logic, target: {kind: slot, name: packages}}
+            - &appdir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: appdir, projection: {kind: identity}}], missing: skip}}
+            - &appimagedir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: appimagedir, projection: {kind: identity}}], missing: skip}}
+            - &keyboard_layoutdir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: keyboard_layoutdir, projection: {kind: identity}}], missing: skip}}
+            - &colorpickerdir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: colorpickerdir, projection: {kind: identity}}], missing: skip}}
+            - &prefpanedir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: prefpanedir, projection: {kind: identity}}], missing: skip}}
+            - &qlplugindir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: qlplugindir, projection: {kind: identity}}], missing: skip}}
+            - &mdimporterdir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: mdimporterdir, projection: {kind: identity}}], missing: skip}}
+            - &dictionarydir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: dictionarydir, projection: {kind: identity}}], missing: skip}}
+            - &fontdir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: fontdir, projection: {kind: identity}}], missing: skip}}
+            - &servicedir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: servicedir, projection: {kind: identity}}], missing: skip}}
+            - &input_methoddir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: input_methoddir, projection: {kind: identity}}], missing: skip}}
+            - &internet_plugindir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: internet_plugindir, projection: {kind: identity}}], missing: skip}}
+            - &audio_unit_plugindir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: audio_unit_plugindir, projection: {kind: identity}}], missing: skip}}
+            - &vst_plugindir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: vst_plugindir, projection: {kind: identity}}], missing: skip}}
+            - &vst3_plugindir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: vst3_plugindir, projection: {kind: identity}}], missing: skip}}
+            - &screen_saverdir_write {kind: write_path, target: {kind: configured_path, sources: [{slot: screen_saverdir, projection: {kind: identity}}], missing: skip}}
+          stream_contract: *streams
+      modifiers: &install_modifiers
+        - *help
+        - *logging
+        - *package_type
+        - &preview {id: preview, matcher: {kind: any_flag, flags: [-n, --dry-run]}}
+        - &install_flags {id: install_flags, matcher: {kind: any_flag, flags: [-f, --force, --display-times, --no-ask, --yes, -y, --ask, --ignore-dependencies, --only-dependencies, -s, --build-from-source, --force-bottle, --include-test, --HEAD, --fetch-HEAD, --keep-tmp, --debug-symbols, --build-bottle, --skip-post-install, --skip-link, --as-dependency, -i, --interactive, -g, --git, --overwrite, --binaries, --no-binaries, --require-sha, --adopt, --skip-cask-deps, --zap, --no-quit, --greedy, --greedy-latest, --greedy-auto-updates]}}
+        - &install_values
+          id: install_values
+          matcher: {kind: any_flag, flags: [--cc, --bottle-arch, --language, --minimum-version, --min-version]}
+          parameters: [{name: install_values, semantic: *plain, binding: *following, cardinality: required_many}]
+        - {id: appdir, matcher: {kind: any_flag, flags: [--appdir]}, parameters: [{name: appdir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: appimagedir, matcher: {kind: any_flag, flags: [--appimagedir]}, parameters: [{name: appimagedir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: keyboard_layoutdir, matcher: {kind: any_flag, flags: [--keyboard-layoutdir]}, parameters: [{name: keyboard_layoutdir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: colorpickerdir, matcher: {kind: any_flag, flags: [--colorpickerdir]}, parameters: [{name: colorpickerdir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: prefpanedir, matcher: {kind: any_flag, flags: [--prefpanedir]}, parameters: [{name: prefpanedir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: qlplugindir, matcher: {kind: any_flag, flags: [--qlplugindir]}, parameters: [{name: qlplugindir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: mdimporterdir, matcher: {kind: any_flag, flags: [--mdimporterdir]}, parameters: [{name: mdimporterdir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: dictionarydir, matcher: {kind: any_flag, flags: [--dictionarydir]}, parameters: [{name: dictionarydir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: fontdir, matcher: {kind: any_flag, flags: [--fontdir]}, parameters: [{name: fontdir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: servicedir, matcher: {kind: any_flag, flags: [--servicedir]}, parameters: [{name: servicedir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: input_methoddir, matcher: {kind: any_flag, flags: [--input-methoddir]}, parameters: [{name: input_methoddir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: internet_plugindir, matcher: {kind: any_flag, flags: [--internet-plugindir]}, parameters: [{name: internet_plugindir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: audio_unit_plugindir, matcher: {kind: any_flag, flags: [--audio-unit-plugindir]}, parameters: [{name: audio_unit_plugindir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: vst_plugindir, matcher: {kind: any_flag, flags: [--vst-plugindir]}, parameters: [{name: vst_plugindir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: vst3_plugindir, matcher: {kind: any_flag, flags: [--vst3-plugindir]}, parameters: [{name: vst3_plugindir, semantic: *plain, binding: *following, cardinality: required_many}]}
+        - {id: screen_saverdir, matcher: {kind: any_flag, flags: [--screen-saverdir]}, parameters: [{name: screen_saverdir, semantic: *plain, binding: *following, cardinality: required_many}]}
+      default_behavior: reject_unknown
+    - name: reinstall
+      option_scope: all_arguments
+      forms: *importing_forms
+      modifiers: *install_modifiers
+      default_behavior: reject_unknown
+    - name: upgrade
+      option_scope: all_arguments
+      forms:
+        - *show_help
+        - id: upgrade_transaction
+          selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: preview}}]}
+          parameters: [{name: packages, semantic: {kind: package_locator, manager: brew, locator_kinds: [registry_ref, direct_url, unknown_dynamic]}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          effects: [*implicit_config, *cache_write, *modify_state, *import, *execute, *appdir_write, *appimagedir_write, *keyboard_layoutdir_write, *colorpickerdir_write, *prefpanedir_write, *qlplugindir_write, *mdimporterdir_write, *dictionarydir_write, *fontdir_write, *servicedir_write, *input_methoddir_write, *internet_plugindir_write, *audio_unit_plugindir_write, *vst_plugindir_write, *vst3_plugindir_write, *screen_saverdir_write]
+          stream_contract: *streams
+      modifiers: *install_modifiers
+      default_behavior: reject_unknown
+    - name: uninstall
+      aliases: [uninstal, remove, rm]
+      option_scope: all_arguments
+      forms:
+        - *show_help
+        - id: remove_packages
+          selector: *running
+          parameters: [{name: installed_packages, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: required_many}]
+          effects:
+            - *implicit_config
+            - *cache_write
+            - *modify_state
+            - &delete_state {kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+          stream_contract: *streams
+      modifiers:
+        - *help
+        - *logging
+        - *package_type
+        - {id: removal_flags, matcher: {kind: any_flag, flags: [-f, --force, --zap, --ignore-dependencies]}}
+      default_behavior: reject_unknown
+    - name: cleanup
+      option_scope: all_arguments
+      forms:
+        - *show_help
+        - id: cleanup_preview
+          selector: {kind: all, items: [*running, {kind: has_modifier, modifier: preview}]}
+          parameters: *plain_args
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+        - id: cleanup_delete
+          selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: preview}}]}
+          parameters: *plain_args
+          effects: [*implicit_config, *cache_write, *delete_state]
+          stream_contract: *streams
+      modifiers:
+        - *help
+        - *logging
+        - *preview
+        - {id: cleanup_flags, matcher: {kind: any_flag, flags: [-s, --scrub, --prune-prefix]}}
+        - id: prune_age
+          matcher: {kind: any_flag, flags: [--prune]}
+          parameters: [{name: prune_age, semantic: *plain, binding: *following, cardinality: required_many}]
+      default_behavior: reject_unknown
+    - name: autoremove
+      forms:
+        - *show_help
+        - id: autoremove_preview
+          selector: {kind: all, items: [*running, {kind: no_positional_args}, {kind: has_modifier, modifier: preview}]}
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+        - id: autoremove_packages
+          selector: {kind: all, items: [*running, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: preview}}]}
+          effects: [*implicit_config, *cache_write, *modify_state, *delete_state]
+          stream_contract: *streams
+      modifiers: [*help, *logging, *preview]
+      default_behavior: reject_unknown
+    - name: link
+      aliases: [ln]
+      option_scope: all_arguments
+      forms: &link_forms
+        - *show_help
+        - id: link_preview
+          selector: {kind: all, items: [*running, {kind: has_modifier, modifier: preview}]}
+          parameters: *plain_args
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+        - id: change_links
+          selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: preview}}]}
+          parameters: *plain_args
+          effects: [*implicit_config, *cache_write, *modify_state]
+          stream_contract: *streams
+      modifiers: &link_modifiers [*help, *logging, *preview, *package_type, {id: link_flags, matcher: {kind: any_flag, flags: [-f, --force, --overwrite, --HEAD]}}]
+      default_behavior: reject_unknown
+    - name: unlink
+      option_scope: all_arguments
+      forms: *link_forms
+      modifiers: *link_modifiers
+      default_behavior: reject_unknown
+    - name: services
+      option_scope: leading_options
+      forms:
+        - *show_help
+        - id: service_list_default
+          selector: {kind: all, items: [*running, {kind: no_positional_args}]}
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+      modifiers: &service_query_modifiers [*help, *logging, {id: service_json, matcher: {kind: any_flag, flags: [--json]}}]
+      children:
+        - name: list
+          aliases: [ls]
+          forms: *argumentless_queries
+          modifiers: *service_query_modifiers
+          default_behavior: reject_unknown
+        - name: info
+          aliases: [i]
+          option_scope: all_arguments
+          forms: *query_forms
+          modifiers: [*help, *logging, {id: service_json, matcher: {kind: any_flag, flags: [--json]}}, {id: service_all, matcher: {kind: any_flag, flags: [--all]}}]
+          default_behavior: reject_unknown
+      # All run/start/stop/restart/kill/cleanup/custom service operations are
+      # unresolved operations. No PID, signal or Bash child is fabricated.
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/sources:
+    - https://docs.brew.sh/Manpage
+    - https://github.com/Homebrew/brew/tree/570982948a8a194f0f42f43f4a5bce2d1c9f64cb
+  caushell.profile/scope: Ordinary queries, importing package transactions, uninstall/cleanup/autoremove, linking and static service-query admission. All other execution/setup/service protocols require approval via the existing opaque-invocation policy.
+  caushell.profile/known_limitations:
+    - Actual prefix, repository, Cellar, Cask artifacts, installed dependency closures and configuration-selected paths are not discovered. Transactions keep unknown modification scopes; removal and cleanup keep unknown deletion scopes, never a fabricated root deletion.
+    - HOMEBREW_PREFIX is overwritten by the native launcher. Caller environment, brew --prefix query, --appdir or --fontdir is not proof that the complete transaction stays in the workspace. Explicit Cask destinations are additional possible writes, not a replacement root or confinement mechanism.
+    - Queries permit incidental cache/API metadata updates and implicit configuration reads, not a whole-program zero-side-effect guarantee. Hidden custom taps and Ruby definition bodies are not interpreted; explicit --eval-all, unknown options, unsupported forms and custom external commands require approval.
+    - Homebrew core registry and qualified tap references retain package provenance. Explicit filesystem spelling and unsupported URL schemes stay unknown, without suffix-based file guesses. Local Ruby definitions, Brewfiles, hooks, package installers, external command environments and service-manager protocols are not interpreted as Bash.
+    - Install/upgrade/reinstall --dry-run remain opaque because bootstrap, auto-update, tap setup and definition evaluation are not certified as transaction-free. Cleanup/autoremove/link/unlink documented previews omit modeled transaction writes/deletions while retaining incidental setup/cache semantics.
+    - Exact declared options and -- boundaries are respected. Formula-specific options, abbreviations and unsupported compact short clusters remain opaque rather than guessed. Known path/source effects survive incomplete operation semantics, and shell redirections remain independently checked.

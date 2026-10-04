@@ -605,6 +605,7 @@ pub enum RawPackageManagerKind {
     Conda,
     Npm,
     Yum,
+    Brew,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

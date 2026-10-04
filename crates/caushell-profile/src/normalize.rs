@@ -1268,6 +1268,7 @@ fn normalize_package_manager_kind(raw: RawPackageManagerKind) -> PackageManagerK
         RawPackageManagerKind::Conda => PackageManagerKind::Conda,
         RawPackageManagerKind::Npm => PackageManagerKind::Npm,
         RawPackageManagerKind::Yum => PackageManagerKind::Yum,
+        RawPackageManagerKind::Brew => PackageManagerKind::Brew,
     }
 }
 

@@ -366,6 +366,7 @@ pub enum PackageManagerKind {
     Conda,
     Npm,
     Yum,
+    Brew,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

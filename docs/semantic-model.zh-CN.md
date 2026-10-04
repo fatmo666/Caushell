@@ -308,6 +308,38 @@ CLI 选项可在命令前后出现。安装、更新、重新安装、同步和�
 GPG key setup、预装插件代码和真实文件系统别名不在此静态 CLI 范围；`--installroot`
 不是它们的沙箱证明。此声明核查的是传统 Yum，不声称验证各发行版由 DNF 提供的 yum 兼容入口。
 
+### Homebrew：查询、包事务与不透明控制入口分开
+
+`brew` Profile 使用独立 `manager: brew`，依据
+[固定 Homebrew 源码](https://github.com/Homebrew/brew/tree/570982948a8a194f0f42f43f4a5bce2d1c9f64cb)
+及[官方手册](https://docs.brew.sh/Manpage)建模。普通 list/info/search/outdated、安装信息、
+shellenv 和 services list/info 与事务分开；明确的本地定义／URL 查询操作数、显式
+`--eval-all`、未知选项和未覆盖形式保留不透明语义。shellenv 只打印代码，不等于执行代码。
+查询保留隐含配置读取和缓存/API 元数据写入，不承诺整个程序完全无副作用。
+已知没有缓存覆盖时沿用 incidental-cache 策略；显式 `HOMEBREW_CACHE` 正常检查路径，
+环境状态未知时不伪装成“未设置”，沿用已有未知修改范围审批。
+
+安装、重新安装、升级保留未知修改范围、包来源与导入逻辑执行；卸载、autoremove、
+cleanup 保留未知删除范围；link/unlink 保留修改范围。它们不虚构 `/` 删除、
+默认 `/opt/homebrew` 写入或不存在的包来源节点。包名和 qualified tap 引用是 registry 来源；
+URL、动态值、明确本地路径及不支持的 URL 语法独立判断，不按 `.rb` 等后缀猜文件。
+既有来源护栏与工作区修改护栏分别生效。
+
+原生 launcher 根据入口及文件系统推导 prefix 并覆盖 `HOMEBREW_PREFIX`；请求中的同名变量
+不能证明真实安装目标。Cask 也可能操作前缀之外的应用、服务和系统位置。
+16 类显式 Cask 目录分别绑定，并采用同一选项最后一个值；未知、空和越界值保留原有判断。
+这些目录是额外目标，不替代整个事务的未知范围，也不构成安装脚本的沙箱。
+根命令 `brew --prefix` 是查询，不是 `brew install` 的目标覆盖选项。
+
+services start/stop/restart/run/kill/cleanup、Brewfile、Ruby、外部子命令、tap setup 和未知入口
+通过 `opaque_on_unresolved` 走既有审批，不虚构 PID 或把内容解释成 Bash 子调用。
+安装类 dry-run 的 bootstrap、auto-update 和定义加载边界仍不透明；文档明确的
+cleanup/autoremove/link/unlink 预览不声明事务修改／删除。裸 `--json` 不吞包名，
+`--json=value` 用既有表单前缀绑定保留值；选项边界之后的内容仍是数据。
+既有参数绑定器、分派器和风险 Pass 不变；只新增 Profile 和包管理器身份。
+没有动态探测、Harness 字段、新依赖或宿主机包／服务操作。此静态范围不解释隐含配置正文、
+Ruby 定义／安装脚本、运行时依赖闭包、任意自定义安装布局或完整 Homebrew 控制语言。
+
 ### 按参数角色识别包来源，不猜文件后缀
 
 包来源使用绑定参数的 `package_locator.locator_kinds` 声明和静态确定的 argv 值，不再根据 `.txt`、`.in`、`.lock` 或文件名里的 `requirements` 推断定义文件。

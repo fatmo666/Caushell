@@ -264,6 +264,45 @@ Standard transaction previews omit environment mutations and imported-package ex
 
 This is a CLI transaction-target scope, not complete Conda execution modeling. Configuration content, solver results, transitive packages, cache/registry paths, plugin code and link/activation-script bodies are not inspected. `run/activate/deactivate`, `config/clean/init/rename`, environment-variable configuration and Python module dispatch remain separate work. In particular, [Conda run](https://github.com/conda/conda/blob/26.7.0/conda/cli/main_run.py) activates an environment before launching the child; it is not declared a transparent wrapper.
 
+### Homebrew: queries, package transactions and opaque control entrypoints
+
+The `brew` Profile uses independent `manager: brew`, based on the
+[pinned Homebrew source](https://github.com/Homebrew/brew/tree/570982948a8a194f0f42f43f4a5bce2d1c9f64cb)
+and [official manual](https://docs.brew.sh/Manpage). Ordinary list/info/search/outdated,
+installation information, shellenv and services list/info are separate from transactions.
+Explicit local-definition/URL query operands, `--eval-all`, unknown options and unsupported
+forms remain opaque. Shellenv prints code; it does not execute it. Queries retain implicit
+configuration reads and incidental cache/API writes, not a whole-program zero-side-effect
+guarantee. A known absent cache override uses the existing incidental cache policy;
+explicit `HOMEBREW_CACHE` is checked normally. Unknown environment facts are not invented
+as absence and retain the existing unknown-mutation approval boundary.
+
+Install/reinstall/upgrade retain unknown modification scope, package provenance and
+imported logic execution. Uninstall/autoremove/cleanup retain unknown deletion scope;
+link/unlink retain modification scope. No root deletion, universal `/opt/homebrew` target
+or fictitious installed-package source is created. Package and qualified tap references
+are registry sources; URLs, dynamic values and explicit local spellings are independently
+classified without `.rb` suffix guessing. Existing source and workspace guards stay independent.
+
+The native launcher derives prefix from the executable/filesystem and overwrites
+`HOMEBREW_PREFIX`; caller environment is not proof of an installation root. Casks can
+operate outside that prefix. Sixteen explicit Cask destination categories are bound
+independently with last-value precedence per option. Unknown/empty/escaping destinations
+retain normal path checks; they supplement, never replace, the unknown overall scope.
+Neither those paths nor `--appdir` sandbox installer code. Root `brew --prefix` is a query,
+not an install destination override.
+
+Service control, Brewfile/Ruby/external execution, tap setup and unknown entrypoints use
+`opaque_on_unresolved` with the existing resolve-gap approval policy, not fabricated PIDs
+or Bash children. Installation dry runs remain opaque due to unbounded bootstrap,
+auto-update and definition evaluation. Documented cleanup/autoremove/link/unlink previews
+omit modeled transaction modifications/deletions. Bare `--json` does not consume the next
+package; existing form-prefix binding retains `--json=value`, respecting `--` data boundaries.
+The binder, dispatcher and risk Passes are unchanged. This adds a Profile and manager
+identity, no dynamic probes, Harness fields or dependencies, and runs no host package or
+service operation. Hidden configuration/Ruby bodies, dependency closures and custom
+installation layouts are outside this static CLI scope.
+
 ### Package-source roles instead of filename guesses
 
 Package provenance uses the bound parameter's `package_locator.locator_kinds` together with a statically resolved argv value. It does not infer a definition file from `.txt`, `.in`, `.lock`, or the word `requirements` in a filename.

@@ -134,6 +134,7 @@ pub enum PackageManagerKind {
     Conda,
     Npm,
     Yum,
+    Brew,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -309,6 +310,7 @@ mod tests {
     #[test]
     fn yum_package_manager_round_trips_without_changing_existing_variants() {
         for (manager, name) in [
+            (PackageManagerKind::Brew, "brew"),
             (PackageManagerKind::Yum, "yum"),
             (PackageManagerKind::Apt, "apt"),
             (PackageManagerKind::Pip, "pip"),
