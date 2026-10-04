@@ -92,6 +92,39 @@ mod tests {
     }
 
     #[test]
+    fn database_family_and_rules_use_existing_configuration_precedence() {
+        let config = load_config_from_str("policy:\n  families:\n    database_safety: allow\n  rules:\n    database_state_mutation: deny\n").unwrap();
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::DatabaseStateMutation),
+            RuleAction::Deny
+        );
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::DatabaseAdministration),
+            RuleAction::Observe
+        );
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::DatabaseOpaqueExecution),
+            RuleAction::Observe
+        );
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::OutsideWorkspaceMutation),
+            RuleAction::NeedApproval
+        );
+    }
+
+    #[test]
     fn loads_config_from_path() {
         let path = temp_config_path();
         fs::write(

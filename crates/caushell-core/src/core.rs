@@ -6,18 +6,19 @@ use caushell_config::{LoadConfigError, load_config_from_path};
 use caushell_graph::SessionGraph;
 use caushell_passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, ComputeEffectiveCwdPass,
-    CwdWorkspaceBoundaryPass, DecisionAssemblyPass, ExtractAliasBindingsPass,
-    ExtractCommandSubstitutionProvenancePass, ExtractCurrentWorkingDirectoryPass,
-    ExtractEndpointProvenancePass, ExtractExecutionSemanticsPass, ExtractFunctionBindingsPass,
-    ExtractImplicitStartupConfigPass, ExtractImportedPackageProvenancePass, ExtractPathFactsPass,
-    ExtractPipelineFlowPass, ExtractPipelineStreamProvenancePass,
-    ExtractProcessSubstitutionProvenancePass, ExtractRedirectProvenancePass,
-    ExtractValueProvenancePass, ExtractVariableBindingIntentPass, ExtractVariableBindingsPass,
-    GitDestructiveOperationGuardPass, ImportedPackageExecutionGuardPass,
-    InteractiveEscapeGuardPass, OutsideWorkspaceMutationGuardPass,
-    OutsideWorkspaceScriptSourcePass, OutsideWorkspaceStartupConfigPass, ParseCommandPass,
-    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
-    SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
+    CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass, DecisionAssemblyPass,
+    ExtractAliasBindingsPass, ExtractCommandSubstitutionProvenancePass,
+    ExtractCurrentWorkingDirectoryPass, ExtractEndpointProvenancePass,
+    ExtractExecutionSemanticsPass, ExtractFunctionBindingsPass, ExtractImplicitStartupConfigPass,
+    ExtractImportedPackageProvenancePass, ExtractPathFactsPass, ExtractPipelineFlowPass,
+    ExtractPipelineStreamProvenancePass, ExtractProcessSubstitutionProvenancePass,
+    ExtractRedirectProvenancePass, ExtractValueProvenancePass, ExtractVariableBindingIntentPass,
+    ExtractVariableBindingsPass, GitDestructiveOperationGuardPass,
+    ImportedPackageExecutionGuardPass, InteractiveEscapeGuardPass,
+    OutsideWorkspaceMutationGuardPass, OutsideWorkspaceScriptSourcePass,
+    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProjectTopLevelCommandsPass,
+    ResolveInvocationPass, ResolvePolicyPass, SensitiveDataExfiltrationGuardPass,
+    SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
 use caushell_profile::{BuiltInRegistryError, ProfileRegistry};
 use caushell_query::{
@@ -475,6 +476,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
+    runner.register_session_analysis_pass(DatabaseOperationGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
     runner.register_session_analysis_pass(caushell_passes::NetworkListenerGuardPass);
     runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);

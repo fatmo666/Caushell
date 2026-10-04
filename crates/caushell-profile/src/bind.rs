@@ -3117,6 +3117,9 @@ fn argument_matches_value_matcher(text: &str, matcher: &ValueMatcher) -> bool {
         }
         ValueMatcher::StructuredValueContext(_) => false,
         ValueMatcher::Literal(value) => text == value,
+        ValueMatcher::AsciiCaseInsensitiveLiterals(values) => {
+            values.iter().any(|value| text.eq_ignore_ascii_case(value))
+        }
         ValueMatcher::RegexPattern(pattern) => Regex::new(pattern)
             .expect("regex patterns are validated during profile normalization")
             .is_match(text),

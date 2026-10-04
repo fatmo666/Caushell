@@ -438,6 +438,7 @@ impl Cardinality {
 pub enum ValueMatcher {
     StructuredValueContext(StructuredValueContext),
     Literal(String),
+    AsciiCaseInsensitiveLiterals(Vec<String>),
     RegexPattern(String),
 }
 
@@ -865,6 +866,7 @@ pub enum EffectKind {
     OpenInteractiveEscapeSurface,
     ControlProcess,
     RepositoryOperation,
+    DatabaseOperation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1038,6 +1040,7 @@ pub struct Effect {
     pub catastrophic: CatastrophicEffectMetadata,
     pub host_risk: HostRiskEffectMetadata,
     pub repository_operation: Option<caushell_types::RepositoryOperationKind>,
+    pub database_operation: Option<caushell_types::DatabaseOperationKind>,
     pub extensions: ExtensionMap,
 }
 
@@ -1050,6 +1053,7 @@ impl Effect {
             catastrophic: CatastrophicEffectMetadata::default(),
             host_risk: HostRiskEffectMetadata::default(),
             repository_operation: None,
+            database_operation: None,
             extensions: ExtensionMap::new(),
         }
     }
@@ -1446,6 +1450,8 @@ pub struct CommandProfile {
     pub trust: ProfileTrustMetadata,
     pub platform: PlatformConstraints,
     pub argument_files: Vec<ArgumentFileRule>,
+    /// Declared uncertainty effects, retained when no complete form can bind.
+    pub selection_failure_effects: Vec<Effect>,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
@@ -1461,6 +1467,7 @@ impl CommandProfile {
             trust: ProfileTrustMetadata::default(),
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             forms: Vec::new(),
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),

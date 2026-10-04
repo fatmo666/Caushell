@@ -32,9 +32,9 @@ pub use evidence::{
     TaintedExecutionUnresolvedReasonEvidence,
 };
 pub use execution::{
-    ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind, InteractiveEscapeCapability,
-    InteractiveEscapeSurfaceKind, NetworkListenScope, NetworkListener, ProcessControlAction,
-    ProcessControlTargetKind,
+    DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,
+    InteractiveEscapeCapability, InteractiveEscapeSurfaceKind, NetworkListenScope, NetworkListener,
+    ProcessControlAction, ProcessControlTargetKind,
 };
 pub use finding::{Finding, FindingEnforcementClass};
 pub use path::{

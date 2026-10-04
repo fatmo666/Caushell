@@ -1,0 +1,161 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: redis-cli, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+# Native CLI options are separate argv words, and stop at the first command.
+option_matching: exact_names
+option_scope: leading_options
+selection_failure_effects:
+  - {kind: database_operation, database_operation: opaque, target: {kind: none}}
+forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: &arguments
+      - {name: command_arguments, semantic: &plain {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: &no_stdin {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: opaque_mode
+    selector: {kind: all, items: [&not_info {kind: not, item: *information}, &opaque_mode {kind: any, items: [{kind: has_modifier, modifier: lua_file}, {kind: has_modifier, modifier: opaque_flags}, {kind: has_modifier, modifier: stdin_tag}, {kind: has_modifier, modifier: hint_file}, {kind: has_modifier, modifier: hint_text}]}]}
+    parameters: *arguments
+    implicit_inputs: &stdin [{source: stdin_data, semantic: *plain}]
+    stream_contract: &input_stream {stdin_mode: data_optional, stdout_mode: data, stderr_mode: data}
+    effects: [&opaque {kind: database_operation, database_operation: opaque, target: {kind: none}}, &consume {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}]
+  - id: administration_mode
+    selector: {kind: all, items: [*not_info, &not_opaque {kind: not, item: *opaque_mode}, &admin_mode {kind: any, items: [{kind: has_modifier, modifier: cluster}, {kind: has_modifier, modifier: replication}]}]}
+    parameters: *arguments
+    effects: [&admin {kind: database_operation, database_operation: administration, target: {kind: none}}]
+    stream_contract: *no_stdin
+  - id: mutation_mode
+    selector: {kind: all, items: [*not_info, *not_opaque, &not_admin {kind: not, item: *admin_mode}, &mutation_mode {kind: has_modifier, modifier: lru_test}]}
+    parameters: *arguments
+    effects: [&write {kind: database_operation, database_operation: write, target: {kind: none}}]
+    stream_contract: *no_stdin
+  - id: backup
+    selector: {kind: all, items: [*not_info, *not_opaque, *not_admin, &not_mutation {kind: not, item: *mutation_mode}, &backup_mode {kind: has_modifier, modifier: backup}]}
+    parameters: *arguments
+    effects:
+      - &read {kind: database_operation, database_operation: read, target: {kind: none}}
+      - {kind: write_path, target: {kind: slot, name: backup_paths}}
+    stream_contract: *no_stdin
+  - id: diagnostic_query
+    selector: {kind: all, items: [*not_info, *not_opaque, *not_admin, *not_mutation, &not_backup {kind: not, item: *backup_mode}, &diagnostic_mode {kind: any, items: [{kind: has_modifier, modifier: diagnostics}, {kind: has_modifier, modifier: intrinsic_latency}]}]}
+    parameters: *arguments
+    effects: [*read]
+    stream_contract: *no_stdin
+  - id: read_command
+    selector:
+      kind: all
+      items:
+        - &direct {kind: all, items: [*not_info, *not_opaque, *not_admin, *not_mutation, *not_backup, {kind: not, item: *diagnostic_mode}]}
+        - &read_command
+          kind: any
+          items:
+            - {kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [PING, ECHO, GET, MGET, GETRANGE, STRLEN, GETBIT, EXISTS, TYPE, TTL, PTTL, EXPIRETIME, PEXPIRETIME, DBSIZE, KEYS, SCAN, HGET, HMGET, HGETALL, HKEYS, HVALS, HLEN, HEXISTS, HSCAN, HSTRLEN, LINDEX, LLEN, LRANGE, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS, SRANDMEMBER, SSCAN, SINTER, SUNION, SDIFF, ZCARD, ZCOUNT, ZRANGE, ZRANGEBYSCORE, ZREVRANGE, ZREVRANGEBYSCORE, ZSCORE, ZMSCORE, ZRANK, ZREVRANK, ZSCAN, PFCOUNT, GEOHASH, GEOPOS, GEODIST, GEOSEARCH, XLEN, XRANGE, XREVRANGE, XREAD, INFO, TIME, LASTSAVE, ROLE, DUMP, SORT_RO, BITFIELD_RO]}}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [CONFIG]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [GET]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [CLIENT]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [LIST, INFO, ID, GETNAME, GETREDIR]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [CLUSTER]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [INFO, NODES, SLOTS, SHARDS, LINKS, MYID, MYSHARDID, KEYSLOT, COUNTKEYSINSLOT, GETKEYSINSLOT, REPLICAS, SLAVES]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [COMMAND]}}, {kind: any, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [COUNT, LIST, INFO, DOCS, GETKEYS, GETKEYSANDFLAGS]}}]}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [MEMORY]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [USAGE, STATS, DOCTOR, MALLOC-STATS]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [OBJECT]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [ENCODING, FREQ, IDLETIME, REFCOUNT]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [XINFO]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [STREAM, GROUPS, CONSUMERS]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [SLOWLOG]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [GET, LEN]}}]}
+            - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [LATENCY]}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: ascii_case_insensitive_literals, values: [DOCTOR, GRAPH, HISTORY, LATEST, HISTOGRAM]}}]}
+    parameters: *arguments
+    effects: [*read]
+    stream_contract: *no_stdin
+  - id: write_command
+    selector: {kind: all, items: [*direct, &write_command {kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [SET, MSET, MSETNX, SETNX, SETEX, PSETEX, APPEND, INCR, INCRBY, INCRBYFLOAT, DECR, DECRBY, DEL, UNLINK, GETDEL, GETSET, GETEX, EXPIRE, PEXPIRE, EXPIREAT, PEXPIREAT, PERSIST, RENAME, RENAMENX, MOVE, COPY, RESTORE, FLUSHDB, FLUSHALL, HSET, HSETNX, HMSET, HDEL, HINCRBY, HINCRBYFLOAT, LPUSH, RPUSH, LPOP, RPOP, BLPOP, BRPOP, LSET, LREM, LTRIM, LMOVE, BLMOVE, SADD, SREM, SPOP, SMOVE, SINTERSTORE, SUNIONSTORE, SDIFFSTORE, ZADD, ZREM, ZINCRBY, ZPOPMIN, ZPOPMAX, ZREMRANGEBYRANK, ZREMRANGEBYSCORE, ZUNIONSTORE, ZINTERSTORE, PFADD, PFMERGE, GEOADD, GEOSEARCHSTORE, XADD, XDEL, XTRIM, XGROUP, XACK, SETBIT, BITOP, BITFIELD, SORT, MIGRATE, SWAPDB]}}]}
+    parameters: *arguments
+    effects: [*write]
+    stream_contract: *no_stdin
+  - id: administration_command
+    selector: {kind: all, items: [*direct, {kind: not, item: *read_command}, &admin_command {kind: has_positional_at_matching, index: 0, matcher: {kind: ascii_case_insensitive_literals, values: [CONFIG, SHUTDOWN, SAVE, BGSAVE, BGREWRITEAOF, REPLICAOF, SLAVEOF, FAILOVER, ACL, CLIENT, CLUSTER, MODULE, DEBUG, MONITOR, SCRIPT, FUNCTION, MEMORY, SLOWLOG, LATENCY]}}]}
+    parameters: *arguments
+    effects: [*admin]
+    stream_contract: *no_stdin
+  - id: opaque_command
+    selector: {kind: all, items: [*direct, {kind: has_positional_at, index: 0}, {kind: not, item: *read_command}, {kind: not, item: *write_command}, {kind: not, item: *admin_command}]}
+    parameters: *arguments
+    effects: [*opaque]
+    stream_contract: *no_stdin
+  - id: interactive_or_command_stream
+    selector: {kind: all, items: [*direct, {kind: no_positional_args}]}
+    parameters: *arguments
+    implicit_inputs: *stdin
+    effects: [*opaque, *consume]
+    stream_contract: *input_stream
+
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version, -v]}}
+  - id: host
+    matcher: {kind: any_flag, flags: [-h]}
+    parameters: [{name: host, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: &operand {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: host}}]
+  - id: uri
+    matcher: {kind: any_flag, flags: [-u]}
+    parameters: [{name: uri, semantic: {kind: endpoint, endpoint_kind: url, usage: generic_endpoint}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: uri}}]
+  - id: socket
+    matcher: {kind: any_flag, flags: [-s]}
+    parameters: [{name: socket, semantic: {kind: endpoint, endpoint_kind: socket_path, usage: generic_endpoint}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: socket}}]
+  - id: connection_values
+    matcher: {kind: any_flag, flags: [-p, -t, -n, -r, -i, -a, --pass, --user, -d, -D, --show-pushes, --sni, --tls-ciphers, --tls-ciphersuites]}
+    parameters: [{name: connection_values, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: switches, matcher: {kind: any_flag, flags: [--raw, --no-raw, --csv, --json, --quoted-json, --no-auth-warning, --askpass, --verbose, --tls, --insecure, -c, -e, '-2', '-3', '-4', '-6', --mono]}}
+  - id: tls_files
+    matcher: {kind: any_flag, flags: [--cacert, --cacertdir, --cert, --key]}
+    parameters: [{name: tls_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: tls_files}}]
+  - id: backup
+    matcher: {kind: any_flag, flags: [--rdb, --functions-rdb]}
+    parameters:
+      - name: backup_operands
+        semantic: *plain
+        binding: *operand
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: backup_paths, semantic: {kind: path, role: write, purpose: generic_operand}}
+  - id: lua_file
+    matcher: {kind: any_flag, flags: [--eval]}
+    parameters: [{name: lua_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: lua_file}}]
+  - {id: opaque_flags, matcher: {kind: any_flag, flags: [--pipe, -x, --quoted-input, --ldb, --ldb-sync-mode]}}
+  - id: stdin_tag
+    matcher: {kind: any_flag, flags: [-X]}
+    parameters: [{name: stdin_tag, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: cluster
+    matcher: {kind: any_flag, flags: [--cluster]}
+    parameters: [{name: cluster_command, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: replication, matcher: {kind: any_flag, flags: [--replica, --slave]}}
+  - id: lru_test
+    matcher: {kind: any_flag, flags: [--lru-test]}
+    parameters: [{name: lru_keys, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: diagnostics, matcher: {kind: any_flag, flags: [--latency, --latency-dist, --latency-history, --stat, --scan, --bigkeys, --memkeys, --hotkeys, --keystats]}}
+  - id: intrinsic_latency
+    matcher: {kind: any_flag, flags: [--intrinsic-latency]}
+    parameters: [{name: duration, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: diagnostic_values
+    matcher: {kind: any_flag, flags: [--pattern, --quoted-pattern, --count, --cursor, --top, --memkeys-samples, --keystats-samples, --pipe-timeout]}
+    parameters: [{name: diagnostic_values, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: hint_file
+    matcher: {kind: any_flag, flags: [--test_hint_file]}
+    parameters: [{name: hint_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: hint_file}}]
+  - id: hint_text
+    matcher: {kind: any_flag, flags: [--test_hint]}
+    parameters: [{name: hint_text, semantic: *plain, binding: *operand, cardinality: required_many}]
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://redis.io/docs/latest/develop/tools/cli/
+    - https://github.com/redis/redis/blob/8.2.3/src/redis-cli.c
+  caushell.profile/known_limitations:
+    - Standard Redis 8.2 CLI option boundaries and a fixed, reviewed command admission set; no server probing, module discovery, Lua, RESP or interactive command parser.
+    - Explicit query admission does not attest data confidentiality, server ownership, custom command renaming, or replacement server behavior.
+    - Unknown commands, functions, scripting, stdin substitution and quoted-input reinterpretation require approval; they are never parsed as Bash or fabricated as filesystem writes.
+    - Server writes and administration require approval even on localhost or a workspace Unix socket. Keys and database IDs remain plain values.
+    - Backup paths and shell redirections are independently checked. Backup '-' is stdout, not a file named '-'.
+    - Mixed special modes may be conservatively classified; unsupported options retain this Profile's declared opaque selection-failure effect, independent of the configured resolve-gap action.
+    - Connection defaults and authentication environment do not prove workspace membership; explicit endpoints are retained without probing implicit server state.

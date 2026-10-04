@@ -913,6 +913,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
 
     pub fn to_execution_semantics_fact(&self) -> ExecutionSemanticsFact {
         ExecutionSemanticsFact {
+            database_operations: self.semantics.database_operations.clone(),
             network_listeners: self.semantics.network_listeners.clone(),
             node_id: self.node_id.0.clone(),
             source: self.source.to_execution_unit(),
@@ -1629,6 +1630,7 @@ mod tests {
             semantics.to_execution_semantics_fact(),
             ExecutionSemanticsFact {
                 network_listeners: Vec::new(),
+                database_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:2".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:2".to_string(),

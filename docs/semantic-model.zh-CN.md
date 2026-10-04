@@ -187,6 +187,18 @@ Ruff 拒绝 `--diff` 与 `--add-noqa/--add-ignore` 同用；Profile 对冲突的
 
 依据：[SQLite CLI](https://sqlite.org/cli.html)、[固定 SQLite 3.53.4 CLI 源码](https://github.com/sqlite/sqlite/blob/b09c88c14082339b66c7b7158d609a771e64ca69/src/shell.c.in)。
 
+### 数据库操作类别与 Redis CLI
+
+Profile 可声明 `{kind: database_operation, database_operation: read|write|administration|opaque, target: {kind: none}}`。数据库 key 是普通值，不伪装成文件路径。操作类别保留到 `ExecutionSemantics.database_operations`、决策 trace、快照和既有执行语义 Query；读取旧数据时默认为空，空字段不输出，不要求 Harness 新增输入字段。
+
+独立 `database_operation_guard` 消费当前请求已经解析的调用，包括明确声明的部分绑定。没有非只读数据库效果时，在收集规范来源节点之前返回；不遍历 session 历史，不探测服务器。Read 不产生决策；`database_state_mutation`、`database_administration`、`database_opaque_execution` 默认 NeedApproval，归属可配置的 `database_safety` family。单条规则配置优先于 family，文件修改等其他护栏仍独立生效。
+
+`redis-cli` Profile 明确准入固定的查询集合，包括 `GET`、`EXISTS`、`DBSIZE` 和 `CONFIG GET`。`SET`、`DEL`、`GETDEL`、`FLUSHALL` 等数据修改以及 `CONFIG SET`、`SHUTDOWN` 等管理操作默认审批；localhost 或工作区内 Unix socket 不证明数据库归属。Lua、函数、交互／RESP 流、stdin 参数替换（`-x`／`-X`）、quoted-input 重解释和未知命令作为不透明操作审批，不当作 Bash 解析。`--rdb`／`--functions-rdb` 保留数据库读取和独立文件输出；`-` 表示 stdout，不是文件名，Shell 重定向仍独立检查修改目标。
+
+前置选项在命令处停止：`redis-cli -a --help GET key` 的 `--help` 是密码值，`redis-cli GET --eval missing.lua` 中后两项是发送给服务器的数据。命令前的特殊模式不会被表面的 GET 遮蔽。信息查询不添加数据库操作；未知或缺少参数的选项保留本 Profile 明确声明的不透明 selection-failure 效果，不修改全局解析缺口策略。混合模式保守分类，不重放所有原生优先级；查询准入不证明自定义命令重命名、模块命令、数据机密性、隐式服务器状态或精确的服务器语法合法性。
+
+依据：[Redis CLI](https://redis.io/docs/latest/develop/tools/cli/)、[固定 Redis 8.2.3 CLI 源码](https://github.com/redis/redis/blob/8.2.3/src/redis-cli.c)。
+
 ### Socket 查询与暂缓审查的连接关闭
 
 Linux iproute2 的 `ss` Profile 将普通查询与 `-K/--kill` 的 `close_sockets_unchecked` 形式分开。当前关闭连接本身不触发审批，这是明确的产品风险范围选择，不是将其判成只读。没有新增 socket 控制效果、进程 kill 替代事实、风险 pass 或动态连接探测；Profile 保留独立 form 与风险范围说明，Graph 保留 form ID。通用短选项匹配器保留带参数选项之前的已声明无参数前缀，包括 `-KtF-` 紧凑写法和 `-4` 等数字选项；遇到参数边界就停止，不将参数文本扫描成后续选项。完整选项词模式和 `--` 的既有语义不变。
@@ -294,6 +306,10 @@ cwd 与工作区均为 `/workspace` 时，默认 `pytest tests/` 放行隐含未
 采用前置选项语法的 Profile，可以在命令根节点或单个子命令节点声明 `option_scope: leading_options`。共享绑定器先按声明解析选项及其操作数，遇到第一个非选项操作数或选项终止符 `--` 后停止；modifier 匹配、form 选择和参数绑定共同遵守这条边界。例如 `sshpass -e ssh -p 2222 host` 中的 `-p 2222` 属于 `ssh`，不会成为 `sshpass` 的密码参数。长得像选项的值仍然是值，子命令的完整 argv（包括自己的 `--`）保留给既有嵌套分派。位置参数仍覆盖整个调用，因此 `env` 能先消费环境赋值，`timeout` 能先消费时长，再确定子命令。
 
 默认仍为 `all_arguments`，普通 Profile 依然可以描述操作数后面的选项。前置选项的操作数数量来自 modifier/form 的 flag binding 声明；未知选项会产生显式 selection gap，并保留已经确认的 modifier 效果，不猜测子命令边界。这不会改变配置中的解析缺口动作或嵌套展开上限。
+
+Profile 可选声明 `selection_failure_effects`，在 form 选择失败时保留不依赖操作数的效果。效果沿用通用校验且必须使用 `target: {kind: none}`，不虚构未绑定参数；未声明的旧 Profile 行为不变。效果进入部分绑定，再由对应分析规则处理，不覆盖全局解析缺口动作。Redis 用这一声明保留不透明数据库操作。
+
+`matcher: {kind: ascii_case_insensitive_literals, values: [GET, MGET]}` 按完整值进行 ASCII 大小写不敏感匹配，不编译正则：`gEt` 命中，`GETDEL` 不命中；正则元字符是普通文字，不作 Unicode case folding。空集合或空条目载入时报错，旧 literal／regex matcher 行为不变。
 
 选项名如何匹配由另一个声明控制：`option_matching: exact_names` 按完整声明的名字匹配 NVIDIA 的 `-pl`、`-nic` 等选项，不把字母拆成短选项组合，也不猜测短选项附着值。`--power-limit=200` 这样的长选项内联值仍按参数绑定声明处理。不写此字段时默认 `short_clusters`，保持已有匹配行为。子命令节点继承父节点模式，也可以显式覆盖；继承在 Profile 载入时完成。modifier 匹配与约束、form 及 remaining selector、参数绑定、前置选项扫描、选择失败后的部分绑定均使用相应模式。这不会改变 Bash 语法解析，也不新增风险 pass 或直接决定审批动作。
 

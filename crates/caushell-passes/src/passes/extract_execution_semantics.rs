@@ -45,15 +45,25 @@ fn project_execution_semantics_mutation(
     record: crate::support::ExecutionResolveRecordRef<'_>,
     has_implicit_startup_config: bool,
 ) -> Option<PendingMutation> {
-    let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
-        return None;
+    let (name, bound) = match record.result() {
+        ResolveInvocationArtifactResult::Resolved(resolved) => {
+            (&resolved.normalized_command_name, &resolved.bound)
+        }
+        ResolveInvocationArtifactResult::SelectionError {
+            normalized_command_name,
+            partial_bound: Some(bound),
+            ..
+        } if bound
+            .effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::DatabaseOperation) =>
+        {
+            (normalized_command_name, bound)
+        }
+        _ => return None,
     };
 
-    let mut semantics = execution_semantics_for_bound(
-        &resolved.normalized_command_name,
-        &resolved.bound,
-        has_implicit_startup_config,
-    );
+    let mut semantics = execution_semantics_for_bound(name, bound, has_implicit_startup_config);
     semantics.network_listeners = crate::support::network_listeners(record);
     Some(PendingMutation::AddExecutionSemantics {
         source_node_id: record.source_node_id().clone(),
@@ -69,6 +79,17 @@ fn execution_semantics_for_bound(
 ) -> ExecutionSemantics {
     let mut semantics =
         ExecutionSemantics::new(normalized_command_name, invocation.form_id.as_str());
+
+    for operation in invocation
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == EffectKind::DatabaseOperation)
+        .filter_map(|effect| effect.database_operation)
+    {
+        if !semantics.database_operations.contains(&operation) {
+            semantics.database_operations.push(operation);
+        }
+    }
 
     if invocation.effects.iter().any(|effect| {
         matches!(

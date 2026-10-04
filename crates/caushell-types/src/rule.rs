@@ -11,6 +11,7 @@ pub enum RuleFamily {
     HostSafety,
     NetworkSafety,
     RepositorySafety,
+    DatabaseSafety,
     Taint,
 }
 
@@ -45,6 +46,9 @@ pub enum RuleId {
     GitTrackedPathDelete,
     GitSavedStateDestroy,
     GitLocalRefDestroy,
+    DatabaseStateMutation,
+    DatabaseAdministration,
+    DatabaseOpaqueExecution,
     TaintedExecution,
     SensitiveDataExfiltration,
     ImportedPackageExecution,
@@ -81,6 +85,9 @@ impl RuleId {
             | Self::GitTrackedPathDelete
             | Self::GitSavedStateDestroy
             | Self::GitLocalRefDestroy => RuleFamily::RepositorySafety,
+            Self::DatabaseStateMutation
+            | Self::DatabaseAdministration
+            | Self::DatabaseOpaqueExecution => RuleFamily::DatabaseSafety,
             Self::TaintedExecution | Self::SensitiveDataExfiltration => RuleFamily::Taint,
             Self::ImportedPackageExecution => RuleFamily::Taint,
         }

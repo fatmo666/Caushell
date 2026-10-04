@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+/// Database state is not a filesystem path or evidence of workspace ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseOperationKind {
+    Read,
+    Write,
+    Administration,
+    Opaque,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractiveEscapeSurfaceKind {
@@ -62,6 +72,8 @@ pub enum ProcessControlTargetKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionSemantics {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub database_operations: Vec<DatabaseOperationKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_listeners: Vec<NetworkListener>,
     pub normalized_command_name: String,
     pub form_id: String,
@@ -91,6 +103,7 @@ pub struct ExecutionSemantics {
 impl ExecutionSemantics {
     pub fn new(normalized_command_name: impl Into<String>, form_id: impl Into<String>) -> Self {
         Self {
+            database_operations: Vec::new(),
             network_listeners: Vec::new(),
             normalized_command_name: normalized_command_name.into(),
             form_id: form_id.into(),
@@ -249,6 +262,32 @@ impl NetworkListener {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn database_operations_roundtrip_and_old_semantics_default_empty() {
+        use super::*;
+        let mut semantics = ExecutionSemantics::new("state-tool", "run");
+        let old = serde_json::to_value(&semantics).unwrap();
+        assert!(old.get("database_operations").is_none());
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(old).unwrap(),
+            semantics
+        );
+        semantics.database_operations = vec![
+            DatabaseOperationKind::Read,
+            DatabaseOperationKind::Write,
+            DatabaseOperationKind::Administration,
+            DatabaseOperationKind::Opaque,
+        ];
+        let wire = serde_json::to_value(&semantics).unwrap();
+        assert_eq!(
+            wire["database_operations"],
+            serde_json::json!(["read", "write", "administration", "opaque"])
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(wire).unwrap(),
+            semantics
+        );
+    }
     #[test]
     fn listener_semantics_roundtrip_and_legacy_semantics_default_empty() {
         use super::*;

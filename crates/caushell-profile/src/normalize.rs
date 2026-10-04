@@ -57,6 +57,8 @@ pub enum NormalizeError {
     UnexpectedInteractiveEscapeSurface,
     MissingRepositoryOperation,
     UnexpectedRepositoryOperation,
+    InvalidDatabaseOperation(String),
+    InvalidSelectionFailureEffects(String),
     InvalidExtensionKey(String),
     InvalidOptionScope(String),
     InvalidValueProjection(String),
@@ -109,6 +111,19 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         })
         .collect::<Result<Vec<_>, NormalizeError>>()?;
     let forms = normalize_forms(raw.forms)?;
+    let selection_failure_effects = raw
+        .selection_failure_effects
+        .into_iter()
+        .map(normalize_effect)
+        .collect::<Result<Vec<_>, _>>()?;
+    if selection_failure_effects
+        .iter()
+        .any(|effect| !matches!(effect.target, EffectTarget::None))
+    {
+        return Err(NormalizeError::InvalidSelectionFailureEffects(
+            "selection_failure_effects must not reference unbound operands".into(),
+        ));
+    }
     let modifiers = normalize_modifiers(raw.modifiers)?;
     let option_matching = normalize_option_matching(raw.option_matching);
     let subcommands = raw
@@ -132,6 +147,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         trust: normalize_trust(raw.trust),
         platform: normalize_platform(raw.platform),
         argument_files,
+        selection_failure_effects,
         forms,
         modifiers,
         option_scope,
@@ -1051,6 +1067,17 @@ fn normalize_value_matcher(raw: RawValueMatcher) -> Result<ValueMatcher, Normali
             ValueMatcher::StructuredValueContext(normalize_structured_value_context(context)),
         ),
         RawValueMatcher::Literal { value } => Ok(ValueMatcher::Literal(value)),
+        RawValueMatcher::AsciiCaseInsensitiveLiterals { values } => {
+            if values.is_empty() {
+                return Err(NormalizeError::EmptyIdentifier {
+                    field: "value_matcher.values",
+                });
+            }
+            for value in &values {
+                ensure_non_empty(value, "value_matcher.values")?;
+            }
+            Ok(ValueMatcher::AsciiCaseInsensitiveLiterals(values))
+        }
         RawValueMatcher::RegexPattern { pattern } => {
             ensure_non_empty(&pattern, "value_matcher.pattern")?;
             regex::Regex::new(&pattern)
@@ -1317,6 +1344,14 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     }
     let surface = normalize_effect_surface(kind, raw.surface)?;
     let repository_operation = normalize_repository_operation(kind, raw.repository_operation)?;
+    let database_operation = match (kind, raw.database_operation) {
+        (EffectKind::DatabaseOperation, Some(operation)) if matches!(target, EffectTarget::None) => Some(operation),
+        (EffectKind::DatabaseOperation, _) => return Err(NormalizeError::InvalidDatabaseOperation(
+            "database_operation requires an operation class and target none; keys are not filesystem paths".into())),
+        (_, Some(_)) => return Err(NormalizeError::InvalidDatabaseOperation(
+            "database_operation metadata is exclusive to database_operation effects".into())),
+        (_, None) => None,
+    };
 
     Ok(Effect {
         kind,
@@ -1325,6 +1360,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         catastrophic: normalize_catastrophic_effect_metadata(raw.catastrophic)?,
         host_risk: normalize_host_risk_effect_metadata(raw.host_risk)?,
         repository_operation,
+        database_operation,
         extensions: normalize_extensions(raw.extensions)?,
     })
 }
@@ -1468,6 +1504,7 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::OpenInteractiveEscapeSurface => EffectKind::OpenInteractiveEscapeSurface,
         RawEffectKind::ControlProcess => EffectKind::ControlProcess,
         RawEffectKind::RepositoryOperation => EffectKind::RepositoryOperation,
+        RawEffectKind::DatabaseOperation => EffectKind::DatabaseOperation,
     }
 }
 
@@ -2029,6 +2066,7 @@ mod tests {
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2080,6 +2118,7 @@ mod tests {
                     catastrophic: None,
                     host_risk: None,
                     repository_operation: None,
+                    database_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2114,6 +2153,7 @@ mod tests {
                     catastrophic: None,
                     host_risk: None,
                     repository_operation: None,
+                    database_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 constraints: Vec::new(),
@@ -2189,6 +2229,7 @@ mod tests {
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2232,6 +2273,7 @@ mod tests {
                     catastrophic: None,
                     host_risk: None,
                     repository_operation: None,
+                    database_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2276,6 +2318,7 @@ mod tests {
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2319,6 +2362,7 @@ mod tests {
                     catastrophic: None,
                     host_risk: None,
                     repository_operation: None,
+                    database_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2363,6 +2407,7 @@ mod tests {
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2418,6 +2463,7 @@ mod tests {
     fn normalize_command_profile_maps_metadata_mutation_semantics() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2464,6 +2510,7 @@ mod tests {
                     catastrophic: None,
                     host_risk: None,
                     repository_operation: None,
+                    database_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2488,6 +2535,7 @@ mod tests {
     fn normalize_rejects_invalid_dsl_version() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2508,6 +2556,7 @@ mod tests {
     fn normalize_rejects_duplicate_form_ids() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2538,6 +2587,7 @@ mod tests {
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            selection_failure_effects: Vec::new(),
             option_scope: Default::default(),
             option_matching: Default::default(),
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2580,6 +2630,7 @@ mod tests {
                     catastrophic: None,
                     host_risk: None,
                     repository_operation: None,
+                    database_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,

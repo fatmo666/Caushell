@@ -184,14 +184,23 @@ pub fn resolve_invocation_with_bindings<'a>(
                 &materialized_projection.invocation,
             )
             .or_else(|| {
-                argument_file_effects(profile, &materialized_projection).then(|| {
+                (argument_file_effects(profile, &materialized_projection)
+                    || !profile.selection_failure_effects.is_empty())
+                .then(|| {
                     BoundInvocation::new(
                         profile.identity.canonical_name.clone(),
-                        crate::FormId::new("__opaque_argument_file__"),
+                        crate::FormId::new(if profile.selection_failure_effects.is_empty() {
+                            "__opaque_argument_file__"
+                        } else {
+                            "__selection_failure__"
+                        }),
                     )
                 })
             })
-            .map(|bound| {
+            .map(|mut bound| {
+                bound
+                    .effects
+                    .extend(profile.selection_failure_effects.iter().cloned());
                 if bound
                     .bound_parameters
                     .iter()

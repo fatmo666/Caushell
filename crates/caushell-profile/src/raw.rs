@@ -12,6 +12,7 @@ pub struct RawCommandProfile {
     pub trust: RawProfileTrustMetadata,
     pub platform: RawPlatformConstraints,
     pub argument_files: Vec<RawArgumentFileRule>,
+    pub selection_failure_effects: Vec<RawEffect>,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
@@ -445,6 +446,7 @@ pub enum RawBindingSpec {
 pub enum RawValueMatcher {
     StructuredValueContext { context: RawStructuredValueContext },
     Literal { value: String },
+    AsciiCaseInsensitiveLiterals { values: Vec<String> },
     RegexPattern { pattern: String },
 }
 
@@ -649,6 +651,8 @@ pub struct RawEffect {
     #[serde(default)]
     pub repository_operation: Option<RawRepositoryOperationKind>,
     #[serde(default)]
+    pub database_operation: Option<caushell_types::DatabaseOperationKind>,
+    #[serde(default)]
     pub extensions: BTreeMap<String, JsonValue>,
 }
 
@@ -730,6 +734,7 @@ pub enum RawEffectKind {
     OpenInteractiveEscapeSurface,
     ControlProcess,
     RepositoryOperation,
+    DatabaseOperation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

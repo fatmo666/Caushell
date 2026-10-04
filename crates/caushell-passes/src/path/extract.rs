@@ -1574,7 +1574,8 @@ fn metadata_mutation_kinds(
         | EffectKind::LoadInProcessCode
         | EffectKind::OpenInteractiveEscapeSurface
         | EffectKind::ControlProcess
-        | EffectKind::RepositoryOperation => None,
+        | EffectKind::RepositoryOperation
+        | EffectKind::DatabaseOperation => None,
     }
 }
 
@@ -1757,7 +1758,8 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::LoadInProcessCode
         | EffectKind::OpenInteractiveEscapeSurface
         | EffectKind::ControlProcess
-        | EffectKind::RepositoryOperation => None,
+        | EffectKind::RepositoryOperation
+        | EffectKind::DatabaseOperation => None,
     }
 }
 
@@ -1792,7 +1794,8 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::LoadInProcessCode
         | EffectKind::OpenInteractiveEscapeSurface
         | EffectKind::ControlProcess
-        | EffectKind::RepositoryOperation => None,
+        | EffectKind::RepositoryOperation
+        | EffectKind::DatabaseOperation => None,
     }
 }
 

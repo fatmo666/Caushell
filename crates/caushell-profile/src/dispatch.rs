@@ -486,6 +486,7 @@ mod tests {
             catastrophic: Default::default(),
             host_risk: Default::default(),
             repository_operation: None,
+            database_operation: None,
             extensions: Default::default(),
         }
     }
