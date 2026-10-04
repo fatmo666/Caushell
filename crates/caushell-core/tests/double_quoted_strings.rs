@@ -142,3 +142,143 @@ fn multiline_here_string_and_assignment_keep_nested_shell_effects() {
         assert!(has_path(&core, "/etc/quoted-outside"));
     }
 }
+
+fn double_quote(value: &str) -> String {
+    let mut encoded = String::from("\"");
+    for character in value.chars() {
+        if matches!(character, '\\' | '"' | '$' | '`') {
+            encoded.push('\\');
+        }
+        encoded.push(character);
+    }
+    encoded.push('"');
+    encoded
+}
+
+#[test]
+fn escaped_script_argv_retains_one_child_mutation_and_the_real_target() {
+    for shell in ["bash", "sh"] {
+        for (target, expected) in [
+            ("/etc/quoted-outside", Decision::NeedApproval),
+            ("/tmp/project/local", Decision::Allow),
+        ] {
+            let script = format!("TARGET={target}\nrm -f \"$TARGET\"");
+            let command = format!("{shell} -c {}", double_quote(&script));
+            let graph = inspect(&command, expected);
+            assert!(has_path(&graph, target), "{command}: {graph:?}");
+            let deletes: Vec<_> = graph
+                .iter()
+                .filter(|node| {
+                    matches!(&node.kind,
+                NodeKind::DerivedInvocation { command_name, .. }
+                    if command_name.as_deref() == Some("rm"))
+                })
+                .collect();
+            // Graph keeps historical and canonical representations. Both must
+            // agree on child text, while the effective mutation is modeled once.
+            assert!(!deletes.is_empty());
+            assert!(deletes.iter().all(|node| matches!(&node.kind,
+                NodeKind::DerivedInvocation { raw_text, .. }
+                    if raw_text == "rm -f \"$TARGET\"")));
+            assert_eq!(
+                graph
+                    .iter()
+                    .filter(|node| matches!(&node.kind,
+                NodeKind::PathFact { resolution, normalized_command_name, .. }
+                    if normalized_command_name.as_deref() == Some("rm")
+                        && resolution.concrete_path() == Some(target)))
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn wrappers_functions_find_and_multiple_shell_layers_use_decoded_payloads() {
+    let script = "TARGET=/etc/quoted-outside\nrm -f \"$TARGET\"";
+    let child = format!("sh -c {}", double_quote(script));
+    for command in [
+        format!("env {child}"),
+        format!("f() {{ {child}; }}; f"),
+        format!("find . -exec {child} _ {{}} \\;"),
+        format!("bash -c {}", double_quote(&child)),
+        format!("eval {}", double_quote(script)),
+    ] {
+        let graph = inspect(&command, Decision::NeedApproval);
+        assert!(
+            has_path(&graph, "/etc/quoted-outside"),
+            "{command}: {graph:?}"
+        );
+    }
+}
+
+#[test]
+fn escaped_child_variable_does_not_expand_in_the_outer_shell() {
+    let script = "TARGET=/tmp/project/local\nrm -f \"$TARGET\"";
+    let command = format!(
+        "TARGET=/etc/quoted-outside; bash -c {}",
+        double_quote(script)
+    );
+    let graph = inspect(&command, Decision::Allow);
+    assert!(has_path(&graph, "/tmp/project/local"));
+    assert!(!has_path(&graph, "/etc/quoted-outside"));
+}
+
+#[test]
+fn escaped_dollar_inside_child_quotes_is_not_decoded_a_second_time() {
+    let script = "TARGET=/etc/quoted-outside\nrm -f \"\\$TARGET\"";
+    let graph = inspect(
+        &format!("bash -c {}", double_quote(script)),
+        Decision::Allow,
+    );
+    assert!(!has_path(&graph, "/etc/quoted-outside"));
+    assert!(graph.iter().any(|node| matches!(&node.kind,
+        NodeKind::DerivedInvocation { raw_text, .. } if raw_text == "rm -f \"\\$TARGET\"")));
+}
+
+#[test]
+fn scalar_payload_with_inner_expansion_is_not_reinterpreted_as_outer_syntax() {
+    let command = "SCRIPT='INNER=/etc/quoted-outside\nrm -f \"$INNER\"'; bash -c \"$SCRIPT\"";
+    let graph = inspect(command, Decision::NeedApproval);
+    assert!(has_path(&graph, "/etc/quoted-outside"));
+}
+
+#[test]
+fn unresolved_outer_payload_is_approval_not_a_fabricated_static_child() {
+    for command in [
+        "bash -c \"rm -f \\\"$UNKNOWN\\\"\"",
+        "bash -c \"echo safe; $UNKNOWN\"",
+        "bash -c script*.sh",
+    ] {
+        let graph = inspect(command, Decision::NeedApproval);
+        assert!(
+            graph.iter().any(|node| matches!(&node.kind,
+            NodeKind::NestedPayload { resolution_kind, .. }
+                if resolution_kind == "unresolved_materialization")),
+            "{command}: {graph:?}"
+        );
+        assert!(!graph.iter().any(|node| matches!(&node.kind,
+            NodeKind::DerivedInvocation { command_name, .. }
+                if command_name.as_deref() == Some("rm"))));
+    }
+}
+
+#[test]
+fn concatenated_outer_quotes_recover_a_patch_without_command_special_cases() {
+    for (target, expected) in [
+        ("local", Decision::Allow),
+        ("/etc/quoted-outside", Decision::NeedApproval),
+    ] {
+        let child =
+            format!("apply_patch '*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch'");
+        let argument = format!("'{}'", child.replace('\'', "'\\''"));
+        let graph = inspect(&format!("bash -c {argument}"), expected);
+        let concrete = if target.starts_with('/') {
+            target.into()
+        } else {
+            format!("/tmp/project/{target}")
+        };
+        assert!(has_path(&graph, &concrete));
+    }
+}

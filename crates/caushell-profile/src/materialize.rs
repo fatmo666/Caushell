@@ -1002,13 +1002,35 @@ pub fn materialize_recursive_payload_candidate(
 
             for fragment in fragments {
                 let materialized = materialize_recursive_fragment_text(fragment, bindings);
+                let materialization = match &materialized.resolution {
+                    ValueMaterialization::Static => {
+                        if fragment.materialization
+                            == RecursivePayloadFragmentMaterialization::RuntimeData
+                        {
+                            RecursivePayloadFragmentMaterialization::RuntimeData
+                        } else {
+                            RecursivePayloadFragmentMaterialization::DecodedLiteral
+                        }
+                    }
+                    ValueMaterialization::ResolvedExactScalar { variable_name, .. } => {
+                        RecursivePayloadFragmentMaterialization::ResolvedExactScalar {
+                            variable_name: variable_name.clone(),
+                        }
+                    }
+                    ValueMaterialization::ResolvedRuntimeProduced { variable_name, .. } => {
+                        RecursivePayloadFragmentMaterialization::ResolvedRuntimeProduced {
+                            variable_name: variable_name.clone(),
+                        }
+                    }
+                    _ => fragment.materialization.clone(),
+                };
 
                 materialized_fragments.push(RecursivePayloadArgumentFragment {
                     text: materialized.text,
                     quoted: fragment.quoted,
                     node_kind: fragment.node_kind.clone(),
                     span: fragment.span.clone(),
-                    materialization: fragment.materialization.clone(),
+                    materialization,
                 });
                 fragment_resolutions.push(materialized.resolution);
             }
@@ -1052,7 +1074,8 @@ fn materialize_recursive_fragment_text(
     bindings: &SessionBindings,
 ) -> MaterializedText {
     match &fragment.materialization {
-        RecursivePayloadFragmentMaterialization::RuntimeData => {
+        RecursivePayloadFragmentMaterialization::DecodedLiteral
+        | RecursivePayloadFragmentMaterialization::RuntimeData => {
             return MaterializedText {
                 text: fragment.text.clone(),
                 resolution: ValueMaterialization::Static,
@@ -1082,16 +1105,51 @@ fn materialize_recursive_fragment_text(
                     };
                 }
             }
+            // The text is already argv data. Losing its origin cannot justify
+            // reinterpreting its dollar signs or backslashes as shell syntax.
+            return MaterializedText {
+                text: fragment.text.clone(),
+                resolution: ValueMaterialization::UnsupportedDynamicBinding {
+                    variable_name: variable_name.clone(),
+                    repr: "runtime-produced argv origin unavailable".into(),
+                    origin: BindingOrigin::SessionBinding,
+                },
+            };
         }
         RecursivePayloadFragmentMaterialization::Literal => {}
     }
 
-    materialize_argument_text(
+    // Reuse the existing quote-aware lexical decoder. It never evaluates
+    // substitutions or accepts a partial static prefix as complete argv.
+    let (decoded, complete) = crate::value_projection::decode_argument_prefix(
+        &fragment.text,
+        fragment.quoted,
+        &fragment.node_kind,
+    );
+    if complete {
+        return MaterializedText {
+            text: decoded,
+            resolution: ValueMaterialization::Static,
+        };
+    }
+
+    let materialized = materialize_argument_text(
         &fragment.text,
         fragment.quoted,
         &fragment.node_kind,
         bindings,
-    )
+    );
+    if matches!(materialized.resolution, ValueMaterialization::Static) {
+        // No lexical completion and no exact scalar: retain an unknown payload,
+        // rather than parsing raw outer-shell syntax as the child program.
+        return MaterializedText {
+            text: fragment.text.clone(),
+            resolution: ValueMaterialization::UnsupportedDynamicText {
+                text: fragment.text.clone(),
+            },
+        };
+    }
+    materialized
 }
 
 fn aggregate_recursive_payload_resolution(

@@ -30,6 +30,8 @@ The Shell AST is the output of the syntax stage. Command behavior, resolved path
 
 For a complete Bash double-quoted string, token text is the exact source between the outer quotes. Newlines, whitespace, escapes and expansion spelling are retained, together with the original source span and independently collected substitution facts. The parser does not evaluate this text or reconstruct it by concatenating AST children. Existing argv decoding and value materialization establish the operand value; incomplete quotes remain a partial parse.
 
+Before parsing a recursive inline payload, its outer-shell operands must become complete argv values. Recursive materialization reuses the quote-aware lexical decoder for literals and the existing exact-scalar resolution for bindings. Decoded literals, resolved scalars and runtime argv data are not expanded again; original quote metadata and spans remain available. Static prefixes, unsupported expansions and incomplete values remain unresolved and use the existing approval fallback. Canonical inline-shell expansion and nested payload records share this materialization path. Already-complete program text from stdin, files or configuration is not subjected to another outer-quote decode.
+
 ## Command Modeling
 
 ![Shell AST to session execution graph](../assets/caushell-graph.png)

@@ -1997,25 +1997,25 @@ fn expanded_shell_payload_children(
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> Vec<ExpandedFrontierEntry> {
-    let Some((shell_payload, _payload_span, positional_args)) =
-        shell_payload_from_bound_invocation(resolved)
-    else {
-        return Vec::new();
-    };
     let shell_kind = match resolved.normalized_command_name.as_str() {
         "bash" => caushell_types::ShellKind::Bash,
         "sh" => caushell_types::ShellKind::Sh,
         _ => return Vec::new(),
     };
-    let Ok(mut parsed_payload) = caushell_parse::parse_command(&shell_payload, shell_kind) else {
-        return Vec::new();
-    };
-    bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let parent_bindings = crate::support::command_environment_bindings(
         &entry.bindings,
         &entry.parsed_scope,
         &entry.command_ref,
     );
+    let Some((shell_payload, _payload_span, positional_args)) =
+        shell_payload_from_bound_invocation(resolved, &parent_bindings)
+    else {
+        return Vec::new();
+    };
+    let Ok(mut parsed_payload) = caushell_parse::parse_command(&shell_payload, shell_kind) else {
+        return Vec::new();
+    };
+    bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
 
     let mut children: Vec<ExpandedFrontierEntry> = parsed_payload
@@ -3179,6 +3179,7 @@ fn bound_argument_texts_for_slot<'a>(
 
 fn shell_payload_from_bound_invocation(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
+    bindings: &SessionBindings,
 ) -> Option<(
     String,
     caushell_parse::SourceSpan,
@@ -3195,31 +3196,44 @@ fn shell_payload_from_bound_invocation(
         }
     })?;
 
-    let payload_parameter = resolved.bound.bound_parameters.iter().find(|parameter| {
-        parameter.name == *payload_slot
-            && matches!(
-                &parameter.semantic,
-                SemanticType::Payload(caushell_profile::PayloadSemantic {
-                    source: PayloadSource::InlineString,
-                    recursive: true,
-                    ..
-                })
-            )
-    })?;
-
-    let payload_value = payload_parameter
-        .values
-        .iter()
-        .find_map(|value| match value {
-            BoundValue::Argument { text, span, .. } => Some((text.as_str(), span.clone())),
-            BoundValue::ImplicitInput { .. } => None,
+    // The canonical frontier and historical nested records must consume the
+    // same decoded argv. Never independently parse the raw bound token here.
+    let candidate = collect_recursive_payload_candidates(&resolved.bound)
+        .into_iter()
+        .find(|candidate| {
+            candidate.source == PayloadSource::InlineString
+                && matches!(
+                    candidate.language,
+                    PayloadLanguage::Bash | PayloadLanguage::Sh
+                )
+                && matches!(&candidate.origin,
+                    caushell_profile::RecursivePayloadOrigin::Parameter { slot }
+                        if slot == payload_slot)
         })?;
+    let materialized = materialize_recursive_payload_candidate(&candidate, bindings);
+    if !matches!(
+        materialized.resolution,
+        ValueMaterialization::Static
+            | ValueMaterialization::ResolvedExactScalar { .. }
+            | ValueMaterialization::ResolvedRuntimeProduced { .. }
+    ) {
+        return None;
+    }
+    let caushell_profile::RecursivePayloadInput::ArgumentFragments { fragments } =
+        &materialized.candidate.input
+    else {
+        return None;
+    };
+    // A shell command-string option owns one argv operand, not a joined list.
+    let [fragment] = fragments.as_slice() else {
+        return None;
+    };
 
     let trailing_args = trailing_shell_args_after_span(
         &resolved.materialized_projection.invocation,
-        &payload_value.1,
+        &fragment.span,
     )?;
-    Some((payload_value.0.to_string(), payload_value.1, trailing_args))
+    Some((fragment.text.clone(), fragment.span.clone(), trailing_args))
 }
 
 fn trailing_shell_args_after_span(
@@ -5068,7 +5082,8 @@ fn nested_payload_is_inline_shell_child(
             if !matches!(resolved.normalized_command_name.as_str(), "sh" | "bash") {
                 return false;
             }
-            let Some((script, _, _)) = shell_payload_from_bound_invocation(resolved) else {
+            let Some((script, _, _)) = shell_payload_from_bound_invocation(resolved, bindings)
+            else {
                 return false;
             };
             let Ok(mut canonical_parse) = caushell_parse::parse_command(

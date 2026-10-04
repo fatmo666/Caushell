@@ -30,9 +30,15 @@ pub struct RecursivePayloadArgumentFragment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecursivePayloadFragmentMaterialization {
     Literal,
+    /// Static argv data whose outer shell quoting has already been decoded.
+    DecodedLiteral,
     RuntimeData,
-    ResolvedExactScalar { variable_name: String },
-    ResolvedRuntimeProduced { variable_name: String },
+    ResolvedExactScalar {
+        variable_name: String,
+    },
+    ResolvedRuntimeProduced {
+        variable_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +181,9 @@ pub fn collect_recursive_payload_candidates(
     candidates
 }
 
+/// Parse child-program text, not outer-shell argument syntax. Execution-facing
+/// callers must first use `materialize_recursive_payload_candidate` and accept
+/// only a complete resolution; this syntax primitive does not resolve bindings.
 pub fn parse_recursive_payload_candidate(
     candidate: &RecursivePayloadCandidate,
 ) -> RecursivePayloadParseResult {
