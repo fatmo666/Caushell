@@ -240,6 +240,7 @@ mod tests {
                 execution_semantics: vec![ExecutionSemanticsFact {
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
+                    terminal_session_operations: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:5".to_string(),
                     source: ExecutionUnit {
                         node_id: "command:sess-1:5".to_string(),

@@ -1,0 +1,149 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: screen, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+# Explicit spellings avoid confusing native multi-letter options with clusters.
+# Undeclared clusters remain opaque and require approval, not a guessed parse.
+option_matching: exact_names
+option_scope: leading_options
+selection_failure_effects:
+  - &opaque {kind: terminal_session_operation, terminal_session_operation: opaque, target: {kind: none}}
+forms:
+  - id: version
+    selector: &version
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: version}
+        - {kind: no_positional_args}
+        - &query_operands
+          kind: all
+          items:
+            - {kind: not, item: {kind: any, items: [{kind: has_flag_at_least, flag: -S, count: 2}, {kind: has_flag_at_least, flag: -p, count: 2}]}}
+            - kind: any
+              items:
+                - {kind: not, item: {kind: has_modifier, modifier: session_name}}
+                - {kind: has_modifier_parameter_matching, modifier: session_name, parameter: session_name, matcher: &fixed_token {kind: regex_pattern, pattern: '^[-A-Za-z0-9_.:@/%]+$'}}
+            - kind: any
+              items:
+                - {kind: not, item: {kind: has_modifier, modifier: window}}
+                - {kind: has_modifier_parameter_matching, modifier: window, parameter: window, matcher: *fixed_token}
+        - &no_unsafe {kind: not, item: &unsafe {kind: any, items: [{kind: has_modifier, modifier: create_mode}, {kind: has_modifier, modifier: create_named}, {kind: has_modifier, modifier: attach_mode}, {kind: has_modifier, modifier: detach_mode}, {kind: has_modifier, modifier: control_mode}, {kind: has_modifier, modifier: configuration}, {kind: has_modifier, modifier: logging}, {kind: has_modifier, modifier: logfile}, {kind: has_modifier, modifier: launch_values}, {kind: has_modifier, modifier: launch_switches}]}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: query}]}}
+    parameters: &arguments [{name: arguments, semantic: &plain {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    effects: [&inspect {kind: terminal_session_operation, terminal_session_operation: inspect, target: {kind: none}}]
+    stream_contract: &streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: list_sessions
+    selector: &list
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: list}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_matching, index: 0, matcher: *fixed_token}]}
+        - *query_operands
+        - *no_unsafe
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: query}]}}
+    parameters: *arguments
+    effects: [*inspect]
+    stream_contract: *streams
+  - id: query_session
+    selector: &query
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: query}
+        - *query_operands
+        - *no_unsafe
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: list}]}}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(windows|info|lastmsg|number|title)$'}}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters: *arguments
+    effects: [*inspect]
+    stream_contract: *streams
+  - id: control_session
+    selector: &control
+      kind: all
+      items:
+        - {kind: not, item: &inspect_form {kind: any, items: [*version, *list, *query]}}
+        - {kind: not, item: &query_modes {kind: any, items: [{kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: query}]}}
+        - {kind: any, items: [{kind: has_modifier, modifier: control_mode}, {kind: all, items: [{kind: has_modifier, modifier: detach_mode}, {kind: not, item: {kind: has_modifier, modifier: attach_mode}}, {kind: not, item: &create_modes {kind: any, items: [{kind: has_modifier, modifier: create_mode}, {kind: has_modifier, modifier: create_named}]}}]}]}
+    parameters: *arguments
+    effects: [{kind: terminal_session_operation, terminal_session_operation: control, target: {kind: none}}]
+    stream_contract: *streams
+  - id: attach_session
+    selector: &attach
+      kind: all
+      items:
+        - {kind: not, item: *inspect_form}
+        - {kind: not, item: *query_modes}
+        - {kind: not, item: *control}
+        - {kind: has_modifier, modifier: attach_mode}
+    parameters: *arguments
+    effects: [{kind: terminal_session_operation, terminal_session_operation: attach, target: {kind: none}}]
+    stream_contract: *streams
+  - id: create_session_or_window
+    selector: &create
+      kind: all
+      items:
+        - {kind: not, item: *inspect_form}
+        - {kind: not, item: *query_modes}
+        - {kind: not, item: *control}
+        - {kind: not, item: *attach}
+    parameters: *arguments
+    effects:
+      - {kind: terminal_session_operation, terminal_session_operation: create, target: {kind: none}}
+      - {kind: load_config, target: {kind: configured_path, sources: [{slot: configuration, projection: {kind: identity}}], environment: {name: SCREENRC}, missing: unknown, purpose: tool_config}}
+      - {kind: load_config, target: {kind: configured_path, sources: [], environment: {name: SYSTEM_SCREENRC}, missing: unknown, purpose: tool_config}}
+    stream_contract: *streams
+  - id: opaque_session_operation
+    selector: {kind: all, items: [{kind: not, item: *inspect_form}, {kind: not, item: *control}, {kind: not, item: *attach}, {kind: not, item: *create}]}
+    parameters: *arguments
+    effects: [*opaque]
+    stream_contract: *streams
+modifiers:
+  - {id: version, matcher: {kind: any_flag, flags: [-v]}}
+  # The zero/one trailing pattern is plain form argv. Mixed flags after -ls
+  # are deliberately opaque: the native optional-pattern ownership is not
+  # certified by the generic leading-options scanner.
+  - {id: list, matcher: {kind: any_flag, flags: [-ls, -list]}}
+  - {id: query, matcher: {kind: any_flag, flags: [-Q]}}
+  - {id: query_switches, matcher: {kind: any_flag, flags: [-q]}}
+  - id: session_name
+    matcher: {kind: any_flag, flags: [-S]}
+    parameters: [{name: session_name, semantic: *plain, binding: &operand {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: window
+    matcher: {kind: any_flag, flags: [-p]}
+    parameters: [{name: window, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: create_mode, matcher: {kind: any_flag, flags: [-m, -dm, -Dm]}}
+  - id: create_named
+    matcher: {kind: any_flag, flags: [-dmS, -DmS]}
+    parameters: [{name: session_name, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: attach_mode, matcher: {kind: any_flag, flags: [-r, -R, -RR, -x, -xr, -xR, -xRR, -dr, -dR, -dRR, -Dr, -DR, -DRR]}}
+  - {id: detach_mode, matcher: {kind: any_flag, flags: [-d, -D]}}
+  - {id: control_mode, matcher: {kind: any_flag, flags: [-X, -wipe]}}
+  - id: configuration
+    matcher: {kind: any_flag, flags: [-c]}
+    parameters: [{name: configuration, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: logging, matcher: {kind: any_flag, flags: [-L]}}
+  - id: logfile
+    matcher: {kind: any_flag, flags: [-Logfile]}
+    parameters: [{name: logfile_template, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: launch_values
+    matcher: {kind: any_flag, flags: [-e, -h, -s, -t, -T]}
+    parameters: [{name: launch_values, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - {id: launch_switches, matcher: {kind: any_flag, flags: [-a, -A, -f, -fn, -fa, -i, -l, -ln, -O, -P, -U]}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://www.gnu.org/software/screen/manual/html_node/Invoking-Screen.html
+    - https://www.gnu.org/software/screen/manual/html_node/Startup-Files.html
+    - https://www.gnu.org/software/screen/manual/html_node/Paste.html
+    - https://ftp.gnu.org/gnu/screen/screen-5.0.1.tar.gz
+  caushell.profile/known_limitations:
+    - Explicit version/list/query forms inspect state; creation, attachment, control and unknown syntax request approval. Query admission is not a whole-program zero-side-effect guarantee for runtime socket-registry bookkeeping.
+    - Query subcommands are case-sensitive and argumentless; title/number with values, select, echo and arbitrary query commands remain opaque.
+    - Option spellings and common native clusters are declared explicitly. Other clusters, abbreviations, option arity gaps and mixed query/control modes remain opaque instead of being guessed safe.
+    - Listing admits zero or one trailing pattern. Mixed flag-shaped list patterns and options after a pattern are conservatively opaque; no optional-operand scanner extension is introduced.
+    - Inspect admission requires simple fixed session/window/list operands. Dynamic references, glob expressions, whitespace-containing or repeated -S/-p operands remain opaque rather than certifying runtime argument cardinality.
+    - Create denotes a potential session or window launch, including STY-based launches. No child shell state, actual server liveness or definite configuration loading is certified.
+    - Child argv, default shells, startup configuration, logfile templates and Screen control/input protocols are not interpreted. All execution/control modes are guarded without pretending their targets are filesystem paths or Bash programs.
+    - Caller cwd may be transmitted by ordinary new-window messages, while environment and Screen command context can differ. Neither is fabricated as the state of an existing session.

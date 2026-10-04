@@ -125,6 +125,32 @@ mod tests {
     }
 
     #[test]
+    fn terminal_rule_uses_existing_interactive_family_and_explicit_rule_precedence() {
+        let config = load_config_from_str("policy:\n  families:\n    interactive_control: deny\n  rules:\n    terminal_session_operation: allow\n").unwrap();
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::TerminalSessionOperation),
+            RuleAction::Observe
+        );
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::InteractiveEscapeSurface),
+            RuleAction::Deny
+        );
+        assert_eq!(
+            config
+                .policy
+                .rule_policy
+                .action_for(RuleId::OutsideWorkspaceMutation),
+            RuleAction::NeedApproval
+        );
+    }
+
+    #[test]
     fn loads_config_from_path() {
         let path = temp_config_path();
         fs::write(

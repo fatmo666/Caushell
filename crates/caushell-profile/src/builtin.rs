@@ -7,6 +7,10 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "screen",
+        content: include_str!("../profiles/screen.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "redis-cli",
         content: include_str!("../profiles/redis-cli.yaml"),
     },

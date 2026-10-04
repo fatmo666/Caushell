@@ -199,6 +199,22 @@ Profile 可声明 `{kind: database_operation, database_operation: read|write|adm
 
 依据：[Redis CLI](https://redis.io/docs/latest/develop/tools/cli/)、[固定 Redis 8.2.3 CLI 源码](https://github.com/redis/redis/blob/8.2.3/src/redis-cli.c)。
 
+### 终端会话操作与 GNU Screen
+
+Profile 可声明 `{kind: terminal_session_operation, terminal_session_operation: inspect|create|attach|control|opaque, target: {kind: none}}`。这是静态操作类别，不证明实际 session 存在或归属。每个调用内去重，保留到 `ExecutionSemantics.terminal_session_operations`、trace、快照和既有执行语义 Query；旧数据缺字段默认为空，空列表不输出。会话／窗口名称、控制协议文本均为普通值，不伪装成文件路径。
+
+复用已有 `interactive_escape_guard` 的当前请求索引语义查询，不新增 Pass、历史遍历或运行时探测。Inspect 不添加 finding 或决策；Create、Attach、Control、Opaque 由新规则 `terminal_session_operation` 默认 NeedApproval，归属既有 `interactive_control` family，沿用单规则优先的配置机制。原 `interactive_escape_surface` 默认 Observe 不变，其他工具原策略不变。空操作列表不增加二次遍历或分配；这不是 latency 实测结果。
+
+`screen` Profile 放行 `-v`、带零或一个尾部匹配模式的 `-ls`／`-list`，以及无额外参数、大小写精确的 `-Q windows|info|lastmsg|number|title`。其他查询语法、缺参数／未知选项、未声明的紧凑组合保留 Opaque；明确的 selection-failure 效果保证默认解析缺口 Observe 也不会绕过审批。列表与控制选项混用、匹配模式后追加选项保守审批，没有扩改可选操作数扫描器。查询准入是操作层策略，不证明整个原生程序零副作用：原生列表／查询路径也可能维护 socket 注册目录。
+
+新建 session／窗口（含 STY 场景）、附着／接管、分离、`-wipe` 和 `-X` 控制／注入默认审批。子程序 argv、默认 shell、`stuff`、`eval`、`source`、`screen` 等 Screen 协议不当作 Bash 或子命令分派；潜在的新启动配置保留 LoadConfig 候选，不证明既存服务的配置或存活。日志模板、协议选择的输出保持不透明，不捏造精确文件写入。Shell 重定向仍独立检查；将终端规则改成 Observe 也不等于这些暂缓效果已完成精细分析。
+
+普通新窗口消息可能携带调用方 cwd，但环境及远程控制上下文可能不同；不把调用方 ShellState 赋给已有窗口。不扫描 session，不新增动态进程事实、依赖或 Harness 字段。这是静态控制准入边界，不宣称完成 Screen 协议解释。
+
+查询准入要求简单、固定的会话／窗口／列表操作数；动态引用、通配符、包含空白及重复 `-S`／`-p` 的形式保守归为不透明，不能据此证明运行时 argv 的数量。限制写在 Profile 中，未改共享选项扫描器。
+
+依据：[GNU Screen 调用文档](https://www.gnu.org/software/screen/manual/html_node/Invoking-Screen.html)、[启动配置](https://www.gnu.org/software/screen/manual/html_node/Startup-Files.html)、[固定 Screen 5.0.1 源码](https://ftp.gnu.org/gnu/screen/screen-5.0.1.tar.gz)。
+
 ### Socket 查询与暂缓审查的连接关闭
 
 Linux iproute2 的 `ss` Profile 将普通查询与 `-K/--kill` 的 `close_sockets_unchecked` 形式分开。当前关闭连接本身不触发审批，这是明确的产品风险范围选择，不是将其判成只读。没有新增 socket 控制效果、进程 kill 替代事实、风险 pass 或动态连接探测；Profile 保留独立 form 与风险范围说明，Graph 保留 form ID。通用短选项匹配器保留带参数选项之前的已声明无参数前缀，包括 `-KtF-` 紧凑写法和 `-4` 等数字选项；遇到参数边界就停止，不将参数文本扫描成后续选项。完整选项词模式和 `--` 的既有语义不变。

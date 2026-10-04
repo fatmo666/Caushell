@@ -58,6 +58,7 @@ pub enum NormalizeError {
     MissingRepositoryOperation,
     UnexpectedRepositoryOperation,
     InvalidDatabaseOperation(String),
+    InvalidTerminalSessionOperation(String),
     InvalidSelectionFailureEffects(String),
     InvalidExtensionKey(String),
     InvalidOptionScope(String),
@@ -1352,6 +1353,14 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
             "database_operation metadata is exclusive to database_operation effects".into())),
         (_, None) => None,
     };
+    let terminal_session_operation = match (kind, raw.terminal_session_operation) {
+        (EffectKind::TerminalSessionOperation, Some(operation)) if matches!(target, EffectTarget::None) => Some(operation),
+        (EffectKind::TerminalSessionOperation, _) => return Err(NormalizeError::InvalidTerminalSessionOperation(
+            "terminal_session_operation requires an operation class and target none; session identity is not a filesystem path".into())),
+        (_, Some(_)) => return Err(NormalizeError::InvalidTerminalSessionOperation(
+            "terminal_session_operation metadata is exclusive to terminal_session_operation effects".into())),
+        (_, None) => None,
+    };
 
     Ok(Effect {
         kind,
@@ -1361,6 +1370,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         host_risk: normalize_host_risk_effect_metadata(raw.host_risk)?,
         repository_operation,
         database_operation,
+        terminal_session_operation,
         extensions: normalize_extensions(raw.extensions)?,
     })
 }
@@ -1505,6 +1515,7 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::ControlProcess => EffectKind::ControlProcess,
         RawEffectKind::RepositoryOperation => EffectKind::RepositoryOperation,
         RawEffectKind::DatabaseOperation => EffectKind::DatabaseOperation,
+        RawEffectKind::TerminalSessionOperation => EffectKind::TerminalSessionOperation,
     }
 }
 
@@ -2119,6 +2130,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    terminal_session_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2154,6 +2166,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    terminal_session_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 constraints: Vec::new(),
@@ -2274,6 +2287,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    terminal_session_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2363,6 +2377,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    terminal_session_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2511,6 +2526,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    terminal_session_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2631,6 +2647,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    terminal_session_operation: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,

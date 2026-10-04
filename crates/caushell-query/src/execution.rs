@@ -786,6 +786,10 @@ pub struct ExecutionSemanticsRef<'a> {
 }
 
 impl<'a> ExecutionSemanticsRef<'a> {
+    pub fn terminal_session_operations(&self) -> &[caushell_types::TerminalSessionOperationKind] {
+        &self.semantics.terminal_session_operations
+    }
+
     pub(crate) fn from_node(
         node: &'a caushell_graph::GraphNode,
         session: QuerySession<'a>,
@@ -913,6 +917,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
 
     pub fn to_execution_semantics_fact(&self) -> ExecutionSemanticsFact {
         ExecutionSemanticsFact {
+            terminal_session_operations: self.semantics.terminal_session_operations.clone(),
             database_operations: self.semantics.database_operations.clone(),
             network_listeners: self.semantics.network_listeners.clone(),
             node_id: self.node_id.0.clone(),
@@ -1631,6 +1636,7 @@ mod tests {
             ExecutionSemanticsFact {
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
+                terminal_session_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:2".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:2".to_string(),

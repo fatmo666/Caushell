@@ -653,6 +653,8 @@ pub struct RawEffect {
     #[serde(default)]
     pub database_operation: Option<caushell_types::DatabaseOperationKind>,
     #[serde(default)]
+    pub terminal_session_operation: Option<caushell_types::TerminalSessionOperationKind>,
+    #[serde(default)]
     pub extensions: BTreeMap<String, JsonValue>,
 }
 
@@ -735,6 +737,7 @@ pub enum RawEffectKind {
     ControlProcess,
     RepositoryOperation,
     DatabaseOperation,
+    TerminalSessionOperation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

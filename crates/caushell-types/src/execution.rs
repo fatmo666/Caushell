@@ -10,6 +10,17 @@ pub enum DatabaseOperationKind {
     Opaque,
 }
 
+/// Static operation labels, not evidence of a live session's shell state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalSessionOperationKind {
+    Inspect,
+    Create,
+    Attach,
+    Control,
+    Opaque,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractiveEscapeSurfaceKind {
@@ -72,6 +83,8 @@ pub enum ProcessControlTargetKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionSemantics {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminal_session_operations: Vec<TerminalSessionOperationKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub database_operations: Vec<DatabaseOperationKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_listeners: Vec<NetworkListener>,
@@ -103,6 +116,7 @@ pub struct ExecutionSemantics {
 impl ExecutionSemantics {
     pub fn new(normalized_command_name: impl Into<String>, form_id: impl Into<String>) -> Self {
         Self {
+            terminal_session_operations: Vec::new(),
             database_operations: Vec::new(),
             network_listeners: Vec::new(),
             normalized_command_name: normalized_command_name.into(),
@@ -262,6 +276,33 @@ impl NetworkListener {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn terminal_operations_roundtrip_and_legacy_semantics_default_empty() {
+        use super::*;
+        let mut semantics = ExecutionSemantics::new("terminal-tool", "run");
+        let old = serde_json::to_value(&semantics).unwrap();
+        assert!(old.get("terminal_session_operations").is_none());
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(old).unwrap(),
+            semantics
+        );
+        semantics.terminal_session_operations = vec![
+            TerminalSessionOperationKind::Inspect,
+            TerminalSessionOperationKind::Create,
+            TerminalSessionOperationKind::Attach,
+            TerminalSessionOperationKind::Control,
+            TerminalSessionOperationKind::Opaque,
+        ];
+        let wire = serde_json::to_value(&semantics).unwrap();
+        assert_eq!(
+            wire["terminal_session_operations"],
+            serde_json::json!(["inspect", "create", "attach", "control", "opaque"])
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(wire).unwrap(),
+            semantics
+        );
+    }
     #[test]
     fn database_operations_roundtrip_and_old_semantics_default_empty() {
         use super::*;

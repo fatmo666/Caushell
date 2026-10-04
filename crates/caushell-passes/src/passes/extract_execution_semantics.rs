@@ -53,10 +53,12 @@ fn project_execution_semantics_mutation(
             normalized_command_name,
             partial_bound: Some(bound),
             ..
-        } if bound
-            .effects
-            .iter()
-            .any(|effect| effect.kind == EffectKind::DatabaseOperation) =>
+        } if bound.effects.iter().any(|effect| {
+            matches!(
+                effect.kind,
+                EffectKind::DatabaseOperation | EffectKind::TerminalSessionOperation
+            )
+        }) =>
         {
             (normalized_command_name, bound)
         }
@@ -79,6 +81,17 @@ fn execution_semantics_for_bound(
 ) -> ExecutionSemantics {
     let mut semantics =
         ExecutionSemantics::new(normalized_command_name, invocation.form_id.as_str());
+
+    for operation in invocation
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == EffectKind::TerminalSessionOperation)
+        .filter_map(|effect| effect.terminal_session_operation)
+    {
+        if !semantics.terminal_session_operations.contains(&operation) {
+            semantics.terminal_session_operations.push(operation);
+        }
+    }
 
     for operation in invocation
         .effects
@@ -462,6 +475,32 @@ mod tests {
     fn registry_from_yaml(yaml: &str) -> ProfileRegistry {
         let profile = load_command_profile_from_str(yaml).expect("expected profile to load");
         ProfileRegistry::from_profiles(vec![profile]).expect("expected registry to build")
+    }
+
+    #[test]
+    fn terminal_operations_are_projected_and_deduplicated_from_generic_effects() {
+        let registry = registry_from_yaml(
+            "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: terminal-tool}\nforms:\n  - id: run\n    selector: {kind: all, items: []}\n    effects:\n      - {kind: terminal_session_operation, terminal_session_operation: inspect, target: {kind: none}}\n      - {kind: terminal_session_operation, terminal_session_operation: control, target: {kind: none}}\n      - {kind: terminal_session_operation, terminal_session_operation: control, target: {kind: none}}\n",
+        );
+        let ctx = run_pass_with_registry(sample_request("terminal-tool"), registry);
+        let projected: Vec<_> = ctx
+            .pending_mutations()
+            .iter()
+            .filter_map(|m| match m {
+                PendingMutation::AddExecutionSemantics { semantics, .. } => Some(semantics),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(
+            projected[0].terminal_session_operations,
+            [
+                caushell_types::TerminalSessionOperationKind::Inspect,
+                caushell_types::TerminalSessionOperationKind::Control
+            ]
+        );
+        assert!(!projected[0].executes_payload);
+        assert!(!projected[0].controls_process);
     }
 
     fn run_pass(command: &str) -> RunnerContext {

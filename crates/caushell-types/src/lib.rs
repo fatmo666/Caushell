@@ -34,7 +34,7 @@ pub use evidence::{
 pub use execution::{
     DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,
     InteractiveEscapeCapability, InteractiveEscapeSurfaceKind, NetworkListenScope, NetworkListener,
-    ProcessControlAction, ProcessControlTargetKind,
+    ProcessControlAction, ProcessControlTargetKind, TerminalSessionOperationKind,
 };
 pub use finding::{Finding, FindingEnforcementClass};
 pub use path::{

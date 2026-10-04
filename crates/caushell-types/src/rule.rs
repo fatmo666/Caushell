@@ -21,6 +21,7 @@ pub enum RuleId {
     NetworkListenerExposure,
     CommandParseFailure,
     InteractiveEscapeSurface,
+    TerminalSessionOperation,
     CwdOutsideWorkspaceRoot,
     OutsideWorkspaceMutation,
     OutsideWorkspaceScriptSource,
@@ -59,7 +60,9 @@ impl RuleId {
         match self {
             Self::NetworkListenerExposure => RuleFamily::NetworkSafety,
             Self::CommandParseFailure => RuleFamily::ResolveGap,
-            Self::InteractiveEscapeSurface => RuleFamily::InteractiveControl,
+            Self::InteractiveEscapeSurface | Self::TerminalSessionOperation => {
+                RuleFamily::InteractiveControl
+            }
             Self::CwdOutsideWorkspaceRoot => RuleFamily::Path,
             Self::OutsideWorkspaceMutation => RuleFamily::Path,
             Self::OutsideWorkspaceScriptSource => RuleFamily::Path,

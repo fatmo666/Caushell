@@ -296,6 +296,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::NetworkListenerExposure => RuleAction::NeedApproval,
         RuleId::CommandParseFailure => RuleAction::NeedApproval,
         RuleId::InteractiveEscapeSurface => RuleAction::Observe,
+        RuleId::TerminalSessionOperation => RuleAction::NeedApproval,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
         RuleId::DatabaseStateMutation

@@ -1,5 +1,5 @@
 use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
-use caushell_types::{Evidence, RuleId};
+use caushell_types::{Evidence, RuleId, TerminalSessionOperationKind};
 
 use crate::support::decision_for_rule_action;
 
@@ -29,6 +29,28 @@ impl SessionAnalysisPass for InteractiveEscapeGuardPass {
             .execute(caushell_query::QuerySession::from_session(&staged_session));
 
         for semantics in semantics.semantics() {
+            // Reuse the existing current-sequence query: an empty typed list
+            // adds no traversal, allocation or session probe. Escape policy is
+            // independent from opaque terminal-session operations.
+            for operation in semantics
+                .terminal_session_operations()
+                .iter()
+                .filter(|op| **op != TerminalSessionOperationKind::Inspect)
+            {
+                let rule = RuleId::TerminalSessionOperation;
+                let reason = format!(
+                    "terminal session {operation:?} operation declared for {} ({}) at {}; static analysis does not assume caller cwd/environment or interpret terminal input as Bash",
+                    semantics.normalized_command_name(),
+                    semantics.form_id(),
+                    semantics.source().node_id().0
+                );
+                ctx.add_finding(rule, reason.clone());
+                if let Some(decision) =
+                    decision_for_rule_action(ctx.policy().rule_policy.action_for(rule))
+                {
+                    ctx.propose_decision(self.name(), rule, decision, reason);
+                }
+            }
             if !semantics.opens_interactive_escape_surface() {
                 continue;
             }
@@ -112,10 +134,18 @@ mod tests {
     }
 
     fn run_pass(command: &str, policy: PolicyConfig) -> RunnerContext {
+        run_pass_with_registry(command, policy, built_in_registry())
+    }
+
+    fn run_pass_with_registry(
+        command: &str,
+        policy: PolicyConfig,
+        registry: ProfileRegistry,
+    ) -> RunnerContext {
         let mut runner = PassRunner::new();
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
-        runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
+        runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
@@ -126,6 +156,33 @@ mod tests {
 
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
+    }
+
+    #[test]
+    fn terminal_guard_consumes_generic_classes_not_screen_names() {
+        for (kind, decision) in [
+            ("inspect", Decision::Allow),
+            ("create", Decision::NeedApproval),
+            ("attach", Decision::NeedApproval),
+            ("control", Decision::NeedApproval),
+            ("opaque", Decision::NeedApproval),
+        ] {
+            let yaml = format!(
+                "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {{canonical_name: terminal-tool}}\nforms:\n  - id: run\n    selector: {{kind: all, items: []}}\n    effects: [{{kind: terminal_session_operation, terminal_session_operation: {kind}, target: {{kind: none}}}}]\n"
+            );
+            let registry = ProfileRegistry::from_profiles(vec![
+                caushell_profile::load_command_profile_from_str(&yaml).unwrap(),
+            ])
+            .unwrap();
+            let ctx = run_pass_with_registry("terminal-tool", PolicyConfig::default(), registry);
+            assert_eq!(ctx.final_decision, Some(decision), "{kind}");
+            assert_eq!(ctx.findings.len(), usize::from(kind != "inspect"));
+            assert!(
+                ctx.findings
+                    .iter()
+                    .all(|f| f.rule_id == RuleId::TerminalSessionOperation)
+            );
+        }
     }
 
     #[test]

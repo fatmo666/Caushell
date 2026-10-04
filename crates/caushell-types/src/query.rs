@@ -598,6 +598,8 @@ pub struct DerivedInvocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionSemanticsFact {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminal_session_operations: Vec<crate::TerminalSessionOperationKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub database_operations: Vec<crate::DatabaseOperationKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_listeners: Vec<crate::NetworkListener>,
@@ -2161,6 +2163,7 @@ mod tests {
                 semantics: Some(ExecutionSemanticsFact {
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
+                    terminal_session_operations: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:2".to_string(),
                     source: ExecutionUnit {
                         node_id: "command:sess-1:2".to_string(),
@@ -2325,6 +2328,7 @@ mod tests {
                     semantics: Some(ExecutionSemanticsFact {
                         network_listeners: Vec::new(),
                         database_operations: Vec::new(),
+                        terminal_session_operations: Vec::new(),
                         node_id: "execution-semantics:command:sess-1:2".to_string(),
                         source: ExecutionUnit {
                             node_id: "command:sess-1:2".to_string(),
@@ -2737,6 +2741,7 @@ mod tests {
             semantics: vec![ExecutionSemanticsFact {
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
+                terminal_session_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:5".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:5".to_string(),

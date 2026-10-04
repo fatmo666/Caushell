@@ -487,6 +487,7 @@ mod tests {
             host_risk: Default::default(),
             repository_operation: None,
             database_operation: None,
+            terminal_session_operation: None,
             extensions: Default::default(),
         }
     }

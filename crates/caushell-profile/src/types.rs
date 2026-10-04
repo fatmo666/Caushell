@@ -867,6 +867,7 @@ pub enum EffectKind {
     ControlProcess,
     RepositoryOperation,
     DatabaseOperation,
+    TerminalSessionOperation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1041,6 +1042,7 @@ pub struct Effect {
     pub host_risk: HostRiskEffectMetadata,
     pub repository_operation: Option<caushell_types::RepositoryOperationKind>,
     pub database_operation: Option<caushell_types::DatabaseOperationKind>,
+    pub terminal_session_operation: Option<caushell_types::TerminalSessionOperationKind>,
     pub extensions: ExtensionMap,
 }
 
@@ -1054,6 +1056,7 @@ impl Effect {
             host_risk: HostRiskEffectMetadata::default(),
             repository_operation: None,
             database_operation: None,
+            terminal_session_operation: None,
             extensions: ExtensionMap::new(),
         }
     }
