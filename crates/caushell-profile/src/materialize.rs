@@ -100,6 +100,9 @@ pub struct SessionBindings {
     session_variables: BTreeMap<String, SessionValue>,
     inherited_environment: BTreeMap<String, SessionValue>,
     positional_parameters: Vec<SessionValue>,
+    // No snapshot is not an empty argv. Materializing $@/$* requires proof
+    // that the entire positional list is known, including a known empty list.
+    positional_parameters_complete: bool,
     // Separate child-environment view: unexported shell locals are not defaults
     // for an external program. None records a proven absence (e.g. unset).
     child_environment: BTreeMap<String, Option<SessionValue>>,
@@ -295,6 +298,9 @@ impl SessionBindings {
                 .collect::<Option<Vec<_>>>();
             if let Some(values) = values {
                 bindings.replace_positional_parameters(values);
+            } else {
+                bindings.positional_parameters.clear();
+                bindings.positional_parameters_complete = false;
             }
         }
 
@@ -398,6 +404,7 @@ impl SessionBindings {
         I: IntoIterator<Item = SessionValue>,
     {
         self.positional_parameters = values.into_iter().collect();
+        self.positional_parameters_complete = true;
     }
 
     pub fn replace_positional_parameters_with_exact_scalars<I, S>(&mut self, values: I)
@@ -418,6 +425,10 @@ impl SessionBindings {
 
     pub fn positional_parameters(&self) -> &[SessionValue] {
         &self.positional_parameters
+    }
+
+    pub fn positional_parameters_are_complete(&self) -> bool {
+        self.positional_parameters_complete
     }
 
     pub fn remove(&mut self, name: &str) {
@@ -803,6 +814,9 @@ fn exact_scalar_all_positional_parameters(
     bindings: &SessionBindings,
     kind: ShellAllPositionalsKind,
 ) -> Option<String> {
+    if !bindings.positional_parameters_are_complete() {
+        return None;
+    }
     let values = bindings
         .positional_parameters()
         .iter()
@@ -1100,7 +1114,14 @@ pub fn materialize_projected_invocation(
                 text: materialized.text,
                 implicit_input_source: arg.implicit_input_source,
                 runtime_argument_domain: arg.runtime_argument_domain.clone(),
-                runtime_data: arg.runtime_data,
+                // A resolved field is argv data, not shell source to decode
+                // again. Its binding origin stays in arg_resolutions below.
+                runtime_data: arg.runtime_data
+                    || matches!(
+                        materialized.resolution,
+                        ValueMaterialization::ResolvedExactScalar { .. }
+                            | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                    ),
                 kind: arg.kind,
                 quoted: arg.quoted,
                 node_kind: arg.node_kind.clone(),
@@ -1414,6 +1435,9 @@ fn materialize_all_positional_parameter_fields(
     quoted: bool,
     bindings: &SessionBindings,
 ) -> Option<Vec<MaterializedShellField>> {
+    if !bindings.positional_parameters_are_complete() {
+        return None;
+    }
     let mut fields = Vec::with_capacity(bindings.positional_parameters().len());
 
     for (index, value) in bindings.positional_parameters().iter().enumerate() {

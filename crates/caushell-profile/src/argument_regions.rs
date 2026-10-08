@@ -2,8 +2,8 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::{
-    ArgumentRegion, ArgumentScope, BindingSpec, FlagName, FlagOperandMode, Form, Modifier,
-    ProjectedArg, ProjectedInvocation, ScopedOptions,
+    ArgumentFieldCount, ArgumentRegion, ArgumentScope, BindingSpec, FlagName, FlagOperandMode,
+    Form, Modifier, ProjectedArg, ProjectedInvocation, ScopedOptions, argument_structure,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,8 +19,10 @@ pub(crate) fn argv_value(arg: &ProjectedArg) -> Option<Cow<'_, str>> {
     if arg.runtime_data {
         Some(Cow::Borrowed(&arg.text))
     } else {
-        caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
-            .map(Cow::Owned)
+        let structure = argument_structure(arg);
+        structure
+            .exact
+            .then_some(Cow::Owned(structure.static_prefix))
     }
 }
 
@@ -109,9 +111,19 @@ pub(crate) fn scan(
     let mut index = scope.start_index;
     while index < scope.end_index {
         let Some(value) = argv_value(&projection.args[index]) else {
-            // Retain a possible root and later known child effects. This is
-            // a partial model, not proof that an unknown word is plain data.
-            result.ownership_unresolved = true;
+            let structure = argument_structure(&projection.args[index]);
+            // Unknown path data is not an unknown control surface. Only use
+            // per-field bounds: unquoted splitting has no such prefix proof.
+            let may_control = structure.fields == ArgumentFieldCount::Unknown
+                || structure.may_start_with("-")
+                || declarations.keys().any(|flag| structure.may_equal(flag))
+                || regions.iter().any(|region| {
+                    region
+                        .start_flags
+                        .iter()
+                        .any(|flag| structure.may_equal(flag))
+                });
+            result.ownership_unresolved |= may_control;
             result.positionals.as_mut().unwrap().push(index);
             index += 1;
             continue;
@@ -124,21 +136,39 @@ pub(crate) fn scan(
             let mut end = index + 1;
             while end < scope.end_index {
                 let Some(word) = argv_value(&projection.args[end]) else {
-                    // An unknown word may itself terminate the child. Keep
-                    // the known prefix/candidate, explicitly marking that
-                    // its full argv ownership has not been established.
-                    result.ownership_unresolved = true;
+                    let structure = argument_structure(&projection.args[end]);
+                    // A child target must be known, and variable-width child
+                    // argv can affect its own CLI grammar. For single fields,
+                    // only possible delimiters make parent ownership uncertain.
+                    result.ownership_unresolved |= end == index + 1
+                        || structure.fields != ArgumentFieldCount::ExactlyOne
+                        || region
+                            .terminators
+                            .iter()
+                            .any(|t| structure.may_equal(&t.value));
                     end += 1;
                     continue;
                 };
-                let terminates = region.terminators.iter().any(|t| {
-                    t.value == word.as_ref()
-                        && t.preceding.as_ref().is_none_or(|preceding| {
-                            end > index + 1
-                                && argv_value(&projection.args[end - 1])
-                                    .is_some_and(|v| v.as_ref() == preceding)
-                        })
-                });
+                let mut terminates = false;
+                for t in &region.terminators {
+                    if t.value != word.as_ref() {
+                        continue;
+                    }
+                    let Some(preceding) = &t.preceding else {
+                        terminates = true;
+                        break;
+                    };
+                    if end > index + 1 {
+                        if let Some(previous) = argv_value(&projection.args[end - 1]) {
+                            terminates |= previous.as_ref() == preceding;
+                        } else {
+                            let previous = argument_structure(&projection.args[end - 1]);
+                            result.ownership_unresolved |= previous.fields
+                                != ArgumentFieldCount::ExactlyOne
+                                || previous.may_equal(preceding);
+                        }
+                    }
+                }
                 if terminates {
                     break;
                 }
@@ -177,9 +207,10 @@ pub(crate) fn scan(
             index += operands + 1;
             if projection.args[index - operands..index]
                 .iter()
-                .any(|operand| !operand.quoted && argv_value(operand).is_none())
+                .any(|operand| argument_structure(operand).fields != ArgumentFieldCount::ExactlyOne)
             {
-                // Unknown unquoted operands can expand to zero or many words.
+                // Quotes alone do not prove width: "$@" may have many fields.
+                // An owned single field may have ANY value, including flags.
                 result.ownership_unresolved = true;
             }
             continue;

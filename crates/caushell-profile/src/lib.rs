@@ -1,4 +1,5 @@
 mod argument_regions;
+mod argument_structure;
 mod bind;
 mod builtin;
 mod dispatch;
@@ -22,6 +23,7 @@ mod value_projection;
 mod value_shape;
 
 pub use argument_regions::BoundArgumentRegion;
+pub use argument_structure::{ArgumentFieldCount, ArgumentStructure, argument_structure};
 pub use bind::{
     ArgumentScope, BindError, InvocationSelection, InvocationShape, SelectedModifier,
     bind_invocation, match_modifiers, select_form, select_invocation,

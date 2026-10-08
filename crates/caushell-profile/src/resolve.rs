@@ -446,10 +446,7 @@ fn attach_bound_argument_materialization(
                 .find(|(arg, _)| {
                     arg.text == *text && arg.node_kind == *node_kind && arg.span == *span
                 });
-            if resolution.is_some_and(|(arg, _)| arg.runtime_data) {
-                *materialization = BoundArgumentMaterialization::RuntimeData;
-                continue;
-            }
+            let runtime_data = resolution.is_some_and(|(arg, _)| arg.runtime_data);
             let resolution = resolution.map(|(_, resolution)| resolution);
             // Binding may already use the materialized argv. Its resulting
             // bytes (e.g. a literal "$OTHER") are data, not another shell word.
@@ -478,6 +475,13 @@ fn attach_bound_argument_materialization(
                     continue;
                 }
                 _ => {}
+            }
+            // Lexical data-ness and binding provenance are separate facts.
+            // Prefer the known origin above; only origin-free argv data is
+            // generic RuntimeData. Neither case permits a second expansion.
+            if runtime_data {
+                *materialization = BoundArgumentMaterialization::RuntimeData;
+                continue;
             }
             // Inline/sub-operand bindings may not match a complete argv word;
             // those still need their own first materialization.
