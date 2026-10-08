@@ -1197,6 +1197,7 @@ fn cwd_update_for_effect(
         | EffectTarget::ConfiguredPath(_)
         | EffectTarget::DerivedPath(_)
         | EffectTarget::MutationScope(_)
+        | EffectTarget::VariableName(_)
         | EffectTarget::ImplicitInput(_)
         | EffectTarget::Dispatch(_)
         | EffectTarget::NetworkListener(_) => CwdState::unknown(),

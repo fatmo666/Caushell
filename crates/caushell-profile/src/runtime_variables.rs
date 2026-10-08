@@ -17,6 +17,16 @@ pub fn runtime_variable_writes(bound: &BoundInvocation) -> RuntimeVariableWrites
         if effect.kind != EffectKind::BindVariableFromRuntimeInput {
             continue;
         }
+        if let EffectTarget::VariableName(name) = &effect.target {
+            if is_scalar_variable_name(name) {
+                if !writes.names.contains(name) {
+                    writes.names.push(name.clone());
+                }
+            } else {
+                writes.unresolved = true;
+            }
+            continue;
+        }
         let EffectTarget::Slot(slot) = &effect.target else {
             writes.unresolved = true;
             continue;
@@ -49,7 +59,7 @@ pub fn runtime_variable_writes(bound: &BoundInvocation) -> RuntimeVariableWrites
     writes
 }
 
-fn is_scalar_variable_name(name: &str) -> bool {
+pub(crate) fn is_scalar_variable_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes
         .next()

@@ -71,6 +71,7 @@ pub enum NormalizeError {
     InvalidArgumentFileRule(String),
     InvalidPayloadProjection(String),
     InvalidStdoutRecords(String),
+    InvalidVariableTarget(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -1744,6 +1745,13 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if matches!(target, EffectTarget::VariableName(_))
+        && kind != EffectKind::BindVariableFromRuntimeInput
+    {
+        return Err(NormalizeError::InvalidVariableTarget(
+            "variable_name targets are exclusive to bind_variable_from_runtime_input".into(),
+        ));
+    }
     if raw.path_access.is_some()
         && (!matches!(kind, EffectKind::ReadPath | EffectKind::WritePath)
             || !matches!(target, EffectTarget::Slot(_)))
@@ -2191,6 +2199,15 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
         RawEffectTarget::Slot { name } => {
             ensure_non_empty(&name, "effects.target.name")?;
             Ok(EffectTarget::Slot(SlotName::new(name)))
+        }
+        RawEffectTarget::VariableName { name } => {
+            if !crate::runtime_variables::is_scalar_variable_name(&name) {
+                return Err(NormalizeError::InvalidVariableTarget(
+                    "variable_name must be a literal scalar identifier, not expansion or code"
+                        .into(),
+                ));
+            }
+            Ok(EffectTarget::VariableName(name))
         }
         RawEffectTarget::ToolConventionPath {
             path,

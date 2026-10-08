@@ -21,36 +21,204 @@ platform:
     - dash
   requires_features: []
 
+# Bash parses only leading options. Operands of -p/-d/etc. are data, not
+# destinations, and every ordinary positional name may be overwritten.
+option_scope: leading_options
+opaque_on_unresolved: true
+
 forms:
   - id: bind_from_stdin
     selector:
-      kind: has_positional_at
-      index: 0
-    parameters:
+      kind: all
+      items:
+        - {kind: lacks_flag, flag: -a}
+        - {kind: lacks_flag, flag: -u}
+        - {kind: lacks_flag, flag: --help}
+        - kind: not
+          item: &poll_only
+            kind: all
+            items:
+              - kind: not
+                item: {kind: has_flag_at_least, flag: -t, count: 2}
+              - kind: has_modifier_parameter_matching
+                modifier: timeout
+                parameter: timeout
+                matcher: {kind: regex_pattern, pattern: '^(0+([.]0*)?|[.]0+)$'}
+        - {kind: has_positional_at, index: 0}
+    parameters: &names
       - name: variable_name
-        semantic:
-          kind: plain_value
-        binding:
-          kind: next_positional
-        cardinality: required_one
-    implicit_inputs:
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+    implicit_inputs: &stdin
       - source: stdin_data
-        semantic:
-          kind: plain_value
-    stream_contract:
+        semantic: {kind: plain_value}
+    stream_contract: &stdin_contract
       stdin_mode: data_required
       stdout_mode: opaque
       stderr_mode: opaque
     effects:
       - kind: consume_stdin
-        target:
-          kind: implicit_input
-          source: stdin_data
+        target: {kind: implicit_input, source: stdin_data}
       - kind: bind_variable_from_runtime_input
-        target:
-          kind: slot
-          name: variable_name
+        target: {kind: slot, name: variable_name}
 
-modifiers: []
+  - id: bind_reply_from_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: lacks_flag, flag: -a}
+        - {kind: lacks_flag, flag: -u}
+        - {kind: lacks_flag, flag: --help}
+        - {kind: not, item: *poll_only}
+        - {kind: no_positional_args}
+    implicit_inputs: *stdin
+    stream_contract: *stdin_contract
+    effects:
+      - kind: consume_stdin
+        target: {kind: implicit_input, source: stdin_data}
+      - kind: bind_variable_from_runtime_input
+        target: {kind: variable_name, name: REPLY}
+
+  - id: bind_array_from_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: has_flag, flag: -a}
+        - {kind: lacks_flag, flag: -u}
+        - {kind: lacks_flag, flag: --help}
+        - {kind: not, item: *poll_only}
+    # Bash ignores name operands when -a is present. Do not invalidate them
+    # or fabricate a REPLY assignment; the named array alone is overwritten.
+    parameters: &ignored_names
+      - name: ignored_names
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    implicit_inputs: *stdin
+    stream_contract: *stdin_contract
+    effects:
+      - kind: consume_stdin
+        target: {kind: implicit_input, source: stdin_data}
+      - kind: bind_variable_from_runtime_input
+        target: {kind: slot, name: array_name}
+
+  # -u can select a descriptor other than stdin. Its contents are not probed
+  # and must not acquire a false stdin provenance guarantee.
+  - id: bind_from_descriptor
+    selector:
+      kind: all
+      items:
+        - {kind: lacks_flag, flag: -a}
+        - {kind: has_flag, flag: -u}
+        - {kind: lacks_flag, flag: --help}
+        - {kind: not, item: *poll_only}
+        - {kind: has_positional_at, index: 0}
+    parameters: *names
+    stream_contract: &descriptor_contract
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+    effects:
+      - kind: bind_variable_from_runtime_input
+        target: {kind: slot, name: variable_name}
+
+  - id: bind_reply_from_descriptor
+    selector:
+      kind: all
+      items:
+        - {kind: lacks_flag, flag: -a}
+        - {kind: has_flag, flag: -u}
+        - {kind: lacks_flag, flag: --help}
+        - {kind: not, item: *poll_only}
+        - {kind: no_positional_args}
+    stream_contract: *descriptor_contract
+    effects:
+      - kind: bind_variable_from_runtime_input
+        target: {kind: variable_name, name: REPLY}
+
+  - id: bind_array_from_descriptor
+    selector:
+      kind: all
+      items:
+        - {kind: has_flag, flag: -a}
+        - {kind: has_flag, flag: -u}
+        - {kind: lacks_flag, flag: --help}
+        - {kind: not, item: *poll_only}
+    parameters: *ignored_names
+    stream_contract: *descriptor_contract
+    effects:
+      - kind: bind_variable_from_runtime_input
+        target: {kind: slot, name: array_name}
+
+  # A single statically known zero timeout polls input availability without
+  # reading or assigning. Repeated/dynamic timeouts retain possible writes.
+  - id: poll_input
+    selector:
+      kind: all
+      items:
+        - *poll_only
+        - {kind: lacks_flag, flag: --help}
+    parameters: *ignored_names
+    stream_contract: *descriptor_contract
+
+  - id: show_help
+    selector: {kind: has_flag, flag: --help}
+    parameters: *ignored_names
+    stream_contract: *descriptor_contract
+
+modifiers:
+  - id: read_modes
+    matcher: {kind: any_flag, flags: [-r, -e, -s, --help]}
+  - id: prompt
+    matcher: {kind: any_flag, flags: [-p]}
+    parameters:
+      - name: prompt
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: delimiter
+    matcher: {kind: any_flag, flags: [-d]}
+    parameters:
+      - name: delimiter
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: initial_text
+    matcher: {kind: any_flag, flags: [-i]}
+    parameters:
+      - name: initial_text
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: character_count
+    matcher: {kind: any_flag, flags: [-n, -N]}
+    parameters:
+      - name: character_count
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: timeout
+    matcher: {kind: any_flag, flags: [-t]}
+    parameters:
+      - name: timeout
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: descriptor
+    matcher: {kind: any_flag, flags: [-u]}
+    parameters:
+      - name: descriptor
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+  - id: array_destination
+    matcher: {kind: any_flag, flags: [-a]}
+    parameters:
+      - name: array_name
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
 subcommands: null
 extensions: {}

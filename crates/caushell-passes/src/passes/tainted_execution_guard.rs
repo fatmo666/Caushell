@@ -350,7 +350,10 @@ fn payload_input_scope(effects: &[caushell_profile::Effect]) -> PayloadInputScop
                         .insert(source.to_caushell_types_implicit_input_source());
                 }
             }
-            EffectTarget::Dispatch(_) | EffectTarget::None | EffectTarget::NetworkListener(_) => {}
+            EffectTarget::Dispatch(_)
+            | EffectTarget::None
+            | EffectTarget::NetworkListener(_)
+            | EffectTarget::VariableName(_) => {}
         }
     }
 

@@ -434,6 +434,7 @@ pub(crate) fn collect_effect_mutation_targets(
                 });
             }
             EffectTarget::ImplicitInput(_)
+            | EffectTarget::VariableName(_)
             | EffectTarget::Dispatch(_)
             | EffectTarget::None
             | EffectTarget::NetworkListener(_) => {}
@@ -855,6 +856,7 @@ fn collect_effect_target_path_facts(
                 }
             }
             EffectTarget::MutationScope(_)
+            | EffectTarget::VariableName(_)
             | EffectTarget::ImplicitInput(_)
             | EffectTarget::Dispatch(_)
             | EffectTarget::None

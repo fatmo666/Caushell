@@ -240,13 +240,27 @@ pub fn resolve_invocation_in_namespace<'a>(
             let bound =
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
             let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
+            // Variable-writing CLI ownership must not use a hypothetical
+            // one-word expansion. Unknown width can swallow controls or add
+            // unmodeled destinations, even when this selected form is a query.
+            // The registry already indexes this declared semantic capability;
+            // ordinary commands take no additional argv-structure scan.
+            if registry.may_write_runtime_variable(profile.primary_name())
+                && materialized_projection.invocation.args.iter().any(|arg| {
+                    crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne
+                })
+            {
+                bound.operation_semantics_unresolved = true;
+            }
             // Validate after argv materialization: a known "$name" is valid,
             // but a dynamic/array destination must not retain an old scalar.
             let writes = crate::runtime_variable_writes(&bound);
             if bound.effects.iter().any(|e| {
                 matches!(
                     e.kind,
-                    crate::EffectKind::TerminateCurrentShell | crate::EffectKind::ShellJobOperation
+                    crate::EffectKind::TerminateCurrentShell
+                        | crate::EffectKind::ShellJobOperation
+                        | crate::EffectKind::BindVariableFromRuntimeInput
                 )
             }) && command
                 .command_name

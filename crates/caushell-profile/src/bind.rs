@@ -1847,7 +1847,9 @@ fn emit_effects(
                 }
                 crate::DispatchCommandSource::Literal(_) => true,
             },
-            EffectTarget::None | EffectTarget::NetworkListener(_) => true,
+            EffectTarget::None
+            | EffectTarget::NetworkListener(_)
+            | EffectTarget::VariableName(_) => true,
         };
 
         if should_emit {

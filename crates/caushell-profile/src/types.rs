@@ -1041,6 +1041,8 @@ pub enum EffectTarget {
     NetworkListener(NetworkListenerTarget),
     ConfiguredPath(ConfiguredPathTarget),
     Slot(SlotName),
+    /// A statically declared shell-variable destination, not a path or argv slot.
+    VariableName(String),
     ToolConventionPath(ToolConventionPathTarget),
     DerivedPath(DerivedPathTarget),
     MutationScope(MutationScopeTarget),

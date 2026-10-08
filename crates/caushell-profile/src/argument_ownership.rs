@@ -181,6 +181,7 @@ fn references_slot(target: &EffectTarget, slot: &crate::SlotName) -> bool {
                 .any(|scalar| scalar.as_ref().is_some_and(|s| &s.slot == slot))
         }
         EffectTarget::ToolConventionPath(_)
+        | EffectTarget::VariableName(_)
         | EffectTarget::ImplicitInput(_)
         | EffectTarget::None => false,
     }

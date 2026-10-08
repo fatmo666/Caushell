@@ -288,6 +288,7 @@ fn config_purpose_for_effect_target(
         EffectTarget::ConfiguredPath(target) => target.purpose,
         EffectTarget::DerivedPath(target) => target.purpose,
         EffectTarget::MutationScope(_)
+        | EffectTarget::VariableName(_)
         | EffectTarget::ImplicitInput(_)
         | EffectTarget::Dispatch(_)
         | EffectTarget::None
@@ -429,6 +430,7 @@ fn payload_mode_for_effect(
         .then_some(ExecutionPayloadMode::ScriptFile),
         EffectTarget::DerivedPath(target) => payload_mode_for_derived_path_target(target),
         EffectTarget::ConfiguredPath(_)
+        | EffectTarget::VariableName(_)
         | EffectTarget::MutationScope(_)
         | EffectTarget::Dispatch(_)
         | EffectTarget::None

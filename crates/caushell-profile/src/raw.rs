@@ -971,6 +971,9 @@ pub enum RawEffectTarget {
     Slot {
         name: String,
     },
+    VariableName {
+        name: String,
+    },
     ToolConventionPath {
         path: String,
         convention: String,
