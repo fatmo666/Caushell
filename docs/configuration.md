@@ -54,6 +54,34 @@ If the configuration file does not exist, `validate` still succeeds because Caus
 | --- | --- | --- | --- |
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Fallback behavior when Caushell cannot complete analysis |
 | `codex.need_approval_mode` | `block` / `observe` | `block` | How Codex handles `NeedApproval` decisions |
+| `policy.rules.process_control` | `allow` / `need_approval` / `deny` | `need_approval` | Signals or resumes a process/job through a declared control effect |
+
+The process-control guard reads resolved `control_process` effects, including
+nested invocations, without looking up live processes or requiring known action
+metadata. `allow` preserves findings but removes this rule's approval; it does
+not override other rules. Zero-signal probes and signal-list forms have no
+control effect. The built-in control profiles mark unsupported forms opaque,
+so the existing resolve policy requests approval; allowing `process_control`
+does not turn an unparsed operation into a known safe one. No critical-PID
+lookup or special protection is claimed.
+
+```yaml
+policy:
+  rules:
+    process_control: allow
+```
+
+### Declared opaque executable input
+
+Profiles opting into `language: opaque` with `recursive: true` use the existing unresolved-payload policy. `opaque_non_shell` defaults to `need_approval`, including literal AWK/HCL input; it does not alter other unsupported-language literal defaults. Override it explicitly when needed:
+
+```yaml
+policy:
+  unresolved_payloads:
+    opaque_non_shell: need_approval  # allow / need_approval / deny
+```
+
+`allow` retains the analysis evidence and cannot bypass independent mutation or hard-deny rules. No live process lookup, code execution or new Harness field is required.
 
 ### `failure_action`
 

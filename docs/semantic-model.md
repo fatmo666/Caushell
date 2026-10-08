@@ -98,7 +98,7 @@ The declaration currently supports filesystem `path` semantics except `cwd_ancho
 
 ### Structured operands and encoded argv
 
-`structured_projection` declares a tool-owned grammar on a plain-value parameter: an optional separator, ordered literal/prefix branches, and a fallback. Prefix matching consumes the prefix; a branch without a target proves that no associated effect applies. Targets emit distinct virtual slots with declared semantics without rewriting argv. Source spans and materialization provenance are retained. Ordered `sources` select the first present original slot, never replacing an explicit unknown with a later default. Separators, references and name collisions are validated at load time.
+`structured_projection` declares a tool-owned grammar on a plain-value or `script_file_ref` payload parameter: an optional separator, ordered literal/prefix/keyword-value branches, and a fallback. Prefix matching consumes the prefix; a branch without a target proves that no associated effect applies. A script reference can retain its executable boundary while emitting a separate declared path view, without binding the same argv twice. Targets emit distinct virtual slots with declared semantics without rewriting argv. Source spans and materialization provenance are retained. Ordered `sources` select the first present original slot, never replacing an explicit unknown with a later default. Separators, references and name collisions are validated at load time.
 
 ```yaml
 structured_projection:
@@ -116,13 +116,39 @@ structured_projection:
 
 `command_whitespace_argv: child_commands` dispatches each semantic value as executable/argv split on whitespace, not Bash source. Executables and arguments retain their argv-data status: dollar signs, quotes, pipes and semicolons are not interpreted again. Unresolved entries remain child-call gaps, and unknown writes remain mutation candidates. Existing scalar `value_projection` is unchanged. Only declared operands are structurally decoded.
 
+Ordinary dispatch also consumes `BoundParameter.semantic_values()` for its executable, argv, environment assignments and unsets. Original operands, spans and binding sources remain intact. Known projected values are argv data, not new shell source. Unknown projected commands remain unresolved; unknown projected argv retains a child candidate and an explicit analysis gap without borrowing bounds from its source operand. An unknown environment overlay invalidates inherited and partially known child values, including after a declared environment clear; it never changes the parent bindings. Already-materialized complete argv words are reused when binding metadata is attached, rather than expanded a second time. Undeclared operands retain their previous materialization behavior.
+
 `stdin_from_parent: true` declares delivery of generated tool data to child stdin. Existing dispatch, execution-context and stream-provenance machinery retain the opaque input, including wrapper dispatch; `@bash` therefore requires approval. Unresolved calls inside wrappers reach the existing approval fallback. No new risk pass, dynamic probing or Harness field is involved.
 
 The first built-in user is `nsys stats/analyze --output`, distinguishing console output, file basenames, default basenames and `@command`. `sibling_files` produces a `BoundedPathSet` under the known output directory instead of inventing a concrete file named after the basename; only its directory is normalized before appending report filenames. Potential SQLite creation from `.nsys-rep` and explicit `--sqlite` targets remain separate effects. Help does not trigger them.
 
-This scope does not cover persistent collection sessions, profile/start/launch/stop, callbacks or report templates. Listed built-in reports/rules and formats are statically accepted; other code references, report/format arguments and custom directories require approval. List alignment and execution counts are not replayed exactly: all output candidates are retained, potentially increasing approvals. Report content and process state are not dynamically inspected.
+Ordinary `nsys profile` collection now declares the application/argv dispatch, child-only comma-separated environment overrides and application stdout provenance. Explicit output basenames and the default `report#` produce bounded sibling-file families under the effective cwd; they are not invented concrete report names. Duration/capture-shutdown forms declare possible `control_process` effects, while explicit `--kill=none` suppresses the modeled termination effect only. The graph-backed process-control guard defaults to approval and supports rule-policy `allow`/`deny` overrides. Approval does not depend on optional known-action metadata or a known PID; a declared effect with no action mapping remains a process-control fact with unknown target. The guard skips before querying the graph when no current control candidate exists, and its allow override cannot bypass independent mutation/deny rules.
 
-Reference: [NVIDIA CLI documentation](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options).
+Persistent `launch/start/stop/shutdown` sessions, callbacks/plugins, command files, identity/environment setup modes and native percent report templates remain opaque and require approval. Listed stats/analyze built-in reports/rules and formats are statically accepted; other code references, report/format arguments and custom directories require approval. List alignment and execution counts are not replayed exactly: all output candidates are retained, potentially increasing approvals. Report content and process state are not dynamically inspected; no process discovery or new Harness field is introduced.
+
+Reference: [NVIDIA stats CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options), [profile CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-profile-command-switch-options).
+
+### Opaque code and keyword-owned shell commands
+
+`{kind: payload, language: opaque, source: inline_string, recursive: true}` explicitly declares executable code outside the modeled shell languages. The existing recursive-analysis record retains its source and unsupported-language evidence; the existing ResolvePolicy pass defaults the `opaque_non_shell` subtype to approval. Script references and implicit stdin use the same language declaration with their actual source. A local or empty stdin does not prove this declared code entry understood or safe: opaque input is unsupported language, not a runtime-input gap deferred to provenance guards. No AWK/HCL parser, guessed internal path, dynamic content read or new risk pass is involved. Existing Python/Node and other static-literal/runtime-input defaults are unchanged. This boundary does not claim configuration/provider/backend coverage.
+
+For a mixed option carrying a shell command, use a virtual plain-value slot and the existing `command_string: {slot: proxy_command, syntax: posix_shell}` dispatch:
+
+```yaml
+structured_projection:
+  first_match_only: true
+  branches:
+    - matcher:
+        kind: keyword_value
+        keyword: ProxyCommand
+        case_insensitive: true
+        allow_quoted_keyword: true
+        disabled_values: [none]
+        unresolved_markers: ['%']
+      target: {name: proxy_command, semantic: {kind: plain_value}}
+```
+
+The keyword boundary is space/tab/CR/LF or `=`; only the leading separator run is consumed, not quotes or syntax in the command body. ASCII case folding applies to the keyword and disabled sentinels. Optional configuration-token quoting allows a double-quoted keyword segment terminating that token. `first_match_only` stops after the first matched, disabled or unknown operand; unrelated known keywords do not consume it. It defaults to false, preserving existing multi-value behavior. Declared unresolved markers and missing/dynamic values emit an unknown slot, so the existing unresolved-child policy requests approval rather than inventing a concrete command. Only operands with a declared grammar are visited. Proxy stdout is SSH transport, not implicitly parent stdout. OpenSSH source: [keyword parsing and ProxyCommand precedence](https://github.com/openssh/openssh-portable/blob/master/readconf.c), [configuration token quoting](https://github.com/openssh/openssh-portable/blob/master/misc.c).
 
 ### Structured patch data and modification targets
 
@@ -389,6 +415,52 @@ The diagram above shows the portion relevant to the example after the current ac
 | Path Content | File content associated with a path |
 | Execution Sink | A script, interpreter, or other execution target |
 
+### Runtime variable assignments
+
+The existing `bind_variable_from_runtime_input` effect declares variable destinations. Invocation resolution and static script-input analysis share source-ordered binding replay: a runtime write invalidates an old exact scalar, while a later explicit assignment can restore precision. Destinations that cannot materialize to valid scalar identifiers retain unresolved-operation approval. Writer candidates are indexed at registry load; ordinary profiles without this effect require no extra effect resolution. No risk Pass, dynamic process probe, dependency, or Harness request field is added.
+
+`wait`, `wait -n`, and `wait -f` wait rather than control processes. `wait -p target` declares a runtime assignment. The analyzer predicts neither a PID nor success: the variable becomes unknown, potentially unset, instead of retaining an old path. Nameref/array declarations explicitly encountered in the action remain outside the scalar destination contract and require approval; scalar snapshots do not discover arbitrary live Bash attributes or job state.
+
+Current-shell effects affect subsequent commands and the final state of allowed actions. Function globals propagate; explicit locals and child-shell writes do not escape. Declined actions do not commit predicted state, and fresh complete observations supersede unknown predictions. Unknown runtime bytes are not fabricated into literal stdin scripts, and local input presence alone does not suppress unresolved-input evidence after such invalidation. The Graph retains variable-binding intents, not claims of observed execution.
+
+### Shell termination and state-only fences
+
+The `exit` Profile declares `terminate_current_shell`, distinct from process control. Ordinary termination is allowed; it does not itself introduce an approval rule. The Graph and the public execution-semantics query expose `terminates_current_shell`, defaulting to false when older saved records omit it. The fact is attached to its existing execution unit: a function belongs to its calling shell, whereas a subshell, pipeline branch, background frame or separately launched shell is isolated.
+
+Registry-indexed effect replay creates source-ordered state fences for statically resolved, unconditional termination. Later assignments, unsets, positional updates and alias/function definitions inside that frame are not accepted as effective shell state. Function termination propagates to the caller frame; isolated termination does not. Commands remain in the audit Graph and risk checks continue conservatively; this is not dead-code pruning. A terminated root frame provides no proven returning cwd. Explicitly conditional termination does not assert that every path exits, and unsupported argument shapes retain existing unresolved-operation approval.
+
+Redirection setup can fail before the builtin or function starts, so such calls do not prove a terminating state fence: the continuing path stays analyzed. A pathname-qualified executable does not establish enclosing-shell builtin semantics and retains unresolved-operation approval. This contract is statically modeled Bash behavior, not observed exit or a session-lifecycle reset. Fresh Harness snapshots remain authoritative. EXIT traps and general current-shell payload/control-flow execution are separate capabilities: this change neither reconstructs trap state nor claims to model every eval/source/return/errexit path. No new risk Pass, dynamic probe, dependency or Harness request field is added.
+
+An unknown invocation or opaque payload in a function can return before a later terminator. The bounded replay therefore does not prove caller termination through such a control-flow gap, including a nested function call after that gap. This is a generic proof boundary, not a `return` command-name exception or a new risk rule.
+
+### Shell job management
+
+A Profile may declare `{kind: shell_job_operation, shell_job_operation: remove_from_job_table|suppress_sighup, target: {kind: none}}`. The existing semantics extraction Pass deduplicates the classes into `ExecutionSemantics.shell_job_operations` and the public execution-semantics Query, marking mutation of the owning shell. Legacy records default to an empty list, omitted on serialization. This is job-management intent, not a signal, proof of successful detachment or job existence, or a promise that a process survives.
+
+Ordinary `disown` removes targets from its shell's job table; `-h` keeps entries but suppresses the shell's SIGHUP forwarding. The original invocation retains `-a/-r`, job specifications and PIDs. Targets bind as plain values, never filesystem paths or live job-table observations. Ordinary modes and unknown job targets allow by default rather than triggering process-control approval. Unknown options retain existing unresolved-operation policy; `--help` has no job mutation. After `--` or the first job operand, `-h` is data, not a mode change.
+
+Function, alias and derived-shell facts stay attached to their execution unit; a child shell's job-table change is not propagated as caller state. A pathname-qualified external executable does not establish owning-shell builtin semantics and retains unresolved-operation approval. Caushell maintains no predicted job table and removes no previously launched process from its audit Graph. Program launch, kill and external redirection retain their independent safeguards. No new risk Pass, dynamic probe, dependency or Harness request field is added.
+
+### Scalar export/unset option state
+
+Options are interpreted in the shared shell-state layer, without a new Profile or risk Pass. `export -n NAME` removes the export attribute but preserves the current-shell scalar; an assignment still updates that scalar. `export -p` is a query only without operands; names/assignments still perform Bash export operations. `unset -v NAME` removes only a variable, while `unset -f NAME` removes only a function, preserving the other namespace. Combined `-fn` selects functions; conflicting `-vf` changes neither namespace.
+
+Only words before the first operand or `--` are options, including clustered and statically quoted flags. `export NAME -n` does not unexport, and `unset NAME -f` does not select functions. Assignments, export changes and removal share source-ordered replay; persistence commits final values rather than grouping mutations by operation type. Ordinary assignment preserves an existing export attribute. Isolated frames do not modify caller state, ordinary function global-scalar effects propagate, and existing termination fences remain effective.
+
+Declaration-builtin assignment operands expand together before binding changes: in `A=old; export A=new B="$A"`, B is old; a pure assignment `A=new B="$A"` uses new in assignment order. Persistence reuses the already computed final replay instead of decoding options or replaying state again. Standalone variable extraction still uses the same static replay entry point.
+
+Plain `unset NAME` considers the variable first. Only proven variable absence removes a same-named function; known presence preserves the function, and unknown presence makes a known function binding uncertain. Presence is distinct from exported-environment values: unexported variables still prevent function fallback, `export NAME` can create a declaration without a scalar value, and bare `export -n NAME` does not create one. Operands are applied in order: `unset NAME NAME` can remove the variable and then the function. Bash function names need not be scalar variable identifiers.
+
+Variables and functions share source-ordered state replay. Conditional removal/definition and unresolved removal targets/options no longer preserve stale exact bodies. The state change alone does not request approval; a subsequent call depending on the uncertain function reaches the existing ResolvePolicy `opaque_invocation` gap, which defaults to approval. Unconditional definitions/removals and authoritative function snapshots restore certainty. Same-shell functions, eval and command/process substitutions inherit analysis state; isolated scopes do not change the caller, and executable dispatch does not use the caller's function lookup. Existing termination fences remain effective.
+
+An optional `uncertainty` reason is persisted through the existing Upsert mutation, without inventing function-definition Graph nodes or changing immutable historical content. Old records missing this field remain exact bindings. The function-extraction Pass reuses ordered resolver results; standalone use shares the same static replay instead of a separate branch simulator.
+
+Observed command success, readonly attributes and complete shell type semantics are not claimed. Exported-function inheritance through child Bash, nameref targets and complete conditional branch merging remain deferred. Unmodeled declarations/runtime writes are not proof of variable absence. Dynamic options/targets and unmodeled `unset -n` do not retain old scalars as exact. No new Profile, risk Pass or dynamic probe is added; no additional Harness observation is required, and CheckRequest shell-snapshot fields are unchanged.
+
+Function-binding Graph identities use the same name, action sequence and stable content fingerprint pattern as aliases. Different bodies defined in one action retain separate immutable nodes; identical content in that action is idempotent. Ordered mutations and the current binding remain separate from content-node identity. Existing conflicting-node validation is unchanged. Saved legacy IDs remain readable and are not rewritten: no snapshot schema, migration, risk rule or Harness field changes are required.
+
+Shared staging keys source-positioned shell-state operations by both mutation content and source position. Repeated extraction of one occurrence is idempotent; distinct occurrences retain staging order, including definition/removal/redefinition of identical content. Alias assignments use their operand token positions, so returning to an earlier value within one `alias` command is not lost. Unpositioned audit/final-state facts retain content deduplication. Termination fences filter each state occurrence independently, without removing audit facts; filtering rebuilds the staging index. Replacing a parsed artifact discards its old coordinates, not existing staged entries. All occurrence bookkeeping is internal to the request, without changes to saved mutations, Graph identities or Harness fields.
+
 ### Variable Bindings and Path Resolution
 
 After `SCRIPT=./setup.sh` establishes the variable binding, `tee "$SCRIPT"` and `bash "$SCRIPT"` resolve to the same relative path. The Runtime State node shows that the current directory is `/workspace`, so the path resolves to `/workspace/setup.sh`.
@@ -433,6 +505,8 @@ The lsof Profile treats file/directory, PID, descriptor and socket selectors as 
 Prefix bindings can optionally declare `binding: {kind: args_with_prefix, prefix: '-D', before_dash_dash: true}`. This binds only unconsumed prefix arguments before the option terminator. Declared option operands are consumed first, so a literal `--` used as an option value is not mistaken for the delimiter; an actual later `--` still ends the binding. The binding does not consume the delimiter or trailing data. Omitting the declaration, or setting it to `false`, preserves legacy prefix binding across the whole scope. Thus `ss -Ddump -- state established` retains the `dump` write, whereas `ss -- -Ddump` does not invent a write from filter data. This is a command-independent, opt-in binding declaration, not a new risk rule.
 
 Command Profiles describe where a command can dispatch execution and how its arguments are bound. The dispatch layer carries each argument as a typed value: literal argv data, a runtime-produced value, or an implicit input with a conservative domain. Consumers may use a bounded path domain to classify possible locations, but it is not a claim that any listed root is the concrete file actually acted on. Unknown input and known-empty input remain distinct.
+
+Shared stdin-source queries replay one command's declared redirections in shell order. Numeric FD spelling is normalized (`000` is FD 0); descriptor copies preserve their source at the time of copying, and moves to a different FD close the old descriptor. A copy/move onto the same FD preserves its source. This is static syntax replay, not inspection of live descriptors or persistence of an inferred FD table across actions. Only the effective source contributes explicit stdin or pipeline provenance; overwritten sources can still have independent opening/producer effects. A closed stdin cannot supply executable bytes, without claiming that runtime reads succeed or return EOF. Unknown descriptor contents or an unprojectable explicit source retain a `RuntimeInput` artifact and are handled by the existing tainted-execution guard. The unknown-input fallback runs after explicit redirection/process-substitution provenance producers, rather than treating mere redirection syntax as proof of a modeled source.
 
 A dispatch target can opt into `stdout_to_parent: true`. The existing stream-provenance pass records a child `Produces` edge and parent `Consumes` edge through a `dispatch_stdout` artifact. Its bytes remain unknown, while the child's modeled inputs retain their origin. Parent pipelines, output redirections and explicitly declared wrapper chains can then trace that origin. This is independent of `stdin_from_parent`; a control/dispatch edge alone does not imply output inheritance. Each direct dispatch uses its own declaration rather than inheriting an outer wrapper's flag, and omission defaults to false. Canonical nested Bash command-string scopes supply pipeline node identities so these edges do not connect only to legacy duplicate nodes. No new risk pass, dynamic file/process probe or Harness protocol field is introduced. This does not infer arbitrary interpreter internals or replay all FD redirection semantics.
 
@@ -591,7 +665,8 @@ in the risk passes:
   `relative_to`. Empty `sources` are allowed with an environment/default source or
   `missing: unknown`; an empty incidental-cache-only declaration is invalid.
 - Dispatch targets accept exactly one of `command` (a slot), `command_literal`
-  (fixed executable), or `command_whitespace_argv` (encoded argv as described above).
+  (fixed executable), `command_whitespace_argv` (encoded argv as described above),
+  or `command_string` (an explicitly declared tool grammar, described below).
   The first two forms accept optional `argv_prefix` data. For example,
   `{kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [module, args]}`
   produces a typed interpreter call, not shell source. `unknown_environment_when`
@@ -662,6 +737,270 @@ No new risk pass, policy default, dependency or Harness field is added.
 Sources: [client options](https://dev.mysql.com/doc/refman/8.4/en/mysql-command-options.html),
 [client commands](https://dev.mysql.com/doc/refman/8.4/en/mysql-commands.html),
 [pinned client implementation](https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/client/mysql.cc).
+
+## Python module entrypoints
+
+Profiles can declare exact module entrypoints separately from executable names:
+
+```yaml
+identity:
+  canonical_name: json.tool
+  module_only: true
+  module_entrypoints: [{runtime: python, name: json.tool}]
+```
+
+An interpreter dispatch declares `module_runtime: python`. Only explicitly
+registered modules gain a semantic derived invocation; lookup never falls back
+to a same-named executable, a basename, or an executable-family alias. A
+module-only Profile is excluded from both executable lookup APIs. The derived
+node is a modeling unit, not a claim that Python starts an OS subprocess. The
+parent's module load and the module's CLI effects are both retained. Undeclared
+or dynamic modules keep the established code-load policy; unknown argv of a
+registered module still leaves an unresolved-dispatch gap.
+
+The optional modifier declaration `ends_option_scope: true` ends scoped option
+ownership after that flag and its operand. It requires `leading_options` or
+`permuted_options`; omission preserves existing behavior. Python uses it for
+`-m`, `-c`, and terminating information options. Module/script argv does not
+become interpreter options, even when it contains `-m`, `-c`, `-i`, or `--help`.
+Extended `-X` configuration, interactive `-i`, and unsupported interpreter
+forms are opaque and use existing unresolved-operation approval.
+
+Registered Python module contracts currently cover pip, pytest, uvicorn,
+json.tool, http.server, py_compile and compileall. JSON file/stdin and file/stdout forms retain their
+data flow; its outfile `-` is a literal file. HTTP serving records the listener,
+served directory and TLS file reads; the directory does not change cwd. The
+existing listener policy exempts numeric loopback only. CGI remains opaque.
+Module search/shadowing, Python bodies, request contents, process lifetime and
+later publication through a running server are not inferred.
+
+`dispatch.unset_environment_when: [{modifier: ignore, names: [CACHE_VAR]}]`
+is an opt-in declaration removing only those fixed variable names from the
+derived environment when the named modifier applies. It does not clear other
+variables, mutate the parent, or inspect the host environment. Python's `-E/-I`
+use it for the modeled `PYTHONPYCACHEPREFIX`; application variables still apply.
+
+For `write_path` configured targets, `fallback_parent_slots: [inputs]` bounds
+an output family under normalized input parents **only after** argv/configured
+environment/default sources are proven unset. Unknown configured values do not
+fall through. Semantic values, quoting and materialized argv are preserved;
+unknown or missing inputs retain an unknown write. No exact bytecode tag or
+temporary filename is guessed. File/directory inputs share a conservative
+parent bound without filesystem or suffix classification, so a compileall
+input naming the workspace root itself can require approval.
+
+The compiler adapters read sources and produce bytecode, not execute source
+bodies. Known cache prefixes route the write target to that directory; complete
+absence or a known empty prefix enables input-parent fallback. Explicit
+compilation still writes under interpreter `-B`. compileall `-b` uses legacy
+sibling outputs and ignores the cache prefix; `-d/-s/-p` change embedded
+traceback names, not physical output roots. Stdin filename lists, file lists and
+default `sys.path` scans have unknown outputs unless a known prefix bounds them.
+Repeated compileall `-i` stays opaque rather than guessing final list ownership.
+These CLI contracts target modern CPython; no interpreter-version or module
+shadowing discovery is claimed.
+
+Sources: [CPython CLI](https://docs.python.org/3.14/using/cmdline.html),
+[JSON CLI source](https://github.com/python/cpython/blob/v3.14.0/Lib/json/tool.py),
+[HTTP CLI source](https://github.com/python/cpython/blob/v3.14.0/Lib/http/server.py),
+[py_compile source](https://github.com/python/cpython/blob/v3.14.0/Lib/py_compile.py),
+[compileall source](https://github.com/python/cpython/blob/v3.14.0/Lib/compileall.py).
+
+## Tool-interpreted command strings
+
+Profiles can declare a string interpretation without executable-name exceptions:
+
+```yaml
+kind: dispatch
+command_string: {slot: callback, syntax: posix_shell}
+unknown_environment_names: [TOOL_FILENAME]
+stdin_from_tool: true
+```
+
+`posix_shell` generates `/bin/sh -c` with the decoded operand as one argv value,
+then uses existing bounded recursive shell analysis. `gnu_wordsplit` instead
+produces argv using GNU wordsplit's default quotes and C escapes. Operators,
+globs and command substitutions remain data in this mode. Environment expansions
+remain explicit unresolved-dispatch gaps, not literal `$VAR` arguments or values
+borrowed from the caller shell. Invalid quotes, NUL/non-ASCII byte escapes,
+strings over 64 KiB and argv over 4096 words also retain a gap. The projector
+never executes commands or reads an ambient environment.
+
+Each string has a distinct dispatch index. Parent bound operands preserve raw
+text, source spans and semantic projections; derived argv has distinct synthetic
+coordinates, because shell payload ownership is span-based. Decoded arguments
+are runtime data and are not expanded again as caller syntax. `argv_suffix` adds
+fixed argv data after the child arguments, e.g. the decompressor's `-d`.
+String sources cannot also declare `argv` or `argv_prefix`.
+
+`unknown_environment_names` masks only tool-generated names in the child;
+unrelated exported variables and caller state remain intact. `stdin_from_tool`
+declares opaque tool-produced bytes, separately from `stdin_from_parent`; the two
+are mutually exclusive. An inner shell inherits input availability, but a tool
+stream is never filled from the caller's literal pipeline. Interpreter use of
+unresolved input continues through existing runtime-input guards.
+
+GNU tar 1.35's source uses `/bin/sh -c` for creation with `-I`, checkpoint exec,
+and `--to-command`; decompression uses GNU wordsplit and adds `-d`. The Profile
+declares these separately. Checkpoint `exec=` uses structured projection; echo
+actions are not programs, and help/version do not launch deferred callbacks.
+The former tar-name token scanner is removed rather than kept as a second path.
+Remote helpers, full old-option arity, implicit compression configuration and
+archive-member contents remain separate limitations, not claimed coverage.
+No risk pass, dynamic probing, Harness input or action-policy change is added.
+
+Sources: [GNU tar external commands](https://www.gnu.org/software/tar/manual/html_section/external.html),
+[GNU tar 1.35 execution source](https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/src/system.c/),
+[GNU wordsplit source](https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/lib/wordsplit.c/).
+
+## Delimited child argv ownership
+
+Root Profiles can opt into exact, delimited argument regions:
+
+```yaml
+option_matching: exact_names
+opaque_on_unresolved: true
+argument_regions:
+  - id: exec
+    start_flags: ["-exec"]
+    terminators:
+      - {value: ";"}
+      - {value: "+", preceding: "{}"}
+```
+
+`argument_region_command` and `argument_region_args` bind the first word and
+remaining argv of the named region. Repeated regions retain separate index
+ranges. Original argument text, quoting, spans and materialization provenance
+are preserved. Regions provide ownership, not a new execution grammar or risk
+rule; existing tool adapters still implement tool-generated arguments/domains.
+
+The shared scanner excludes child argv and delimiters from outer modifiers,
+selectors and positional bindings, then resumes outer scanning after each
+delimiter. Ordinary option arity comes from existing parameter declarations;
+an option operand spelling `-exec` never opens a region. Delimiters compare
+decoded argv words, not raw shell quotes. The optional `preceding` constraint
+keeps a literal `+` as child data unless the preceding word is `{}`.
+
+Unknown words retain partial known child effects and an explicit ownership
+residual. Unquoted unknown option operands may change argv cardinality and also
+retain uncertainty. Missing children/delimiters or undeclared outer option
+arity produce selection gaps. The required `opaque_on_unresolved` declaration
+routes these cases through existing ResolvePolicy approval behavior. This
+capability currently requires root `all_arguments`/`exact_names` without a
+subcommand tree; unsupported combinations and dangling references fail at load
+time. Profiles without regions keep their existing scan/binding behavior.
+
+The find adapter consumes these same ranges, rather than independently finding
+`-exec` in raw argv. Separate actions retain separate children; child `-L`,
+`-type`, `-name`, `--` and `-delete` cannot change the outer search domain or
+effects. Unknown roots, mutation targets and shell payloads still reach their
+specific existing guards. A shell-level bare `;` does not terminate find argv:
+the delimiter must be passed as `\;` or `';'`. This is not a full find expression
+evaluator and does not add dynamic probing, an additional Pass or an action-map
+change.
+
+## Stream device paths and content opens
+
+An explicit-slot `read_path` or `write_path` effect may opt in with
+`path_access: content_open`. It describes opening content, not unlinking,
+creating links, or replacing directory entries in place. Unsupported
+effect/target combinations fail at load time. Reviewed declarations cover tee
+outputs, cat inputs and tar archive files; archive member writes and sed
+in-place replacement do not receive this interpretation.
+
+The shared `IoTargetQuery` reads a statically projected FD snapshot. Content
+opens and native shell file redirections recognize exact `/dev/stdin`,
+`/dev/stdout`, `/dev/stderr`, `/dev/fd/N` and `/proc/self/fd/N` aliases, not
+arbitrary device paths or another process's descriptors. Copies, moves,
+closures and file opens are replayed left-to-right within one invocation,
+retaining process-substitution channel identities. The implicit stderr copy
+of `|&` applies after explicit redirections.
+Redirection operands use the snapshot before their open; tool operands use the
+final snapshot. Opening an alias is not reduced to descriptor duplication:
+the original read/write open and its potential create/truncate/append effect
+remain relevant.
+
+Inherited standard streams do not acquire outside-workspace mutation approval
+merely from their alias spelling. Known backing files use the existing path
+boundary guard; unknown nonstandard FD writes require approval. `/dev/null`
+is an empty source/discard sink only for content access, never an exemption for
+deletion, moves, permissions, links or namespace replacement. Unknown reads do
+not receive blanket approval requirements; unknown executable input remains
+subject to existing execution guards.
+
+Graph projection uses actual backing paths and the same pipeline/transform
+artifact identities. Inherited or unknown descriptors retain explicit
+`descriptor_stream` artifacts and consume/produce edges. Sensitive provenance
+can therefore survive FD reads, intermediate workspace files and later
+requests. Unrelated targets skip snapshot construction. This adds no risk
+Pass, Harness fields, live FD probing, or cross-action live descriptor table.
+
+## Stream contracts and output data dependencies
+
+A shell FD connection does not prove a tool consumes its bytes. Reading an input
+does not mean every output contains that input. A selected Form can declare:
+
+```yaml
+stream_contract:
+  stdin_mode: ignored
+  stdout_mode: opaque
+  stderr_mode: opaque
+  stdout_dependency: independent
+  stderr_dependency: unknown
+```
+
+Both dependency fields accept `inputs`, `independent`, or `unknown` (the default).
+`independent` means fixed/empty output that does not carry input data, not a
+sanitizer or safety label. `opaque` describes output structure only. Incomplete
+bindings and unresolved operations cannot establish negative guarantees. The
+selected contract is retained in the binding and consumed by shared stream
+projection and `DataDependencyQuery`, without command-name branches.
+
+`gzip .env` retains its file read, `.env.gz` write and possible input deletion,
+but its stdout does not carry the file contents. Test-only `gzip -t` has empty
+stdout; `gzip -l` lists input-dependent metadata. File outputs retain provenance.
+Pipelines, redirects, command/process substitutions and dispatched streams use
+the same output boundary, respecting ordered FD aliases and stderr merging.
+Explicit `/dev/stdin` or FD-alias reads remain real ReadPath effects, even when
+implicit stdin is ignored. Shell opening/truncation/append effects remain intact;
+opening an input FD alone is not tool content consumption. Structural `FlowsTo`
+and `Dispatches` edges are not exfiltration evidence. Unknown contracts remain
+conservative. Dependency labels survive Graph snapshots and are respected by
+shared taint queries and existing guards. An independent child output alone does
+not prove all parent output independent when the parent's dependency is undeclared.
+
+## Parsed shell execution I/O boundaries
+
+Fully parsed shell command strings, recursive shell scripts and expanded
+functions project their actual child producers onto the caller's existing output
+artifacts. They do not turn control edges into content edges or merge all child
+reads into the caller's inputs. Thus `sh -c 'cat .env' | curl --data-binary @- URL`
+retains the child's sensitive source, while `sh -c 'cat .env >/dev/null; printf SAFE'`
+does not invent that source in stdout. Every escaping command matters, not only
+the last command; internal pipelines, stdout/stderr routing, ordered descriptor
+copies, outer redirections and command/process captures keep their boundaries.
+
+Only complete parsed scopes whose child calls are graph-backed replace the
+caller's broad output dependency. Partial or truncated expansion retains unknown
+dependencies and existing resolution/expansion approval. Program-byte sources
+from scripts, executable stdin and materialized command strings remain child
+inputs after parsing. Inherited stdin is attached only where consumed; ignored
+stdin and local/internal inputs do not automatically import the caller's data.
+
+Referenced nonstandard entry descriptors can reuse concrete, closed or discarded
+targets in statically known enclosing shell frames, before replaying local FD
+updates. A copy retains its old source after that source FD is reassigned.
+Unresolved entry-stream aliases remain unknown and retain conservative possible
+input dependencies; this is not a live FD table or a claim about runtime success.
+The existing output-provenance pass performs the projection, with an early exit
+when neither pipelines nor relevant derived execution boundaries are present.
+No command-name exceptions, new risk pass, host probe or Harness field is required.
+Execution-source tracing distinguishes a dispatcher's launch context from data
+returned by its child: returned stdout stays available to ordinary data-origin
+tracing, but cannot loop back through dispatch control and become that same
+child's launch code. Unresolved calls do not certify parent output independence.
+Functions declared inside nested shell bodies are still a separate resolver
+expansion gap, not covered merely by fixing an I/O edge.
 
 ## Further Reading
 

@@ -98,7 +98,7 @@ bash ./setup.sh
 
 ### 结构化参数与编码 argv
 
-`structured_projection` 为 plain-value 参数声明工具自己的小语法：可选的列表分隔符、按顺序匹配的 literal／prefix 分支，以及 fallback。prefix 匹配会消费前缀；没有 target 的分支表示已确认无相关效果。各 target 声明不同的虚拟 slot 和语义，原始 argv 不变，源码位置及物化来源仍保留。`sources` 按顺序选择首个存在的原始 slot；显式未知不会退回后面的默认值。分隔符、slot 引用与命名冲突在加载时验证。
+`structured_projection` 为 plain-value 或 `script_file_ref` payload 参数声明工具自己的小语法：可选的列表分隔符、按顺序匹配的 literal／prefix／keyword-value 分支，以及 fallback。prefix 匹配会消费前缀；没有 target 的分支表示已确认无相关效果。脚本引用可以保留执行边界，同时投影出单独的路径视图，不必重复绑定同一个 argv。各 target 声明不同的虚拟 slot 和语义，原始 argv 不变，源码位置及物化来源仍保留。`sources` 按顺序选择首个存在的原始 slot；显式未知不会退回后面的默认值。分隔符、slot 引用与命名冲突在加载时验证。
 
 ```yaml
 structured_projection:
@@ -116,13 +116,39 @@ structured_projection:
 
 分派 target 可声明 `command_whitespace_argv: child_commands`，将每个语义值按空白拆成 executable／argv，而不是再解析为 Bash。程序名与参数都标为 argv 数据；字面量 `$`、引号、管道和分号不会被二次解释。解析失败保留未解析子调用，未知写入目标也不会变成“没有修改”。原有标量 `value_projection` 不变；只有声明这种语法的参数才进行结构化解码。
 
+普通分派同样通过 `BoundParameter.semantic_values()` 读取程序名、argv、环境赋值和移除项，原操作数、span 与绑定来源保持不变。已知投影值是 argv 数据，不是新的 Shell 源码。未知投影程序保留未解析记录；未知 argv 保留子调用候选和明确的分析缺口，不借用原操作数的路径范围。未知环境覆盖会使继承值和部分已知子环境失效，即使先声明清空环境也不能抹掉显式覆盖的未知性；父环境不受影响。绑定元数据时直接沿用已物化的完整 argv 结果，避免再次展开。未声明投影的操作数保持原有物化行为。
+
 `stdin_from_parent: true` 表示父工具将生成的数据交给子调用 stdin。现有分派、执行上下文和流来源提取记录这条关系，内容保持不透明，并沿包装分派保留；`@bash` 因此需要审批。包装层内未解析的分派也保留到既有审批兜底，无需新增风险 pass 或 Harness 字段。
 
 首个使用者为 `nsys stats/analyze --output`，区分控制台、文件 basename、默认 basename 和 `@command`。生成的报告用 `sibling_files` 表示为确定目录下的 `BoundedPathSet`，不虚构一个名为 basename 的实际文件；目录在拼接报告名之前归一化。读取 `.nsys-rep` 时的潜在 SQLite 创建及显式 `--sqlite` 目标独立保留；帮助不触发这些效果。
 
-本轮不覆盖持久采集会话、profile/start/launch/stop、回调和报告模板。已列出的内置报告／规则及格式可静态接受；其他报告或格式、附加参数及自定义目录作为不透明代码引用送审。列表对齐和执行次数不作精确重演，所有输出项均保留为候选，可能增加审批。没有读取报告内容或动态探测进程。
+普通 `nsys profile` 采集声明应用／argv 分派、仅对子调用生效的逗号分隔环境覆盖及应用 stdout 来源。显式输出 basename 和默认 `report#` 表示为有效 cwd 下的有界 sibling 文件族，不虚构具体报告名。duration／capture-shutdown 声明可能的 `control_process` 效果，显式 `--kill=none` 仅关闭已建模的终止效果。基于 Graph 效果的进程控制护栏默认审批，可由规则配置改为 allow／deny；它不依赖可选的已知动作字段或已知 PID，没有动作映射时仍记录进程控制和未知目标。当前请求没有候选时，在查询 Graph 前直接跳过；该规则的 allow 配置不能覆盖其他修改或拒绝规则。
 
-依据：[NVIDIA CLI 文档](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options)。
+持久 `launch/start/stop/shutdown` 会话、回调／插件、command file、身份／环境设置模式及原生百分号报告模板仍不透明并要求审批。已列出的 stats/analyze 内置报告／规则及格式可静态接受；其他报告或格式、附加参数及自定义目录作为不透明代码引用送审。列表对齐和执行次数不作精确重演，所有输出项均保留为候选，可能增加审批。没有读取报告内容、动态探测进程或新增 Harness 字段。
+
+依据：[NVIDIA stats CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options)、[profile CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-profile-command-switch-options)。
+
+### 不透明代码与选项内的 Shell 命令
+
+`{kind: payload, language: opaque, source: inline_string, recursive: true}` 显式声明不属于已建模 Shell 语言的可执行代码。既有递归分析保留真实来源及“不支持此语言”证据，既有 ResolvePolicy Pass 默认对 `opaque_non_shell` 要求审批。脚本引用和隐式 stdin 使用同一语言声明及各自真实来源。本地或空 stdin 不能证明这个显式代码入口已被理解或安全：opaque 是语言语义未支持，不是可交给来源护栏兜底的运行时输入缺口。不引入 AWK/HCL 解释器、不猜内部路径、不动态读取代码，也不新增风险 Pass；现有 Python/Node 等静态字面量及运行时输入默认行为不变。本声明不声称覆盖配置、provider 或 backend 行为。
+
+混合选项中的 Shell 命令先投影为 plain-value 虚拟 slot，再用既有 `command_string: {slot: proxy_command, syntax: posix_shell}` 分派：
+
+```yaml
+structured_projection:
+  first_match_only: true
+  branches:
+    - matcher:
+        kind: keyword_value
+        keyword: ProxyCommand
+        case_insensitive: true
+        allow_quoted_keyword: true
+        disabled_values: [none]
+        unresolved_markers: ['%']
+      target: {name: proxy_command, semantic: {kind: plain_value}}
+```
+
+关键字边界为 SP／TAB／CR／LF 或 `=`，只消费开头的分隔符，不改命令体内的引号和 Shell 语法。ASCII 大小写匹配同时用于关键字与禁用值。可选配置 token 引号支持由一个双引号片段结束关键字。`first_match_only` 遇到第一个匹配、禁用或未知值即停；已知不相关关键字不占用首值。默认 false，旧多值行为不变。声明的运行时标记、缺失或动态输入产生未知 slot，沿用未解析子调用审批，不伪造具体命令。只访问显式声明语法的参数；Proxy stdout 是 SSH 传输流，不推断为父命令 stdout。依据：[OpenSSH 关键字解析与优先级](https://github.com/openssh/openssh-portable/blob/master/readconf.c)、[配置 token 引号](https://github.com/openssh/openssh-portable/blob/master/misc.c)。
 
 ### 结构化补丁数据与修改目标
 
@@ -374,6 +400,52 @@ Ruby 定义／安装脚本、运行时依赖闭包、任意自定义安装布局
 | Path Content | 某个路径对应的文件内容 |
 | Execution Sink | 脚本、解释器或其他执行目标 |
 
+### 运行时变量赋值
+
+既有 `bind_variable_from_runtime_input` effect 声明运行时写入的变量名。命令解析与静态脚本输入分析共享按源码顺序的变量回放：旧精确标量失效，后续明确赋值可以恢复精度；变量名不能完整物化为合法标量标识符时，由现有未解析操作策略审批。注册表加载时派生候选索引，不含该 effect 的普通命令不进行额外 effect 解析；不新增风险 Pass、动态进程探测或 Harness 输入字段。
+
+`wait`、`wait -n`、`wait -f` 是等待，不是进程控制；`wait -p target` 声明运行时赋值。静态层不预测 PID，也不假定调用成功：`target` 记录为未知、可能未设置，不能继续使用旧路径。当前 action 明确遇到的 nameref／数组目标不按标量猜测，保留审批；标量快照不是完整 Bash 类型或作业状态探测。
+
+当前 shell 的 effect 更新后续命令和获准 action 的会话状态；函数全局写入可传递，明确的局部变量和子 shell 写入不污染调用者。拒绝／待审批 action 不提交预测状态；新的完整真实快照优先于预测未知。依赖失效变量的 stdin 不伪造精确脚本，也不因存在本地输入而丢掉既有未解析输入证据。Graph 仍保留变量绑定 intent；它不是已执行的证明。
+
+### Shell 退出与状态传播边界
+
+`exit` Profile 声明 `terminate_current_shell`，不伪装成进程控制；普通退出默认允许，不因此新增审批规则。Graph 及公开执行语义 Query 暴露 `terminates_current_shell`，旧记录缺失时按 false 读取。事实附着于既有 execution unit：函数属于调用者 Shell；子 Shell、管道分支、后台 frame 及另外启动的 Shell 则按隔离作用域处理。
+
+注册表候选索引驱动按源码顺序的 Effect 回放。可静态解析、非条件退出形成状态传播边界；同一 frame 后续的赋值、unset、位置参数更新和别名／函数定义不再当作生效状态。函数退出传递至调用者 frame，隔离退出不传递。命令仍保留在审计 Graph 中，风险检查继续保守执行，不进行不可达代码裁剪。根 frame 已退出时不宣称有可信的返回 cwd；条件退出不假定所有分支都会结束，未支持参数形态继续由既有未解析语义策略审批。
+
+重定向准备可能在 builtin／函数启动之前失败，因此这种调用不证明确定的退出状态边界，仍分析继续执行路径；带路径的外部可执行文件也不能证明当前 Shell builtin 语义，保留未解析操作审批。这是静态建模的 Bash 行为，不是实际退出观察或会话生命周期重置；Harness 的新快照仍优先。EXIT trap 和一般的当前 Shell payload／控制流执行是独立能力：本轮不恢复 trap 状态，也不宣称覆盖全部 eval／source／return／errexit 路径。没有新风险 Pass、动态探测、依赖或 Harness 请求字段。
+
+函数中的未知调用或不透明 payload 可能在后续退出指令之前返回；有界回放不会跨越这种控制流缺口证明调用者一定退出，缺口后的嵌套函数调用也一样。这是通用证明边界，不是 `return` 命令名特例，也不是新风险规则。
+
+### Shell 作业管理
+
+Profile 可声明 `{kind: shell_job_operation, shell_job_operation: remove_from_job_table|suppress_sighup, target: {kind: none}}`。既有语义提取 Pass 将类别去重后记录在 `ExecutionSemantics.shell_job_operations` 和公开执行语义 Query 中，并标记修改所属 Shell；旧记录缺字段默认为空，空列表不输出。这是作业管理意图，不是向进程发信号、已完成脱离、确认作业存在或保证存活的事实。
+
+`disown` 默认从所属 Shell 作业表移除目标，`-h` 则保留作业表项、取消 Shell 的 SIGHUP 转发。`-a/-r`、作业标识及 PID 保留在原始调用中；目标作为普通值绑定，不伪装成文件路径或动态查询真实作业表。普通模式及未知作业目标默认 Allow，不因目标不明套用进程控制审批。未知选项仍通过既有未解析操作策略处理，`--help` 不记录作业修改；`--` 后和首个作业参数后的 `-h` 是数据，不改变操作类别。
+
+函数、别名及派生 Shell 中的语义仍附着于其 execution unit；不把子 Shell 的作业表变化传播成调用者状态。带路径的外部 executable 不证明所属 Shell 的 builtin 语义，保留未解析操作审批。Caushell 不维护预测作业表，也不从 Graph 删除此前启动的进程。后台程序启动本身、kill、外部重定向等独立效果仍受原有护栏约束。没有新风险 Pass、动态探测、依赖或 Harness 请求字段。
+
+### export／unset 的标量选项状态
+
+选项解释在共享 Shell 状态层完成，不新增 Profile 或风险 Pass。`export -n NAME` 取消导出属性但保留当前 Shell 的标量；带赋值时仍更新标量。`export -p` 无名称时仅查询，有名称／赋值时仍按 Bash 的导出操作处理。`unset -v NAME` 只删除变量，`unset -f NAME` 只删除函数，不混淆同名对象；组合 `-fn` 按函数删除，`-vf` 是无状态修改的非法组合。
+
+解析器只把首个操作数／`--` 之前的词当选项，保留组合短选项和静态引用；例如 `export NAME -n` 不取消导出，`unset NAME -f` 不切换到函数模式。变量赋值、导出及删除共用源码顺序回放，session 持久化提交最终状态，不再按操作类别分组；已导出的变量被普通赋值后仍保持导出。显式隔离 frame 的修改不污染调用者，普通函数中的全局标量变化可传递，已有退出状态边界继续生效。
+
+同一条声明内建命令的赋值参数先统一展开，再更新绑定：`A=old; export A=new B="$A"` 中 B 为 old；纯赋值 `A=new B="$A"` 则按赋值顺序使用 new。持久化层直接复用已计算的最终回放结果，不重复解释选项或再做一次完整回放；独立使用变量提取 Pass 时仍调用相同的静态回放入口。
+
+普通 `unset NAME` 先处理变量，只有能确认变量不存在时才删除同名函数；变量存在则保留函数，变量存在性未知则把已知函数绑定标为不确定。存在性不是导出环境中是否有值：未导出的变量仍阻止函数回退，`export NAME` 可以建立无标量值的声明，而 `export -n NAME` 单独使用不会建立声明。操作数按顺序处理，例如 `unset NAME NAME` 可以先删除变量、再删除函数。Bash 函数名也不被强制当作变量标识符。
+
+变量和函数共用一次源码顺序状态回放。条件删除／定义、未知删除目标或选项不保留旧函数体为精确状态；单独遇到这些状态修改不触发审批，后续真正调用受影响函数时，由已有 ResolvePolicy 的 `opaque_invocation` 缺口默认要求审批。无条件定义、无条件 `unset -f` 或权威函数快照可恢复确定状态。同 Shell 的函数、eval、命令／进程替换继承分析状态，隔离作用域不污染调用者；外部可执行程序分派不使用调用者的函数查找。退出状态边界保持有效。
+
+不确定绑定通过既有 Upsert mutation 保存可选的 `uncertainty` 原因，不假造函数定义 Graph 节点，原始内容节点保持不可变；旧记录缺少该字段时仍作为精确绑定读取。函数提取 Pass 复用解析阶段计算的有序结果，独立使用时也走同一个静态状态回放，不另建条件分支模拟器。
+
+本轮不声称还原命令成功、readonly 或完整 Shell 类型属性；`export -f` 的子 Bash 函数继承、nameref 目标和完整条件分支合并仍暂缓。未建模的声明／运行时赋值不被当成变量不存在的证明。动态选项／目标及未建模的 `unset -n` 不保留旧标量为精确值；不新增 Profile、风险 Pass 或动态探测，无需 Harness 额外采集／提供状态事实，CheckRequest 的 Shell 快照字段不变。
+
+函数绑定的 Graph 身份复用 alias 的“名称＋action 序号＋稳定内容指纹”机制。同一 action 中不同函数体分别保留不可变节点，相同内容重复定义保持幂等；有序 mutation 和当前绑定与内容节点身份分开处理。原有节点冲突校验保持不变。旧存储中的 ID 继续读取，不重写历史，不修改快照结构，不需要迁移，也不新增风险规则或 Harness 字段。
+
+共享暂存层用“mutation 内容＋源码位置”识别带位置的 Shell 状态操作。同一次操作被重复提取仍幂等，不同位置的操作按暂存顺序保留，包括定义、删除、同内容再定义。Alias 赋值使用操作数 token 的位置，避免同一条 `alias` 命令中最后设回旧值的操作丢失；无位置的审计事实／最终状态事实继续按内容去重。退出边界逐次过滤状态操作，不删除审计事实，过滤后重建暂存索引。替换解析工件时只清除旧坐标，不删除已有暂存项。发生位置仅在当前请求内使用，不改变已存储的 mutation、Graph 身份或 Harness 字段。
+
 ### 变量绑定与路径解析
 
 `SCRIPT=./setup.sh` 建立变量绑定后，`tee "$SCRIPT"` 和 `bash "$SCRIPT"` 得到同一个相对路径。图中的 Runtime State 表明当前目录为 `/workspace`，因此该路径被解析为 `/workspace/setup.sh`。
@@ -439,6 +511,8 @@ lsof Profile 将文件／目录、PID、FD 和 socket 选择器当作元数据�
 前缀绑定可声明 `binding: {kind: args_with_prefix, prefix: '-D', before_dash_dash: true}`，仅绑定选项终止符之前尚未消费的匹配参数。声明过的选项操作数先绑定，因此作为选项值的字面 `--` 不被误当作分隔符，后面的实际 `--` 仍能终止绑定。该绑定不消费分隔符或后续数据。省略该字段或设为 `false` 时保留原有全范围行为。因此 `ss -Ddump -- state established` 保留 `dump` 写入，而 `ss -- -Ddump` 不从过滤数据中制造写入。这是命令无关、按声明启用的绑定能力，不是新增风险规则。
 
 Command Profile 描述命令可能分派到哪里，以及参数如何绑定。分派层将参数作为带类型的值传递：字面 argv 数据、运行时产生的值，或带保守取值域的隐式输入。消费者可以用有界路径域分类可能的位置，但这些根目录不代表实际操作的具体文件。未知输入与已知空输入始终有区别。
+
+共享 stdin 来源查询按 shell 顺序静态回放单条命令的重定向声明。FD 数字拼写会规范化（`000` 即 FD 0）；复制保留复制当时的来源，移动到不同 FD 会关闭旧 FD，复制／移动到同一 FD 则保留来源。这不是探测实际 FD，也不会将推测的 FD 表跨 action 持久化。只有最终生效来源进入显式 stdin／管道来源边；被覆盖的重定向及进程替换仍可保留各自独立的打开／生产效果。关闭 stdin 表示不能提供可执行字节，不意味着运行时读取会成功或返回 EOF。未知 FD 内容或未能投影的显式来源保留 `RuntimeInput` 节点，交由既有 tainted-execution 护栏判断。未知输入兜底在重定向和进程替换来源生产者之后运行，不再把“语法上出现重定向”等同于“来源已经建模”。
 
 `find -exec`/`-execdir` 和 `xargs` profile 使用相同的分派与执行图机制。`find` 参数可以携带有界搜索根域；跟随符号链接、无法解析的根，以及无法确定上下文的 `-execdir` 会扩大该域或保留未知。只有来源已知完整时才使用 `xargs` 静态输入；部分已知片段仅作为参考，不能证明它们是 argv 的前缀，不完整或运行时生成的输入会使参数保持未知。显式 stdin 重定向优先于管道输入。
 
@@ -556,8 +630,9 @@ Pass 先检查本次请求已经提取的事实，没有非本地或未知监听
 - `configured_path.unresolved_relative_base: true` 用于基准目录需文件系统发现的相对目标，
   不允许与 `relative_to` 同时声明。空 `sources` 只允许有环境／字面默认来源，或
   `missing: unknown`；空来源且只有 incidental-cache 豁免的声明仍无效。
-- dispatch 在 `command`（slot）、`command_literal`（固定可执行名）和上文的
-  `command_whitespace_argv`（编码 argv）中必须选且只选一个；前两种可用 `argv_prefix`
+- dispatch 在 `command`（slot）、`command_literal`（固定可执行名）、上文的
+  `command_whitespace_argv`（编码 argv）和下文的 `command_string`（声明式工具语法）
+  中必须选且只选一个；前两种可用 `argv_prefix`
   加入固定 argv 数据。例如
   `{kind: dispatch, command_literal: python, argv_prefix: ['-m'], argv: [module, args]}`
   形成带类型的解释器调用，不把字面参数重新当 shell 源码解析。
@@ -612,6 +687,208 @@ SQL、初始化 SQL、stdin／交互客户端输入声明不透明数据库操�
 依据：[客户端选项](https://dev.mysql.com/doc/refman/8.4/en/mysql-command-options.html)、
 [客户端命令](https://dev.mysql.com/doc/refman/8.4/en/mysql-commands.html)、
 [固定版本客户端实现](https://github.com/mysql/mysql-server/blob/3f821bcb4ee93cd90c0ffa0f8e17bb9677502acf/client/mysql.cc)。
+
+## Python 模块入口
+
+Profile 用 `identity.module_entrypoints: [{runtime: python, name: json.tool}]`
+单独声明模块入口，`module_only: true` 表示不注册同名可执行文件。
+解释器分派目标声明 `module_runtime: python`，只展开明确登记的模块，
+不会回退到同名命令、可执行文件 basename 或命令族别名。两套可执行文件
+查找接口都排除模块专属 Profile。派生节点是语义建模单元，不代表创建了
+OS 子进程；父层模块加载与模块 CLI 的效果同时保留。未登记或动态模块
+沿用已有代码加载策略；已登记模块的未知 argv 仍保留真正的分析缺口。
+
+可选 modifier 声明 `ends_option_scope: true` 在该选项及其操作数之后结束
+选项归属范围，要求使用 `leading_options` 或 `permuted_options`；未声明时
+旧行为不变。Python 的 `-m`、`-c` 和退出式信息选项使用该能力，后续
+模块／脚本 argv 中的 `-m`、`-c`、`-i`、`--help` 不再冒充解释器选项。
+扩展 `-X` 配置、交互 `-i` 和不支持的解释器形式按既有不透明操作规则审批。
+
+目前登记 pip、pytest、uvicorn、json.tool、http.server、py_compile、compileall。JSON 文件／stdin
+输入和文件／stdout 输出保留数据流，outfile `-` 是字面文件名。
+HTTP 服务记录监听、服务目录和 TLS 文件读取；`--directory` 不改变 cwd。
+复用已有监听规则，仅数字回环地址豁免，CGI 保持不透明审批。
+不探测模块搜索／遮蔽，不分析 Python 本体、请求内容或进程寿命，也不声称
+已追踪“服务启动后移动敏感文件”的发布链。
+
+可选声明 `dispatch.unset_environment_when: [{modifier: ignore, names: [CACHE_VAR]}]`
+只在所指 modifier 生效时，从派生环境移除列出的固定变量；不清空其他变量、
+不修改父环境、不读取宿主机环境。Python `-E/-I` 对已建模的
+`PYTHONPYCACHEPREFIX` 使用它；应用自己的环境变量仍生效。
+
+`write_path` 的配置目标可声明 `fallback_parent_slots: [inputs]`：只有参数、
+配置环境和默认值来源均确认未设置时，才将输出文件族限定在规范化输入的父目录下。
+未知配置不回退；使用现有语义值，保留引号和已物化 argv，未知／缺失输入保留未知写入。
+不猜具体字节码标签／临时文件名，不探测文件类型或按后缀分类。文件和目录共用保守的
+父目录边界，因此 compileall 输入直接命名工作区根目录时可能需要审批。
+
+两个编译模块读取源码、写字节码，不执行源码本体。已知缓存前缀将写入目标定在该目录；
+完整环境下的缺失或已知空前缀才启用输入父目录回退。解释器 `-B` 不取消显式编译写入。
+compileall `-b` 使用旧式 sibling 输出且忽略缓存前缀；`-d/-s/-p` 只改嵌入的 traceback
+文件名，不是物理输出目录。stdin 文件名列表、文件列表和默认 `sys.path` 扫描的写入范围
+未知，除非已知前缀能限定输出。重复 `-i` 保持不透明，不猜最后列表归属。
+CLI 契约面向现代 CPython，不声称探测了解释器版本或模块遮蔽。
+
+来源：[CPython CLI](https://docs.python.org/3.14/using/cmdline.html)、
+[JSON CLI 源码](https://github.com/python/cpython/blob/v3.14.0/Lib/json/tool.py)、
+[HTTP CLI 源码](https://github.com/python/cpython/blob/v3.14.0/Lib/http/server.py)、
+[py_compile 源码](https://github.com/python/cpython/blob/v3.14.0/Lib/py_compile.py)、
+[compileall 源码](https://github.com/python/cpython/blob/v3.14.0/Lib/compileall.py)。
+
+## 工具内部解释的命令字符串
+
+Profile 可显式声明解释方式，共享分派层不添加可执行名特例：
+
+```yaml
+kind: dispatch
+command_string: {slot: callback, syntax: posix_shell}
+unknown_environment_names: [TOOL_FILENAME]
+stdin_from_tool: true
+```
+
+`posix_shell` 生成 `/bin/sh -c`，将解码后的操作数保留为一个 argv，复用既有有界嵌套
+Shell 分析。`gnu_wordsplit` 则按 GNU wordsplit 默认引号与 C 转义产生 argv，不把
+操作符、通配符或命令替换当作 Shell 执行。工具环境变量展开保留未解析子调用，不能把
+`$VAR` 原样当实际参数，也不能借用调用者 Shell 的值。畸形引号、NUL／非 ASCII 字节
+转义、超过 64 KiB 的字符串及超过 4096 个词的 argv 同样保留缺口。没有执行或环境探测。
+
+每个字符串有独立分派索引。父调用 bound operand 保留原文、来源 span 和语义投影；
+子 argv 使用互不重叠的合成坐标，避免依赖 span 的 Shell payload 归属将 `-c` 和参数
+混为一项。解码参数是 runtime data，不再按调用者语法展开。`argv_suffix` 在子参数后
+追加固定 argv 数据，例如解压程序的 `-d`；字符串来源不能同时声明 `argv`／`argv_prefix`。
+
+`unknown_environment_names` 仅在子环境遮蔽工具生成的同名值，保留无关 exported
+变量，不修改父 Shell。`stdin_from_tool` 表达内容未知的工具输出，与
+`stdin_from_parent` 互斥。内层 Shell 继承输入存在性，但不得用调用者的字面管道填充
+工具内部流；解释器执行未知输入仍走既有运行时输入护栏。
+
+GNU tar 1.35 源码中的创建压缩 `-I`、checkpoint exec 和 `--to-command` 使用
+`/bin/sh -c`；解压入口使用 GNU wordsplit 并追加 `-d`。Profile 分别声明，不混用。
+checkpoint 的 `exec=` 通过结构化投影提取；echo action 不是程序，help／version
+不执行延后的回调。原先按 tar 名字扫描 token 的专用路径移除，不保留双轨分析。
+远程 helper、完整旧式选项参数个数、隐式压缩配置及归档成员内容仍为独立限制，
+不冒充已覆盖。没有新增风险 Pass、动态探测、Harness 字段或动作策略。
+
+来源：[GNU tar 外部命令](https://www.gnu.org/software/tar/manual/html_section/external.html)、
+[GNU tar 1.35 执行源码](https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/src/system.c/)、
+[GNU wordsplit 源码](https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/lib/wordsplit.c/)。
+
+## 有界子命令 argv 的参数归属
+
+根级 Profile 可选择声明精确匹配的子命令参数区域：
+
+```yaml
+option_matching: exact_names
+opaque_on_unresolved: true
+argument_regions:
+  - id: exec
+    start_flags: ["-exec"]
+    terminators:
+      - {value: ";"}
+      - {value: "+", preceding: "{}"}
+```
+
+`argument_region_command` 绑定该区域的首个命令词，`argument_region_args` 绑定其余
+argv；重复区域保留独立索引范围。原始参数文本、引号、span 和物化来源不被改写。
+该声明解决参数归属，不新建执行语法或风险规则；工具生成的参数／目标域仍由既有
+工具适配处理。
+
+共享扫描器让外层 modifier、selector 和位置参数绑定跳过子 argv 及结束符，区域结束
+后继续扫描真正的外层选项。普通选项的参数个数来自既有参数声明，所以 `-name -exec`
+中的 `-exec` 是操作数，不是新区域。结束符比较解码后的 argv，而非原始引号；
+可选 `preceding` 条件让普通 `+` 保持子参数，只有前一词是 `{}` 才结束该批处理区域。
+
+未知词保留已知部分的子调用／副作用，并添加“参数归属未确定”的 residual；未加引号
+的未知选项操作数可能改变实际 argv 个数，也保留不确定性。缺少命令／结束符或外层
+选项的参数个数未声明时，产生 selection gap。此能力要求显式开启
+`opaque_on_unresolved`，由既有 ResolvePolicy 审批兜底。目前仅支持根级
+`all_arguments`／`exact_names`、无 subcommand tree 的组合；不支持的声明组合和
+悬空引用在加载时拒绝。未声明区域的 Profile 保持原来的扫描与绑定行为。
+
+find 适配器使用同一份区域范围，不再独立遍历原始 argv 寻找 `-exec`。多个 action
+保留各自子调用；子参数中的 `-L`、`-type`、`-name`、`--`、`-delete` 不改变外层
+搜索域和副作用。未知根路径、修改目标和 Shell payload 仍进入各自原有护栏。
+Shell 的裸 `;` 不属于 find 的 argv；应以 `\;` 或 `';'` 传入结束符。
+这不是完整 find 表达式求值器，没有动态探测、新增 Pass 或修改风险动作映射。
+
+## 标准流设备路径与内容读写
+
+Profile 可在 `read_path`／`write_path` 的显式 slot 效果上声明
+`path_access: content_open`，表示打开目标读写内容，而非删除路径、创建链接或原地
+替换目录项。声明可选；不合法的效果／目标组合在加载时拒绝。本轮仅审查并声明了
+tee 的输出、cat 的文件输入及 tar 的归档文件；tar 成员写入、sed 原地替换等不获得
+此解释。
+
+共享 `IoTargetQuery` 查询静态投影的 FD 快照。只有内容读写及 Shell 原生文件重定向
+才能识别 `/dev/stdin`、`/dev/stdout`、`/dev/stderr`、`/dev/fd/N`、
+`/proc/self/fd/N`；其他 `/dev/*` 和其他进程的 `/proc/PID/fd/*` 不属于白名单。
+快照按本调用的重定向顺序处理复制、移动、关闭和文件打开，并保留进程替换通道。
+`|&` 的 stderr 复制在显式重定向之后生效。重定向操作数使用打开
+之前的快照；工具操作数使用所有重定向完成后的快照。打开设备别名不是简单复制
+FD：原来的内容写入／打开效果保留，不抹掉创建、截断或追加的可能性。
+
+普通继承的标准流不因别名位于工作区外而触发修改审批；已知文件目标继续使用
+既有工作区边界规则；未知非标准 FD 写入要求审批。`/dev/null` 只对内容读写作为
+空源／丢弃汇解释，删除、移动、修改权限、链接和路径替换仍检查路径本身。
+未知读取不会单独升级为审批；执行未知输入仍使用已有执行护栏。
+
+Graph 中已知文件使用实际 backing path，管道使用同一份 pipeline／transform
+工件；普通继承或未知描述符使用显式 `descriptor_stream` 工件和 consume／produce
+边。流不因无需工作区外审批而消失，敏感来源仍可经显式 FD 读取、工作区内中间
+文件及后续请求到达泄露护栏。无相关目标时不创建 FD 快照；不增加风险 Pass、
+Harness 输入、动态 FD 探测或跨 shell action 的实时描述符表。
+
+## 流契约与输出数据依赖
+
+Shell 的 FD 连接不等于工具实际读取数据；读取某份数据也不代表每路输出都包含它。
+匹配的 Form 可通过 `stream_contract` 声明隐式 stdin 的使用方式及各路输出依赖：
+
+```yaml
+stream_contract:
+  stdin_mode: ignored
+  stdout_mode: opaque
+  stderr_mode: opaque
+  stdout_dependency: independent
+  stderr_dependency: unknown
+```
+
+`stdout_dependency`、`stderr_dependency` 均可为 `inputs`、`independent` 或 `unknown`，省略时为 `unknown`。
+`independent` 只适用于不承载输入数据的固定／空输出；不是内容清洗或安全标签。
+`opaque` 仅表示输出结构不透明，不改变数据依赖。解析不完整或操作语义未解析时，不采用负向保证。
+选中的契约保留在绑定结果中，共享流投影和 `DataDependencyQuery` 消费它，不按命令名分支。
+
+例如 `gzip .env` 仍读取 `.env`、写入 `.env.gz`，并可能删除原文件；其 stdout 不承载文件内容。
+`gzip -t` 的 stdout 为空，而 `gzip -l` 的列表信息仍依赖输入。真实文件输出保留来源关系。
+管道、重定向、命令／进程替换及分派流使用同样的输出边界，并按重定向顺序纳入 stderr 合并。
+显式读取 `/dev/stdin` 或其他 FD 别名仍是实际 ReadPath，不受“忽略隐式 stdin”抹除。
+Shell 打开、截断和追加输出文件的路径副作用始终保留；输入 FD 的打开事实不冒充工具消费内容。
+结构性 `FlowsTo`／`Dispatches` 不作为泄露证明；未知流契约继续保留保守依赖。
+输出依赖随 Graph 快照保存，公共污点查询及已有护栏遵循同一边界。未声明父命令输出关系时，
+不能仅凭子调用的独立输出推断父命令全部输出独立。
+
+## 已解析 Shell 执行边界的输入输出
+
+完整解析的 Shell 命令字符串、递归 Shell 脚本和展开后的函数，将实际子调用的
+输出生产关系连接到父调用已有的输出工件。不把控制边当内容边，也不把所有子调用
+读取都混进父调用输入。因此 `sh -c 'cat .env' | curl --data-binary @- URL` 保留
+子调用的敏感来源，而 `sh -c 'cat .env >/dev/null; printf SAFE'` 不凭空污染 stdout。
+纳入所有真正逃逸出边界的命令，而非只看最后一条；内部管道、stdout／stderr 路由、
+有序 FD 复制、外层重定向和命令／进程替换捕获保留各自边界。
+
+只有解析完整、子调用已入图的范围才用精确子输出替代父调用的粗略输出依赖。
+部分解析或展开超限仍保留未知依赖，由既有解析／展开策略审批。脚本文件、可执行
+stdin 和物化命令字符串的程序字节来源在解析后仍是子调用输入。继承 stdin 只连接到
+实际消费它的子调用；忽略 stdin、本地重定向和内部管道不自动混入父层输入。
+
+对引用到的非标准入口 FD，可复用静态已知父 Shell 帧中的具体文件、关闭或丢弃目标，
+再按顺序处理本地 FD 更新。复制保留当时的来源，不受原 FD 后续重绑定污染。
+尚无法确定的入口流别名仍为未知，并保留可能输入的保守依赖；这不是实时 FD 表，
+也不声称命令一定执行成功。投影由已有输出来源 Pass 完成；没有管道和相关派生执行
+边界时开头退出。不增加命令名特例、风险 Pass、宿主机探测或 Harness 输入字段。
+执行来源追踪区分分派者的启动上下文与子调用返回的数据：返回的 stdout 仍参与普通
+数据来源追踪，但不能沿分派控制边绕回来，充当同一子调用的启动代码。未解析调用
+不证明父输出独立。嵌套 Shell 内声明的函数仍有单独的函数体展开缺口，不能靠补
+输入输出边就宣称覆盖。
 
 ## 进一步阅读
 

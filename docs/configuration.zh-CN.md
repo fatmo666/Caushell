@@ -54,6 +54,31 @@ caushell config validate
 | --- | --- | --- | --- |
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Caushell 无法完成分析时的回退行为 |
 | `codex.need_approval_mode` | `block` / `observe` | `block` | Codex 遇到 `NeedApproval` 时的处理方式 |
+| `policy.rules.process_control` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的进程／作业发信号或恢复操作 |
+
+进程护栏直接读取已解析的 `control_process` Effect，包括嵌套调用，不查询运行中
+进程，也不要求动作元数据已知。`allow` 保留发现但取消本规则审批，不能覆盖其他
+规则。零信号探测和信号列表不产生控制效果；内置进程控制 Profile 将未支持形式
+标为不透明，由既有解析策略审批。允许 `process_control` 不会把未解析的操作变成
+已确认安全的操作；不查询或声称专门保护关键 PID。
+
+```yaml
+policy:
+  rules:
+    process_control: allow
+```
+
+### 显式声明的不透明可执行输入
+
+Profile 通过 `language: opaque` 和 `recursive: true` 接入既有未解析 payload 策略。`opaque_non_shell` 默认 `need_approval`，包括字面量 AWK/HCL 输入；其他不支持语言的字面量默认行为不变。如需调整，显式配置：
+
+```yaml
+policy:
+  unresolved_payloads:
+    opaque_non_shell: need_approval  # allow / need_approval / deny
+```
+
+`allow` 保留分析证据，不能绕过独立修改规则或硬拒绝底线。不需要查询存活进程、执行代码或增加 Harness 字段。
 
 ### `failure_action`
 
