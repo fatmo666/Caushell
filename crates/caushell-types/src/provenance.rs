@@ -67,6 +67,9 @@ pub enum ProvenanceMaterializedValueState {
     RequiresRuntimeInput {
         source: RuntimeInputSource,
     },
+    RequiresImplicitInput {
+        source: ImplicitInputSource,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

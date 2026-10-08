@@ -19,6 +19,14 @@ platform:
 
 option_matching: exact_names
 opaque_on_unresolved: true
+# GNU/BSD find expression controls are exact words. Leading options retain
+# their conservative prefix bound until an expression boundary is known.
+# Keep unmodeled expression controls/clusters opaque when a glob can generate
+# them; this is a grammar fact, not a risk allowlist.
+argument_control_vocabulary:
+  unmodeled_words: ["-ok", "-okdir", "-fprintf", "-files0-from", "-f", "-mnewer", "-printx", "-exit", "-O", "--"]
+  unmodeled_short_clusters: ["EHLPXdsx"]
+  positional_boundary_words: ["-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-wholename", "-iwholename", "-lname", "-ilname", "-context"]
 argument_regions:
   - id: exec
     start_flags: ["-exec"]
@@ -147,6 +155,15 @@ forms:
       stdin_mode: ignored
       stdout_mode: path_list
       stderr_mode: opaque
+    stdout_records:
+      projection:
+        kind: paths
+        roots_slot: search_roots
+        default_root: "."
+        separator: nul
+        escape_modifiers: [follow_symlinks]
+      required_modifiers: [nul_output]
+      excluded_modifiers: [line_output, information_options]
     effects: &enumerate_effects
       - kind: read_path
         target:
@@ -341,13 +358,12 @@ modifiers:
         target: {kind: slot, name: output_paths}
         catastrophic: {semantic_class: raw_write_target}
 
-  - id: output_actions
-    matcher:
-      kind: any_flag
-      flags:
-        - "-print"
-        - "-print0"
-        - "-ls"
+  - id: nul_output
+    matcher: {kind: any_flag, flags: ["-print0"]}
+  - id: line_output
+    matcher: {kind: any_flag, flags: ["-print"]}
+  - id: list_output
+    matcher: {kind: any_flag, flags: ["-ls"]}
 
   - id: delete_action
     matcher:

@@ -4,7 +4,7 @@ use caushell_profile::{
     MaterializedRecursivePayloadCandidate, RecursivePayloadOrigin, RecursivePayloadParseResult,
     SessionBindings, ValueMaterialization,
 };
-use caushell_types::{RuntimeInputSource, ShellKind};
+use caushell_types::{ImplicitInputSource, RuntimeInputSource, ShellKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NestedPayloadRecordId(pub usize);
@@ -39,6 +39,9 @@ pub enum NestedPayloadResolution {
     RequiresRuntimeInput {
         source: RuntimeInputSource,
     },
+    RequiresImplicitInput {
+        source: ImplicitInputSource,
+    },
     UnsupportedLanguage,
     ParseFailed {
         shell_kind: ShellKind,
@@ -47,6 +50,22 @@ pub enum NestedPayloadResolution {
     UnresolvedMaterialization {
         materialization: ValueMaterialization,
     },
+}
+
+impl NestedPayloadResolution {
+    /// Preserve unknown-source identity in both normal expansion and depth
+    /// truncation. A dispatch-produced program is not an unknown stdin stream.
+    pub fn from_unresolved_materialization(materialization: ValueMaterialization) -> Self {
+        match materialization {
+            ValueMaterialization::RequiresRuntimeInput { source, .. } => {
+                Self::RequiresRuntimeInput { source }
+            }
+            ValueMaterialization::RequiresImplicitInput { source } => Self::RequiresImplicitInput {
+                source: source.to_caushell_types_implicit_input_source(),
+            },
+            materialization => Self::UnresolvedMaterialization { materialization },
+        }
+    }
 }
 
 impl NestedPayloadRecord {
@@ -64,18 +83,12 @@ impl NestedPayloadRecord {
                 shell_kind: parsed.shell_kind,
                 parsed: parsed.artifact,
             },
-            RecursivePayloadParseResult::RequiresRuntimeInput { .. } => {
-                let ValueMaterialization::RequiresRuntimeInput { source, .. } =
-                    &candidate.resolution
-                else {
-                    panic!(
-                        "recursive payload runtime-input parse result must carry runtime input materialization"
-                    );
-                };
-                NestedPayloadResolution::RequiresRuntimeInput {
-                    source: source.to_runtime_input_source().expect(
-                        "nested runtime input resolution should not use inherited environment",
-                    ),
+            RecursivePayloadParseResult::RequiresRuntimeInput { source, .. } => {
+                NestedPayloadResolution::RequiresRuntimeInput { source }
+            }
+            RecursivePayloadParseResult::RequiresImplicitInput { source, .. } => {
+                NestedPayloadResolution::RequiresImplicitInput {
+                    source: source.to_caushell_types_implicit_input_source(),
                 }
             }
             RecursivePayloadParseResult::UnsupportedLanguage { .. } => {

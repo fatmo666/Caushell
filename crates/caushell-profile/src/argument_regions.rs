@@ -90,6 +90,7 @@ pub(crate) fn scan(
     regions: &[ArgumentRegion],
     modifiers: &[Modifier],
     forms: &[Form],
+    vocabulary: Option<&crate::ArgumentControlVocabulary>,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: true,
@@ -98,6 +99,8 @@ pub(crate) fn scan(
         flags: Vec::new(),
         terminator: None,
         positionals: Some(Vec::new()),
+        additional_positionals: Vec::new(),
+        retains_positional_default: false,
         argument_regions: Vec::new(),
         error: None,
     };
@@ -109,13 +112,19 @@ pub(crate) fn scan(
         }
     };
     let mut index = scope.start_index;
+    let mut operand_width_unresolved = false;
+    let mut expression_closed = false;
     while index < scope.end_index {
         let Some(value) = argv_value(&projection.args[index]) else {
             let structure = argument_structure(&projection.args[index]);
             // Unknown path data is not an unknown control surface. Only use
             // per-field bounds: unquoted splitting has no such prefix proof.
             let may_control = structure.fields == ArgumentFieldCount::Unknown
-                || structure.may_start_with("-")
+                || crate::argument_ownership::may_be_unmodeled_control(
+                    &structure,
+                    vocabulary,
+                    expression_closed,
+                )
                 || declarations.keys().any(|flag| structure.may_equal(flag))
                 || regions.iter().any(|region| {
                     region
@@ -195,6 +204,11 @@ pub(crate) fn scan(
         }
         if let Some(mode) = declarations.get(value.as_ref()) {
             result.flags.push((index, FlagName::new(value.as_ref())));
+            expression_closed |= vocabulary.is_some_and(|v| {
+                v.positional_boundary_words
+                    .iter()
+                    .any(|word| word == value.as_ref())
+            });
             let operands = match mode {
                 None => 0,
                 Some(FlagOperandMode::SecondArg) => 2,
@@ -211,7 +225,7 @@ pub(crate) fn scan(
             {
                 // Quotes alone do not prove width: "$@" may have many fields.
                 // An owned single field may have ANY value, including flags.
-                result.ownership_unresolved = true;
+                operand_width_unresolved = true;
             }
             continue;
         }
@@ -223,6 +237,30 @@ pub(crate) fn scan(
         }
         result.positionals.as_mut().unwrap().push(index);
         index += 1;
+    }
+    if operand_width_unresolved {
+        // Only attempt the extra proof for bounded operand-width uncertainty.
+        // Existing unknown controls/children and scanner errors keep their
+        // fallback; no second scanner on the common exact-argv path.
+        if result.error.is_none() && !result.ownership_unresolved {
+            match crate::argument_ownership::covered_positionals(
+                projection,
+                &result,
+                &declarations,
+                regions,
+                modifiers,
+                forms,
+                vocabulary,
+            ) {
+                Some(coverage) => {
+                    result.additional_positionals = coverage.additional;
+                    result.retains_positional_default = coverage.retains_default;
+                }
+                None => result.ownership_unresolved = true,
+            }
+        } else {
+            result.ownership_unresolved = true;
+        }
     }
     result
 }

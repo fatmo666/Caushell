@@ -261,6 +261,32 @@ pub struct StreamContract {
     pub stderr_dependency: caushell_types::StreamDataDependency,
 }
 
+/// A positive guarantee about complete stdout records, separate from data
+/// provenance. `path_list` alone makes no claim about record boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdoutRecordContract {
+    pub projection: StdoutRecordProjection,
+    pub required_modifiers: Vec<ModifierId>,
+    pub excluded_modifiers: Vec<ModifierId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StdoutRecordProjection {
+    Paths {
+        roots_slot: SlotName,
+        default_root: Option<String>,
+        separator: StreamRecordSeparator,
+        escape_modifiers: Vec<ModifierId>,
+    },
+    /// Byte-preserving forwarding of effective stdin, not a generic transform.
+    Stdin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamRecordSeparator {
+    Nul,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathRole {
     Read,
@@ -782,6 +808,7 @@ pub struct Form {
     pub implicit_inputs: Vec<ImplicitInput>,
     pub effects: Vec<Effect>,
     pub stream_contract: Option<StreamContract>,
+    pub stdout_records: Option<StdoutRecordContract>,
     pub extensions: ExtensionMap,
 }
 
@@ -796,6 +823,7 @@ impl Form {
             implicit_inputs: Vec::new(),
             effects: Vec::new(),
             stream_contract: None,
+            stdout_records: None,
             extensions: ExtensionMap::new(),
         }
     }
@@ -1514,6 +1542,7 @@ pub struct BoundInvocation {
     pub form_id: FormId,
     /// Retained after form selection for command-independent stream projection.
     pub stream_contract: Option<StreamContract>,
+    pub stdout_records: Option<StdoutRecordContract>,
     pub bound_parameters: Vec<BoundParameter>,
     pub argument_regions: Vec<crate::BoundArgumentRegion>,
     pub payload_projections: Vec<PayloadProjection>,
@@ -1532,6 +1561,7 @@ impl BoundInvocation {
             subcommand_path: Vec::new(),
             form_id,
             stream_contract: None,
+            stdout_records: None,
             bound_parameters: Vec::new(),
             argument_regions: Vec::new(),
             payload_projections: Vec::new(),
@@ -1581,6 +1611,9 @@ pub struct CommandProfile {
     pub platform: PlatformConstraints,
     pub argument_files: Vec<ArgumentFileRule>,
     pub argument_regions: Vec<ArgumentRegion>,
+    /// Opt-in finite outer control vocabulary. Unknown dash words are invalid
+    /// in the tool, not new actions. Valid but unmodeled controls stay opaque.
+    pub argument_control_vocabulary: Option<ArgumentControlVocabulary>,
     /// Declared uncertainty effects, retained when no complete form can bind.
     pub selection_failure_effects: Vec<Effect>,
     /// Opt in to operation uncertainty for failed selection or binding residuals.
@@ -1608,6 +1641,14 @@ pub struct ArgumentRegionTerminator {
     pub preceding: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentControlVocabulary {
+    pub unmodeled_words: Vec<String>,
+    pub unmodeled_short_clusters: Vec<String>,
+    /// Recognized controls after which new positional words are invalid.
+    pub positional_boundary_words: Vec<String>,
+}
+
 impl CommandProfile {
     pub fn new(name: &str) -> Self {
         Self {
@@ -1616,6 +1657,7 @@ impl CommandProfile {
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             forms: Vec::new(),

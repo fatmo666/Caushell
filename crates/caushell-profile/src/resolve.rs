@@ -52,6 +52,23 @@ impl ResolvedInvocationArtifact {
         }
         self.bound.stream_contract
     }
+
+    pub fn proven_stdout_records(&self) -> Option<&crate::StdoutRecordContract> {
+        // The same completeness gate as negative stream guarantees: an
+        // unmodeled control word must never manufacture a positive path proof.
+        self.proven_stream_contract()?;
+        let contract = self.bound.stdout_records.as_ref()?;
+        let applied = &self.bound.applied_modifiers;
+        (contract
+            .required_modifiers
+            .iter()
+            .all(|m| applied.contains(m))
+            && contract
+                .excluded_modifiers
+                .iter()
+                .all(|m| !applied.contains(m)))
+        .then_some(contract)
+    }
 }
 
 impl<'a> ResolvedInvocation<'a> {

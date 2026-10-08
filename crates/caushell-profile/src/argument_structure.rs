@@ -8,7 +8,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentFieldCount {
     ExactlyOne,
-    /// Pathname/brace generation has variable width; zero covers nullglob.
+    /// Bounded variable-width generation/splitting; zero covers nullglob/IFS.
     ZeroOrMore,
     /// Field splitting, arrays, or syntax outside this query's proof domain.
     Unknown,
@@ -19,7 +19,20 @@ pub struct ArgumentStructure {
     pub fields: ArgumentFieldCount,
     /// A literal prefix shared by every produced field; empty means no bound.
     pub static_prefix: String,
+    /// Literal tail shared by each field (not by arbitrary split fields).
+    pub static_suffix: String,
     pub exact: bool,
+    spelling: Option<Vec<SpellingPart>>,
+    pathname_generation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpellingPart {
+    Literal(char),
+    Any,
+    One,
+    Class(String),
+    CharacterRun(String),
 }
 
 impl ArgumentStructure {
@@ -31,21 +44,238 @@ impl ArgumentStructure {
         if self.exact {
             self.static_prefix == value
         } else {
-            value.starts_with(&self.static_prefix)
+            // Cheap literal rejection before the bounded pattern proof. Only
+            // compare ASCII here; unknown Unicode collation must stay widened.
+            if self.static_prefix.is_ascii() && self.static_suffix.is_ascii() && value.is_ascii() {
+                let equal = |a: &str, b: &str| {
+                    if self.pathname_generation {
+                        a.eq_ignore_ascii_case(b)
+                    } else {
+                        a == b
+                    }
+                };
+                if value
+                    .get(..self.static_prefix.len())
+                    .is_none_or(|head| !equal(head, &self.static_prefix))
+                    || value
+                        .len()
+                        .checked_sub(self.static_suffix.len())
+                        .and_then(|i| value.get(i..))
+                        .is_none_or(|tail| !equal(tail, &self.static_suffix))
+                {
+                    return false;
+                }
+            }
+            self.spelling.as_ref().map_or_else(
+                || value.starts_with(&self.static_prefix) && value.ends_with(&self.static_suffix),
+                |parts| spelling_matches(parts, value, false, self.pathname_generation),
+            )
         }
     }
 
     pub fn may_start_with(&self, prefix: &str) -> bool {
-        self.static_prefix.starts_with(prefix)
-            || (!self.exact && prefix.starts_with(&self.static_prefix))
+        if self.exact {
+            self.static_prefix.starts_with(prefix)
+        } else {
+            if self.static_prefix.is_ascii() && prefix.is_ascii() {
+                let count = self.static_prefix.len().min(prefix.len());
+                let a = &self.static_prefix[..count];
+                let b = &prefix[..count];
+                if if self.pathname_generation {
+                    !a.eq_ignore_ascii_case(b)
+                } else {
+                    a != b
+                } {
+                    return false;
+                }
+            }
+            self.spelling.as_ref().map_or_else(
+                || {
+                    self.static_prefix.starts_with(prefix)
+                        || prefix.starts_with(&self.static_prefix)
+                },
+                |parts| spelling_matches(parts, prefix, true, self.pathname_generation),
+            )
+        }
     }
 
     fn unknown() -> Self {
         Self {
             fields: ArgumentFieldCount::Unknown,
             static_prefix: String::new(),
+            static_suffix: String::new(),
             exact: false,
+            spelling: None,
+            pathname_generation: false,
         }
+    }
+
+    /// Intersection with `-[letters]+`, used only by explicitly declared
+    /// unmodeled short-option grammars. Three bounded automaton states; no
+    /// enumeration of filenames, option combinations, or shell values.
+    pub(crate) fn may_be_short_cluster(&self, letters: &str) -> bool {
+        if self.fields == ArgumentFieldCount::Unknown || letters.is_empty() {
+            return true;
+        }
+        if self.exact {
+            return self
+                .static_prefix
+                .strip_prefix('-')
+                .is_some_and(|tail| !tail.is_empty() && tail.chars().all(|c| letters.contains(c)));
+        }
+        let fallback;
+        let parts = if let Some(parts) = &self.spelling {
+            parts
+        } else {
+            fallback = self
+                .static_prefix
+                .chars()
+                .map(SpellingPart::Literal)
+                .chain([SpellingPart::Any])
+                .chain(self.static_suffix.chars().map(SpellingPart::Literal))
+                .collect();
+            &fallback
+        };
+        if parts.len() > 256 {
+            return true;
+        }
+        let mut states = [true, false, false]; // empty, '-', at least one flag
+        for part in parts {
+            let matches = |c: char| match part {
+                SpellingPart::Literal(v) => {
+                    *v == c
+                        || self.pathname_generation && (v.eq_ignore_ascii_case(&c) || !v.is_ascii())
+                }
+                SpellingPart::Any | SpellingPart::One => true,
+                SpellingPart::Class(body) => class_may_match(body, c),
+                SpellingPart::CharacterRun(chars) => chars.contains(c),
+            };
+            let dash = matches('-');
+            let flag = letters.chars().any(matches);
+            let mut next = [false; 3];
+            if matches!(part, SpellingPart::Any | SpellingPart::CharacterRun(_)) {
+                // Epsilon plus closure of a single character transition.
+                next = states;
+                next[1] |= next[0] && dash;
+                next[2] |= (next[1] || next[2]) && flag;
+            } else {
+                next[1] = states[0] && dash;
+                next[2] = (states[1] || states[2]) && flag;
+            }
+            states = next;
+        }
+        states[2]
+    }
+}
+
+// Match only short declared control words, never filenames. A bounded DP,
+// not regex compilation or pathname enumeration. Unsupported/large proofs
+// return "possible". ASCII case folding covers Bash's nocaseglob option.
+fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case: bool) -> bool {
+    if parts.len() > 256 || value.len() > 256 {
+        return true;
+    }
+    let chars: Vec<_> = value.chars().collect();
+    let mut reachable = vec![false; chars.len() + 1];
+    reachable[0] = true;
+    let equals = |a: char, b: char| {
+        a == b || (fold_case && (a.eq_ignore_ascii_case(&b) || !a.is_ascii() || !b.is_ascii()))
+    };
+    for part in parts {
+        if prefix && reachable[chars.len()] {
+            return true;
+        }
+        let mut next = vec![false; chars.len() + 1];
+        match part {
+            SpellingPart::Any => {
+                let mut seen = false;
+                for index in 0..=chars.len() {
+                    seen |= reachable[index];
+                    next[index] = seen;
+                }
+            }
+            SpellingPart::CharacterRun(allowed) => {
+                next[0] = reachable[0];
+                for index in 0..chars.len() {
+                    next[index + 1] =
+                        reachable[index + 1] || (next[index] && allowed.contains(chars[index]));
+                }
+            }
+            _ => {
+                for index in 0..chars.len() {
+                    next[index + 1] |= reachable[index]
+                        && match part {
+                            SpellingPart::Literal(ch) => equals(*ch, chars[index]),
+                            SpellingPart::One => true,
+                            SpellingPart::Class(body) => class_may_match(body, chars[index]),
+                            SpellingPart::Any | SpellingPart::CharacterRun(_) => unreachable!(),
+                        };
+                    if reachable[index]
+                        && let SpellingPart::Class(body) = part
+                    {
+                        // noglob or an unmatched glob preserves the literal
+                        // bracket spelling, which is longer than one field char.
+                        let retained: Vec<_> = format!("[{body}]").chars().collect();
+                        let available = chars.len() - index;
+                        let compared = available.min(retained.len());
+                        if retained[..compared]
+                            .iter()
+                            .zip(&chars[index..index + compared])
+                            .all(|(a, b)| equals(*a, *b))
+                        {
+                            if prefix && available < retained.len() {
+                                return true;
+                            }
+                            if available >= retained.len() {
+                                next[index + retained.len()] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        reachable = next;
+    }
+    reachable[chars.len()]
+}
+
+fn class_may_match(body: &str, value: char) -> bool {
+    // Locale-dependent classes/collation and non-ASCII ranges have no local
+    // proof. Widen them; never infer safety from a guessed locale.
+    if !body.is_ascii() || !value.is_ascii() || body.contains(['[', ':', '=', '\\']) {
+        return true;
+    }
+    let (negated, body) = body
+        .strip_prefix(['!', '^'])
+        .map_or((false, body), |b| (true, b));
+    let bytes = body.as_bytes();
+    let mut index = 0;
+    let mut matched = false;
+    while index < bytes.len() {
+        if index + 2 < bytes.len() && bytes[index + 1] == b'-' {
+            // Range order and membership can depend on LC_COLLATE.
+            return true;
+        }
+        matched |= bytes[index].eq_ignore_ascii_case(&(value as u8));
+        index += 1;
+    }
+    // nocaseglob only enlarges positive classes. For negated classes, retain
+    // both case-sensitive and case-insensitive interpretations.
+    if negated {
+        !body.contains(value)
+    } else {
+        matched
+    }
+}
+
+fn exact_word(value: String) -> ArgumentStructure {
+    ArgumentStructure {
+        fields: ArgumentFieldCount::ExactlyOne,
+        static_suffix: String::new(), // exact_value already owns the full word
+        static_prefix: value,
+        exact: true,
+        spelling: None,
+        pathname_generation: false,
     }
 }
 
@@ -86,10 +316,74 @@ fn incomplete_word(prefix: String, whole_quoted_scalar: bool) -> ArgumentStructu
         ArgumentStructure {
             fields: ArgumentFieldCount::ExactlyOne,
             static_prefix: prefix,
+            static_suffix: String::new(),
             exact: false,
+            spelling: None,
+            pathname_generation: false,
         }
     } else {
         ArgumentStructure::unknown()
+    }
+}
+
+fn literal(
+    ch: char,
+    exact: bool,
+    prefix: &mut String,
+    suffix: &mut String,
+    parts: &mut Vec<SpellingPart>,
+) {
+    if exact {
+        prefix.push(ch);
+    }
+    suffix.push(ch);
+    parts.push(SpellingPart::Literal(ch));
+}
+
+fn pid_field_bounds(arg: &ProjectedArg) -> Option<ArgumentStructure> {
+    if arg.quoted {
+        return None;
+    }
+    let (prefix, suffix) = arg.text.split_once("$$")?;
+    // Only literal affixes and the shell's numeric PID. No value evaluation,
+    // assumed IFS, inherited prefix, glob, brace, or concatenated substitution.
+    if prefix.chars().chain(suffix.chars()).any(|c| {
+        matches!(
+            c,
+            '$' | '`' | '*' | '?' | '[' | '{' | '}' | '~' | '\'' | '"' | '\\'
+        )
+    }) {
+        return None;
+    }
+    // Every split field uses this alphabet, but only the first may retain the
+    // prefix. This deliberately does NOT claim that /tmp/stamp$$ is one path.
+    let allowed = format!("0123456789{prefix}{suffix}");
+    Some(ArgumentStructure {
+        fields: ArgumentFieldCount::ZeroOrMore,
+        static_prefix: String::new(),
+        static_suffix: String::new(),
+        exact: false,
+        spelling: Some(vec![SpellingPart::CharacterRun(allowed)]),
+        pathname_generation: false,
+    })
+}
+
+fn opaque_glob(arg: &ProjectedArg, prefix: String) -> ArgumentStructure {
+    // Unsupported bracket/collation syntax does not erase a proven prefix
+    // of a pure pathname word. But expansions/quotes outside that bracket
+    // could split fields, so those retain the fully unknown fallback.
+    if arg.text.contains(['$', '`', '"', '\'', '\\', '~']) {
+        return ArgumentStructure::unknown();
+    }
+    let mut spelling: Vec<_> = prefix.chars().map(SpellingPart::Literal).collect();
+    spelling.push(SpellingPart::Any);
+    ArgumentStructure {
+        fields: ArgumentFieldCount::ZeroOrMore,
+        static_prefix: prefix,
+        static_suffix: String::new(),
+        exact: false,
+        spelling: Some(spelling),
+        pathname_generation: true,
     }
 }
 
@@ -97,11 +391,30 @@ fn incomplete_word(prefix: String, whole_quoted_scalar: bool) -> ArgumentStructu
 /// command, or looking up files. Unsupported constructs return Unknown.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
     if arg.runtime_data || matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string") {
+        return exact_word(arg.text.clone());
+    }
+    if arg.node_kind == "process_substitution" {
+        // The shell supplies one generated FIFO/fd pathname. Its contents and
+        // producer effects are still modeled by the existing substitution path.
         return ArgumentStructure {
             fields: ArgumentFieldCount::ExactlyOne,
-            static_prefix: arg.text.clone(),
-            exact: true,
+            // FIFO locations are platform/environment dependent. Do not
+            // assume /dev/fd or a particular TMPDIR for path classification.
+            static_prefix: String::new(),
+            static_suffix: String::new(),
+            exact: false,
+            // A generated fd/FIFO pathname has a directory separator, even
+            // when a platform uses a relative TMPDIR. Do not infer its root.
+            spelling: Some(vec![
+                SpellingPart::Any,
+                SpellingPart::Literal('/'),
+                SpellingPart::Any,
+            ]),
+            pathname_generation: false,
         };
+    }
+    if let Some(bounds) = pid_field_bounds(arg) {
+        return bounds;
     }
     if !matches!(
         arg.node_kind.as_str(),
@@ -122,15 +435,14 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
         && let Some(value) =
             caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
     {
-        return ArgumentStructure {
-            fields: ArgumentFieldCount::ExactlyOne,
-            static_prefix: value,
-            exact: true,
-        };
+        return exact_word(value);
     }
     let mut quote = initial;
     let mut prefix = String::new();
+    let mut suffix = String::new();
+    let mut spelling = Vec::new();
     let mut exact = true;
+    let mut pathname_generation = false;
     let mut fields = ArgumentFieldCount::ExactlyOne;
     let mut chars = arg.text.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -138,21 +450,22 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
             Quote::Single => {
                 if ch == '\'' {
                     quote = Quote::None;
-                } else if exact {
-                    prefix.push(ch);
+                } else {
+                    literal(ch, exact, &mut prefix, &mut suffix, &mut spelling);
                 }
             }
             Quote::Double => match ch {
                 '"' if initial == Quote::None => quote = Quote::None,
                 '"' => return ArgumentStructure::unknown(),
                 '\\' => match chars.next() {
-                    Some(escaped @ ('$' | '`' | '"' | '\\')) if exact => prefix.push(escaped),
-                    Some('$' | '`' | '"' | '\\' | '\n') => {}
-                    Some(other) if exact => {
-                        prefix.push('\\');
-                        prefix.push(other);
+                    Some(escaped @ ('$' | '`' | '"' | '\\')) => {
+                        literal(escaped, exact, &mut prefix, &mut suffix, &mut spelling)
                     }
-                    Some(_) => {}
+                    Some('\n') => {}
+                    Some(other) => {
+                        literal('\\', exact, &mut prefix, &mut suffix, &mut spelling);
+                        literal(other, exact, &mut prefix, &mut suffix, &mut spelling);
+                    }
                     None => return ArgumentStructure::unknown(),
                 },
                 '$' => {
@@ -165,9 +478,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                                 '_' | '$' | '?' | '!' | '#' | '-' | '@' | '*' | '{' | '('
                             )
                     }) {
-                        if exact {
-                            prefix.push('$');
-                        }
+                        literal('$', exact, &mut prefix, &mut suffix, &mut spelling);
                         continue;
                     }
                     if chars
@@ -190,29 +501,32 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                         }
                     }
                     exact = false;
+                    suffix.clear();
+                    spelling.push(SpellingPart::Any);
                 }
                 '`' => return incomplete_word(prefix, whole_quoted_scalar),
-                other if exact => prefix.push(other),
-                _ => {}
+                other => literal(other, exact, &mut prefix, &mut suffix, &mut spelling),
             },
             Quote::None => match ch {
+                '@' | '!' | '+' | '*' | '?' if chars.peek() == Some(&'(') => {
+                    // Only unquoted extglob syntax is an expansion; a quoted
+                    // regex in a concatenated word is ordinary argv data.
+                    return ArgumentStructure::unknown();
+                }
                 '\'' => quote = Quote::Single,
                 '"' => quote = Quote::Double,
                 '\\' => match chars.next() {
                     Some('\n') => {}
-                    Some(other) if exact => prefix.push(other),
-                    Some(_) => {}
+                    Some(other) => literal(other, exact, &mut prefix, &mut suffix, &mut spelling),
                     None => return ArgumentStructure::unknown(),
                 },
                 // No prefix survives an unquoted expansion: later split fields
                 // do not inherit it. ./ $value must not become a safety proof.
-                '$' | '`' => return ArgumentStructure::unknown(),
-                '~' if prefix.is_empty() && exact => return ArgumentStructure::unknown(),
+                '$' | '`' | '~' => return ArgumentStructure::unknown(),
                 '{' if chars.peek() == Some(&'}') => {
                     chars.next();
-                    if exact {
-                        prefix.push_str("{}");
-                    }
+                    literal('{', exact, &mut prefix, &mut suffix, &mut spelling);
+                    literal('}', exact, &mut prefix, &mut suffix, &mut spelling);
                 }
                 '{' => {
                     // Simple lists/ranges preserve the prefix of EVERY
@@ -226,7 +540,9 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                             closed = true;
                             break;
                         }
-                        if !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-' | ',') {
+                        if !c.is_ascii_alphanumeric()
+                            && !matches!(c, '.' | '_' | '-' | ',' | '*' | '?' | '[' | ']' | '/')
+                        {
                             return ArgumentStructure::unknown();
                         }
                         body.push(c);
@@ -237,27 +553,78 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                     if body.contains(',') || body.contains("..") {
                         fields = ArgumentFieldCount::ZeroOrMore;
                         exact = false;
-                    } else if exact {
-                        prefix.push('{');
-                        prefix.push_str(&body);
-                        prefix.push('}');
+                        suffix.clear();
+                        spelling.push(SpellingPart::Any);
+                        pathname_generation |= body.contains(['*', '?', '[']);
+                    } else {
+                        // A non-expanding brace spelling can still contain a
+                        // glob. Leave those unusual combinations unresolved.
+                        if body.contains(['*', '?', '[']) {
+                            return ArgumentStructure::unknown();
+                        }
+                        for c in format!("{{{body}}}").chars() {
+                            literal(c, exact, &mut prefix, &mut suffix, &mut spelling);
+                        }
                     }
                 }
-                '*' | '?' | '[' => {
+                '*' | '?' => {
                     fields = ArgumentFieldCount::ZeroOrMore;
                     exact = false;
+                    pathname_generation = true;
+                    suffix.clear();
+                    spelling.push(if ch == '*' {
+                        SpellingPart::Any
+                    } else {
+                        SpellingPart::One
+                    });
                 }
-                other if exact => prefix.push(other),
-                _ => {}
+                '[' => {
+                    // [] and unmatched [ are literals. Bash requires a
+                    // nonempty, closed bracket expression (a first ] is data).
+                    let mut lookahead = chars.clone();
+                    let mut body = String::new();
+                    let mut closed = false;
+                    while let Some(c) = lookahead.next() {
+                        if c == ']' && !body.is_empty() && body != "!" && body != "^" {
+                            closed = true;
+                            break;
+                        }
+                        if matches!(c, '$' | '`' | '\\' | '\'' | '"' | '[') {
+                            // POSIX classes and quoting need a wider proof.
+                            return opaque_glob(arg, prefix);
+                        }
+                        body.push(c);
+                    }
+                    if closed {
+                        chars = lookahead;
+                        fields = ArgumentFieldCount::ZeroOrMore;
+                        exact = false;
+                        pathname_generation = true;
+                        suffix.clear();
+                        // An unmatched pattern is retained literally when
+                        // nullglob is off. The glob atom also has to include
+                        // that spelling when checking equality (below).
+                        spelling.push(SpellingPart::Class(body));
+                    } else {
+                        literal('[', exact, &mut prefix, &mut suffix, &mut spelling);
+                    }
+                }
+                other => literal(other, exact, &mut prefix, &mut suffix, &mut spelling),
             },
         }
     }
     if quote != initial {
         return ArgumentStructure::unknown();
     }
+    if exact {
+        return exact_word(prefix);
+    }
     ArgumentStructure {
         fields,
         static_prefix: prefix,
+        static_suffix: suffix,
         exact,
+        spelling: Some(spelling),
+        pathname_generation,
     }
 }

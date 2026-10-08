@@ -2991,6 +2991,13 @@ fn expanded_static_xargs_children(
             max_nested_parse_depth.saturating_sub(entry.depth),
         )
     };
+    // A domain proof is useful even when none of the concrete input bytes are
+    // known. Never reinterpret it as literal shell text or an exact argv list.
+    let input_domain = (!evidence.complete
+        && !has_applied_modifier(&resolved.bound, "arg_file")
+        && matches!(config.item_mode, XargsItemMode::NullSeparated))
+    .then(|| xargs_stdin_path_domain(registry, session, request, entry, max_nested_parse_depth))
+    .flatten();
     // Partial fragments have no guaranteed offset: unknown bytes may precede
     // them, join their quoting, or shift every positional argument. Keep them
     // as advisory evidence, never as a proven argv prefix.
@@ -3072,12 +3079,18 @@ fn expanded_static_xargs_children(
                 }
                 replaced_any = true;
                 if unresolved {
+                    let exact_placeholder = argument.text == replace_token;
                     argument.text.clear();
                     argument.runtime_data = false;
                     argument.implicit_input_source =
                         Some(caushell_types::ImplicitInputSource::StdinData);
-                    argument.runtime_argument_domain =
-                        Some(caushell_types::RuntimeArgumentDomain::Unbounded);
+                    argument.runtime_argument_domain = Some(if exact_placeholder {
+                        input_domain
+                            .clone()
+                            .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded)
+                    } else {
+                        caushell_types::RuntimeArgumentDomain::Unbounded
+                    });
                 } else {
                     let Some(XargsItem::Known(item)) = item else {
                         continue;
@@ -3088,20 +3101,31 @@ fn expanded_static_xargs_children(
             }
             if !replaced_any && !unresolved {
                 if let Some(XargsItem::Known(item)) = item {
-                    append_xargs_data_argument(&mut child_candidate, item.clone(), None, next_byte);
+                    append_xargs_data_argument(
+                        &mut child_candidate,
+                        item.clone(),
+                        None,
+                        None,
+                        next_byte,
+                    );
                 }
                 next_byte = next_byte.saturating_add(1);
             }
         } else {
             for item in group {
                 match item {
-                    XargsItem::Known(item) => {
-                        append_xargs_data_argument(&mut child_candidate, item, None, next_byte)
-                    }
+                    XargsItem::Known(item) => append_xargs_data_argument(
+                        &mut child_candidate,
+                        item,
+                        None,
+                        None,
+                        next_byte,
+                    ),
                     XargsItem::UnknownTail => append_xargs_data_argument(
                         &mut child_candidate,
                         String::new(),
                         Some(caushell_types::ImplicitInputSource::StdinData),
+                        input_domain.as_ref(),
                         next_byte,
                     ),
                 }
@@ -3151,6 +3175,73 @@ fn expanded_static_xargs_children(
 enum XargsItem {
     Known(String),
     UnknownTail,
+}
+
+fn xargs_stdin_path_domain(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    max_depth: u8,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    use crate::support::{
+        VariableBindingReplay, scope_has_prior_directory_transition, stdin_path_records,
+    };
+    let scope = &entry.static_payload_scope;
+    if scope.stdin_is_parent_output
+        || scope_has_prior_directory_transition(&scope.parsed_scope, scope.command_index)
+    {
+        return None;
+    }
+    let inherited = entry.inherited_scope.dispatch_working_directory.as_ref();
+    let cwds = inherited.map(EffectiveCwd::known_cwds).unwrap_or_default();
+    if inherited.is_some_and(|c| c.has_unknown() || cwds.len() != 1) {
+        return None;
+    }
+    let cwd = cwds
+        .first()
+        .copied()
+        .unwrap_or(request.shell_state_before.cwd());
+    let replay = runtime_binding_replay(registry, request, &scope.scope_base_bindings);
+    let records = stdin_path_records(
+        &scope.parsed_scope,
+        scope.command_index,
+        cwd,
+        request.home.as_deref(),
+        usize::from(max_depth.saturating_sub(entry.depth)).min(64),
+        |index| {
+            let command = scope.parsed_scope.commands.get(index)?;
+            let mut aliases = alias_bindings(session.summary(), request);
+            for earlier in scope.parsed_scope.commands.iter().take(index) {
+                apply_alias_command(&mut aliases, earlier, request.sequence_no);
+            }
+            let bindings = replay.apply_before(
+                scope.scope_base_bindings.clone(),
+                &scope.parsed_scope,
+                command.span.start_byte,
+                request.sequence_no,
+            );
+            let name = caushell_profile::materialize_command_name(
+                command.command_name.as_deref()?,
+                &bindings,
+            )?;
+            // This lookup must not pretend a shell function or alias is the
+            // registry tool. Their ordinary expansion is audited separately.
+            if aliases.contains_key(&name) || bindings.function_binding(&name).is_some() {
+                return None;
+            }
+            match resolve_invocation_artifact_with_bindings(
+                registry,
+                command,
+                runtime_context_for_parsed_command(&scope.parsed_scope, index, command),
+                &bindings,
+            ) {
+                ResolveInvocationArtifactResult::Resolved(resolved) => Some(resolved),
+                _ => None,
+            }
+        },
+    )?;
+    (records.separator == caushell_profile::StreamRecordSeparator::Nul).then_some(records.domain)
 }
 
 fn static_arg_file_evidence_for_xargs_scope(
@@ -3246,13 +3337,18 @@ fn append_xargs_data_argument(
     candidate: &mut caushell_profile::DispatchCommandCandidate,
     text: String,
     source: Option<caushell_types::ImplicitInputSource>,
+    domain: Option<&caushell_types::RuntimeArgumentDomain>,
     byte: usize,
 ) {
     candidate.argv.push(caushell_profile::DispatchArgument {
         slot: caushell_profile::SlotName::new("wrapped_args"),
         text,
         implicit_input_source: source,
-        runtime_argument_domain: source.map(|_| caushell_types::RuntimeArgumentDomain::Unbounded),
+        runtime_argument_domain: source.map(|_| {
+            domain
+                .cloned()
+                .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded)
+        }),
         runtime_data: source.is_none(),
         quoted: true,
         node_kind: "xargs_input_item".to_string(),
@@ -3612,7 +3708,9 @@ fn xargs_static_expansion_config(
                     item_mode = XargsItemMode::Delimited { delimiter: raw };
                 }
             }
-            "replace_token" if matches!(item_mode, XargsItemMode::WhitespaceSeparated) => {
+            "replace_token" | "replace_token_optional"
+                if matches!(item_mode, XargsItemMode::WhitespaceSeparated) =>
+            {
                 item_mode = XargsItemMode::NewlineSeparated;
             }
             _ => {}
@@ -3635,7 +3733,7 @@ fn xargs_dispatch_mode(bound: &caushell_profile::BoundInvocation) -> XargsDispat
 
     for modifier in &bound.applied_modifiers {
         match modifier.as_str() {
-            "replace_token" => {
+            "replace_token" | "replace_token_optional" => {
                 let token = bound_argument_texts_for_slot(bound, "replace_token")
                     .first()
                     .copied()
@@ -3654,7 +3752,7 @@ fn xargs_dispatch_mode(bound: &caushell_profile::BoundInvocation) -> XargsDispat
                     mode = XargsDispatchMode::MaxArgs { max_args: raw };
                 }
             }
-            "max_lines" => {
+            "max_lines" | "max_lines_optional" => {
                 let max_lines = bound_argument_texts_for_slot(bound, "max_lines")
                     .first()
                     .copied()
@@ -4437,6 +4535,13 @@ fn project_nested_payload_evidence_inner(
                 unresolved_execution_payload_subtype,
             ))
         }
+        NestedPayloadResolution::RequiresImplicitInput { source } => {
+            Some(Evidence::nested_payload_unresolved(
+                context,
+                NestedPayloadUnresolvedReasonEvidence::RequiresImplicitInput { source: *source },
+                unresolved_execution_payload_subtype,
+            ))
+        }
         NestedPayloadResolution::UnsupportedLanguage => Some(Evidence::nested_payload_unresolved(
             context,
             NestedPayloadUnresolvedReasonEvidence::UnsupportedLanguage,
@@ -4845,6 +4950,7 @@ fn nested_resolution_kind_string(resolution: &NestedPayloadResolution) -> String
         NestedPayloadResolution::Parsed { .. } => "parsed",
         NestedPayloadResolution::TruncatedByDepthBudget { .. } => "truncated_by_depth_budget",
         NestedPayloadResolution::RequiresRuntimeInput { .. } => "requires_runtime_input",
+        NestedPayloadResolution::RequiresImplicitInput { .. } => "requires_implicit_input",
         NestedPayloadResolution::UnsupportedLanguage => "unsupported_language",
         NestedPayloadResolution::ParseFailed { .. } => "parse_failed",
         NestedPayloadResolution::UnresolvedMaterialization { .. } => "unresolved_materialization",
@@ -4865,6 +4971,7 @@ fn nested_resolution_detail(resolution: &NestedPayloadResolution) -> Option<Stri
             "max_depth={max_depth};next_candidate_count={next_candidate_count}",
         )),
         NestedPayloadResolution::RequiresRuntimeInput { .. } => None,
+        NestedPayloadResolution::RequiresImplicitInput { source } => Some(format!("{source:?}")),
         NestedPayloadResolution::UnsupportedLanguage => None,
         NestedPayloadResolution::ParseFailed { shell_kind, error } => {
             Some(format!("shell_kind={shell_kind:?};error={error}"))
@@ -4882,6 +4989,7 @@ fn nested_resolution_runtime_input_source(
         NestedPayloadResolution::RequiresRuntimeInput { source } => Some(*source),
         NestedPayloadResolution::Parsed { .. }
         | NestedPayloadResolution::TruncatedByDepthBudget { .. }
+        | NestedPayloadResolution::RequiresImplicitInput { .. }
         | NestedPayloadResolution::UnsupportedLanguage
         | NestedPayloadResolution::ParseFailed { .. }
         | NestedPayloadResolution::UnresolvedMaterialization { .. } => None,
@@ -4922,10 +5030,11 @@ fn unresolved_reason_evidence(
             value: value.clone(),
         },
         ValueMaterialization::RequiresRuntimeInput { source, .. } => {
-            NestedPayloadUnresolvedReasonEvidence::RequiresRuntimeInput {
-                source: source
-                    .to_runtime_input_source()
-                    .expect("nested/runtime input resolution should not use inherited environment"),
+            NestedPayloadUnresolvedReasonEvidence::RequiresRuntimeInput { source: *source }
+        }
+        ValueMaterialization::RequiresImplicitInput { source } => {
+            NestedPayloadUnresolvedReasonEvidence::RequiresImplicitInput {
+                source: source.to_caushell_types_implicit_input_source(),
             }
         }
     }
@@ -4986,6 +5095,7 @@ fn classify_argument_fragment_payload(
         | ValueMaterialization::MissingBinding { .. }
         | ValueMaterialization::UnsupportedDynamicBinding { .. }
         | ValueMaterialization::UnsupportedDynamicText { .. }
+        | ValueMaterialization::RequiresImplicitInput { .. }
         | ValueMaterialization::UnsafeUnquotedScalar { .. } => {
             UnresolvedExecutionPayloadSubtype::DynamicInlinePayload
         }
@@ -5000,10 +5110,21 @@ fn classify_argument_fragment_payload(
 }
 
 fn classify_implicit_input_payload(
-    _record: &NestedPayloadRecord,
+    record: &NestedPayloadRecord,
     _parsed_request: Option<&caushell_parse::ParsedCommandArtifact>,
 ) -> UnresolvedExecutionPayloadSubtype {
-    UnresolvedExecutionPayloadSubtype::RuntimeInputPayload
+    let caushell_profile::RecursivePayloadInput::ImplicitInput { source, .. } =
+        &record.candidate.candidate.input
+    else {
+        return UnresolvedExecutionPayloadSubtype::UnknownPayloadShape;
+    };
+    if source.to_runtime_input_source().is_some() {
+        UnresolvedExecutionPayloadSubtype::RuntimeInputPayload
+    } else if record.candidate.candidate.source == caushell_profile::PayloadSource::InlineString {
+        UnresolvedExecutionPayloadSubtype::DynamicInlinePayload
+    } else {
+        UnresolvedExecutionPayloadSubtype::UnknownPayloadShape
+    }
 }
 
 fn collect_nested_payload_records(
@@ -5293,16 +5414,9 @@ fn collect_nested_payload_records(
                                         next_candidate_count: expandable_child_count,
                                     }
                                 }
-                                ValueMaterialization::RequiresRuntimeInput { source, .. } => {
-                                    NestedPayloadResolution::RequiresRuntimeInput {
-                                        source: source.to_runtime_input_source().expect(
-                                            "nested/runtime input resolution should not use inherited environment",
-                                        ),
-                                    }
-                                }
-                                _ => NestedPayloadResolution::UnresolvedMaterialization {
-                                    materialization: child_materialized.resolution.clone(),
-                                },
+                                _ => NestedPayloadResolution::from_unresolved_materialization(
+                                    child_materialized.resolution.clone(),
+                                ),
                             };
 
                             nested_records.push(NestedPayloadRecord {
@@ -5320,21 +5434,6 @@ fn collect_nested_payload_records(
 
                 nested_records.push(record);
             }
-            ValueMaterialization::RequiresRuntimeInput { source, .. } => {
-                nested_records.push(NestedPayloadRecord {
-                    record_id,
-                    parent_ref: entry.parent_ref,
-                    root_command_index: entry.root_command_index,
-                    depth: entry.depth,
-                    bindings: entry.bindings,
-                    candidate: materialized.clone(),
-                    resolution: NestedPayloadResolution::RequiresRuntimeInput {
-                        source: source.to_runtime_input_source().expect(
-                            "nested/runtime input resolution should not use inherited environment",
-                        ),
-                    },
-                });
-            }
             _ => {
                 nested_records.push(NestedPayloadRecord {
                     record_id,
@@ -5343,9 +5442,9 @@ fn collect_nested_payload_records(
                     depth: entry.depth,
                     bindings: entry.bindings,
                     candidate: materialized.clone(),
-                    resolution: NestedPayloadResolution::UnresolvedMaterialization {
-                        materialization: materialized.resolution,
-                    },
+                    resolution: NestedPayloadResolution::from_unresolved_materialization(
+                        materialized.resolution,
+                    ),
                 });
             }
         }

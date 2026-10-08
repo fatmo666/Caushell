@@ -20,6 +20,12 @@ pub struct ScopedOptions {
     /// Sorted non-option argv indices inside a permuted scope. None keeps the
     /// leading-prefix representation and avoids allocating for old profiles.
     pub positionals: Option<Vec<usize>>,
+    /// Original argv sources that may ALSO be positionals after bounded field
+    /// expansion. Bind them conservatively even if a filter owns them too.
+    pub additional_positionals: Vec<usize>,
+    /// A bounded expansion may leave no explicit roots. Preserve configured
+    /// positional defaults alongside the union of possible explicit targets.
+    pub retains_positional_default: bool,
     /// An unknown option means its arity (and hence the boundary) is unknown.
     pub error: Option<String>,
 }
@@ -138,6 +144,8 @@ pub(crate) fn scan_leading_options(
         flags: Vec::new(),
         terminator: None,
         positionals: permuted.then(Vec::new),
+        additional_positionals: Vec::new(),
+        retains_positional_default: false,
         error: None,
     };
     let declarations = match declarations(modifiers, forms, matching) {

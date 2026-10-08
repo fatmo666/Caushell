@@ -1,3 +1,4 @@
+mod argument_ownership;
 mod argument_regions;
 mod argument_structure;
 mod bind;
@@ -58,6 +59,7 @@ pub use projection::{
     InvocationRuntimeContext, ProjectedArg, ProjectedArgKind, ProjectedInvocation,
     project_invocation,
 };
+pub use raw::RawArgumentControlVocabulary;
 pub use raw::{
     RawArgumentFileRule, RawBindingSpec, RawCardinality, RawCatastrophicEffectMetadata,
     RawCatastrophicSemanticClass, RawCommandIdentity, RawCommandProfile,
@@ -80,6 +82,7 @@ pub use raw::{
 };
 pub use raw::{RawArgumentRegion, RawArgumentRegionTerminator};
 pub use raw::{RawPayloadFormat, RawPayloadInputSource, RawPayloadProjection};
+pub use raw::{RawStdoutRecordContract, RawStdoutRecordProjection, RawStreamRecordSeparator};
 pub use raw::{
     RawStructuredProjection, RawStructuredProjectionBranch, RawStructuredProjectionMatcher,
     RawStructuredProjectionTarget,
@@ -100,6 +103,7 @@ pub use resolve::{
     resolve_invocation_with_summary,
 };
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
+pub use types::ArgumentControlVocabulary;
 pub use types::PathAccessKind;
 pub use types::{
     ArgumentBindingSource, ArgumentFileRule, ArgumentRegion, ArgumentRegionTerminator, BindingSpec,
@@ -126,6 +130,7 @@ pub use types::{
     ValueProjection,
 };
 pub use types::{ModuleEntrypoint, PayloadFormat, PayloadInputSource, PayloadProjection};
+pub use types::{StdoutRecordContract, StdoutRecordProjection, StreamRecordSeparator};
 pub use types::{
     StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher,
     StructuredProjectionTarget,

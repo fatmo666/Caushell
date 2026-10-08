@@ -938,7 +938,7 @@ pub(crate) fn static_literal_stdout_payloads_for_command(
     }
 }
 
-fn scope_has_prior_directory_transition(
+pub(crate) fn scope_has_prior_directory_transition(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
 ) -> bool {

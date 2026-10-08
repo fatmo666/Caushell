@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: xargs
@@ -94,7 +96,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-I"
-        - "--replace"
     parameters:
       - name: replace_token
         semantic:
@@ -102,6 +103,16 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
+        cardinality: required_one
+
+  - id: replace_token_optional
+    matcher: {kind: any_flag, flags: ["-i", "--replace"]}
+    parameters:
+      - name: replace_token
+        semantic: {kind: plain_value}
+        binding:
+          kind: following_matched_flag
+          operand_mode: optional_inline_or_short_attached
         cardinality: optional_one
 
   - id: max_args
@@ -124,7 +135,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-L"
-        - "-l"
         - "--max-lines"
     parameters:
       - name: max_lines
@@ -133,6 +143,16 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
+        cardinality: required_one
+
+  - id: max_lines_optional
+    matcher: {kind: any_flag, flags: ["-l"]}
+    parameters:
+      - name: max_lines
+        semantic: {kind: plain_value}
+        binding:
+          kind: following_matched_flag
+          operand_mode: optional_inline_or_short_attached
         cardinality: optional_one
 
   - id: delimiter
@@ -176,7 +196,7 @@ modifiers:
           kind: plain_value
         binding:
           kind: following_matched_flag
-          operand_mode: inline_or_short_attached
+          operand_mode: optional_inline_or_short_attached
         cardinality: optional_one
 
   - id: arg_file
@@ -209,6 +229,28 @@ modifiers:
       flags:
         - "-r"
         - "--no-run-if-empty"
+
+  - id: verbose
+    matcher: {kind: any_flag, flags: ["-t", "--verbose"]}
+
+  - id: exit_on_size
+    matcher: {kind: any_flag, flags: ["-x", "--exit"]}
+
+  - id: max_processes
+    matcher: {kind: any_flag, flags: ["-P", "--max-procs"]}
+    parameters:
+      - name: max_processes
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+  - id: max_chars
+    matcher: {kind: any_flag, flags: ["-s", "--max-chars"]}
+    parameters:
+      - name: max_chars
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
 
 subcommands: null
 extensions:

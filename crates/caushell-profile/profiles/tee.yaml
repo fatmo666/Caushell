@@ -57,6 +57,8 @@ forms:
       stdin_mode: data_required
       stdout_mode: data
       stderr_mode: opaque
+    stdout_records:
+      projection: {kind: stdin}
     effects:
       - kind: write_path
         path_access: content_open

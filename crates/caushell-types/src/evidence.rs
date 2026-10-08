@@ -149,6 +149,12 @@ impl Evidence {
                 context.depth,
                 runtime_input_source_name(*source)
             ),
+            NestedPayloadUnresolvedReasonEvidence::RequiresImplicitInput { source } => format!(
+                "nested payload record {} at depth {} requires unknown implicit input from {} before it can be parsed",
+                context.record_id,
+                context.depth,
+                implicit_input_source_name(*source)
+            ),
             NestedPayloadUnresolvedReasonEvidence::UnsupportedLanguage => format!(
                 "nested payload record {} at depth {} uses unsupported payload language {:?}",
                 context.record_id, context.depth, context.language
@@ -270,6 +276,13 @@ impl Evidence {
                 sink.sequence_no.0,
                 sink.risk_subtypes,
                 runtime_input_source_name(*source)
+            ),
+            TaintedExecutionUnresolvedReasonEvidence::RequiresImplicitInput { source } => format!(
+                "execution sink {} at sequence {} with subtypes {:?} has unresolved payload origin because it requires unknown implicit input from {}",
+                sink.command,
+                sink.sequence_no.0,
+                sink.risk_subtypes,
+                implicit_input_source_name(*source)
             ),
             TaintedExecutionUnresolvedReasonEvidence::MissingBinding { variable_name } => format!(
                 "execution sink {} at sequence {} with subtypes {:?} has unresolved payload origin because variable {} is missing",
@@ -718,6 +731,9 @@ pub enum NestedPayloadUnresolvedReasonEvidence {
     RequiresRuntimeInput {
         source: RuntimeInputSource,
     },
+    RequiresImplicitInput {
+        source: ImplicitInputSource,
+    },
     UnsupportedLanguage,
     ParseFailed {
         shell_kind: ShellKind,
@@ -745,6 +761,9 @@ pub enum TaintedExecutionUnresolvedReasonEvidence {
     RequiresRuntimeInput {
         source: RuntimeInputSource,
     },
+    RequiresImplicitInput {
+        source: ImplicitInputSource,
+    },
     MissingBinding {
         variable_name: String,
     },
@@ -768,6 +787,16 @@ fn shell_kind_name(shell_kind: ShellKind) -> &'static str {
         ShellKind::Zsh => "zsh",
         ShellKind::Fish => "fish",
         ShellKind::Powershell => "powershell",
+    }
+}
+
+fn implicit_input_source_name(source: ImplicitInputSource) -> &'static str {
+    match source {
+        ImplicitInputSource::StdinPayload => "stdin_payload",
+        ImplicitInputSource::StdinData => "stdin_data",
+        ImplicitInputSource::InteractiveSession => "interactive_session",
+        ImplicitInputSource::DispatchOutput => "dispatch_output",
+        ImplicitInputSource::InheritedEnvironment => "inherited_environment",
     }
 }
 

@@ -36,6 +36,9 @@ fn exact_literals_preserve_shell_quoting_and_placeholder_values() {
         ("'-delete'", "-delete"),
         ("'a b'", "a b"),
         ("'./'\"literal\"", "./literal"),
+        ("[]", "[]"),
+        ("name[", "name["),
+        ("'s/.*('\"x)/\"", "s/.*(x)/"),
     ] {
         let facts = shape(word);
         assert_eq!(
@@ -44,6 +47,221 @@ fn exact_literals_preserve_shell_quoting_and_placeholder_values() {
             "{word}: {facts:?}"
         );
         assert_eq!(facts.exact_value(), Some(value), "{word}: {facts:?}");
+    }
+}
+
+#[test]
+fn glob_and_scalar_spelling_bounds_include_suffixes_and_literal_fallbacks() {
+    let glob = shape("report*.log");
+    assert_eq!(glob.static_suffix, ".log");
+    assert!(glob.may_equal("report-x.LOG")); // nocaseglob may be enabled
+    assert!(glob.may_equal("report*.log")); // noglob / unmatched glob
+    assert!(!glob.may_equal("-delete") && !glob.may_start_with("-"));
+    assert!(!shape("*.log").may_equal("-delete"));
+    assert!(shape("*.log").may_start_with("-")); // undeclared options still possible
+    assert!(shape("*DELETE").may_equal("-delete"));
+    let class = shape("[ab]*");
+    assert!(!class.may_start_with("-"));
+    assert!(class.may_equal("[ab]*") && class.may_start_with("[ab]"));
+    assert!(shape("[!a]*").may_start_with("-"));
+    assert!(shape("[a-z]*").may_start_with("-")); // unknown collation
+    let posix = shape("file[[:digit:]]");
+    assert_eq!(posix.fields, ArgumentFieldCount::ZeroOrMore);
+    assert!(!posix.may_start_with("-") && posix.may_equal("file123"));
+    assert_eq!(
+        shape("file[[:digit:]]$value").fields,
+        ArgumentFieldCount::Unknown
+    );
+    let scalar = shape(r#""$HOME/""#);
+    assert_eq!(scalar.fields, ArgumentFieldCount::ExactlyOne);
+    assert_eq!(scalar.static_suffix, "/");
+    assert!(!scalar.may_equal("-delete") && scalar.may_equal("/home/user/"));
+    assert!(scalar.may_start_with("-")); // a suffix is NOT a prefix guarantee
+    let brace = shape("/path/folder{?,[1-4]?,50}");
+    assert_eq!(brace.fields, ArgumentFieldCount::ZeroOrMore);
+    assert!(!brace.may_start_with("-") && !brace.may_equal(";"));
+}
+
+#[test]
+fn standalone_process_substitution_is_one_unknown_path_not_its_shell_body() {
+    for word in ["<(cat stamp)", ">(cat)"] {
+        let facts = shape(word);
+        assert_eq!(facts.fields, ArgumentFieldCount::ExactlyOne);
+        assert!(!facts.exact);
+        assert!(!facts.may_equal(";") && !facts.may_equal("{}"));
+    }
+    assert!(!find("find . -newer <(cat stamp) -print").operation_semantics_unresolved);
+}
+
+fn slot_values<'a>(bound: &'a BoundInvocation, name: &str) -> Vec<&'a str> {
+    bound
+        .bound_parameters
+        .iter()
+        .filter(|p| p.name.as_str() == name)
+        .flat_map(|p| &p.values)
+        .map(|v| match v {
+            caushell_profile::BoundValue::Argument { text, .. } => text.as_str(),
+            _ => panic!("{v:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn bounded_operand_width_checks_zero_one_many_and_respects_positional_order() {
+    for command in [
+        "find . -name report*.log -print",
+        "find . -name [ab]* -type f -print",
+        "find . -name report*.log -name other*.log -print",
+    ] {
+        let bound = find(command);
+        assert!(
+            !bound.operation_semantics_unresolved,
+            "{command}: {bound:?}"
+        );
+        assert_eq!(slot_values(&bound, "search_roots"), vec!["."], "{bound:?}");
+        assert!(bound.effects.iter().any(|e| e.kind == EffectKind::ReadPath));
+    }
+    let bound = find("find /outside -name report*.log -delete");
+    assert!(bound.operation_semantics_unresolved); // zero fields can swallow -delete
+    assert!(
+        bound
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::DeletePath)
+    );
+}
+
+#[test]
+fn shifted_controls_and_mutation_operands_never_lose_structural_approval() {
+    for command in [
+        "find /outside -name *.zip -printf '-delete'",
+        "find /outside -name report*.zip -printf '-delete'",
+        "find . -fprint ./output* /outside/new-target",
+        "find . -name -d* -print",
+        "find . -name * -print",
+    ] {
+        let bound = find(command);
+        assert!(bound.operation_semantics_unresolved, "{command}: {bound:?}");
+    }
+}
+
+#[test]
+fn declared_control_vocabulary_bounds_globs_without_guessing_unknown_options() {
+    for command in [
+        "find . -name *.py -print",
+        "find -name *.xml",
+        "find -name met* -print",
+        "find . -name *.py -type f -exec md5sum {} '+'",
+    ] {
+        let bound = find(command);
+        assert!(
+            !bound.operation_semantics_unresolved,
+            "{command}: {bound:?}"
+        );
+    }
+    let mut profile = load_command_profile_from_str(include_str!("../profiles/find.yaml")).unwrap();
+    profile.argument_control_vocabulary = None;
+    let parsed = parse_command("find . -name *.py -print", ShellKind::Bash).unwrap();
+    let projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let selection = select_invocation(&profile, &projection).unwrap();
+    assert!(bind_invocation(&profile, &projection, &selection).operation_semantics_unresolved);
+    for command in [
+        r#"find "$HOME/" -name myfile.txt -print"#,
+        "find *.py -print",
+        "find *.. -delete",
+        "find . -name * -print",
+        "find . -name *DELETE -print",
+        "find . -name *ok -print",
+        "find . -name *files0-from -print",
+        "find . -name *newer* -print",
+        "find . -name *sX -print", // valid BSD option clusters are not guessed
+    ] {
+        assert!(find(command).operation_semantics_unresolved, "{command}");
+    }
+}
+
+#[test]
+fn finite_control_vocabulary_is_command_independent_and_validated() {
+    let yaml = include_str!("../profiles/find.yaml")
+        .replace("canonical_name: find", "canonical_name: probe");
+    assert!(!bound_with(&yaml, "probe . -name *.py -print").operation_semantics_unresolved);
+    assert!(bound_with(&yaml, "probe . -name *ok -print").operation_semantics_unresolved);
+    assert!(
+        load_command_profile_from_str(&yaml.replace(
+            "unmodeled_short_clusters: [\"EHLPXdsx\"]",
+            "unmodeled_short_clusters: [\"-s\"]"
+        ))
+        .is_err()
+    );
+    assert!(
+        load_command_profile_from_str(&yaml.replace(
+            "unmodeled_words: [\"-ok\"",
+            "unmodeled_words: [\"bad control\""
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn bounded_ownership_retains_defaults_children_and_effectful_target_coverage() {
+    let bound = find("find -name met* -print");
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert!(slot_values(&bound, "search_roots").is_empty());
+    assert!(bound.effects.iter().any(|e| matches!(&e.target,
+        caushell_profile::EffectTarget::ConfiguredPath(p)
+        if p.default_value.as_deref() == Some("."))));
+    let yaml = include_str!("../profiles/find.yaml");
+    let start = yaml.find("  positional_boundary_words:").unwrap();
+    let end = start + yaml[start..].find('\n').unwrap();
+    let open = format!(
+        "{}  positional_boundary_words: []{}",
+        &yaml[..start],
+        &yaml[end..]
+    );
+    let bound = bound_with(&open, "find -name met* -print");
+    assert!(!bound.operation_semantics_unresolved);
+    assert!(slot_values(&bound, "search_roots").contains(&"met*"));
+    assert!(bound.effects.iter().any(|e| matches!(&e.target,
+        caushell_profile::EffectTarget::ConfiguredPath(p)
+        if p.sources.is_empty() && p.default_value.as_deref() == Some("."))));
+    let bound = find("find . -name *.py -type f -exec rm {} ';'");
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert_eq!(bound.argument_regions.len(), 1);
+    assert_eq!(slot_values(&bound, "exec_command"), vec!["rm"]);
+    assert_eq!(slot_values(&bound, "exec_args"), vec!["{}"]);
+    assert_eq!(slot_values(&bound, "search_roots"), vec!["."]);
+    assert!(
+        bound
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::DispatchCommand)
+    );
+    for command in ["find /outside -name *.py -printf '-delete'"] {
+        assert!(find(command).operation_semantics_unresolved, "{command}");
+    }
+}
+
+#[test]
+fn dead_expression_branches_do_not_hide_live_writes_or_exposed_controls() {
+    let bound = find("find . -name *.py -fprint /outside/target");
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert_eq!(slot_values(&bound, "output_paths"), vec!["/outside/target"]);
+    assert!(
+        bound
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::WritePath)
+    );
+    let bound = find("find . -name *.py -exec echo '-delete' ';'");
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert_eq!(slot_values(&bound, "exec_args"), vec!["-delete"]);
+    for command in [
+        "find . -name *.py -exec -delete ';'",
+        "find . -name *.py -fprint '-delete'",
+        "find . -name *.py -printf '-ok'",
+        "find . -name *.py -type '-delete'",
+    ] {
+        assert!(find(command).operation_semantics_unresolved, "{command}");
     }
 }
 
@@ -239,7 +457,6 @@ fn unknown_option_width_and_possible_root_controls_remain_unresolved() {
         r#"find "$dir" -print"#,
         "find ./$dir -print",
         "find * -print",
-        "find . -name *.py -print",
         r#"find . -name "$@" -print"#,
         r#"find . -newer "$@" -delete"#,
         r#"find . -name "./${array[@]}" -print"#,
@@ -306,6 +523,99 @@ fn structural_query_uses_declared_grammar_not_find_or_path_exceptions() {
         r#"arbitrary-region-tool --worker echo "END$arg" END"#,
     );
     assert!(bound.operation_semantics_unresolved, "{bound:?}");
+}
+
+#[test]
+fn bounded_width_coverage_is_declarative_and_preserves_cross_modifier_targets() {
+    let yaml = format!(
+        "{GENERIC}\n  - id: pattern\n    matcher: {{kind: any_flag, flags: [--pattern]}}\n    parameters:\n      - {{name: filters, semantic: {{kind: plain_value}}, binding: {{kind: following_matched_flag, operand_mode: next_arg}}, cardinality: required_many}}\n"
+    );
+    let command = "arbitrary-region-tool root --pattern item* --action";
+    let bound = bound_with(&yaml, command);
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert_eq!(slot_values(&bound, "roots"), ["root", "item*"]);
+    // A different modifier consuming that slot makes its role effectful,
+    // even when the modifier owning --pattern itself has no effects.
+    let yaml = yaml.replace("matcher: {kind: any_flag, flags: [--action]}",
+        "matcher: {kind: any_flag, flags: [--action]}\n    effects: [{kind: write_path, target: {kind: slot, name: filters}}]");
+    assert!(bound_with(&yaml, command).operation_semantics_unresolved);
+    let command = "arbitrary-region-tool root --pattern item* --worker echo END";
+    assert!(bound_with(&yaml, command).operation_semantics_unresolved);
+}
+
+#[test]
+fn configured_targets_require_same_form_companions_and_active_effect_metadata() {
+    let yaml = format!(
+        "{GENERIC}\n  - id: pattern\n    matcher: {{kind: any_flag, flags: [--pattern]}}\n    parameters:\n      - {{name: filters, semantic: {{kind: plain_value}}, binding: {{kind: following_matched_flag, operand_mode: next_arg}}, cardinality: required_many}}\n"
+    ).replace("name: roots, semantic: {kind: plain_value}",
+        "name: roots, semantic: {kind: path, role: read, purpose: generic_operand}")
+    .replace("modifiers:\n", "    effects:\n      - {kind: read_path, target: {kind: slot, name: roots}}\n      - kind: read_path\n        target: {kind: configured_path, sources: [{slot: roots, projection: {kind: identity}}], default_value: '.', purpose: generic_operand}\nmodifiers:\n");
+    let command = "arbitrary-region-tool root --pattern item* --action";
+    assert!(!bound_with(&yaml, command).operation_semantics_unresolved);
+    // Different access metadata does not prove target coverage, even when
+    // the two effects' kinds and slots agree.
+    let different = yaml.replace(
+        "{kind: read_path, target: {kind: slot, name: roots}}",
+        "{kind: read_path, path_access: content_open, target: {kind: slot, name: roots}}",
+    );
+    assert!(bound_with(&different, command).operation_semantics_unresolved);
+    let inactive = format!(
+        "{yaml}\n  - id: other\n    matcher: {{kind: any_flag, flags: [--other]}}\n    effects:\n      - kind: write_path\n        target: {{kind: configured_path, sources: [{{slot: roots, projection: {{kind: identity}}}}], purpose: generic_operand}}\n"
+    );
+    assert!(!bound_with(&inactive, command).operation_semantics_unresolved);
+    assert!(bound_with(&inactive, &format!("{command} --other")).operation_semantics_unresolved);
+    // An effect from a different form cannot cover the configured target.
+    let other_form = yaml.replace("      - {kind: read_path, target: {kind: slot, name: roots}}\n", "")
+        .replace("modifiers:\n", "  - id: companion_elsewhere\n    selector: {kind: has_flag, flag: --worker}\n    parameters:\n      - {name: roots, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}\n    effects: [{kind: read_path, target: {kind: slot, name: roots}}]\nmodifiers:\n");
+    assert!(bound_with(&other_form, command).operation_semantics_unresolved);
+}
+
+#[test]
+fn bounded_pid_fields_do_not_inherit_prefixes_or_ignore_ifs() {
+    let facts = shape("/tmp/stamp$$");
+    assert_eq!(facts.fields, ArgumentFieldCount::ZeroOrMore);
+    assert!(facts.static_prefix.is_empty());
+    assert!(facts.may_equal("/tmp/stamp123") && facts.may_equal("23"));
+    assert!(!facts.may_start_with("-") && !facts.may_equal(";"));
+    assert!(!find("find /usr -newer /tmp/stamp$$").operation_semantics_unresolved);
+    assert!(find("find . -newer /tmp/stamp$$ -delete").operation_semantics_unresolved);
+    assert_eq!(shape("/tmp/$unknown").fields, ArgumentFieldCount::Unknown);
+    assert!(shape("'$$'").exact);
+}
+
+#[test]
+fn second_operand_arity_is_covered_but_effectful_second_targets_are_not_guessed() {
+    let yaml = format!(
+        "{GENERIC}\n  - id: pair\n    matcher: {{kind: any_flag, flags: [--pair]}}\n    parameters:\n      - {{name: second, semantic: {{kind: plain_value}}, binding: {{kind: following_matched_flag, operand_mode: second_arg}}, cardinality: required_many}}\n"
+    );
+    let command = "arbitrary-region-tool root --pair item* value --action";
+    let bound = bound_with(&yaml, command);
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert_eq!(slot_values(&bound, "roots"), ["root", "item*", "value"]);
+    let effectful = yaml.replace(
+        "name: second, semantic: {kind: plain_value}",
+        "name: second, semantic: {kind: path, role: write}",
+    );
+    assert!(bound_with(&effectful, command).operation_semantics_unresolved);
+    let excluded = yaml.replace("name: roots, semantic: {kind: plain_value}",
+        "name: roots, value_constraints: [{kind: exclude_literal, value: value}], semantic: {kind: plain_value}");
+    assert!(bound_with(&excluded, command).operation_semantics_unresolved);
+}
+
+#[test]
+fn form_shape_selection_and_modifier_constraints_cannot_be_changed_by_width_proofs() {
+    let yaml = format!(
+        "{GENERIC}\n  - id: pattern\n    matcher: {{kind: any_flag, flags: [--pattern]}}\n    parameters:\n      - {{name: filters, semantic: {{kind: plain_value}}, binding: {{kind: following_matched_flag, operand_mode: next_arg}}, cardinality: required_many}}\n"
+    );
+    let command = "arbitrary-region-tool root --pattern item* --action";
+    let by_shape = yaml.replace(
+        "- id: run",
+        "- id: run\n    selector: {kind: has_positional_at, index: 0}",
+    );
+    assert!(bound_with(&by_shape, command).operation_semantics_unresolved);
+    let constrained=yaml.replace("matcher: {kind: any_flag, flags: [--action]}",
+        "matcher: {kind: any_flag, flags: [--action]}\n    constraints: [{kind: requires_modifier, modifier: pattern}]");
+    assert!(bound_with(&constrained, command).operation_semantics_unresolved);
 }
 
 #[test]

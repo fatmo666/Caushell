@@ -37,6 +37,10 @@ impl SessionTransformPass for ExtractValueProvenancePass {
             &records,
             ctx.request().sequence_no,
         ));
+        mutations.extend(collect_implicit_argument_provenance_mutations(
+            &records,
+            ctx.request().sequence_no,
+        ));
         mutations.extend(collect_runtime_input_provenance_mutations(
             &records,
             ctx.request().sequence_no,
@@ -173,6 +177,12 @@ fn collect_variable_expansion_provenance_mutations(
             .zip(resolved.materialized_projection.arg_resolutions.iter())
             .enumerate()
         {
+            // Binding an implicit argument replaces its lexical value with
+            // BoundValue::ImplicitInput. Record it below through its semantic
+            // slot, rather than creating a value detached from that slot.
+            if arg.implicit_input_source.is_some() {
+                continue;
+            }
             let Some(expansion) = variable_expansion(summary, resolution, sequence_no) else {
                 if let Some(materialized_state) = materialized_value_state(resolution) {
                     let slot_name = slot_name_for_arg(&resolved.bound, &arg.span);
@@ -254,6 +264,49 @@ fn collect_variable_expansion_provenance_mutations(
         }
     }
 
+    mutations
+}
+
+fn collect_implicit_argument_provenance_mutations(
+    records: &[ExecutionResolveRecordRef<'_>],
+    sequence_no: CommandSequenceNo,
+) -> Vec<PendingMutation> {
+    let mut mutations = Vec::new();
+    for &record in records {
+        let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
+            continue;
+        };
+        for parameter in &resolved.bound.bound_parameters {
+            for (index, value) in parameter.values.iter().enumerate() {
+                let BoundValue::ImplicitInput { source, .. } = value else {
+                    continue;
+                };
+                let resolution = ValueMaterialization::requires_implicit_input(*source);
+                let Some(state) = materialized_value_state(&resolution) else {
+                    continue;
+                };
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: record.source_node_id().clone(),
+                    node_id: materialized_value_artifact_node_id(
+                        record.source_node_id(),
+                        &format!("implicit-slot-{}-{index}", parameter.name.as_str()),
+                    ),
+                    artifact: ProvenanceArtifact::MaterializedValue {
+                        source_kind: materialized_value_source_kind(&resolution),
+                        state,
+                        version: sequence_no.0,
+                    },
+                    relation: EdgeKind::Produces,
+                    semantics: ProvenanceEdgeSemantics::Produce {
+                        produce_kind: ProvenanceProduceKind::MaterializedValue,
+                        slot_name: Some(parameter.name.as_str().to_string()),
+                        normalized_command_name: Some(resolved.normalized_command_name.clone()),
+                        domain_label: None,
+                    },
+                });
+            }
+        }
+    }
     mutations
 }
 
@@ -345,24 +398,19 @@ fn variable_expansion<'a>(
             BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
                 summary.variable_binding(variable_name)?,
             )),
-            BindingOrigin::InheritedEnvironment => {
-                let runtime_input_source = source.to_runtime_input_source().expect(
-                    "materialized runtime input binding should not use inherited-environment implicit source",
-                );
-
-                Some(VariableExpansion::InheritedEnvironment {
-                    name: variable_name.clone(),
-                    state: ProvenanceVariableValueState::RuntimeInput {
-                        source: runtime_input_source,
-                        capture: capture.clone().unwrap_or(RuntimeInputCapture::NotCaptured),
-                    },
-                    version: sequence_no.0,
-                })
-            }
+            BindingOrigin::InheritedEnvironment => Some(VariableExpansion::InheritedEnvironment {
+                name: variable_name.clone(),
+                state: ProvenanceVariableValueState::RuntimeInput {
+                    source: *source,
+                    capture: capture.clone().unwrap_or(RuntimeInputCapture::NotCaptured),
+                },
+                version: sequence_no.0,
+            }),
         },
         ValueMaterialization::Static
         | ValueMaterialization::MissingBinding { .. }
         | ValueMaterialization::UnsupportedDynamicText { .. }
+        | ValueMaterialization::RequiresImplicitInput { .. }
         | ValueMaterialization::RequiresRuntimeInput { .. } => None,
     }
 }
@@ -592,10 +640,11 @@ fn materialized_value_state(
             value: value.clone(),
         }),
         ValueMaterialization::RequiresRuntimeInput { source, .. } => {
-            Some(ProvenanceMaterializedValueState::RequiresRuntimeInput {
-                source: source
-                    .to_runtime_input_source()
-                    .expect("implicit runtime input source must map to provenance runtime input"),
+            Some(ProvenanceMaterializedValueState::RequiresRuntimeInput { source: *source })
+        }
+        ValueMaterialization::RequiresImplicitInput { source } => {
+            Some(ProvenanceMaterializedValueState::RequiresImplicitInput {
+                source: source.to_caushell_types_implicit_input_source(),
             })
         }
     }
@@ -649,8 +698,11 @@ fn materialized_value_source_kind(resolution: &ValueMaterialization) -> String {
             (Some(variable_name), Some(BindingOrigin::InheritedEnvironment)) => {
                 format!("inherited_environment:{variable_name}")
             }
-            _ => format!("runtime_input:{}", source.as_str()),
+            _ => format!("runtime_input:{}", runtime_input_source_name(*source)),
         },
+        ValueMaterialization::RequiresImplicitInput { source } => {
+            format!("implicit_input:{}", source.as_str())
+        }
         ValueMaterialization::Static => "static".to_string(),
     }
 }
@@ -701,6 +753,7 @@ fn materialized_value_version(
             }
         },
         ValueMaterialization::MissingBinding { .. }
+        | ValueMaterialization::RequiresImplicitInput { .. }
         | ValueMaterialization::UnsupportedDynamicText { .. }
         | ValueMaterialization::Static => sequence_no.0,
     }

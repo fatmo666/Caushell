@@ -1417,6 +1417,7 @@ fn endpoint_url_basename(
                 | ValueMaterialization::UnsupportedDynamicText { .. }
                 | ValueMaterialization::UnsafeUnquotedScalar { .. }
                 | ValueMaterialization::RequiresRuntimeInput { .. }
+                | ValueMaterialization::RequiresImplicitInput { .. }
         )
     ) {
         return None;
@@ -1453,7 +1454,8 @@ fn endpoint_url_unresolved_reason(
             | ValueMaterialization::UnsupportedDynamicBinding { .. }
             | ValueMaterialization::UnsupportedDynamicText { .. }
             | ValueMaterialization::UnsafeUnquotedScalar { .. }
-            | ValueMaterialization::RequiresRuntimeInput { .. },
+            | ValueMaterialization::RequiresRuntimeInput { .. }
+            | ValueMaterialization::RequiresImplicitInput { .. },
         ) => DerivedPathUnresolvedReason::UnsupportedOperandShape,
         Some(
             ValueMaterialization::Static
@@ -1719,6 +1721,7 @@ fn resolve_path_resolution(
             PathResolution::UnsupportedDynamicText { text: text.clone() }
         }
         Some(ValueMaterialization::RequiresRuntimeInput { .. })
+        | Some(ValueMaterialization::RequiresImplicitInput { .. })
         | Some(ValueMaterialization::Static)
         | None => PathResolution::UnsupportedDynamicText {
             text: text.to_string(),

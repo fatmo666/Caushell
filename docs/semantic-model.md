@@ -855,6 +855,46 @@ Sources: [GNU tar external commands](https://www.gnu.org/software/tar/manual/htm
 
 ## Delimited child argv ownership
 
+### Positive stdout record contracts
+
+`stream_contract.stdout_mode: path_list` describes output type, not a guarantee
+that a consumer receives intact paths. A form can additionally declare:
+
+```yaml
+stdout_records:
+  projection:
+    kind: paths
+    roots_slot: search_roots
+    default_root: "."
+    separator: nul
+    escape_modifiers: [follow_symlinks]
+  required_modifiers: [nul_output]
+  excluded_modifiers: [line_output]
+```
+
+The slot must be a declared path parameter; modifier references and stream
+compatibility are checked when loading the Profile. Only a complete invocation
+with no residuals can supply this positive contract. Missing/unknown operands
+are not replaced with a default root. Defaults apply only to absent roots.
+Relative emitted path bounds remain relative until the consuming execution's
+effective cwd is known. They are not filesystem observations or captured bytes.
+
+`projection: {kind: stdin}` declares byte-preserving forwarding, as for `tee`;
+it is not implied by `transform_data` or a data-dependency edge. The shared
+bounded stream-record query follows effective pipeline stdin and these explicit
+contracts. Input overrides, unknown tools, rewritten output, stdout redirection,
+stderr merging and exhausted hop budgets stop the proof. Existing provenance
+and independent file effects are never removed by a record proof.
+
+The xargs adapter preserves a NUL path domain only when its item parsing is
+also NUL-delimited. Child argv remains typed runtime input, not fabricated
+literal filenames or shell source. Exact replacement operands retain the
+domain; composite replacements remain unknown until a sound path projection
+exists. Ordinary whitespace-split find output stays unknown, since a filename
+can contain whitespace/newlines and become different argv. The existing path
+extractor and mutation guards consume the resulting `PathSet`; no new risk
+Pass, dynamic probing or blanket xargs allow rule is added.
+
 Root Profiles can opt into exact, delimited argument regions:
 
 ```yaml
@@ -898,6 +938,45 @@ specific existing guards. A shell-level bare `;` does not terminate find argv:
 the delimiter must be passed as `\;` or `';'`. This is not a full find expression
 evaluator and does not add dynamic probing, an additional Pass or an action-map
 change.
+
+### Bounded shell expansions in an outer grammar
+
+An exact region grammar may additionally declare a complete control vocabulary:
+
+```yaml
+argument_control_vocabulary:
+  unmodeled_words: ["-ok", "-okdir", "-files0-from", "-fprintf"]
+  unmodeled_short_clusters: ["EHLPXdsx"]
+  positional_boundary_words: ["-name", "-iname", "-path"]
+```
+
+This is an explicit tool-syntax contract: controls are the existing modifier
+and region words plus these reserved, unmodeled words/clusters; other dash
+spellings in the closed expression are invalid, not abbreviations or new
+operations. Before the expression boundary, leading option prefixes remain
+unknown; an exact-word vocabulary does not prove attached option operands.
+Reserved controls
+still require approval when their argument ownership is unknown. It is not a
+risk allowlist. The declaration requires a validated exact root region grammar;
+profiles without it retain the existing unknown-option fallback. Boundary words
+must reference declared modifiers and state where new positional words become
+invalid; they do not change operand arity.
+
+Only variable-width operands invoke the bounded ownership proof (256 outer
+arguments, 128 states). It explores zero, one and multiple fields without
+enumerating filenames. Literal prefixes/suffixes, glob spelling, and short
+cluster alphabets can exclude controls. A branch may be discarded only when a
+declared grammar proves it invalid. Exposed controls, shifted effectful targets,
+uncertain child delimiters, constraints and unsupported forms retain residuals.
+Known effects are never removed, including output-file opens that can occur
+before a later parse error. Possible additional positional targets remain a
+union, with a separate configured default when no explicit root may remain.
+
+The find profile supplies GNU/BSD syntax facts; the proof contains no command
+names. Stable child regions are preserved rather than excluded wholesale.
+File enumeration, shell evaluation, new Harness facts, additional risk passes
+and action-map changes are not used. Tilde expansions and opaque substitutions
+retain their existing path/materialization contracts.
 
 ## Stream device paths and content opens
 

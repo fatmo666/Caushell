@@ -70,6 +70,7 @@ pub enum NormalizeError {
     InvalidStructuredProjection(String),
     InvalidArgumentFileRule(String),
     InvalidPayloadProjection(String),
+    InvalidStdoutRecords(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -129,6 +130,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         ));
     }
     let modifiers = normalize_modifiers(raw.modifiers)?;
+    validate_stdout_records(&forms, &modifiers)?;
     let option_matching = normalize_option_matching(raw.option_matching);
     let option_prefixes = match raw.option_prefixes {
         RawOptionPrefixPolicy::DashOnly => OptionPrefixPolicy::DashOnly,
@@ -167,6 +169,35 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         subcommands.is_some(),
         raw.opaque_on_unresolved,
     )?;
+    let argument_control_vocabulary =
+        raw.argument_control_vocabulary
+            .map(|v| crate::ArgumentControlVocabulary {
+                unmodeled_words: v.unmodeled_words,
+                unmodeled_short_clusters: v.unmodeled_short_clusters,
+                positional_boundary_words: v.positional_boundary_words,
+            });
+    if let Some(vocabulary) = &argument_control_vocabulary {
+        if argument_regions.is_empty()
+            || vocabulary
+                .unmodeled_words
+                .iter()
+                .any(|w| !w.starts_with('-') || w.len() < 2 || w.chars().any(char::is_whitespace))
+            || vocabulary
+                .unmodeled_short_clusters
+                .iter()
+                .any(|s| s.is_empty() || !s.bytes().all(|c| c.is_ascii_alphabetic()))
+            || vocabulary.positional_boundary_words.iter().any(|word| {
+                !modifiers
+                    .iter()
+                    .any(|m| m.matcher.flag_names().iter().any(|f| f.as_str() == word))
+            })
+        {
+            return Err(NormalizeError::InvalidArgumentRegion(
+                "argument_control_vocabulary requires argument_regions and nonempty dash controls"
+                    .into(),
+            ));
+        }
+    }
     if let Some(tree) = &subcommands {
         validate_subcommand_argument_regions(&tree.roots)?;
     }
@@ -190,6 +221,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         platform: normalize_platform(raw.platform),
         argument_files,
         argument_regions,
+        argument_control_vocabulary,
         selection_failure_effects,
         opaque_on_unresolved: raw.opaque_on_unresolved,
         forms,
@@ -665,8 +697,113 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .map(normalize_effect)
             .collect::<Result<Vec<_>, _>>()?,
         stream_contract: raw.stream_contract.map(normalize_stream_contract),
+        stdout_records: raw
+            .stdout_records
+            .map(normalize_stdout_records)
+            .transpose()?,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn normalize_stdout_records(
+    raw: crate::RawStdoutRecordContract,
+) -> Result<crate::StdoutRecordContract, NormalizeError> {
+    let projection = match raw.projection {
+        crate::RawStdoutRecordProjection::Paths {
+            roots_slot,
+            default_root,
+            separator,
+            escape_modifiers,
+        } => {
+            ensure_non_empty(&roots_slot, "stdout_records.roots_slot")?;
+            if default_root
+                .as_ref()
+                .is_some_and(|r| r.is_empty() || r.contains('\0'))
+            {
+                return Err(NormalizeError::InvalidStdoutRecords(
+                    "invalid default root".into(),
+                ));
+            }
+            crate::StdoutRecordProjection::Paths {
+                roots_slot: SlotName::new(roots_slot),
+                default_root,
+                separator: match separator {
+                    crate::RawStreamRecordSeparator::Nul => crate::StreamRecordSeparator::Nul,
+                },
+                escape_modifiers: escape_modifiers.into_iter().map(ModifierId::new).collect(),
+            }
+        }
+        crate::RawStdoutRecordProjection::Stdin => crate::StdoutRecordProjection::Stdin,
+    };
+    Ok(crate::StdoutRecordContract {
+        projection,
+        required_modifiers: raw
+            .required_modifiers
+            .into_iter()
+            .map(ModifierId::new)
+            .collect(),
+        excluded_modifiers: raw
+            .excluded_modifiers
+            .into_iter()
+            .map(ModifierId::new)
+            .collect(),
+    })
+}
+
+fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(), NormalizeError> {
+    for form in forms {
+        let Some(records) = &form.stdout_records else {
+            continue;
+        };
+        let Some(stream) = form.stream_contract else {
+            return Err(NormalizeError::InvalidStdoutRecords(
+                "requires stream_contract".into(),
+            ));
+        };
+        let mut ids = records
+            .required_modifiers
+            .iter()
+            .chain(&records.excluded_modifiers)
+            .collect::<Vec<_>>();
+        match &records.projection {
+            crate::StdoutRecordProjection::Paths {
+                roots_slot,
+                escape_modifiers,
+                ..
+            } => {
+                if stream.stdout_mode != StreamOutputMode::PathList
+                    || !form.parameters.iter().any(|p| {
+                        p.name == *roots_slot && matches!(p.semantic, SemanticType::Path(_))
+                    })
+                {
+                    return Err(NormalizeError::InvalidStdoutRecords(
+                        "paths requires path_list stdout and a declared path slot".into(),
+                    ));
+                }
+                ids.extend(escape_modifiers);
+            }
+            crate::StdoutRecordProjection::Stdin => {
+                if stream.stdin_mode == StreamInputMode::Ignored
+                    || stream.stdout_mode == StreamOutputMode::Opaque
+                {
+                    return Err(NormalizeError::InvalidStdoutRecords(
+                        "stdin forwarding requires data input/output".into(),
+                    ));
+                }
+            }
+        }
+        if ids.iter().any(|id| !modifiers.iter().any(|m| m.id == **id))
+            || records
+                .required_modifiers
+                .iter()
+                .any(|id| records.excluded_modifiers.contains(id))
+        {
+            return Err(NormalizeError::InvalidStdoutRecords(
+                "unknown or contradictory modifier".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, NormalizeError> {
@@ -903,7 +1040,8 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
             ))
     {
         return Err(NormalizeError::InvalidStructuredProjection(
-            "structured_projection requires an unprojected plain_value or script_file_ref source".into(),
+            "structured_projection requires an unprojected plain_value or script_file_ref source"
+                .into(),
         ));
     }
     if value_projection.is_some()
@@ -2373,6 +2511,7 @@ fn normalize_subcommand_node(
     ensure_non_empty(&raw.name, "subcommands.name")?;
     let forms = normalize_forms(raw.forms)?;
     let modifiers = normalize_modifiers(raw.modifiers)?;
+    validate_stdout_records(&forms, &modifiers)?;
     let option_scope = normalize_option_scope(raw.option_scope);
     let option_matching = raw
         .option_matching
@@ -2520,6 +2659,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2582,6 +2722,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_records: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -2694,6 +2835,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2748,6 +2890,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_records: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -2791,6 +2934,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2845,6 +2989,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_records: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -2888,6 +3033,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2928,6 +3074,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: Vec::new(),
                 stream_contract: None,
+                stdout_records: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: Vec::new(),
@@ -2948,6 +3095,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -3004,6 +3152,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_records: None,
                 extensions: BTreeMap::new(),
             }],
             ..Default::default()
@@ -3026,6 +3175,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             dsl_version: "wrong".to_string(),
@@ -3050,6 +3200,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -3084,6 +3235,7 @@ mod tests {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
+            argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -3137,6 +3289,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_records: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: Vec::new(),

@@ -84,7 +84,6 @@ fn root_controls_splitting_arrays_and_conditional_delimiters_keep_approval() {
     for command in [
         r#"find "$dir""#,
         "find ./$dir -print",
-        "find . -name *.py -print",
         r#"find . -name "$@" -print"#,
         r#"find . -newer "$@" -delete"#,
         r#"find . -name "./${array[@]}" -print"#,
@@ -169,4 +168,107 @@ fn quoted_regex_anchors_and_scalar_substitutions_do_not_change_owned_operand_wid
     }
     let result = ShellQueryCore::new().check(request(r#"find "./$(rm -rf /)" -print"#));
     assert_eq!(result.decision, Decision::Deny, "{result:?}");
+}
+
+#[test]
+fn bounded_filter_expansion_is_not_blanket_approval_or_a_hidden_mutation() {
+    for command in [
+        "find . -name report*.log -print",
+        "find . -name *.py -print",
+        "find -name *.zip -print",
+        "find . -name [ab]* -type f -print",
+        "find . -name [] -print",
+        "find . -newer <(cat stamp) -print",
+        "find /path/folder{?,[1-4]?,50} -print",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(result.decision, Decision::Allow, "{command}: {result:?}");
+    }
+    for command in [
+        r#"find "$HOME/" -name myfile.txt -print"#,
+        "find *.py -print",
+        "find *.. -delete",
+        "find /outside -name report*.log -delete",
+        "find /outside -name report*.zip -printf '-delete'",
+        "find /outside -name *.zip -printf '-delete'",
+        "find . -name report*.zip -fprint /outside/output",
+        "find . -fprint ./output* /outside/new-target",
+        "find . -name *DELETE -print",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::SelectionError
+                    || p.rule_id == RuleId::OutsideWorkspaceMutation),
+            "{result:?}"
+        );
+    }
+    let result = ShellQueryCore::new().check(request("find . -newer <(rm -rf /) -print"));
+    assert_eq!(result.decision, Decision::Deny, "{result:?}");
+}
+
+#[test]
+fn closed_expression_grammar_preserves_live_risk_and_does_not_run_globs() {
+    for command in [
+        "find . -name *.py -exec md5sum {} '+'",
+        "find . -name *.py -exec echo '-delete' ';'",
+        "find . -name *.py -fprint ./output",
+        "find ~/ -name *.py -print",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(result.decision, Decision::Allow, "{command}: {result:?}");
+    }
+    for command in [
+        "find . -name *.py -exec rm /outside/file ';'",
+        "find . -name *.py -fprint /outside/output",
+        "find . -fprint /outside/output -name *.py -printf '-delete'",
+        "find ~/ -name *.py -delete",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::OutsideWorkspaceMutation),
+            "{result:?}"
+        );
+    }
+    let result = ShellQueryCore::new().check(request("find . -name *.py -exec rm -rf / ';'"));
+    assert_eq!(result.decision, Decision::Deny, "{result:?}");
+    for command in [
+        "find . -name *DELETE -print",
+        "find . -name *ok -print",
+        "find . -name *sX -print",
+        "find . -name *.py -printf '-delete'",
+        "find . -name *.py -exec -delete ';'",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::SelectionError),
+            "{result:?}"
+        );
+    }
 }

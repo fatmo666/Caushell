@@ -1075,11 +1075,30 @@ pub enum ValueMaterialization {
         origin: BindingOrigin,
     },
     RequiresRuntimeInput {
-        source: ImplicitInputSource,
+        source: RuntimeInputSource,
         capture: Option<RuntimeInputCapture>,
         variable_name: Option<String>,
         origin: Option<BindingOrigin>,
     },
+    /// Unknown bytes supplied by a non-stream implicit source. These cannot
+    /// be represented as stdin or as a captured runtime-input binding.
+    RequiresImplicitInput {
+        source: ImplicitInputSource,
+    },
+}
+
+impl ValueMaterialization {
+    pub fn requires_implicit_input(source: ImplicitInputSource) -> Self {
+        match source.to_runtime_input_source() {
+            Some(source) => Self::RequiresRuntimeInput {
+                source,
+                capture: None,
+                variable_name: None,
+                origin: None,
+            },
+            None => Self::RequiresImplicitInput { source },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1206,12 +1225,7 @@ pub fn materialize_recursive_payload_candidate(
         RecursivePayloadInput::ImplicitInput { source, .. } => {
             MaterializedRecursivePayloadCandidate {
                 candidate: candidate.clone(),
-                resolution: ValueMaterialization::RequiresRuntimeInput {
-                    source: *source,
-                    capture: None,
-                    variable_name: None,
-                    origin: None,
-                },
+                resolution: ValueMaterialization::requires_implicit_input(*source),
                 fragment_resolutions: Vec::new(),
             }
         }
@@ -1313,6 +1327,7 @@ fn aggregate_recursive_payload_resolution(
         matches!(
             resolution,
             ValueMaterialization::RequiresRuntimeInput { .. }
+                | ValueMaterialization::RequiresImplicitInput { .. }
         )
     }) {
         return resolution.clone();
@@ -1345,6 +1360,14 @@ fn materialize_argument_fields(
     arg: &ProjectedArg,
     bindings: &SessionBindings,
 ) -> Vec<MaterializedText> {
+    if let Some(source) = arg.implicit_input_source {
+        return vec![MaterializedText {
+            text: arg.text.clone(),
+            resolution: ValueMaterialization::requires_implicit_input(
+                ImplicitInputSource::from_caushell_types_implicit_input_source(source),
+            ),
+        }];
+    }
     if arg.runtime_data {
         return vec![MaterializedText {
             text: arg.text.clone(),
@@ -1598,7 +1621,7 @@ pub(crate) fn materialize_argument_text(
                 return MaterializedText {
                     text: text.to_string(),
                     resolution: ValueMaterialization::RequiresRuntimeInput {
-                        source: runtime_input_source_to_implicit_input_source(*source),
+                        source: *source,
                         capture: Some(capture.clone()),
                         variable_name: Some(variable_name.to_string()),
                         origin: Some(binding.origin),
@@ -1682,7 +1705,7 @@ pub(crate) fn materialize_argument_text(
                 return MaterializedText {
                     text: text.to_string(),
                     resolution: ValueMaterialization::RequiresRuntimeInput {
-                        source: runtime_input_source_to_implicit_input_source(*source),
+                        source: *source,
                         capture: Some(capture.clone()),
                         variable_name: Some(position.to_string()),
                         origin: Some(BindingOrigin::SessionBinding),
@@ -1814,16 +1837,6 @@ fn contains_unescaped_dynamic_syntax(text: &str) -> bool {
     }
 
     false
-}
-
-fn runtime_input_source_to_implicit_input_source(
-    source: RuntimeInputSource,
-) -> ImplicitInputSource {
-    match source {
-        RuntimeInputSource::StdinPayload => ImplicitInputSource::StdinPayload,
-        RuntimeInputSource::StdinData => ImplicitInputSource::StdinData,
-        RuntimeInputSource::InteractiveSession => ImplicitInputSource::InteractiveSession,
-    }
 }
 
 fn is_safe_unquoted_scalar(value: &str) -> bool {
@@ -2616,7 +2629,7 @@ mod tests {
         assert_eq!(
             materialized.resolution,
             ValueMaterialization::RequiresRuntimeInput {
-                source: ImplicitInputSource::StdinPayload,
+                source: RuntimeInputSource::StdinPayload,
                 capture: None,
                 variable_name: None,
                 origin: None,
@@ -2660,7 +2673,7 @@ mod tests {
         assert_eq!(
             materialized.resolution,
             ValueMaterialization::RequiresRuntimeInput {
-                source: ImplicitInputSource::StdinData,
+                source: RuntimeInputSource::StdinData,
                 capture: Some(RuntimeInputCapture::Descriptor {
                     descriptor: "read USER_CMD".to_string(),
                 }),

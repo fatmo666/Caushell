@@ -1,5 +1,5 @@
 use caushell_parse::{ParseError, ParsedCommandArtifact, SourceSpan, parse_command};
-use caushell_types::ShellKind;
+use caushell_types::{RuntimeInputSource, ShellKind};
 
 use crate::{
     BoundArgumentMaterialization, BoundInvocation, BoundValue, ImplicitInputSource,
@@ -75,6 +75,11 @@ pub enum RecursivePayloadParseResult {
     Parsed(ParsedRecursivePayload),
     RequiresRuntimeInput {
         candidate: RecursivePayloadCandidate,
+        source: RuntimeInputSource,
+    },
+    RequiresImplicitInput {
+        candidate: RecursivePayloadCandidate,
+        source: ImplicitInputSource,
     },
     UnsupportedLanguage {
         candidate: RecursivePayloadCandidate,
@@ -238,9 +243,17 @@ pub fn parse_recursive_payload_candidate(
                 },
             }
         }
-        RecursivePayloadInput::ImplicitInput { .. } => {
-            RecursivePayloadParseResult::RequiresRuntimeInput {
-                candidate: candidate.clone(),
+        RecursivePayloadInput::ImplicitInput { source, .. } => {
+            if let Some(source) = source.to_runtime_input_source() {
+                RecursivePayloadParseResult::RequiresRuntimeInput {
+                    candidate: candidate.clone(),
+                    source,
+                }
+            } else {
+                RecursivePayloadParseResult::RequiresImplicitInput {
+                    candidate: candidate.clone(),
+                    source: *source,
+                }
             }
         }
     }
@@ -570,7 +583,7 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         match &results[0] {
-            RecursivePayloadParseResult::RequiresRuntimeInput { candidate } => {
+            RecursivePayloadParseResult::RequiresRuntimeInput { candidate, .. } => {
                 assert_eq!(candidate.language, PayloadLanguage::Bash);
                 assert_eq!(candidate.source, PayloadSource::Stdin);
                 assert_eq!(candidate.origin, RecursivePayloadOrigin::FormImplicitInput);
@@ -655,7 +668,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            RecursivePayloadParseResult::RequiresRuntimeInput { candidate } => {
+            RecursivePayloadParseResult::RequiresRuntimeInput { candidate, .. } => {
                 assert_eq!(candidate.language, PayloadLanguage::Python);
                 assert_eq!(candidate.source, PayloadSource::Stdin);
             }

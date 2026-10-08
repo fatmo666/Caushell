@@ -255,10 +255,11 @@ fn scoped_options(
     modifiers: &[Modifier],
     forms: &[Form],
     regions: &[crate::ArgumentRegion],
+    vocabulary: Option<&crate::ArgumentControlVocabulary>,
 ) -> Option<crate::ScopedOptions> {
     if !regions.is_empty() {
         return Some(crate::argument_regions::scan(
-            projection, scope, regions, modifiers, forms,
+            projection, scope, regions, modifiers, forms, vocabulary,
         ));
     }
     match policy {
@@ -359,6 +360,7 @@ pub fn select_invocation<'a>(
         &profile.modifiers,
         &profile.forms,
         &profile.argument_regions,
+        profile.argument_control_vocabulary.as_ref(),
     );
     ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
     let modifiers = if let Some(options) = &option_scope {
@@ -460,6 +462,7 @@ pub fn bind_invocation(
     )
     .with_subcommand_path(selection.subcommand_path.clone());
     bound.stream_contract = selection.form.stream_contract;
+    bound.stdout_records = selection.form.stdout_records.clone();
     bound.argument_regions = selection
         .option_scope
         .as_ref()
@@ -526,6 +529,44 @@ pub fn bind_invocation(
 
     if profile.opaque_on_unresolved {
         collect_unresolved_arguments(&state, selection, &mut residuals);
+    }
+    if selection
+        .option_scope
+        .as_ref()
+        .is_some_and(|o| o.retains_positional_default)
+    {
+        let positional_slots: BTreeSet<_> = selection
+            .form
+            .parameters
+            .iter()
+            .filter(|p| p.binding == BindingSpec::RemainingPositionals)
+            .map(|p| &p.name)
+            .collect();
+        let defaults: Vec<_> = bound
+            .effects
+            .iter()
+            .filter_map(|effect| {
+                let EffectTarget::ConfiguredPath(path) = &effect.target else {
+                    return None;
+                };
+                if path.default_value.is_none()
+                    || path.sources.is_empty()
+                    || !path
+                        .sources
+                        .iter()
+                        .all(|s| positional_slots.contains(&s.slot))
+                {
+                    return None;
+                }
+                let mut fallback = effect.clone();
+                let EffectTarget::ConfiguredPath(path) = &mut fallback.target else {
+                    unreachable!()
+                };
+                path.sources.clear();
+                Some(fallback)
+            })
+            .collect();
+        bound.effects.extend(defaults);
     }
     bound.residuals = residuals;
     bound.operation_semantics_unresolved =
@@ -683,6 +724,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 &profile.modifiers,
                 &profile.forms,
                 &profile.argument_regions,
+                profile.argument_control_vocabulary.as_ref(),
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -861,6 +903,7 @@ fn scan_subcommand_path<'p, 'a>(
         &profile.modifiers,
         &profile.forms,
         &profile.argument_regions,
+        profile.argument_control_vocabulary.as_ref(),
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -921,6 +964,7 @@ fn scan_subcommand_path<'p, 'a>(
             &node.modifiers,
             &node.forms,
             &[],
+            None,
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
         let node_modifiers = if let Some(options) = &node_options {
@@ -1979,6 +2023,7 @@ struct BindingState<'p, 'm> {
     option_flag_names: Option<Vec<(usize, FlagName)>>,
     option_boundary: Option<usize>,
     option_positionals: Option<Vec<usize>>,
+    additional_positionals: Vec<usize>,
     option_terminator: Option<usize>,
 }
 
@@ -1999,6 +2044,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             option_flag_names: None,
             option_boundary: None,
             option_positionals: None,
+            additional_positionals: Vec::new(),
             option_terminator: None,
         }
     }
@@ -2023,6 +2069,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             option_flag_names: None,
             option_boundary: None,
             option_positionals: None,
+            additional_positionals: Vec::new(),
             option_terminator: None,
         };
         state.set_modifier_context(modifiers);
@@ -2052,6 +2099,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
             .unwrap_or_default();
         self.option_boundary = options.map(|options| options.scope.end_index);
         self.option_positionals = options.and_then(|options| options.positionals.clone());
+        self.additional_positionals = options
+            .map(|o| o.additional_positionals.clone())
+            .unwrap_or_default();
         self.option_terminator = options.and_then(|options| options.terminator);
         self.option_flag_indices =
             options.map(|options| options.flags.iter().map(|(index, _)| *index).collect());
@@ -2766,6 +2816,29 @@ impl<'p, 'm> BindingState<'p, 'm> {
             value_constraints,
         ) {
             values.push(value);
+        }
+
+        // A bounded expansion may make a filter's original argv source a
+        // positional as well. Consumption is not exclusive in that proof:
+        // preserve the same source/span in both semantic roles.
+        for index in std::mem::take(&mut self.additional_positionals) {
+            if index < scope.start_index || index >= scope.end_index {
+                self.additional_positionals.push(index);
+                continue;
+            }
+            let arg = &self.projection.args[index];
+            self.consumed[index] = true;
+            if argument_satisfies_value_constraints(&arg.text, value_constraints) {
+                values.push(BoundValue::argument_with_node_kind(
+                    arg.text.clone(),
+                    arg.quoted,
+                    arg.node_kind.clone(),
+                    arg.span.clone(),
+                    ArgumentBindingSource::Positional {
+                        kind: PositionalBindingSource::RemainingPositionals,
+                    },
+                ));
+            }
         }
 
         values

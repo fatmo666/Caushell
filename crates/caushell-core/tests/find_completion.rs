@@ -241,7 +241,6 @@ fn unknown_output_and_unquoted_expansion_boundaries_still_require_approval() {
         "find . -fprint \"$OUTPUT\"",
         "find . -fprint0 \"$OUTPUT\"",
         "find . -fls \"$OUTPUT\"",
-        r"find . -name *.py -exec rm {} \;",
         r"find $ROOT -mtime -7 -exec rm {} \;",
         r"find . -mtime $AGE -exec rm {} \;",
     ] {
@@ -252,6 +251,21 @@ fn unknown_output_and_unquoted_expansion_boundaries_still_require_approval() {
             "{command}: {result:?}"
         );
     }
+    // The bounded pattern cannot become a control word. The child deletion
+    // keeps its workspace path domain; there is no blanket workspace-cleanup
+    // approval policy. An outside root must still reach the mutation guard.
+    assert_allow(r"find . -name *.py -exec rm {} \;");
+    let result =
+        ShellQueryCore::new().check(request(r"find /opt/shared -name *.py -exec rm {} \;"));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:?}");
+    assert!(
+        result
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::OutsideWorkspaceMutation),
+        "{result:?}"
+    );
 }
 
 #[test]

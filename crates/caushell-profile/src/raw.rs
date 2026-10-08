@@ -13,6 +13,7 @@ pub struct RawCommandProfile {
     pub platform: RawPlatformConstraints,
     pub argument_files: Vec<RawArgumentFileRule>,
     pub argument_regions: Vec<RawArgumentRegion>,
+    pub argument_control_vocabulary: Option<RawArgumentControlVocabulary>,
     pub selection_failure_effects: Vec<RawEffect>,
     pub opaque_on_unresolved: bool,
     pub forms: Vec<RawForm>,
@@ -46,6 +47,14 @@ pub struct RawArgumentRegion {
 pub struct RawArgumentRegionTerminator {
     pub value: String,
     pub preceding: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RawArgumentControlVocabulary {
+    pub unmodeled_words: Vec<String>,
+    pub unmodeled_short_clusters: Vec<String>,
+    pub positional_boundary_words: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -165,6 +174,7 @@ pub struct RawForm {
     pub implicit_inputs: Vec<RawImplicitInput>,
     pub effects: Vec<RawEffect>,
     pub stream_contract: Option<RawStreamContract>,
+    pub stdout_records: Option<RawStdoutRecordContract>,
     pub extensions: BTreeMap<String, JsonValue>,
 }
 
@@ -310,6 +320,36 @@ pub struct RawStreamContract {
     pub stderr_dependency: caushell_types::StreamDataDependency,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawStdoutRecordContract {
+    pub projection: RawStdoutRecordProjection,
+    #[serde(default)]
+    pub required_modifiers: Vec<String>,
+    #[serde(default)]
+    pub excluded_modifiers: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawStdoutRecordProjection {
+    Paths {
+        roots_slot: String,
+        #[serde(default)]
+        default_root: Option<String>,
+        separator: RawStreamRecordSeparator,
+        #[serde(default)]
+        escape_modifiers: Vec<String>,
+    },
+    Stdin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawStreamRecordSeparator {
+    Nul,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RawModifier {
@@ -402,8 +442,12 @@ pub struct RawStructuredProjectionBranch {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawStructuredProjectionMatcher {
-    Literal { value: String },
-    Prefix { value: String },
+    Literal {
+        value: String,
+    },
+    Prefix {
+        value: String,
+    },
     KeywordValue {
         keyword: String,
         #[serde(default)]

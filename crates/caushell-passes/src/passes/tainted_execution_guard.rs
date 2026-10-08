@@ -4,7 +4,7 @@ use caushell_graph::{EdgeKind, GraphNode, GraphRead, NodeId, NodeKind};
 use caushell_profile::{EffectKind, EffectTarget, ResolveInvocationArtifactResult};
 use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{
-    CommandSequenceNo, Evidence, ExecutionRiskSubtype, ProvenanceArtifact,
+    CommandSequenceNo, Evidence, ExecutionRiskSubtype, ImplicitInputSource, ProvenanceArtifact,
     ProvenanceMaterializedValueState, RuleId, RuntimeInputCapture, RuntimeInputSource,
     TaintSourceKindEvidence, TaintedExecutionSinkEvidence,
     TaintedExecutionUnresolvedReasonEvidence,
@@ -157,6 +157,7 @@ struct ExecutionUnitInfo {
 struct PayloadInputScope {
     slot_names: BTreeSet<String>,
     implicit_input_sources: BTreeSet<RuntimeInputSource>,
+    deferred_input_sources: BTreeSet<ImplicitInputSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +344,10 @@ fn payload_input_scope(effects: &[caushell_profile::Effect]) -> PayloadInputScop
             EffectTarget::ImplicitInput(source) => {
                 if let Some(runtime_input_source) = source.to_runtime_input_source() {
                     scope.implicit_input_sources.insert(runtime_input_source);
+                } else {
+                    scope
+                        .deferred_input_sources
+                        .insert(source.to_caushell_types_implicit_input_source());
                 }
             }
             EffectTarget::Dispatch(_) | EffectTarget::None | EffectTarget::NetworkListener(_) => {}
@@ -714,6 +719,11 @@ fn matches_payload_scope(
     match state {
         ProvenanceMaterializedValueState::RequiresRuntimeInput { source } => {
             scope.implicit_input_sources.contains(source)
+                || slot_name.is_some_and(|slot_name| scope.slot_names.contains(slot_name))
+        }
+        ProvenanceMaterializedValueState::RequiresImplicitInput { source } => {
+            scope.deferred_input_sources.contains(source)
+                || slot_name.is_some_and(|slot_name| scope.slot_names.contains(slot_name))
         }
         ProvenanceMaterializedValueState::RuntimeProduced { .. } => {
             slot_name.is_some_and(|slot_name| scope.slot_names.contains(slot_name))
@@ -763,12 +773,16 @@ fn unresolved_reason_for_materialized_state(
         ProvenanceMaterializedValueState::RequiresRuntimeInput { source } => {
             Some(TaintedExecutionUnresolvedReasonEvidence::RequiresRuntimeInput { source: *source })
         }
+        ProvenanceMaterializedValueState::RequiresImplicitInput { source } => Some(
+            TaintedExecutionUnresolvedReasonEvidence::RequiresImplicitInput { source: *source },
+        ),
     }
 }
 
 fn unresolved_reason_rank(reason: &TaintedExecutionUnresolvedReasonEvidence) -> u8 {
     match reason {
         TaintedExecutionUnresolvedReasonEvidence::RequiresRuntimeInput { .. } => 0,
+        TaintedExecutionUnresolvedReasonEvidence::RequiresImplicitInput { .. } => 0,
         TaintedExecutionUnresolvedReasonEvidence::MissingBinding { .. } => 1,
         TaintedExecutionUnresolvedReasonEvidence::UnsupportedDynamicBinding { .. } => 2,
         TaintedExecutionUnresolvedReasonEvidence::UnsupportedDynamicText { .. } => 3,
