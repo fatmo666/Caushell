@@ -34,13 +34,20 @@ argument_regions:
 forms:
   - id: exec_command
     selector:
-      kind: any
+      kind: all
       items:
-        - kind: has_flag
-          flag: "-exec"
-        - kind: has_flag
-          flag: "-execdir"
-    parameters:
+        - &has_dispatch
+          kind: any
+          items:
+            - {kind: has_flag, flag: "-exec"}
+            - {kind: has_flag, flag: "-execdir"}
+        - kind: not
+          item: &formatted_stdout
+            kind: any
+            items:
+              - {kind: has_flag, flag: "-printf"}
+              - {kind: has_flag, flag: "-ls"}
+    parameters: &dispatch_parameters
       - name: exec_command
         semantic:
           kind: command_ref
@@ -90,11 +97,18 @@ forms:
       stdin_mode: ignored
       stdout_mode: path_list
       stderr_mode: opaque
-    effects:
+    effects: &dispatch_effects
       - kind: read_path
         target:
           kind: slot
           name: search_roots
+      - &default_root_read
+        kind: read_path
+        target:
+          kind: configured_path
+          sources: [{slot: search_roots, projection: {kind: identity}}]
+          default_value: "."
+          purpose: generic_operand
       - kind: dispatch_command
         target:
           kind: dispatch
@@ -108,17 +122,19 @@ forms:
           argv:
             - execdir_args
 
+  - id: exec_formatted_output
+    selector: {kind: all, items: [*has_dispatch, *formatted_stdout]}
+    parameters: *dispatch_parameters
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects: *dispatch_effects
+
   - id: enumerate_paths
     selector:
-      kind: not
-      item:
-        kind: any
-        items:
-          - kind: has_flag
-            flag: "-exec"
-          - kind: has_flag
-            flag: "-execdir"
-    parameters:
+      kind: all
+      items:
+        - {kind: not, item: *has_dispatch}
+        - {kind: not, item: *formatted_stdout}
+    parameters: &enumerate_parameters
       - name: search_roots
         semantic:
           kind: path
@@ -131,11 +147,22 @@ forms:
       stdin_mode: ignored
       stdout_mode: path_list
       stderr_mode: opaque
-    effects:
+    effects: &enumerate_effects
       - kind: read_path
         target:
           kind: slot
           name: search_roots
+      - *default_root_read
+
+  - id: enumerate_formatted_output
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *has_dispatch}
+        - *formatted_stdout
+    parameters: *enumerate_parameters
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects: *enumerate_effects
 
 modifiers:
   - id: follow_symlinks
@@ -145,9 +172,15 @@ modifiers:
   - id: expression_control
     matcher:
       kind: any_flag
-      flags: ["-a", "-and", "-o", "-or", "-not", "-depth", "-xdev", "-mount", "-prune", "-quit"]
+      flags: ["(", ")", "!", ",", "-a", "-and", "-o", "-or", "-not", "-depth", "-d", "-xdev", "-x", "-mount", "-prune", "-quit"]
   - id: operand_free_tests
-    matcher: {kind: any_flag, flags: ["-empty", "-true", "-false", "-readable", "-writable", "-executable"]}
+    matcher: {kind: any_flag, flags: ["-empty", "-true", "-false", "-readable", "-writable", "-executable", "-nouser", "-nogroup", "-acl", "-sparse"]}
+  - id: traversal_options
+    matcher:
+      kind: any_flag
+      flags: ["-daystart", "-noleaf", "-ignore_readdir_race", "-noignore_readdir_race", "-warn", "-nowarn", "-O0", "-O1", "-O2", "-O3", "-E", "-X", "-s"]
+  - id: information_options
+    matcher: {kind: any_flag, flags: ["-help", "--help", "-version", "--version"]}
   - id: name_pattern
     matcher:
       kind: any_flag
@@ -158,6 +191,11 @@ modifiers:
         - "-ipath"
         - "-regex"
         - "-iregex"
+        - "-wholename"
+        - "-iwholename"
+        - "-lname"
+        - "-ilname"
+        - "-context"
     parameters:
       - name: patterns
         semantic:
@@ -197,6 +235,112 @@ modifiers:
           operand_mode: next_arg
         cardinality: required_many
 
+  # These arguments are tests, not search roots or file modifications. In
+  # particular, negative ages and permission masks own their leading '-'.
+  - id: numeric_filter
+    matcher:
+      kind: any_flag
+      flags: ["-amin", "-atime", "-cmin", "-ctime", "-mmin", "-mtime", "-Bmin", "-Btime", "-size", "-inum", "-links", "-uid", "-gid", "-used"]
+    parameters:
+      - name: numeric_tests
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: permission_filter
+    matcher: {kind: any_flag, flags: ["-perm", "-flags"]}
+    parameters:
+      - name: permission_tests
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: owner_filter
+    matcher: {kind: any_flag, flags: ["-user", "-group"]}
+    parameters:
+      - name: owners
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: filesystem_filter
+    matcher: {kind: any_flag, flags: ["-fstype"]}
+    parameters:
+      - name: filesystem_types
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: expression_syntax
+    matcher: {kind: any_flag, flags: ["-regextype"]}
+    parameters:
+      - name: regex_syntax
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: debug_options
+    matcher: {kind: any_flag, flags: ["-D"]}
+    parameters:
+      - name: debug_categories
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  # In -newerXY, Y=t is a date literal; all other Y values name a
+  # reference file. Do not invent a file read for a timestamp string.
+  - id: timestamp_filter
+    matcher: {kind: any_flag, flags: ["-newerat", "-newerBt", "-newerct", "-newermt"]}
+    parameters:
+      - name: reference_times
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: reference_file_filter
+    matcher:
+      kind: any_flag
+      flags: ["-newer", "-anewer", "-cnewer", "-Bnewer", "-samefile", "-neweraa", "-neweraB", "-newerac", "-neweram", "-newerBa", "-newerBB", "-newerBc", "-newerBm", "-newerca", "-newercB", "-newercc", "-newercm", "-newerma", "-newermB", "-newermc", "-newermm"]
+    parameters:
+      - name: reference_files
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target: {kind: slot, name: reference_files}
+
+  - id: alternate_type_filter
+    matcher: {kind: any_flag, flags: ["-xtype"]}
+    parameters:
+      - name: alternate_file_types
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  - id: formatted_output
+    matcher: {kind: any_flag, flags: ["-printf"]}
+    parameters:
+      - name: output_formats
+        semantic: {kind: structured_value, context: format_string}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+
+  # These actions open/create/truncate a named output file even when no
+  # paths match. A filter or -false must not erase their write effects.
+  - id: file_output
+    matcher: {kind: any_flag, flags: ["-fprint", "-fprint0", "-fls"]}
+    parameters:
+      - name: output_paths
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: output_paths}
+        catastrophic: {semantic_class: raw_write_target}
+
   - id: output_actions
     matcher:
       kind: any_flag
@@ -217,11 +361,27 @@ modifiers:
           name: search_roots
         catastrophic:
           semantic_class: delete_path
+      # Preserve all explicit roots through the slot effect above. The
+      # configured target supplements it with find's implicit cwd when the
+      # slot is empty; an unresolved explicit root must not become '.'.
+      - kind: delete_path
+        target:
+          kind: configured_path
+          sources: [{slot: search_roots, projection: {kind: identity}}]
+          default_value: "."
+          purpose: generic_operand
 
 subcommands: null
 extensions:
+  caushell.profile/semantic_sources:
+    - https://www.gnu.org/software/findutils/manual/html_node/find_html/find-Expressions.html
+    - https://www.gnu.org/software/findutils/manual/html_node/find_html/Comparing-Timestamps.html
+    - https://www.gnu.org/software/findutils/manual/html_node/find_html/Print-File-Name.html
+    - https://www.gnu.org/software/findutils/manual/html_node/find_html/Print-File-Information.html
+    - https://man.freebsd.org/cgi/man.cgi?query=find&sektion=1
   caushell.profile/known_limitations:
     - Outer option ownership is opt-in and exact; an undeclared outer option or unknown argv boundary requires approval rather than guessing its operand count. Child argv never supplies outer flags or search roots.
-    - Dispatch arguments and bounded search-root domains are modeled for common -exec and -execdir forms, but this is not a full find expression evaluator; uncommon predicates remain residual operands.
+    - Common GNU/BSD filters and their operands are modeled, but expressions are not evaluated against the filesystem; possible actions are conservatively retained across boolean branches.
+    - Undeclared forms including -fprintf (two distinct operands), -files0-from (runtime-provided traversal roots), BSD -f (mixed positional and flag-provided root sets), and -ok/-okdir (confirmation-based dispatch) remain unresolved and require approval. They must not be declared as operand-free or mapped to incorrect traversal domains.
     - Semicolon and plus terminators are recognized for dispatch, but batched execution cardinality and all platform-specific find behavior are not modeled exactly.
     - Symlink traversal and execution-directory context that cannot be established conservatively widen or leave the argument domain unknown.
