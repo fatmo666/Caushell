@@ -1,0 +1,269 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: hashcat
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+- id: crack_with_output
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: output
+    - kind: has_modifier
+      modifier: potfile_disable
+  parameters:
+  - name: hash_file
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: wordlist
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: hash_file
+  - kind: read_path
+    target:
+      kind: slot
+      name: wordlist
+- id: crack
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: output
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: potfile_disable
+  parameters:
+  - name: hash_file
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: wordlist
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: hash_file
+  - kind: read_path
+    target:
+      kind: slot
+      name: wordlist
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: potfile_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+- id: crack_without_potfile
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: has_modifier
+      modifier: potfile_disable
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: output
+  parameters:
+  - name: hash_file
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: wordlist
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: hash_file
+  - kind: read_path
+    target:
+      kind: slot
+      name: wordlist
+- id: crack_with_output_and_potfile
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: output
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: potfile_disable
+  parameters:
+  - name: hash_file
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: wordlist
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: hash_file
+  - kind: read_path
+    target:
+      kind: slot
+      name: wordlist
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: potfile_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: output
+  matcher:
+    kind: any_flag
+    flags:
+    - "-o"
+    - "--outfile"
+  parameters:
+  - name: output_file
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: output_file
+- id: potfile
+  matcher:
+    kind: any_flag
+    flags:
+    - "--potfile-path"
+  parameters:
+  - name: potfile_path
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: potfile_disable
+  matcher:
+    kind: any_flag
+    flags:
+    - "--potfile-disable"
+- id: mode
+  matcher:
+    kind: any_flag
+    flags:
+    - "-m"
+    - "--hash-type"
+  parameters:
+  - name: hash_mode
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: output_format
+  matcher:
+    kind: any_flag
+    flags:
+    - "--outfile-format"
+  parameters:
+  - name: output_format
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: quiet
+  matcher:
+    kind: any_flag
+    flags:
+    - "--quiet"
+    - "--outfile-autohex-disable"
+extensions:
+  caushell.profile/source_research:
+  - https://hashcat.net/wiki/doku.php?id=hashcat
+  caushell.profile/known_limitations:
+  - Hashcat may append results to the explicit --outfile destination; a concrete file
+    write is retained.
+  - Potfile, restore/session, backend and default output behavior vary with options
+    and configuration; unknown default state writes remain represented.
+  - Hash cracking input, mode-specific semantics and GPU/device effects are not interpreted.

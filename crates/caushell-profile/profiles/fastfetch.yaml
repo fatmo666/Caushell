@@ -1,0 +1,35 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: fastfetch, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: system_info_with_config_and_logo
+    selector: {kind: all, items: []}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects:
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: config_path, projection: {kind: identity}}], missing: skip, purpose: tool_config}}
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: config_path_long, projection: {kind: identity}}], missing: skip, purpose: tool_config}}
+      - {kind: execute_payload, target: {kind: slot, name: config_path}}
+      - {kind: execute_payload, target: {kind: slot, name: config_path_long}}
+      - {kind: read_path, target: {kind: slot, name: logo_path}}
+      - {kind: read_path, target: {kind: slot, name: logo_path_short}}
+modifiers:
+  - id: config_short
+    matcher: {kind: any_flag, flags: ['-c']}
+    parameters: [{name: config_path, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: config_long
+    matcher: {kind: any_flag, flags: ['--config']}
+    parameters: [{name: config_path_long, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: logo_long
+    matcher: {kind: any_flag, flags: ['--file']}
+    parameters: [{name: logo_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: logo_short
+    matcher: {kind: any_flag, flags: ['-f']}
+    parameters: [{name: logo_path_short, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/fastfetch (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/unstable/fastfetch/fastfetch.1.en.html"]
+  caushell.profile/known_limitations: ["The `-c` config is JSONC and command-module `text` is fastfetch's embedded command configuration language; the referenced file is represented as an opaque recursive payload and is not interpreted as shell by this profile.", "The source creates config with echo redirection; that shell-side file write is supplied by source materialization and is excluded from the fastfetch invocation profile.", "The `--file` ASCII logo content contributes to stdout; terminal-specific image protocols, alignment and formatting are not modeled."]

@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: as, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+argument_files:
+  - {prefix: '@', possible_effects: [read_path, write_path]}
+forms:
+  - id: response_file_arguments
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+    parameters:
+      - name: response_files
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^@'}}
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: prefix, value: '@'}, target: {name: response_file_paths, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: response_file_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: unknown}
+modifiers:
+  - {id: output_file, matcher: {kind: any_flag, flags: ['-o']}, parameters: [{name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}], effects: [{kind: write_path, target: {kind: slot, name: output_file}}]}
+  - {id: listing, matcher: {kind: any_flag, flags: ['-a']}}
+extensions:
+  caushell.profile/source_research: [https://sourceware.org/binutils/docs/as/Command-Line.html, https://sourceware.org/binutils/docs/as/Input-Files.html]
+  caushell.profile/known_limitations:
+    - GNU as @FILE expands a response/argument file before option parsing; it is not modeled as an ordinary assembly source path.
+    - This form does not claim assembly source files as data outputs; unsupported assembler options remain unresolved.

@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ansible-test, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h]}}
+subcommands:
+  roots:
+    - name: shell
+      aliases: []
+      forms:
+        - id: test_environment_shell
+          selector: {kind: all, items: []}
+          implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+          effects:
+            - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+          stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/source_research:
+    - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ansible-test (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+    - https://docs.ansible.com/projects/ansible/latest/dev_guide/testing_running_locally.html
+  caushell.profile/known_limitations:
+    - ansible-test shell opens the test environment shell; later interactive input is opaque and is not parsed as Bash argv.
+    - Docker, virtual-environment, Python-version, and other shell setup options are not modeled; unknown arguments remain unresolved.

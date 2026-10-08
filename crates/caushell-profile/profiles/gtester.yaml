@@ -1,0 +1,130 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: gtester
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: run_test_binary
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: output
+  parameters:
+  - name: test_binary
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: test_binary_payload
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: test_binary
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: test_binary_payload
+- id: write_test_report
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: output
+    - kind: has_positional_at
+      index: 0
+  parameters:
+  - name: test_binary
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: test_binary_payload
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: test_binary
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: test_binary_payload
+  - kind: write_path
+    target:
+      kind: slot
+      name: output_path
+modifiers:
+- id: output
+  matcher:
+    kind: any_flag
+    flags:
+    - "-o"
+    - "--output"
+  parameters:
+  - name: output_path
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: quiet
+  matcher:
+    kind: any_flag
+    flags:
+    - "-q"
+    - "--quiet"
+extensions:
+  caushell.profile/source_research:
+  - https://docs.gtk.org/glib/running-tests.html
+  caushell.profile/known_limitations:
+  - gtester launches the specified test binary; binary behavior is opaque. Output
+    XML includes the supplied test binary path as data. The profile does not infer
+    generated binary contents from a pathname.

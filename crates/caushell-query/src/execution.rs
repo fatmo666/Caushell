@@ -786,6 +786,10 @@ pub struct ExecutionSemanticsRef<'a> {
 }
 
 impl<'a> ExecutionSemanticsRef<'a> {
+    pub fn shell_job_operations(&self) -> &[caushell_types::ShellJobOperationKind] {
+        &self.semantics.shell_job_operations
+    }
+
     pub fn terminal_session_operations(&self) -> &[caushell_types::TerminalSessionOperationKind] {
         &self.semantics.terminal_session_operations
     }
@@ -879,6 +883,10 @@ impl<'a> ExecutionSemanticsRef<'a> {
         self.semantics.mutates_current_shell
     }
 
+    pub fn terminates_current_shell(&self) -> bool {
+        self.semantics.terminates_current_shell
+    }
+
     pub fn executes_remote_command(&self) -> bool {
         self.semantics.executes_remote_command
     }
@@ -921,6 +929,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
 
     pub fn to_execution_semantics_fact(&self) -> ExecutionSemanticsFact {
         ExecutionSemanticsFact {
+            shell_job_operations: self.shell_job_operations().to_vec(),
             operation_semantics_unresolved: self.operation_semantics_unresolved(),
             terminal_session_operations: self.semantics.terminal_session_operations.clone(),
             database_operations: self.semantics.database_operations.clone(),
@@ -940,6 +949,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
             process_control_target_kind: self.process_control_target_kind(),
             process_control_broad_target: self.process_control_broad_target(),
             mutates_current_shell: self.mutates_current_shell(),
+            terminates_current_shell: self.terminates_current_shell(),
             executes_remote_command: self.executes_remote_command(),
             executes_hook: self.executes_hook(),
             executes_imported_package_logic: self.executes_imported_package_logic(),
@@ -1643,6 +1653,7 @@ mod tests {
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
                 terminal_session_operations: Vec::new(),
+                shell_job_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:2".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:2".to_string(),
@@ -1665,6 +1676,7 @@ mod tests {
                 process_control_target_kind: None,
                 process_control_broad_target: false,
                 mutates_current_shell: false,
+                terminates_current_shell: false,
                 executes_remote_command: false,
                 executes_hook: false,
                 executes_imported_package_logic: false,

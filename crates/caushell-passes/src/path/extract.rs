@@ -1565,6 +1565,8 @@ fn metadata_mutation_kinds(
         | EffectKind::DispatchCommand
         | EffectKind::ConsumeStdin
         | EffectKind::BindVariableFromRuntimeInput
+        | EffectKind::TerminateCurrentShell
+        | EffectKind::ShellJobOperation
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
         | EffectKind::ListenNetwork
@@ -1750,6 +1752,8 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::DispatchCommand
         | EffectKind::ConsumeStdin
         | EffectKind::BindVariableFromRuntimeInput
+        | EffectKind::TerminateCurrentShell
+        | EffectKind::ShellJobOperation
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
         | EffectKind::ListenNetwork
@@ -1787,6 +1791,8 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::DispatchCommand
         | EffectKind::ConsumeStdin
         | EffectKind::BindVariableFromRuntimeInput
+        | EffectKind::TerminateCurrentShell
+        | EffectKind::ShellJobOperation
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
         | EffectKind::ListenNetwork

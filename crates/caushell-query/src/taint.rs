@@ -589,6 +589,9 @@ fn next_hops_forward(
             for edge in graph.outgoing_edges(node_id) {
                 match edge.kind {
                     EdgeKind::Produces => {
+                        if !crate::DataDependencyQuery::carries_inputs(edge) {
+                            continue;
+                        }
                         if artifact_key(session, &edge.to).is_some() {
                             let next = TraceEndpointKey::Artifact(edge.to.clone());
                             insert_candidate(
@@ -603,6 +606,9 @@ fn next_hops_forward(
                         }
                     }
                     EdgeKind::FlowsTo => {
+                        if !crate::DataDependencyQuery::control_edge_carries_inputs(graph, edge) {
+                            continue;
+                        }
                         if execution_unit_key(session, &edge.to).is_some() {
                             let next = TraceEndpointKey::ExecutionUnit(edge.to.clone());
                             insert_candidate(
@@ -724,6 +730,9 @@ fn next_hops_backward(
             for edge in graph.incoming_edges(node_id) {
                 match edge.kind {
                     EdgeKind::FlowsTo => {
+                        if !crate::DataDependencyQuery::control_edge_carries_inputs(graph, edge) {
+                            continue;
+                        }
                         if execution_unit_key(session, &edge.from).is_some() {
                             let next = TraceEndpointKey::ExecutionUnit(edge.from.clone());
                             insert_candidate(
@@ -789,6 +798,9 @@ fn next_hops_backward(
 
             for edge in graph.incoming_edges(node_id) {
                 if edge.kind != EdgeKind::Produces {
+                    continue;
+                }
+                if !crate::DataDependencyQuery::carries_inputs(edge) {
                     continue;
                 }
 

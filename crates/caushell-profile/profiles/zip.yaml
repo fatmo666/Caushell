@@ -1,0 +1,362 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity:
+  canonical_name: zip
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: add_files_to_archive_implicit_extension
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: test_mode
+        - kind: has_modifier
+          modifier: test_command
+    - kind: not
+      item: &1
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: regex_pattern
+          pattern: "(^|/)[^/]*\\.[^/]+$"
+  parameters:
+  - name: archive_path
+    semantic: &3
+      kind: path
+      role: target
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: &2
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: derived_path
+      source:
+        kind: slot
+        name: archive_path
+      rule:
+        kind: append_suffix
+        suffix: ".zip"
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: add_files_to_archive
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: test_mode
+        - kind: has_modifier
+          modifier: test_command
+    - *1
+  parameters:
+  - name: archive_path
+    semantic: &4
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: archive_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: test_archive_implicit_extension
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: all
+      items:
+      - kind: has_modifier
+        modifier: test_mode
+      - kind: has_modifier
+        modifier: test_command
+    - kind: not
+      item: *1
+  parameters:
+  - name: archive_path
+    semantic: *3
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  - name: test_payload_short
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-TT"
+      operand_mode: next_arg
+    cardinality: optional_one
+  - name: test_payload_long
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--unzip-command"
+      operand_mode: next_arg
+    cardinality: optional_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: derived_path
+      source:
+        kind: slot
+        name: archive_path
+      rule:
+        kind: append_suffix
+        suffix: ".zip"
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: test_payload_short
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: test_payload_long
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: test_archive
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: all
+      items:
+      - kind: has_modifier
+        modifier: test_mode
+      - kind: has_modifier
+        modifier: test_command
+    - *1
+  parameters:
+  - name: archive_path
+    semantic: *4
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  - name: test_payload_short
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-TT"
+      operand_mode: next_arg
+    cardinality: optional_one
+  - name: test_payload_long
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--unzip-command"
+      operand_mode: next_arg
+    cardinality: optional_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: archive_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: test_payload_short
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: test_payload_long
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: archive_to_stdout
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: "-"
+    - kind: not
+      item:
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: test_mode
+        - kind: has_modifier
+          modifier: test_command
+  parameters:
+  - name: archive_sentinel
+    semantic: *4
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+modifiers:
+- id: test_mode
+  matcher:
+    kind: any_flag
+    flags:
+    - "-T"
+    - "--test"
+- id: test_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "-TT"
+    - "--unzip-command"
+  parameters:
+  - name: test_command
+    semantic: *4
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+extensions:
+  caushell.profile/source_research:
+  - https://manpages.debian.org/bookworm/zip/zip.1.en.html
+  - https://infozip.sourceforge.net/Zip.html
+  caushell.profile/known_limitations:
+  - The -TT template becomes opaque executable payload only with -T/--test. Without
+    test mode it remains data. zip adds .zip when the basename has no extension; -
+    writes to stdout and is not a file. Template expansion, appended archive argv,
+    and external unzip defaults are not represented as fabricated Bash invocations.
+    Other update modes and stdin filename lists remain unresolved.

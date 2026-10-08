@@ -1,0 +1,24 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: crash, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: crash_debugger_pager
+    selector: {kind: all, items: [{kind: has_flag, flag: -h}]}
+    parameters: []
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: read_path, target: {kind: configured_path, sources: [], environment: {name: CRASHPAGER, empty_is_unset: true}, missing: skip, purpose: generic_operand}}, {kind: execute_payload, target: {kind: none}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: pager, requires_tty: false, capabilities: [run_command]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: debugger_session
+    selector: {kind: all, items: [{kind: lacks_flag, flag: -h}]}
+    parameters: []
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: help_pager, matcher: {kind: any_flag, flags: [-h]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/crash (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://sourceware.org/gdb/current/onlinedocs/gdb.html/Shell-Commands.html"]
+  caushell.profile/known_limitations: ["The source passes CRASHPAGER through the environment for crash -h; its configured executable is read and invoked as an opaque helper, with helper argv/environment details not projected.", "Crash debugger commands and startup configuration are opaque and not parsed."]

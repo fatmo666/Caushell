@@ -1,0 +1,43 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: look, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: lookup_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_positional_at, index: 2}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: search_prefix, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: alternative, matcher: {kind: any_flag, flags: ['-a', '--alternative']}}
+  - {id: alphanum, matcher: {kind: any_flag, flags: ['-d', '--alphanum']}}
+  - {id: ignore_case, matcher: {kind: any_flag, flags: ['-f', '--ignore-case']}}
+  - id: terminate
+    matcher: {kind: any_flag, flags: ['-t', '--terminate']}
+    parameters: [{name: terminator, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://man7.org/linux/man-pages/man1/look.1.html
+    - GTFOBins fixed snapshot look/file-read/0
+  caushell.profile/known_limitations:
+    - The first positional is the search prefix data, including the empty prefix in the source recipe; only the second positional is opened as a path.
+    - The default dictionary, omitted file, stdin marker, extra operands, and unresolved options are not asserted as a file-read form.
+    - Output is matching/terminal-formatted file data; exact collation and terminal control behavior are outside the model.

@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: ksu, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+
+forms:
+  - id: execute_command
+    selector: {kind: has_modifier, modifier: execute}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: following_flag, flag: '-e', operand_mode: next_arg}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: privilege_modifier, target: {kind: none}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true, unknown_environment_names: [HOME, USER, SHELL, KRB5CCNAME]}}
+modifiers:
+  - {id: execute, matcher: {kind: any_flag, flags: ['-e']}, ends_option_scope: true}
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q']}}
+  - {id: target_principal, matcher: {kind: any_flag, flags: ['-n']}, parameters: [{name: target_principal, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/ksu/
+    - https://web.mit.edu/Kerberos/www/krb5-latest/doc/user/user_commands/ksu.html
+  caushell.profile/scope: -e ends outer option scanning and owns a command followed by its argv; shell metacharacters in argv are not interpreted as a shell command string. Known rewritten HOME/USER/SHELL/KRB5CCNAME values are not inherited as parent facts. The source's -q is explicit. Target-principal authorization, credentials, default target shell and leading target-user variants remain unresolved.

@@ -1,0 +1,88 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: cancel
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: cancel_jobs_on_remote_server
+  selector:
+    kind: has_modifier
+    modifier: server
+  parameters:
+  - name: job_targets
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: network_endpoint
+    target:
+      kind: slot
+      name: server
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers:
+- id: server
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+  parameters:
+  - name: server
+    semantic:
+      kind: endpoint
+      endpoint_kind: host_port
+      usage: control_plane
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: owner
+  matcher:
+    kind: any_flag
+    flags:
+    - "-u"
+  parameters:
+  - name: owner
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: delete_job_data
+  matcher:
+    kind: any_flag
+    flags:
+    - "-x"
+- id: all_jobs
+  matcher:
+    kind: any_flag
+    flags:
+    - "-a"
+extensions:
+  caushell.profile/source_research:
+  - https://www.cups.org/doc/man-cancel.html
+  - 'GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/cancel upload'
+  caushell.profile/known_limitations:
+  - cancel changes print-job state on the selected CUPS server; no local filesystem
+    mutation is inferred, including for -x whose data files belong to the server.
+  - The GTFOBins -u value is modeled as a CUPS owner selector and remains plain data;
+    request body and server-side cancellation are not decomposed.
+  - Authentication, server policy and job identifiers are runtime-dependent.

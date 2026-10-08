@@ -98,6 +98,10 @@ pub struct SessionFunctionBinding {
     pub name: String,
     pub body: String,
     pub observed_at: CommandSequenceNo,
+    /// Analysis uncertainty, not a runtime observation or an executable body.
+    /// Missing in older persisted records means an exact binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncertainty: Option<String>,
 }
 
 impl SessionFunctionBinding {
@@ -110,6 +114,20 @@ impl SessionFunctionBinding {
             name: name.into(),
             body: body.into(),
             observed_at,
+            uncertainty: None,
+        }
+    }
+
+    pub fn uncertain(
+        name: impl Into<String>,
+        reason: impl Into<String>,
+        observed_at: CommandSequenceNo,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            body: String::new(),
+            observed_at,
+            uncertainty: Some(reason.into()),
         }
     }
 }

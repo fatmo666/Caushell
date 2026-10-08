@@ -1,0 +1,82 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: vagrant
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: project_up
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: up
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: read_path
+    target:
+      kind: tool_convention_path
+      path: Vagrantfile
+      convention: vagrant.project_definition
+      purpose: tool_config
+  - kind: execute_config_defined_task
+    target:
+      kind: none
+  - kind: write_path
+    target:
+      kind: none
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://developer.hashicorp.com/vagrant/docs/cli
+  - https://gtfobins.org/gtfobins/vagrant/
+  caushell.profile/known_limitations:
+  - The pinned source says Vagrantfile runs Ruby code. Provisioners, plugins, provider
+    actions and their child argv depend on that file and are not expanded.
+  - vagrant up produces VM/provider artifacts and modifies instance state; their output
+    paths depend on the provider/configuration, represented as unknown writes, not
+    nonexistent writes. Ruby configuration source cannot be expanded without filesystem
+    contents.
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true

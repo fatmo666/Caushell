@@ -181,6 +181,10 @@ enum FlagTokenMatch<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindError {
+    UncertainFunctionBinding {
+        command_name: String,
+        reason: String,
+    },
     NoFormMatched {
         command_name: String,
     },
@@ -201,6 +205,15 @@ pub enum BindError {
 impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UncertainFunctionBinding {
+                command_name,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "function binding for {command_name:?} is uncertain: {reason}"
+                )
+            }
             Self::NoFormMatched { command_name } => {
                 write!(f, "no form matched for command {command_name:?}")
             }
@@ -241,7 +254,13 @@ fn scoped_options(
     scope: ArgumentScope,
     modifiers: &[Modifier],
     forms: &[Form],
+    regions: &[crate::ArgumentRegion],
 ) -> Option<crate::ScopedOptions> {
+    if !regions.is_empty() {
+        return Some(crate::argument_regions::scan(
+            projection, scope, regions, modifiers, forms,
+        ));
+    }
     match policy {
         crate::OptionScopePolicy::AllArguments => None,
         crate::OptionScopePolicy::LeadingOptions | crate::OptionScopePolicy::PermutedOptions => {
@@ -339,6 +358,7 @@ pub fn select_invocation<'a>(
         scope,
         &profile.modifiers,
         &profile.forms,
+        &profile.argument_regions,
     );
     ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
     let modifiers = if let Some(options) = &option_scope {
@@ -376,7 +396,18 @@ pub fn select_invocation<'a>(
         form_scope: scope,
         modifiers,
         subcommand_path: Vec::new(),
-        residuals: Vec::new(),
+        residuals: if option_scope
+            .as_ref()
+            .is_some_and(|o| o.ownership_unresolved)
+        {
+            vec![Residual::new(
+                ResidualKind::UnboundControlSurface,
+                ResidualSurface::Control,
+                "argument region ownership is unresolved; known child effects are partial",
+            )]
+        } else {
+            Vec::new()
+        },
         option_terminators: option_scope
             .as_ref()
             .and_then(|options| options.terminator)
@@ -428,6 +459,12 @@ pub fn bind_invocation(
         selection.form.id.clone(),
     )
     .with_subcommand_path(selection.subcommand_path.clone());
+    bound.stream_contract = selection.form.stream_contract;
+    bound.argument_regions = selection
+        .option_scope
+        .as_ref()
+        .map(|options| options.argument_regions.clone())
+        .unwrap_or_default();
 
     for bound_parameter in parameter_results.into_iter().flatten() {
         bound.bound_parameters.push(bound_parameter);
@@ -515,7 +552,21 @@ fn collect_unresolved_arguments(
         ));
     }
     let mut declared_short_flags = state.declared_short_flags.clone();
-    let mut attached_operands = state.short_flags_allowing_attached_operands.clone();
+    let mut cluster_stoppers = state.short_flags_allowing_attached_operands.clone();
+    // A declared option-parser terminator owns the rest of its token too.
+    // Do not re-audit those bytes as flags after the scanner has stopped.
+    for selected in &state.selected_modifiers {
+        if selected.modifier.ends_option_scope {
+            cluster_stoppers.extend(
+                selected
+                    .modifier
+                    .matcher
+                    .flag_names()
+                    .iter()
+                    .map(|flag| flag.as_str().to_string()),
+            );
+        }
+    }
     for parameter in &selection.form.parameters {
         if let BindingSpec::FollowingFlag {
             flag_name,
@@ -531,7 +582,7 @@ fn collect_unresolved_arguments(
                         | FlagOperandMode::InlineOrShortAttached
                         | FlagOperandMode::OptionalInlineOrShortAttached
                 ) {
-                    attached_operands.insert(flag_name.as_str().to_string());
+                    cluster_stoppers.insert(flag_name.as_str().to_string());
                 }
             }
         }
@@ -575,8 +626,9 @@ fn collect_unresolved_arguments(
                         unknown = true;
                         break;
                     }
-                    if attached_operands.contains(&flag) {
-                        // Remaining bytes are an operand, not cluster members.
+                    if cluster_stoppers.contains(&flag) {
+                        // Remaining bytes are an operand or follow a declared
+                        // parser terminator, not additional cluster members.
                         break;
                     }
                 }
@@ -630,6 +682,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 scope,
                 &profile.modifiers,
                 &profile.forms,
+                &profile.argument_regions,
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -807,6 +860,7 @@ fn scan_subcommand_path<'p, 'a>(
         root_scope,
         &profile.modifiers,
         &profile.forms,
+        &profile.argument_regions,
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -866,6 +920,7 @@ fn scan_subcommand_path<'p, 'a>(
             node_scope,
             &node.modifiers,
             &node.forms,
+            &[],
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
         let node_modifiers = if let Some(options) = &node_options {
@@ -1742,7 +1797,10 @@ fn emit_effects(
             EffectTarget::ImplicitInput(source) => bound_implicit_sources.contains(source),
             EffectTarget::Dispatch(dispatch) => match &dispatch.command {
                 crate::DispatchCommandSource::Slot(slot)
-                | crate::DispatchCommandSource::WhitespaceArgv(slot) => bound_slots.contains(slot),
+                | crate::DispatchCommandSource::WhitespaceArgv(slot)
+                | crate::DispatchCommandSource::CommandString { slot, .. } => {
+                    bound_slots.contains(slot)
+                }
                 crate::DispatchCommandSource::Literal(_) => true,
             },
             EffectTarget::None | EffectTarget::NetworkListener(_) => true,
@@ -1845,6 +1903,8 @@ fn residual_surface_for_semantic(semantic: &SemanticType) -> ResidualSurface {
 
 fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> String {
     match binding {
+        BindingSpec::ArgumentRegionCommand(id) => format!("command in argument region {id:?}"),
+        BindingSpec::ArgumentRegionArgs(id) => format!("argv in argument region {id:?}"),
         BindingSpec::NextPositional => "next unconsumed positional argument".to_string(),
         BindingSpec::NextPositionalAfterDashDash => {
             "first positional argument after `--`".to_string()
@@ -1905,6 +1965,8 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
 }
 
 struct BindingState<'p, 'm> {
+    exact_option_words: bool,
+    argument_regions: Vec<crate::BoundArgumentRegion>,
     audit_operation_semantics: bool,
     unbound_flag_operands: Vec<usize>,
     flag_operand_indices: Vec<bool>,
@@ -1923,6 +1985,8 @@ struct BindingState<'p, 'm> {
 impl<'p, 'm> BindingState<'p, 'm> {
     fn new(projection: &'p ProjectedInvocation) -> Self {
         Self {
+            exact_option_words: false,
+            argument_regions: Vec::new(),
             projection,
             audit_operation_semantics: false,
             unbound_flag_operands: Vec::new(),
@@ -1945,6 +2009,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
         modifiers: &[SelectedModifier<'m>],
     ) -> Self {
         let mut state = Self {
+            exact_option_words: false,
+            argument_regions: Vec::new(),
             projection,
             audit_operation_semantics: false,
             unbound_flag_operands: Vec::new(),
@@ -1980,6 +2046,10 @@ impl<'p, 'm> BindingState<'p, 'm> {
     }
 
     fn set_option_scope(&mut self, options: Option<&crate::ScopedOptions>) {
+        self.exact_option_words = options.is_some_and(|options| options.exact_argv);
+        self.argument_regions = options
+            .map(|options| options.argument_regions.clone())
+            .unwrap_or_default();
         self.option_boundary = options.map(|options| options.scope.end_index);
         self.option_positionals = options.and_then(|options| options.positionals.clone());
         self.option_terminator = options.and_then(|options| options.terminator);
@@ -2030,6 +2100,12 @@ impl<'p, 'm> BindingState<'p, 'm> {
         let value_constraints = &target.parameter.value_constraints;
 
         match &target.parameter.binding {
+            BindingSpec::ArgumentRegionCommand(region) => {
+                self.consume_argument_region(region, true, value_constraints)
+            }
+            BindingSpec::ArgumentRegionArgs(region) => {
+                self.consume_argument_region(region, false, value_constraints)
+            }
             BindingSpec::FollowingFlag {
                 flag_name,
                 operand_mode,
@@ -2126,6 +2202,44 @@ impl<'p, 'm> BindingState<'p, 'm> {
         }
     }
 
+    fn consume_argument_region(
+        &mut self,
+        id: &str,
+        command: bool,
+        constraints: &[ValueConstraint],
+    ) -> Vec<BoundValue> {
+        let mut values = Vec::new();
+        for region in &self.argument_regions {
+            if region.id != id {
+                continue;
+            }
+            self.consumed[region.start_index] = true;
+            self.consumed[region.end_index] = true;
+            let indices = if command {
+                region.command_index..region.command_index + 1
+            } else {
+                region.command_index + 1..region.end_index
+            };
+            for index in indices {
+                if self.consumed[index] {
+                    continue;
+                }
+                self.consumed[index] = true;
+                let arg = &self.projection.args[index];
+                if argument_satisfies_value_constraints(&arg.text, constraints) {
+                    values.push(BoundValue::argument_with_node_kind(
+                        arg.text.clone(),
+                        arg.quoted,
+                        arg.node_kind.clone(),
+                        arg.span.clone(),
+                        ArgumentBindingSource::RemainingArg,
+                    ));
+                }
+            }
+        }
+        values
+    }
+
     fn consume_modifier_flags(
         &mut self,
         modifier: &Modifier,
@@ -2147,9 +2261,16 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 continue;
             }
 
-            if modifier.matcher.flag_names().iter().any(|flag_name| {
-                flag_token_matches_name(arg.text.as_str(), flag_name.as_str(), matching)
-            }) {
+            let owned = self.option_flag_names.as_ref().is_some_and(|occurrences| {
+                occurrences
+                    .iter()
+                    .any(|(i, name)| *i == index && modifier.matcher.flag_names().contains(name))
+            });
+            if owned
+                || modifier.matcher.flag_names().iter().any(|flag_name| {
+                    flag_token_matches_name(arg.text.as_str(), flag_name.as_str(), matching)
+                })
+            {
                 self.consumed[index] = true;
             }
         }
@@ -2212,12 +2333,20 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
             }
 
+            let flag_text = if self.exact_option_words {
+                crate::argument_regions::argv_value(arg)
+            } else {
+                Some(std::borrow::Cow::Borrowed(arg.text.as_str()))
+            };
+            let Some(flag_text) = flag_text else {
+                continue;
+            };
             let Some((matched_flag_name, flag_match)) = flag_names.iter().find_map(|flag_name| {
                 let flag_match = if let Some(occurrences) = &owned_occurrences {
                     occurrences
                         .iter()
                         .any(|(i, name)| *i == index && name == flag_name)
-                        .then(|| owned_flag_token_binding_match(&arg.text, flag_name.as_str()))
+                        .then(|| owned_flag_token_binding_match(&flag_text, flag_name.as_str()))
                         .flatten()
                 } else {
                     flag_token_binding_match(
@@ -5921,7 +6050,7 @@ mod tests {
     fn bind_invocation_binds_find_exec_command_until_terminator() {
         let profile = built_in_profile("find");
         let artifact = parse_command(
-            r#"find ./src -name '*.sh' -exec bash -c 'echo "$1"' _ {} ;"#,
+            r#"find ./src -name '*.sh' -exec bash -c 'echo "$1"' _ {} \;"#,
             ShellKind::Bash,
         )
         .expect("expected parse to succeed");

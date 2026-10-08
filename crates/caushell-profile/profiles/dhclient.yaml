@@ -1,0 +1,104 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: dhclient
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: selected_network_script
+  selector:
+    kind: has_modifier
+    modifier: script_file
+  parameters:
+  - name: interface
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: optional_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: network_script_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: network_script
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: acquire_lease
+  selector:
+    kind: not
+    item:
+      kind: has_modifier
+      modifier: script_file
+  parameters:
+  - name: interface
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: script_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-sf"
+  parameters:
+  - name: network_script
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: network_script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/dhclient (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://kb.isc.org/docs/isc-dhcp-44-manual-pages-dhclient
+  - https://kb.isc.org/docs/isc-dhcp-44-manual-pages-dhclient-script
+  caushell.profile/known_limitations:
+  - "-sf selects an executable helper file; its path is retained as a read path and
+    its contents as an opaque executable payload. The client supplies native dynamic
+    arguments and environment that are not fabricated as an empty argv, so delegated-argument
+    coverage remains partial."
+  - Lease protocol traffic, address changes, helper contents, and helper-trigger conditions
+    are runtime-dependent.
+  - Lease and pid state writes use native configured/default paths, which are not
+    discovered statically in this scope. They remain genuine unknown writes; an ordinary
+    lease acquisition is not a read-only query.

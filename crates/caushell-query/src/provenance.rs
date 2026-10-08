@@ -1664,6 +1664,7 @@ fn path_content_artifact(node: &caushell_graph::GraphNode) -> Option<(&str, Opti
         ProvenanceArtifact::VariableValue { .. }
         | ProvenanceArtifact::InheritedEnvValue { .. }
         | ProvenanceArtifact::PipelineStream { .. }
+        | ProvenanceArtifact::DescriptorStream { .. }
         | ProvenanceArtifact::TransformOutput { .. }
         | ProvenanceArtifact::MaterializedValue { .. }
         | ProvenanceArtifact::RuntimeInput { .. }
@@ -1692,6 +1693,7 @@ fn runtime_input_artifact(
         | ProvenanceArtifact::VariableValue { .. }
         | ProvenanceArtifact::InheritedEnvValue { .. }
         | ProvenanceArtifact::PipelineStream { .. }
+        | ProvenanceArtifact::DescriptorStream { .. }
         | ProvenanceArtifact::TransformOutput { .. }
         | ProvenanceArtifact::MaterializedValue { .. }
         | ProvenanceArtifact::InlineShellContent { .. }

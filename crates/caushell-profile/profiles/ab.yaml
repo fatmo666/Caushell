@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ab, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: benchmark_endpoint_verbose_response
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: post_file}, {kind: has_modifier, modifier: put_file}]}}, {kind: has_modifier_parameter_matching, modifier: verbosity, parameter: verbosity_level, matcher: {kind: literal, value: '2'}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: generic_endpoint}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: upload_endpoint_verbose_response
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: any, items: [{kind: has_modifier, modifier: post_file}, {kind: has_modifier, modifier: put_file}]}, {kind: has_modifier_parameter_matching, modifier: verbosity, parameter: verbosity_level, matcher: {kind: literal, value: '2'}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: upload_endpoint
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: any, items: [{kind: has_modifier, modifier: post_file}, {kind: has_modifier, modifier: put_file}]}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: verbosity, parameter: verbosity_level, matcher: {kind: literal, value: '2'}}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: benchmark_endpoint
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: post_file}, {kind: has_modifier, modifier: put_file}]}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: verbosity, parameter: verbosity_level, matcher: {kind: literal, value: '2'}}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: generic_endpoint}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - id: post_file
+    matcher: {kind: any_flag, flags: ['-p']}
+    parameters: [{name: post_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: post_file}}]
+  - id: put_file
+    matcher: {kind: any_flag, flags: ['-u']}
+    parameters: [{name: put_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: put_file}}]
+  - {id: verbosity, matcher: {kind: any_flag, flags: ['-v']}, parameters: [{name: verbosity_level, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: inline_or_short_attached}, cardinality: optional_one}]}
+  - {id: post_content_type, matcher: {kind: any_flag, flags: ['-T']}, parameters: [{name: content_type, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+  - {id: requests, matcher: {kind: any_flag, flags: ['-n']}, parameters: [{name: request_count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+extensions:
+  caushell.profile/source_research: [https://httpd.apache.org/docs/2.4/programs/ab.html, https://github.com/apache/httpd/blob/2.4.x/support/ab.c]
+  caushell.profile/known_limitations:
+    - On Apache httpd 2.4.x, -v2 can expose the initial response-buffer bytes already co-received with headers on stdout; it does not copy the full response body.
+    - Endpoints are the request destinations; local payload files under -p/-u are read and sent to that endpoint.

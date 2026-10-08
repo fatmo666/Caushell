@@ -1,0 +1,24 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: emacs, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: emacs_eval_expression
+    selector: {kind: has_flag, flag: --eval}
+    parameters: [{name: lisp_expression, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: --eval, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: lisp_expression}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: emacs_file_or_terminal_ui
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: --eval}}]}
+    parameters: [{name: file_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: read_path, target: {kind: slot, name: file_paths}}, {kind: write_path, target: {kind: slot, name: file_paths}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell, write_buffer_to_path]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: no_init_files, matcher: {kind: any_flag, flags: [-Q]}}
+  - {id: no_window_system, matcher: {kind: any_flag, flags: [-nw]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/emacs (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://www.gnu.org/software/emacs/manual/html_node/emacs/Entering-Emacs.html", "https://www.gnu.org/software/emacs/manual/html_node/emacs/Evaluating-Lisp-Expressions.html"]
+  caushell.profile/known_limitations: ["Emacs -Q -nw --eval feeds Emacs Lisp into the native evaluator; the Lisp value and any term buffer remain opaque and no shell argv is fabricated.", "The source's C-x C-s write sequence is native UI input, not caller shell text; the selected output path is represented only by the command line file operand when supplied."]

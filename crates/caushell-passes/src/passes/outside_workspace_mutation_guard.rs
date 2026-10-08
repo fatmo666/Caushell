@@ -2,16 +2,18 @@ use std::collections::BTreeSet;
 
 use caushell_parse::ParsedCommandArtifact;
 use caushell_profile::EffectKind;
+use caushell_query::IoTarget;
 use caushell_runner::{EffectiveCwd, RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{PathResolution, RuleId};
 
 use crate::path::{
     MutationTargetCandidate, collect_effect_mutation_targets, collect_redirection_path_facts,
-    normalize_shell_path, path_is_within_root, path_operand_depends_on_cwd,
+    normalize_shell_path, path_is_within_root,
 };
 use crate::support::{
-    decision_for_rule_action, graph_backed_execution_resolve_records,
-    is_file_write_redirection_operator, redirection_parent_command_index,
+    bound_invocation, content_io_target, decision_for_rule_action,
+    graph_backed_execution_resolve_records, is_file_write_redirection_operator,
+    redirection_parent_command_index, slot_uses_content_open,
 };
 
 pub struct OutsideWorkspaceMutationGuardPass;
@@ -56,6 +58,45 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                         collect_effect_mutation_targets(record, resolution_cwd, home.as_deref())
                     };
                     for target in targets {
+                        if !redirections
+                            && target.operation == EffectKind::WritePath
+                            && target.resolution.concrete_path().is_some_and(|path| {
+                                path == "/dev/null"
+                                    || caushell_query::IoTargetQuery::descriptor_alias(path)
+                                        .is_some()
+                            })
+                            && bound_invocation(record.result()).is_some_and(|bound| {
+                                slot_uses_content_open(bound, &target.slot_name, target.operation)
+                            })
+                        {
+                            let shell_cwd = ctx.effective_cwd_for_node(record.source_node_id());
+                            // A tool-local chdir must not change the interpretation
+                            // of a relative file opened earlier by the caller shell.
+                            let entries = effective_cwd_options(shell_cwd, &fallback_cwd);
+                            for entry in entries {
+                                let io = content_io_target(
+                                    record.parsed_scope(),
+                                    Some(record.command_index()),
+                                    None,
+                                    &target.resolution,
+                                    target.cwd_dependent,
+                                    entry.as_deref().unwrap_or(&fallback_cwd),
+                                    home.as_deref(),
+                                );
+                                if let Some((resolution, dependent)) = mutation_path_for_io(io) {
+                                    add_reason_for_target(
+                                        &mut reasons,
+                                        target.operation,
+                                        &target.slot_name,
+                                        &resolution,
+                                        dependent,
+                                        entry.is_none(),
+                                        workspace_root.as_deref(),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
                         // Only a declaratively identified implicit cache fallback
                         // is exempt. Explicit, unknown argv paths and redirections
                         // cannot acquire this exemption from their purpose alone.
@@ -146,16 +187,52 @@ fn collect_redirection_mutation_targets(
                 is_file_write_redirection_operator(operator) || operator == "<>"
             })
         })
-        .map(|path| MutationTargetCandidate {
-            implicit_incidental_cache: false,
-            operation: EffectKind::WritePath,
-            slot_name: path.slot_name,
-            resolution: path.resolution,
-            cwd_dependent: path.fact.target.as_ref().is_some_and(|target| {
-                path_operand_depends_on_cwd(&target.text, target.quoted, &target.node_kind, None)
-            }),
+        .filter_map(|path| {
+            let io = content_io_target(
+                parsed,
+                command_index,
+                Some(path.redirection_index),
+                &path.resolution,
+                path.cwd_dependent,
+                cwd,
+                home,
+            );
+            let (resolution, cwd_dependent) = mutation_path_for_io(io)?;
+            Some(MutationTargetCandidate {
+                implicit_incidental_cache: false,
+                operation: EffectKind::WritePath,
+                slot_name: path.slot_name,
+                resolution,
+                cwd_dependent,
+            })
         })
         .collect()
+}
+
+fn mutation_path_for_io(target: IoTarget) -> Option<(PathResolution, bool)> {
+    match target {
+        IoTarget::Path {
+            resolution,
+            cwd_dependent,
+        } => Some((resolution, cwd_dependent)),
+        IoTarget::UnknownDescriptor { descriptor } => Some((
+            PathResolution::UnsupportedDynamicText {
+                text: format!("unknown file descriptor {descriptor} target"),
+            },
+            false,
+        )),
+        IoTarget::InlineContent { .. } => Some((
+            PathResolution::UnsupportedDynamicText {
+                text: "write through an inline-content descriptor has no known filesystem target"
+                    .into(),
+            },
+            false,
+        )),
+        IoTarget::InheritedDescriptor { .. }
+        | IoTarget::ProcessSubstitution { .. }
+        | IoTarget::Closed
+        | IoTarget::Discard => None,
+    }
 }
 
 fn add_reason_for_target(
@@ -167,11 +244,8 @@ fn add_reason_for_target(
     cwd_unknown: bool,
     workspace_root: Option<&str>,
 ) {
-    // Both command effects (e.g. `tee /dev/null`) and shell redirections
-    // discard writes to this sink. Do not exempt deletion or metadata changes.
-    if operation == EffectKind::WritePath && resolution.concrete_path() == Some("/dev/null") {
-        return;
-    }
+    // Content-open sinks have already been classified by the shared I/O query.
+    // Namespace operations must never inherit a device-path exemption.
     let operation = operation_name(operation);
     if cwd_unknown && cwd_dependent {
         reasons.insert(format!(

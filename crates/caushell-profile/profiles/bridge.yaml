@@ -1,0 +1,48 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: bridge, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: execute_batch_file
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: batch_file}
+        - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: batch_file, parameter: batch_payloads, matcher: {kind: literal, value: '-'}}}
+    parameters: []
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: batch_paths}}
+      - {kind: execute_payload, target: {kind: slot, name: batch_payloads}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stdout_dependency: unknown, stderr_dependency: inputs}
+  - id: execute_batch_stdin
+    selector: {kind: has_modifier_parameter_matching, modifier: batch_file, parameter: batch_payloads, matcher: {kind: literal, value: '-'}}
+    implicit_inputs: [{source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}]
+    effects: [{kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}]
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: data, stdout_dependency: unknown, stderr_dependency: inputs}
+  - id: direct_bridge_operation
+    selector: {kind: not, item: {kind: has_modifier, modifier: batch_file}}
+    parameters:
+      - {name: operation_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+modifiers:
+  - id: batch_file
+    matcher: {kind: any_flag, flags: ['-b', '--batch']}
+    parameters:
+      - name: batch_payloads
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: batch_paths, semantic: {kind: path, role: read, purpose: script_source}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: batch_paths}}
+      - {kind: execute_payload, target: {kind: slot, name: batch_payloads}}
+extensions:
+  caushell.profile/source_research:
+    - https://kernel.googlesource.com/pub/scm/network/iproute2/iproute2/+/6e15d27aae947510efd824c7ce4bc7ea3b8a5aae/man/man8/bridge.8
+  caushell.profile/known_limitations:
+    - Batch input is bridge's own command language, not Bash. It is explicitly retained as opaque executable payload and sent to the existing unresolved-payload policy; no shell parsing or guessed effects are applied to its lines.

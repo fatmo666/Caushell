@@ -1,0 +1,19 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ranger, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: interactive_file_manager
+    selector: {kind: all, items: []}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ranger (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/unstable/ranger/ranger.1.en.html"]
+  caushell.profile/known_limitations: ["GTFOBins uses the interactive `S` key sequence; the keypress is evidence, not CLI syntax.", "Ranger command bindings and user configuration are not parsed; session privilege and process behavior are not probed."]

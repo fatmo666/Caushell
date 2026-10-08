@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use caushell_parse::{CommandFact, CommandTokenKind, ParseStatus, parse_command};
+use caushell_parse::{CommandFact, CommandToken, CommandTokenKind, ParseStatus, parse_command};
 use caushell_types::{CommandSequenceNo, SessionAliasBinding, ShellKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AliasAssignment {
     pub name: String,
     pub body: String,
+    pub source_start: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +24,7 @@ pub(crate) fn alias_assignments(command: &CommandFact) -> Vec<AliasAssignment> {
     command
         .tokens
         .iter()
-        .filter_map(|token| parse_alias_assignment(token.text.as_str()))
+        .filter_map(parse_alias_assignment)
         .collect()
 }
 
@@ -100,8 +101,8 @@ fn has_option_tokens(command: &CommandFact) -> bool {
         .any(|token| token.kind != CommandTokenKind::Arg)
 }
 
-fn parse_alias_assignment(text: &str) -> Option<AliasAssignment> {
-    let (name, body) = text.split_once('=')?;
+fn parse_alias_assignment(token: &CommandToken) -> Option<AliasAssignment> {
+    let (name, body) = token.text.split_once('=')?;
 
     if !is_valid_alias_name(name) {
         return None;
@@ -110,6 +111,7 @@ fn parse_alias_assignment(text: &str) -> Option<AliasAssignment> {
     Some(AliasAssignment {
         name: name.to_string(),
         body: strip_one_outer_quote_layer(body).to_string(),
+        source_start: token.span.start_byte,
     })
 }
 
@@ -157,6 +159,10 @@ fn expand_alias_once(
     expanded.pipeline_span = command.pipeline_span.clone();
     expanded.terminator = command.terminator;
     expanded.guarded = command.guarded;
+    expanded.conditional_execution = command.conditional_execution;
+    expanded.shell_scope_span = command.shell_scope_span.clone();
+    expanded.subshell_span = command.subshell_span.clone();
+    expanded.control_flow_span = command.control_flow_span.clone();
     expanded.span = command.span.clone();
     Some(expanded)
 }
@@ -187,12 +193,33 @@ mod tests {
                 super::AliasAssignment {
                     name: "ll".to_string(),
                     body: "ls -l".to_string(),
+                    source_start: 6,
                 },
                 super::AliasAssignment {
                     name: "g".to_string(),
                     body: "grep --color=auto".to_string(),
+                    source_start: 17,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn alias_assignments_preserve_repeated_operand_positions() {
+        let command =
+            parse_single_command("alias a='printf FIRST' a='printf SECOND' a='printf FIRST'");
+        let assignments = alias_assignments(&command);
+        assert_eq!(
+            assignments
+                .iter()
+                .map(|a| a.body.as_str())
+                .collect::<Vec<_>>(),
+            ["printf FIRST", "printf SECOND", "printf FIRST"]
+        );
+        assert!(
+            assignments
+                .windows(2)
+                .all(|a| a[0].source_start < a[1].source_start)
         );
     }
 

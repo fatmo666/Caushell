@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ssh-keyscan, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: scan_explicit_hosts
+    selector: {kind: has_positional_at, index: 0}
+    parameters: [{name: hosts, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: hosts}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: scan_hosts_from_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: host_file}, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: host_file, parameter: host_file, matcher: {kind: literal, value: '-'}}}]}
+    effects: [{kind: network_endpoint, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: scan_hosts_from_stdin
+    selector: {kind: all, items: [{kind: has_modifier, modifier: host_file}, {kind: has_modifier_parameter_matching, modifier: host_file, parameter: host_file, matcher: {kind: literal, value: '-'}}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: network_endpoint, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - id: host_file
+    matcher: {kind: any_flag, flags: ['-f']}
+    parameters: [{name: host_file, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [{matcher: {kind: literal, value: '-'}, target: null}], fallback: {name: host_file_path, semantic: {kind: path, role: read, purpose: generic_operand}}}}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: host_file_path}}]
+  - {id: port, matcher: {kind: any_flag, flags: ['-p']}, parameters: [{name: port, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: key_type, matcher: {kind: any_flag, flags: ['-t']}, parameters: [{name: key_types, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: timeout, matcher: {kind: any_flag, flags: ['-T']}, parameters: [{name: timeout, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+extensions:
+  caushell.profile/source_research: [https://man.openbsd.org/OpenBSD-7.9/ssh-keyscan.1]
+  caushell.profile/known_limitations:
+    - Hostnames inside -f are dynamic network targets; the form retains an unknown endpoint target and models input-dependent diagnostics on stderr.
+    - A literal - supplied to -f consumes stdin. Other ssh-keyscan options fall through unresolved.

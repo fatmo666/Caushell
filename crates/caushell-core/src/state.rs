@@ -671,7 +671,9 @@ fn summary_function_matches(
     existing: Option<&SessionFunctionBinding>,
     candidate: &SessionFunctionBinding,
 ) -> bool {
-    existing.is_some_and(|existing| existing.body == candidate.body)
+    existing.is_some_and(|existing| {
+        existing.body == candidate.body && existing.uncertainty == candidate.uncertainty
+    })
 }
 
 impl SessionRead for SessionState {

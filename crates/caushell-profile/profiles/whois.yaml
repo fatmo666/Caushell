@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: whois, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: query_whois_server
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: server}
+    parameters:
+      - {name: query_text, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: server}}
+      - {kind: transform_data, target: {kind: slot, name: query_text}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: default_server_lookup
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: server}}
+    parameters:
+      - {name: query_text, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - {kind: network_endpoint, target: {kind: none}}
+      - {kind: transform_data, target: {kind: slot, name: query_text}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: show_help
+    selector: {kind: has_modifier, modifier: help}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - id: server
+    matcher: {kind: any_flag, flags: ['-h', '--host', '--server']}
+    parameters: [{name: server, semantic: {kind: endpoint, endpoint_kind: host_port, usage: upload_target}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: port
+    matcher: {kind: any_flag, flags: ['-p', '--port']}
+    parameters: [{name: server_port, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: help
+    matcher: {kind: any_flag, flags: ['--help', '-?']}
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/inetutils/manual/html_node/whois-invocation.html
+    - https://manpages.debian.org/bookworm/whois/whois.1.en.html
+  caushell.profile/known_limitations:
+    - Query text is sent over the selected whois connection and the server response is emitted on stdout. The client lowercases query data and appends CRLF; the exact protocol transformation is noted, not guessed as a file path.
+    - A missing -h selects a registry-dependent default endpoint and recursive referrals may cause further network requests. Those endpoints are not dynamically resolved.

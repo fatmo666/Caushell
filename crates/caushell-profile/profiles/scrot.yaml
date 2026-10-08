@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: scrot, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: show_help
+    selector: {kind: any, items: [{kind: has_flag, flag: '-h'}, {kind: has_flag, flag: '--help'}]}
+  - id: show_version
+    selector: {kind: any, items: [{kind: has_flag, flag: '-v'}, {kind: has_flag, flag: '--version'}]}
+  - id: execute_shell_template
+    selector: {kind: all, items: [{kind: has_modifier, modifier: exec}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: exec, parameter: command_template, matcher: {kind: regex_pattern, pattern: '[%$]'}}}]}
+    parameters: []
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command_string: {slot: command_template, syntax: posix_shell}}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+  - id: execute_formatted_shell_template
+    selector: {kind: all, items: [{kind: has_modifier, modifier: exec}, {kind: has_modifier_parameter_matching, modifier: exec, parameter: command_template, matcher: {kind: regex_pattern, pattern: '[%$]'}}]}
+    parameters: []
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: command_template}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+  - id: capture_image
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: exec}}, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: version}}, {kind: no_positional_args}]}
+    parameters:
+      - {name: output_filename, semantic: {kind: plain_value}, binding: {kind: last_positional}, cardinality: optional_one}
+    effects:
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+  - id: capture_to_stable_filename
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: exec}}, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: version}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[^%$]+$'}}]}
+    parameters:
+      - {name: output_filename, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}
+    effects: [{kind: write_path, target: {kind: slot, name: output_filename}}]
+  - id: capture_to_formatted_filename
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: exec}}, {kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: version}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '[%$]'}}]}
+    effects: [{kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}]
+
+modifiers:
+  - {id: exec, matcher: {kind: any_flag, flags: ['-e', '--exec']}, parameters: [{name: command_template, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-v', '--version']}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/unstable/scrot/scrot.1.en.html
+    - https://gtfobins.org/gtfobins/scrot/
+  caushell.profile/known_limitations:
+    - The explicit command is projected through the existing POSIX-shell dispatch syntax. scrot expands percent and dollar format markers in both command templates and filenames at runtime; commands or output paths affected by those markers are not statically resolved here.
+    - A capture with no explicit filename writes to scrot's runtime-generated default filename, which is intentionally not guessed as a concrete path.

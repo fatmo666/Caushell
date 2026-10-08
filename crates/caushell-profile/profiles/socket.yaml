@@ -1,0 +1,32 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: socket, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: bind_listener_with_opaque_program
+    selector: {kind: all, items: [{kind: has_modifier, modifier: server_mode}, {kind: has_modifier, modifier: execute_program}]}
+    parameters: [{name: port, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_one}]
+    effects:
+      - {kind: listen_network, target: {kind: network_listener, host: {slot: bind_host, default_value: '0.0.0.0'}, port: {slot: port}}}
+      - {kind: execute_payload, target: {kind: slot, name: program}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: connect_to_remote_host_with_opaque_program
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: server_mode}}, {kind: has_modifier, modifier: execute_program}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: endpoint}}
+      - {kind: execute_payload, target: {kind: slot, name: program}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: server_mode, matcher: {kind: any_flag, flags: ['-s']}}
+  - {id: bind_address, matcher: {kind: any_flag, flags: ['-B']}, parameters: [{name: bind_host, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+  - {id: execute_program, matcher: {kind: any_flag, flags: ['-p']}, parameters: [{name: program, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}], effects: [{kind: execute_payload, target: {kind: slot, name: program}}]}
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q']}}
+  - {id: verbose, matcher: {kind: any_flag, flags: ['-v']}}
+  - {id: wait_mode, matcher: {kind: any_flag, flags: ['-w']}}
+extensions:
+  caushell.profile/source_research: ['https://manpages.debian.org/trixie/socket/socket.1.en.html', 'GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/socket bind-shell and reverse-shell']
+  caushell.profile/known_limitations: ['The -p value is an opaque native program command consumed by socket; it is not dispatched as shell source or given invented argv.', 'Host/port pairing, bind address and protocol details vary by socket implementation.']

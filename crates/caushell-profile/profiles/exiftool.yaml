@@ -1,0 +1,341 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: all_arguments
+option_matching: exact_names
+opaque_on_unresolved: true
+identity:
+  canonical_name: exiftool
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: filename_move
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_argument_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: "^-filename="
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: destination_path
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: args_with_prefix
+      prefix: "-filename="
+      before_dash_dash: true
+    cardinality: required_one
+  - &2
+    name: input_path
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  - kind: move_path
+    target:
+      kind: slot
+      name: input_path
+    host_risk:
+      semantic_class: move_source_path
+  - kind: write_path
+    target:
+      kind: slot
+      name: destination_path
+- id: metadata_assignment
+  selector:
+    kind: any
+    items:
+    - kind: all
+      items:
+      - kind: all
+        items:
+        - kind: all
+          items:
+          - &3
+            kind: any
+            items:
+            - kind: has_modifier_parameter_matching
+              modifier: description
+              parameter: metadata_value
+              matcher:
+                kind: regex_pattern
+                pattern: ".*"
+            - kind: has_modifier
+              modifier: description_file
+          - kind: not
+            item: &4
+              kind: has_modifier_parameter_matching
+              modifier: filename
+              parameter: destination_path
+              matcher:
+                kind: regex_pattern
+                pattern: ".+"
+        - kind: not
+          item: *1
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: information
+    - &5
+      kind: has_argument_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: ^["']?-description<?=
+  parameters:
+  - *2
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  - kind: write_path
+    target:
+      kind: slot
+      name: input_path
+- id: metadata_output
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: all
+        items:
+        - kind: has_modifier
+          modifier: output_file
+        - kind: not
+          item: *3
+        - kind: not
+          item: *4
+      - kind: not
+        item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - *2
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+- id: conditional_perl
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: all
+        items:
+        - kind: has_modifier
+          modifier: conditional
+        - kind: not
+          item: *3
+        - kind: not
+          item: *4
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: output_file
+      - kind: not
+        item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - *2
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+- id: metadata_query
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: all
+        items:
+        - kind: all
+          items:
+          - kind: not
+            item:
+              kind: has_modifier
+              modifier: conditional
+          - kind: not
+            item: *3
+          - kind: not
+            item: *4
+          - kind: not
+            item:
+              kind: has_modifier
+              modifier: output_file
+        - kind: not
+          item: *1
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: information
+    - kind: not
+      item: *5
+  parameters:
+  - *2
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+modifiers:
+- id: filename
+  matcher:
+    kind: any_flag
+    flags:
+    - "-filename"
+  parameters: []
+- id: description
+  matcher:
+    kind: any_flag
+    flags:
+    - "-description"
+  parameters:
+  - name: metadata_value
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: optional_inline_or_short_attached
+    cardinality: optional_one
+- id: description_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-description<"
+  parameters:
+  - name: metadata_source
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: inline_or_short_attached
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: metadata_source
+- id: output_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-W"
+  parameters:
+  - name: output_path
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: output_path
+- id: conditional
+  matcher:
+    kind: any_flag
+    flags:
+    - "-if"
+  parameters:
+  - name: conditional_code
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: conditional_code
+- id: exclude_filename
+  matcher:
+    kind: any_flag
+    flags:
+    - "--filename"
+  parameters: []
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "-help"
+    - "-ver"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://exiftool.org/exiftool_pod2.html
+  - https://exiftool.org/filename.html
+  - https://gtfobins.org/gtfobins/exiftool/
+  caushell.profile/known_limitations:
+  - The declared FileName and Description CLI forms distinguish rename, metadata writes,
+    tag-file reads and -W exports. Other tags, native filename formatting codes and
+    general metadata expression grammar remain unresolved.
+  - The exact-name option scanner cannot currently recognize single-dash multi-character
+    inline assignments generally. The declared leading -filename= prefix is handled
+    without losing source-move and destination-write facts; reordered/quoted assignments
+    remain unresolved and are not counted as full coverage.
+  - Native embedded Perl configuration/condition expressions are an opaque non-shell
+    execution boundary, not assumed to follow the standalone perl command adapter
+    grammar.
+  - Quoted Description assignments are recognized as target-file metadata writes,
+    but the shared raw-prefix binding cannot fully decode their native tag/value or
+    quoted <= source path. The residual remains explicit approval and partial source
+    coverage; no quote-stripping command-name special case is added.

@@ -1,0 +1,114 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: update-alternatives
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+- id: install_link
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: install
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: list
+  parameters:
+  - name: link_path
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: group_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: target_path
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: priority
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: link_path
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: tool_config
+- id: list_links
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: list
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: install
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: tool_config
+  parameters:
+  - name: group_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+modifiers:
+- id: install
+  matcher:
+    kind: any_flag
+    flags:
+    - "--install"
+- id: list
+  matcher:
+    kind: any_flag
+    flags:
+    - "--list"
+    - "--display"
+    - "--query"
+- id: force
+  matcher:
+    kind: any_flag
+    flags:
+    - "--force"
+extensions:
+  caushell.profile/source_research:
+  - https://manpages.debian.org/unstable/dpkg/update-alternatives.1.en.html
+  caushell.profile/known_limitations:
+  - "--install creates or updates a symlink at the explicit link path and updates
+    alternatives administration state, whose path is unknown."
+  - Selection/group state and platform-specific database behavior are not expanded;
+    force does not change the declared write targets.

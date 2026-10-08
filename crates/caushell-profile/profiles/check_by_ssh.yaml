@@ -1,0 +1,73 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity:
+  canonical_name: check_by_ssh
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families: [posix, linux]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: remote_check
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: host}
+        - {kind: has_modifier, modifier: command}
+    parameters:
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: remote_host}}
+      - {kind: execute_remote_command, target: {kind: slot, name: remote_command}}
+
+modifiers:
+  - id: host
+    matcher: {kind: any_flag, flags: ["-H", "--hostname"]}
+    parameters:
+      - name: remote_host
+        semantic: {kind: endpoint, endpoint_kind: host_port, usage: control_plane}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: command
+    matcher: {kind: any_flag, flags: ["-C", "--command"]}
+    parameters:
+      - name: remote_command
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: ssh_option
+    matcher: {kind: any_flag, flags: ["-o", "--ssh-option"]}
+    parameters:
+      - name: ssh_options
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: optional_many
+        structured_projection:
+          first_match_only: true
+          branches:
+            - matcher:
+                kind: keyword_value
+                keyword: ProxyCommand
+                case_insensitive: true
+                allow_quoted_keyword: true
+                disabled_values: [none]
+                unresolved_markers: ['%']
+              target: {name: proxy_command, semantic: {kind: plain_value}}
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command_string: {slot: proxy_command, syntax: posix_shell}
+
+extensions:
+  caushell.profile/known_limitations:
+    - ProxyCommand uses a declared keyword/value grammar followed by the existing nested POSIX-shell dispatch. The first matching value wins; none disables it. OpenSSH percent substitutions are unresolved and require approval, not guessed or expanded by this static guard. Proxy stdout is SSH transport, not declared as parent command stdout.
+    - Upstream GTFOBins warns that default Nagios Plugins check_by_ssh 2.4.5 and later rejects its interactive ProxyCommand recipe; this profile models the option's documented shell semantics, not that version-sensitive exploit outcome.

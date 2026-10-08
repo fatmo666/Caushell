@@ -24,6 +24,7 @@ pub enum RuleId {
     TerminalSessionOperation,
     CwdOutsideWorkspaceRoot,
     OutsideWorkspaceMutation,
+    ProcessControl,
     OutsideWorkspaceScriptSource,
     OutsideWorkspaceStartupConfig,
     MissingCommandName,
@@ -65,6 +66,7 @@ impl RuleId {
             }
             Self::CwdOutsideWorkspaceRoot => RuleFamily::Path,
             Self::OutsideWorkspaceMutation => RuleFamily::Path,
+            Self::ProcessControl => RuleFamily::HostSafety,
             Self::OutsideWorkspaceScriptSource => RuleFamily::Path,
             Self::OutsideWorkspaceStartupConfig => RuleFamily::Path,
             Self::MissingCommandName => RuleFamily::ResolveGap,
@@ -110,6 +112,7 @@ mod tests {
             RuleFamily::InteractiveControl
         );
         assert_eq!(RuleId::CwdOutsideWorkspaceRoot.family(), RuleFamily::Path);
+        assert_eq!(RuleId::ProcessControl.family(), RuleFamily::HostSafety);
         assert_eq!(
             RuleId::OutsideWorkspaceScriptSource.family(),
             RuleFamily::Path

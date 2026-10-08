@@ -1,0 +1,47 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: pkexec, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: authorized_child_keep_cwd
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: keep_cwd}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: privilege_modifier, target: {kind: none}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true, unknown_environment_names: [HOME, USER, LOGNAME, PKEXEC_UID]}}
+  - id: authorized_child
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: keep_cwd}}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: privilege_modifier, target: {kind: none}}
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [], missing: unknown}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true, unknown_environment_names: [HOME, USER, LOGNAME, PKEXEC_UID]}}
+
+modifiers:
+  - {id: user, matcher: {kind: any_flag, flags: ['-u', '--user']}, parameters: [{name: target_user, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['--version']}}
+  - {id: keep_cwd, matcher: {kind: any_flag, flags: ['--keep-cwd']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/pkexec/
+    - https://polkit.pages.freedesktop.org/polkit/pkexec.1.html
+  caushell.profile/scope: The profile models only an explicit child command and argv after policy authorization. Target identity and HOME/USER/LOGNAME/PKEXEC_UID are unknown because policy selects them. Default invocation also gets an unknown child cwd; --keep-cwd preserves caller cwd and has a separate form with no cwd mutation. Polkit policy, authentication, and no-command default behavior are not inferred; no child means unresolved.

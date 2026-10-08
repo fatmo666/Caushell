@@ -12,8 +12,9 @@ use crate::path::{
     collect_redirection_path_facts, provenance_artifact_for_path, provenance_path_artifact_node_id,
 };
 use crate::support::{
+    EffectiveStdinSource, effective_stdin_source, execution_content_io_target,
     graph_backed_execution_resolve_records, redirection_parent_command_index,
-    redirection_targets_stdin_payload, source_node_id_for_redirection,
+    redirection_targets_stdin_payload, source_node_id_for_redirection, stream_provenance_mutations,
 };
 
 pub struct ExtractRedirectProvenancePass;
@@ -29,6 +30,11 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
         let home = ctx.request().home.as_deref();
 
         for record in graph_backed_execution_resolve_records(ctx) {
+            if matches!(record.result(), ResolveInvocationArtifactResult::Resolved(resolved)
+                if resolved.proven_stream_contract().is_some_and(|contract| contract.stdin_mode == caushell_profile::StreamInputMode::Ignored))
+            {
+                continue;
+            }
             let parsed_scope = record.parsed_scope();
             let normalized_command_name = match record.result() {
                 ResolveInvocationArtifactResult::Resolved(resolved) => {
@@ -38,16 +44,88 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
             };
             let path_by_redirection_index = redirection_paths_by_index(parsed_scope, cwd, home);
 
-            for (redirection_index, redirection) in parsed_scope.redirections.iter().enumerate() {
-                if redirection_parent_command_index(parsed_scope, redirection)
-                    != Some(record.command_index())
+            // A descriptor alias retains the original source; an overwritten
+            // redirect is not input consumed by this command.
+            let stdin_source = effective_stdin_source(parsed_scope, record.command_index());
+            if let EffectiveStdinSource::Redirect(redirection_index)
+            | EffectiveStdinSource::UnknownDescriptor(redirection_index) = stdin_source
+            {
+                let redirection = &parsed_scope.redirections[redirection_index];
+                if matches!(stdin_source, EffectiveStdinSource::UnknownDescriptor(_))
+                    || path_by_redirection_index
+                        .get(&redirection_index)
+                        .is_some_and(|path| {
+                            caushell_query::IoTargetQuery::descriptor_alias(path).is_some()
+                        })
                 {
+                    // Consumption sees the final stdin snapshot; an alias
+                    // opened earlier retains its inherited backing source even
+                    // if that original FD was rebound afterwards.
+                    let shell_cwd = ctx
+                        .known_effective_cwd_for_node(record.source_node_id())
+                        .unwrap_or(cwd);
+                    let target = execution_content_io_target(
+                        ctx,
+                        record.source_node_id(),
+                        parsed_scope,
+                        record.command_index(),
+                        None,
+                        &caushell_types::PathResolution::Concrete {
+                            path: "/dev/stdin".into(),
+                        },
+                        false,
+                        shell_cwd,
+                        home,
+                    );
+                    match target {
+                        caushell_query::IoTarget::Path {
+                            resolution,
+                            cwd_dependent,
+                        } => {
+                            if let Some(path) = resolution.concrete_path().filter(|_| {
+                                !cwd_dependent
+                                    || ctx
+                                        .effective_cwd_for_node(record.source_node_id())
+                                        .is_none_or(|cwd| !cwd.has_unknown())
+                            }) {
+                                mutations.extend(project_stdin_redirection_provenance_mutation(
+                                    ctx.request().sequence_no.0,
+                                    record.source_node_id(),
+                                    normalized_command_name.clone(),
+                                    redirection_index,
+                                    redirection,
+                                    Some(&path.to_string()),
+                                ));
+                            }
+                        }
+                        _ if matches!(stdin_source, EffectiveStdinSource::UnknownDescriptor(_)) => {
+                            // Still unknown: keep the established runtime-input
+                            // fallback, not an invented concrete stdin source.
+                        }
+                        target => {
+                            let mut projected = stream_provenance_mutations(
+                                ctx,
+                                Some(record),
+                                record.source_node_id(),
+                                &target,
+                                caushell_profile::PathRole::Read,
+                                &stdin_redirection_slot_name(redirection, redirection_index),
+                                normalized_command_name.as_deref(),
+                            );
+                            for mutation in &mut projected {
+                                if let PendingMutation::AddProvenanceArtifact {
+                                    semantics: ProvenanceEdgeSemantics::Consume { consume_kind, .. },
+                                    ..
+                                } = mutation
+                                {
+                                    *consume_kind = ProvenanceConsumeKind::StdinExplicit;
+                                }
+                            }
+                            mutations.extend(projected);
+                        }
+                    }
                     continue;
                 }
-                if !redirection_targets_stdin_payload(redirection) {
-                    continue;
-                }
-
                 let Some(mutation) = project_stdin_redirection_provenance_mutation(
                     ctx.request().sequence_no.0,
                     record.source_node_id(),
@@ -246,6 +324,45 @@ mod tests {
 
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
+    }
+
+    #[test]
+    fn redirect_sources_select_only_effective_input_and_keep_alias_origin() {
+        for (command, expected) in [
+            ("bash < old.sh <<< 'printf SAFE'", Some(1)),
+            ("bash 3<<<'printf SAFE' 0<&3", Some(0)),
+            ("bash <<< 'printf SAFE' 0<&2", None),
+            ("bash <<< 'printf SAFE' 0<&-", None),
+        ] {
+            let ctx = run_pass(command);
+            let sources: Vec<_> = ctx
+                .pending_mutations()
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    PendingMutation::AddProvenanceArtifact {
+                        artifact: ProvenanceArtifact::InlineShellContent { text, .. },
+                        semantics:
+                            ProvenanceEdgeSemantics::Consume {
+                                consume_kind: ProvenanceConsumeKind::StdinExplicit,
+                                slot_name,
+                                ..
+                            },
+                        ..
+                    } => Some((text.clone(), slot_name.clone())),
+                    _ => None,
+                })
+                .collect();
+            let wanted: Vec<_> = expected
+                .into_iter()
+                .map(|index| {
+                    (
+                        "printf SAFE".to_string(),
+                        Some(format!("redirect_content_{index}")),
+                    )
+                })
+                .collect();
+            assert_eq!(sources, wanted, "{command}: {:?}", ctx.pending_mutations());
+        }
     }
 
     #[test]

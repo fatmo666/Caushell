@@ -1,0 +1,56 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: sysctl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: set_kernel_parameter
+    selector:
+      kind: any
+      items:
+        - {kind: has_modifier, modifier: write}
+        - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '='}}
+    parameters:
+      - {name: assignments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: read_or_list_kernel_parameters
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: write}}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '='}}}
+    parameters:
+      - {name: parameter_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: read_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: list_kernel_parameters
+    selector:
+      kind: all
+      items:
+        - {kind: no_positional_args}
+        - {kind: not, item: {kind: has_modifier, modifier: write}}
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+    effects: [{kind: read_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: show_help
+    selector: {kind: has_modifier, modifier: help}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q', '--quiet']}}
+  - {id: all, matcher: {kind: any_flag, flags: ['-a', '--all']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: values_only, matcher: {kind: any_flag, flags: ['-n', '--values']}}
+  - {id: write, matcher: {kind: any_flag, flags: ['-w', '--write']}}
+extensions:
+  caushell.profile/source_research:
+    - https://man7.org/linux/man-pages/man8/sysctl.8.html
+    - https://man7.org/linux/man-pages/man5/proc_sys_fs.5.html
+    - https://man7.org/linux/man-pages/man5/core.5.html
+  caushell.profile/known_limitations:
+    - sysctl parameter names address kernel control values, not ordinary filesystem paths; the profile deliberately does not construct a local file target from kernel.core_pattern or a dotted parameter.
+    - Assignments change kernel control values. The write is represented with an untargeted effect and no local path fact. A core_pattern pipe value may configure a command for a later kernel core event; it is not executed by sysctl itself and is not parsed as Bash here.
+    - Legacy slash/traversal reads shown by the source snapshot (sysctl/procps versions < 4) have an unknown control-key-to-file target mapping; the effect is an untargeted read and no concrete file path is fabricated. Current procps implementations restrict keys to procfs paths. Runtime implementation version, kernel values, and permissions are not probed.

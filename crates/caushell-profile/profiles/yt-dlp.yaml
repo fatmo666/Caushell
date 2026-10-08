@@ -1,0 +1,192 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: yt-dlp
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  - windows
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+- id: download_with_shell_exec
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: has_modifier
+      modifier: exec
+    - kind: has_modifier_parameter_matching
+      modifier: exec
+      parameter: raw_exec_text
+      matcher:
+        kind: regex_pattern
+        pattern: "^[A-Za-z0-9_./ -]+[ ]#[A-Za-z0-9_./ -]*$"
+  parameters:
+  - name: media_urls
+    semantic:
+      kind: endpoint
+      endpoint_kind: url
+      usage: fetch_source
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  - name: exec_payload
+    semantic:
+      kind: payload
+      language: sh
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--exec"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: network_endpoint
+    target:
+      kind: slot
+      name: media_urls
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: exec_payload
+- id: download_with_opaque_exec_template
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: has_modifier
+      modifier: exec
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: exec
+        parameter: raw_exec_text
+        matcher:
+          kind: regex_pattern
+          pattern: "^[A-Za-z0-9_./ -]+[ ]#[A-Za-z0-9_./ -]*$"
+  parameters:
+  - name: media_urls
+    semantic:
+      kind: endpoint
+      endpoint_kind: url
+      usage: fetch_source
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  - name: exec_text
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--exec"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: network_endpoint
+    target:
+      kind: slot
+      name: media_urls
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: exec_text
+- id: download_media
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: exec
+  parameters:
+  - name: media_urls
+    semantic:
+      kind: endpoint
+      endpoint_kind: url
+      usage: fetch_source
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: network_endpoint
+    target:
+      kind: slot
+      name: media_urls
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: exec
+  matcher:
+    kind: any_flag
+    flags:
+    - "--exec"
+  parameters:
+  - name: raw_exec_text
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-h"
+    - "--version"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/yt-dlp (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://github.com/yt-dlp/yt-dlp/blob/master/README.md
+  - https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/yt_dlp/postprocessor/exec.py
+  caushell.profile/known_limitations:
+  - 'Native --exec formats templates and otherwise replaces/appends a quoted output
+    filename. Only a bounded ASCII unquoted literal command followed by a real shell
+    comment is parsed as unchanged shell code: that comment neutralizes the appended
+    filename. Quotes, escapes, expansions, stage prefixes, output templates, and all
+    other callbacks remain typed opaque executable text; no generated native command
+    or filename is fabricated.'
+  - Media URLs are network fetch sources. Output names and download/post-processing
+    behavior are configured by yt-dlp and are retained as unknown output paths.
+  - The GTFOBins example requires a valid media URL and a completed download; this
+    profile is static and does not fetch content.

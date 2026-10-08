@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: arp, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: load_entries_from_file
+    selector: {kind: has_modifier, modifier: file}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: entry_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+  - id: display_or_manage_cache
+    selector: {kind: not, item: {kind: has_modifier, modifier: file}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+modifiers:
+  - id: file
+    matcher: {kind: any_flag, flags: ['-f', '--file']}
+    parameters: [{name: entry_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: verbose, matcher: {kind: any_flag, flags: ['-v', '--verbose']}}
+  - {id: numeric, matcher: {kind: any_flag, flags: ['-n', '--numeric']}}
+  - {id: all, matcher: {kind: any_flag, flags: ['-a', '--all']}}
+extensions:
+  caushell.profile/source_research: [https://man7.org/linux/man-pages/man8/arp.8.html]
+  caushell.profile/known_limitations:
+    - -f loads ARP entry records from the named file; file contents can alter system neighbor state. The profile records the actual file read but the record grammar and resulting kernel mutations are not expanded into individual effects.
+    - The source recipe's verbose diagnostic leakage is not modeled as reliable file-content output; dynamic kernel permissions and resulting ARP state are outside the static Graph.

@@ -1,0 +1,17 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: rlogin, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: rlogin_remote_session
+    selector: {kind: all, items: []}
+    parameters: [{name: remote_host, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: last_positional}, cardinality: required_one}, {name: remote_user, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: -l, operand_mode: next_arg}, cardinality: optional_one}, {name: remote_port, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: -p, operand_mode: next_arg}, cardinality: optional_one}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: remote_host}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/rlogin (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://man7.org/linux/man-pages/man1/rlogin.1.html"]
+  caushell.profile/known_limitations: ["The source writes DATA through the -l login name and uses -p for port selection; this is not an upload command and its leading/trailing data corruption is preserved as a source limitation.", "Remote rlogin protocol, server behavior and session contents are not modeled."]

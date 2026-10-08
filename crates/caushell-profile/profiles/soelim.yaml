@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: soelim, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: expand_so_requests
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: read_path, target: {kind: none}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: expand_so_requests_from_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}}
+        - kind: any
+          items:
+            - {kind: no_positional_args}
+            - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters: [{name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: expand_so_requests_with_stdin_and_files
+    selector: {kind: all, items: [{kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}]}
+    parameters:
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: required_one}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: compatibility, matcher: {kind: any_flag, flags: ['-C']}}
+  - id: include_directory
+    matcher: {kind: any_flag, flags: ['-I']}
+    parameters: [{name: include_directories, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+subcommands: null
+extensions:
+  caushell.profile/source: https://man7.org/linux/man-pages/man1/soelim.1.html
+  caushell.profile/known_limitations:
+    - .so requests cause additional files to be opened; the included paths cannot be enumerated from top-level argv with this DSL. Unknown content reads are retained with target none.
+    - Included content may itself contain further .so requests; recursive expansion is not resolved statically.

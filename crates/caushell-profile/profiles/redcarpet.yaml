@@ -1,0 +1,20 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: redcarpet, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: render_markdown_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: exclude_literal, value: '-'}]}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/vmg/redcarpet
+    - https://gtfobins.org/gtfobins/redcarpet/
+  caushell.profile/scope: Models only the fixed one-file Markdown parsing form. Rendered stdout and parse diagnostics may depend on input content. The bundled CLI's full option grammar, stdin behavior, and any additional command-line inputs are not claimed.

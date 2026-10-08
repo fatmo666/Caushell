@@ -1,0 +1,66 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: run-mailcap, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: view_mailcap_file
+    selector: {kind: all, items: [{kind: has_modifier_parameter_matching, modifier: action, parameter: action_name, matcher: {kind: literal, value: view}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(text/plain|application/octet-stream):/'}}]}
+    parameters:
+      - name: mailcap_target
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: required_one
+        structured_projection:
+          separator: ':'
+          branches: [{matcher: {kind: literal, value: text/plain}}, {matcher: {kind: literal, value: application/octet-stream}}]
+          fallback: {name: input_file, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects: [{kind: read_path, target: {kind: slot, name: input_file}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [run_command, launch_external_editor]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: edit_mailcap_file
+    selector: {kind: all, items: [{kind: has_modifier_parameter_matching, modifier: action, parameter: action_name, matcher: {kind: literal, value: edit}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(text/plain|application/octet-stream):/'}}]}
+    parameters:
+      - name: mailcap_target
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: required_one
+        structured_projection:
+          separator: ':'
+          branches: [{matcher: {kind: literal, value: text/plain}}, {matcher: {kind: literal, value: application/octet-stream}}]
+          fallback: {name: edited_file, semantic: {kind: path, role: write, purpose: generic_operand}}
+    effects: [{kind: read_path, target: {kind: slot, name: edited_file}}, {kind: write_path, target: {kind: slot, name: edited_file}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [run_command, spawn_shell, write_buffer_to_path]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: view_mailcap_positional_action
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: view}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(text/plain|application/octet-stream):/'}}]}
+    parameters:
+      - name: mailcap_target
+        semantic: {kind: plain_value}
+        binding: {kind: positional_at, index: 1}
+        cardinality: required_one
+        structured_projection:
+          separator: ':'
+          branches: [{matcher: {kind: literal, value: text/plain}}, {matcher: {kind: literal, value: application/octet-stream}}]
+          fallback: {name: input_file, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects: [{kind: read_path, target: {kind: slot, name: input_file}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [run_command, launch_external_editor]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: edit_mailcap_positional_action
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: edit}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(text/plain|application/octet-stream):/'}}]}
+    parameters:
+      - name: mailcap_target
+        semantic: {kind: plain_value}
+        binding: {kind: positional_at, index: 1}
+        cardinality: required_one
+        structured_projection:
+          separator: ':'
+          branches: [{matcher: {kind: literal, value: text/plain}}, {matcher: {kind: literal, value: application/octet-stream}}]
+          fallback: {name: edited_file, semantic: {kind: path, role: write, purpose: generic_operand}}
+    effects: [{kind: read_path, target: {kind: slot, name: edited_file}}, {kind: write_path, target: {kind: slot, name: edited_file}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [run_command, spawn_shell, write_buffer_to_path]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: action
+    matcher: {kind: any_flag, flags: [--action]}
+    parameters: [{name: action_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/run-mailcap (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/unstable/mime-support/run-mailcap.1.en.html"]
+  caushell.profile/known_limitations: ["The profile projects text/plain and application/octet-stream MIME targets with an absolute path; other MIME types and path spellings remain unresolved rather than being guessed from extensions.", "Viewer/editor dispatch and the selected pager depend on the mailcap database. The profile records a possible native surface and never fabricates the configured child argv.", "Edit requires an existing nonempty target according to the source. Successful file writes and editor selection are runtime-dependent."]

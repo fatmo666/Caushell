@@ -1,0 +1,177 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: nft
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+- id: execute_ruleset_file
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: file
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: file
+        parameter: ruleset_payloads
+        matcher:
+          kind: literal
+          value: "-"
+  effects:
+  - kind: read_path
+    path_access: content_open
+    target:
+      kind: slot
+      name: ruleset_paths
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: ruleset_payloads
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: unknown
+- id: execute_ruleset_stdin
+  selector:
+    kind: has_modifier_parameter_matching
+    modifier: file
+    parameter: ruleset_payloads
+    matcher:
+      kind: literal
+      value: "-"
+  implicit_inputs:
+  - source: stdin_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: stdin
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: stdin_payload
+  stream_contract:
+    stdin_mode: payload_required
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: unknown
+- id: direct_ruleset_operation
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: file
+    - &1
+      kind: any
+      items:
+      - kind: no_positional_args
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: list
+  parameters:
+  - name: operation_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+- id: opaque_direct_ruleset_operation
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: file
+    - kind: not
+      item: *1
+  parameters:
+  - name: operation_arguments
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: operation_arguments
+modifiers:
+- id: file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+    - "--file"
+  parameters:
+  - name: ruleset_payloads
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches:
+      - matcher:
+          kind: literal
+          value: "-"
+      fallback:
+        name: ruleset_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    path_access: content_open
+    target:
+      kind: slot
+      name: ruleset_paths
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: ruleset_payloads
+extensions:
+  caushell.profile/source_research:
+  - https://wiki.nftables.org/wiki-nftables/index.php/Scripting
+  - https://manpages.debian.org/bookworm/nftables/nft.8.en.html
+  caushell.profile/known_limitations:
+  - nft -f reads nftables' native ruleset language and applies system rules. Input
+    is opaque executable payload under the existing policy; no Bash parser or rule-specific
+    effect inference is used.
+  - The parser may process include directives and other runtime-selected files; those
+    transitive reads are not statically expanded.

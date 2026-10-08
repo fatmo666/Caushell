@@ -152,6 +152,13 @@ pub enum PackageLocatorKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProvenanceArtifact {
+    /// A statically identified inherited stream, not captured runtime bytes.
+    DescriptorStream {
+        scope: String,
+        descriptor: String,
+        unresolved: bool,
+        version: u64,
+    },
     PathContent {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,6 +259,7 @@ pub enum ProvenanceConsumeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceProduceKind {
+    StreamWrite,
     PathWrite,
     VariableBinding,
     PipelineOutput,
@@ -271,6 +279,21 @@ pub enum ProvenanceDomainLabel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         purpose: Option<ResolvedPathPurpose>,
     },
+    /// Dependency of this particular output, not a sanitizer for the producer.
+    StreamOutput {
+        dependency: StreamDataDependency,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        domain: Option<Box<ProvenanceDomainLabel>>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamDataDependency {
+    #[default]
+    Unknown,
+    Inputs,
+    Independent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -307,6 +330,58 @@ mod tests {
     };
     use crate::{CommandSequenceNo, ResolvedPathPurpose, ResolvedPathRole};
     use serde_json::json;
+
+    #[test]
+    fn stream_dependency_roundtrips_without_erasing_path_domain() {
+        for dependency in [
+            super::StreamDataDependency::Unknown,
+            super::StreamDataDependency::Inputs,
+            super::StreamDataDependency::Independent,
+        ] {
+            let semantics = ProvenanceEdgeSemantics::Produce {
+                produce_kind: ProvenanceProduceKind::PathWrite,
+                slot_name: Some("redirect_target_0".into()),
+                normalized_command_name: None,
+                domain_label: Some(ProvenanceDomainLabel::StreamOutput {
+                    dependency,
+                    domain: Some(Box::new(ProvenanceDomainLabel::Path {
+                        role: ResolvedPathRole::Write,
+                        purpose: None,
+                    })),
+                }),
+            };
+            let json = serde_json::to_string(&semantics).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ProvenanceEdgeSemantics>(&json).unwrap(),
+                semantics
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_stream_and_stream_write_have_roundtrip_contracts() {
+        for unresolved in [false, true] {
+            let artifact = ProvenanceArtifact::DescriptorStream {
+                scope: "command:test:1".into(),
+                descriptor: "3".into(),
+                unresolved,
+                version: 1,
+            };
+            let encoded = serde_json::to_value(&artifact).unwrap();
+            assert_eq!(encoded["kind"], "descriptor_stream");
+            assert_eq!(encoded["unresolved"], unresolved);
+            assert_eq!(
+                serde_json::from_value::<ProvenanceArtifact>(encoded).unwrap(),
+                artifact
+            );
+        }
+        let value = serde_json::to_value(ProvenanceProduceKind::StreamWrite).unwrap();
+        assert_eq!(value, json!("stream_write"));
+        assert_eq!(
+            serde_json::from_value::<ProvenanceProduceKind>(value).unwrap(),
+            ProvenanceProduceKind::StreamWrite
+        );
+    }
 
     #[test]
     fn yum_package_manager_round_trips_without_changing_existing_variants() {

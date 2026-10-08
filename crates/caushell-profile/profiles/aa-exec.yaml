@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: aa-exec, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: execute_command
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}
+
+modifiers:
+  - id: profile
+    matcher: {kind: any_flag, flags: ['-p', '--profile']}
+    parameters: [{name: profile_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: namespace
+    matcher: {kind: any_flag, flags: ['-n', '--namespace']}
+    parameters: [{name: namespace_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: immediate, matcher: {kind: any_flag, flags: ['-i', '--immediate']}}
+  - {id: verbose, matcher: {kind: any_flag, flags: ['-v', '--verbose']}}
+  - {id: debug, matcher: {kind: any_flag, flags: ['-d', '--debug']}}
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/bookworm/apparmor/aa-exec.1.en.html
+    - GTFOBins fixed snapshot aa-exec/shell/0
+  caushell.profile/scope: Recognizes the documented profile, namespace, immediate, verbosity, and debug options before a child command. The command is dispatched as argv; confinement success, loaded profiles, namespaces, and AppArmor policy are not probed. Missing commands and unrecognized parent options remain unresolved.

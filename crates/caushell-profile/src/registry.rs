@@ -16,6 +16,9 @@ pub struct RegistryLookupResult<'a> {
 pub struct ProfileRegistry {
     profiles: Vec<CommandProfile>,
     name_index: BTreeMap<String, usize>,
+    module_index: BTreeMap<String, BTreeMap<String, usize>>,
+    runtime_variable_writers: std::collections::BTreeSet<String>,
+    shell_terminators: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -72,18 +75,42 @@ impl ProfileRegistry {
 
     pub fn from_profiles(profiles: Vec<CommandProfile>) -> Result<Self, RegistryError> {
         let mut name_index = BTreeMap::new();
+        let mut module_index: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut runtime_variable_writers = std::collections::BTreeSet::new();
+        let mut shell_terminators = std::collections::BTreeSet::new();
 
         for (index, profile) in profiles.iter().enumerate() {
-            register_name(&mut name_index, &profiles, index, profile.primary_name())?;
+            if profile_runtime_variable_writer(profile) {
+                runtime_variable_writers.insert(profile.primary_name().to_string());
+            }
+            if profile_has_effect(profile, crate::EffectKind::TerminateCurrentShell) {
+                shell_terminators.insert(profile.primary_name().to_string());
+            }
+            if !profile.identity.module_only {
+                register_name(&mut name_index, &profiles, index, profile.primary_name())?;
 
-            for alias in &profile.identity.aliases {
-                register_name(&mut name_index, &profiles, index, alias.as_str())?;
+                for alias in &profile.identity.aliases {
+                    register_name(&mut name_index, &profiles, index, alias.as_str())?;
+                }
+            }
+            for entry in &profile.identity.module_entrypoints {
+                let names = module_index.entry(entry.runtime.clone()).or_default();
+                if let Some(first) = names.insert(entry.name.clone(), index) {
+                    return Err(RegistryError::DuplicateName {
+                        name: format!("{}:{}", entry.runtime, entry.name),
+                        first_profile: profiles[first].primary_name().into(),
+                        second_profile: profile.primary_name().into(),
+                    });
+                }
             }
         }
 
         Ok(Self {
             profiles,
             name_index,
+            module_index,
+            runtime_variable_writers,
+            shell_terminators,
         })
     }
 
@@ -131,6 +158,31 @@ impl ProfileRegistry {
         &self.profiles
     }
 
+    /// Derived once at registry load; no command-name special cases or DSL additions.
+    pub fn may_write_runtime_variable(&self, command_name: &str) -> bool {
+        if let Some(index) = self.name_index.get(command_name) {
+            return self
+                .runtime_variable_writers
+                .contains(self.profiles[*index].primary_name());
+        }
+        self.lookup(command_name).profile.is_some_and(|profile| {
+            self.runtime_variable_writers
+                .contains(profile.primary_name())
+        })
+    }
+
+    /// Registry-derived candidate index, shared by any declared shell terminator.
+    pub fn may_terminate_shell(&self, name: &str) -> bool {
+        if let Some(index) = self.name_index.get(name) {
+            return self
+                .shell_terminators
+                .contains(self.profiles[*index].primary_name());
+        }
+        self.lookup(name)
+            .profile
+            .is_some_and(|p| self.shell_terminators.contains(p.primary_name()))
+    }
+
     pub fn lookup(&self, command_name: &str) -> RegistryLookupResult<'_> {
         let exact_normalized_command_name =
             super::lookup::normalize_command_name_without_family_coalescing(command_name);
@@ -156,6 +208,43 @@ impl ProfileRegistry {
             profile,
         }
     }
+
+    pub fn lookup_module(&self, runtime: &str, module: &str) -> RegistryLookupResult<'_> {
+        let profile = self
+            .module_index
+            .get(runtime)
+            .and_then(|names| names.get(module))
+            .map(|index| &self.profiles[*index]);
+        RegistryLookupResult {
+            normalized_command_name: profile
+                .map_or_else(|| module.to_string(), |p| p.primary_name().to_string()),
+            profile,
+        }
+    }
+}
+
+fn profile_runtime_variable_writer(profile: &CommandProfile) -> bool {
+    profile_has_effect(profile, crate::EffectKind::BindVariableFromRuntimeInput)
+}
+
+fn profile_has_effect(profile: &CommandProfile, kind: crate::EffectKind) -> bool {
+    fn effects(effects: &[crate::Effect], kind: crate::EffectKind) -> bool {
+        effects.iter().any(|e| e.kind == kind)
+    }
+    fn nodes(entries: &[crate::SubcommandNode], kind: crate::EffectKind) -> bool {
+        entries.iter().any(|n| {
+            n.forms.iter().any(|f| effects(&f.effects, kind))
+                || n.modifiers.iter().any(|m| effects(&m.effects, kind))
+                || nodes(&n.children, kind)
+        })
+    }
+    profile.forms.iter().any(|f| effects(&f.effects, kind))
+        || profile.modifiers.iter().any(|m| effects(&m.effects, kind))
+        || effects(&profile.selection_failure_effects, kind)
+        || profile
+            .subcommands
+            .as_ref()
+            .is_some_and(|tree| nodes(&tree.roots, kind))
 }
 
 fn register_name(

@@ -1,0 +1,130 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: varnishncsa
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: write_selected_logs
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: output
+    - kind: not
+      item: &1
+        kind: has_modifier_parameter_matching
+        modifier: output
+        parameter: output_file
+        matcher:
+          kind: literal
+          value: "-"
+  parameters: []
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: output_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+- id: stream_selected_logs
+  selector:
+    kind: any
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: output
+    - *1
+  parameters: []
+  effects: []
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: independent
+modifiers:
+- id: output
+  matcher:
+    kind: any_flag
+    flags:
+    - "-w"
+  parameters:
+  - name: output_file
+    semantic: &2
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: query
+  matcher:
+    kind: any_flag
+    flags:
+    - "-q"
+  parameters:
+  - name: query
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: group
+  matcher:
+    kind: any_flag
+    flags:
+    - "-g"
+  parameters:
+  - name: grouping
+    semantic: *2
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: format
+  matcher:
+    kind: any_flag
+    flags:
+    - "-F"
+  parameters:
+  - name: format_string
+    semantic:
+      kind: structured_value
+      context: format_string
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: append
+  matcher:
+    kind: any_flag
+    flags:
+    - "-a"
+extensions:
+  caushell.profile/source_research:
+  - https://varnish-cache.org/docs/7.2/reference/varnishncsa.html
+  caushell.profile/known_limitations:
+  - Reads request log records from a running varnishd instance; daemon availability
+    and traffic are external preconditions, not executed by profile tests.
+  - "-w writes selected log output to an explicit file. Format strings may reference
+    request data and are opaque values."
+  - Daemon connection/socket details and implementation-specific filtering are not
+    resolved.

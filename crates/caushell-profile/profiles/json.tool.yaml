@@ -1,0 +1,74 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: json.tool
+  module_only: true
+  module_entrypoints: [{runtime: python, name: json.tool}]
+trust: {tier: tier_a, source: built_in}
+# CPython v3.14.0 Lib/json/tool.py. Outfile "-" is a literal file, not stdout.
+forms:
+  - id: help
+    selector: {kind: has_modifier, modifier: help}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+  - id: file_to_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+        - {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+        - {kind: has_positional_at, index: 1}
+    parameters:
+      - {name: input, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input}}
+      - {kind: write_path, target: {kind: slot, name: output}}
+      - {kind: transform_data, target: {kind: none}}
+  - id: file_to_stdout
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+        - {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters:
+      - {name: input, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input}}
+      - {kind: transform_data, target: {kind: none}}
+  - id: stdin_to_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+        - {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}
+        - {kind: has_positional_at, index: 1}
+    parameters:
+      - {name: input, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+      - {name: output, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: write_path, target: {kind: slot, name: output}}
+      - {kind: transform_data, target: {kind: none}}
+  - id: stdin_to_stdout
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+        - {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters:
+      - {name: input, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: transform_data, target: {kind: none}}
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}, ends_option_scope: true}
+  - {id: formatting, matcher: {kind: any_flag, flags: ['--sort-keys', '--no-ensure-ascii', '--json-lines', '--tab', '--no-indent', '--compact']}}
+  - id: indent
+    matcher: {kind: any_flag, flags: ['--indent']}
+    parameters: [{name: indent, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]

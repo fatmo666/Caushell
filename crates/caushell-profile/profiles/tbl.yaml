@@ -1,0 +1,46 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: tbl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: preprocess_tables
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: preprocess_tables_from_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}}
+        - kind: any
+          items:
+            - {kind: no_positional_args}
+            - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters: [{name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: preprocess_tables_with_stdin_and_files
+    selector: {kind: all, items: [{kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}]}
+    parameters:
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: required_one}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/source: https://www.gnu.org/software/groff/manual/groff.html
+  caushell.profile/known_limitations:
+    - tbl preprocesses marked table regions and emits rewritten troff input; it is not the later troff formatter. Groff document inclusion requests are processed downstream, not by tbl itself.
+    - Unrecognized options are opaque. Input '-' is stdin data, not a filesystem path; mixed '-' and FILE operands are represented as two sources.

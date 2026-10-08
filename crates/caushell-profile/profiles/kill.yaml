@@ -21,11 +21,74 @@ platform:
     - dash
   requires_features: []
 
+# Unknown/conflicting option spellings must not silently enter a read-only form.
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
 forms:
+  - id: list_signals
+    selector:
+      kind: has_modifier
+      modifier: list_signals
+    parameters:
+      - name: signal_queries
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+
+  - id: probe_targets
+    selector: &probe_selector
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_signals
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: nonzero_signal
+        - kind: not
+          item:
+            kind: has_modifier_parameter_matching
+            modifier: signal
+            parameter: signal_spec
+            matcher:
+              kind: regex_pattern
+              pattern: "^([^0].*|0.+)$"
+        - kind: any
+          items:
+            - kind: has_modifier
+              modifier: zero_signal
+            - kind: has_modifier_parameter_matching
+              modifier: signal
+              parameter: signal_spec
+              matcher:
+                kind: literal
+                value: "0"
+    parameters:
+      - name: targets
+        semantic:
+          kind: process_target
+          target_kind: unknown
+          broad_match: false
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+
   - id: signal_targets
     selector:
-      kind: has_positional_at
-      index: 0
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: list_signals
+        - kind: not
+          item: *probe_selector
     parameters:
       - name: targets
         semantic:
@@ -42,11 +105,113 @@ forms:
           name: targets
 
 modifiers:
+  - id: list_signals
+    matcher:
+      kind: any_flag
+      flags: ["-l", "-L", "--list", "--table"]
+  - id: zero_signal
+    matcher:
+      kind: any_flag
+      flags: ["-0"]
+  - id: nonzero_signal
+    matcher:
+      kind: any_flag
+      flags:
+        - "-1"
+        - "-2"
+        - "-3"
+        - "-4"
+        - "-5"
+        - "-6"
+        - "-7"
+        - "-8"
+        - "-9"
+        - "-10"
+        - "-11"
+        - "-12"
+        - "-13"
+        - "-14"
+        - "-15"
+        - "-16"
+        - "-17"
+        - "-18"
+        - "-19"
+        - "-20"
+        - "-21"
+        - "-22"
+        - "-23"
+        - "-24"
+        - "-25"
+        - "-26"
+        - "-27"
+        - "-28"
+        - "-29"
+        - "-30"
+        - "-31"
+        - "-32"
+        - "-33"
+        - "-34"
+        - "-35"
+        - "-36"
+        - "-37"
+        - "-38"
+        - "-39"
+        - "-40"
+        - "-41"
+        - "-42"
+        - "-43"
+        - "-44"
+        - "-45"
+        - "-46"
+        - "-47"
+        - "-48"
+        - "-49"
+        - "-50"
+        - "-51"
+        - "-52"
+        - "-53"
+        - "-54"
+        - "-55"
+        - "-56"
+        - "-57"
+        - "-58"
+        - "-59"
+        - "-60"
+        - "-61"
+        - "-62"
+        - "-63"
+        - "-64"
+        - "-HUP"
+        - "-INT"
+        - "-QUIT"
+        - "-ILL"
+        - "-TRAP"
+        - "-ABRT"
+        - "-BUS"
+        - "-FPE"
+        - "-KILL"
+        - "-USR1"
+        - "-SEGV"
+        - "-USR2"
+        - "-PIPE"
+        - "-ALRM"
+        - "-TERM"
+        - "-CHLD"
+        - "-CONT"
+        - "-STOP"
+        - "-TSTP"
+        - "-TTIN"
+        - "-TTOU"
+        - "-SIGTERM"
+        - "-SIGKILL"
+        - "-SIGSTOP"
+        - "-SIGCONT"
   - id: signal
     matcher:
       kind: any_flag
       flags:
         - "-s"
+        - "-n"
         - "--signal"
     parameters:
       - name: signal_spec

@@ -1,0 +1,35 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: neofetch, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [bourne, bash, sh, dash], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: system_info_with_config_and_logo
+    selector: {kind: all, items: []}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects:
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: config_path, projection: {kind: identity}}], missing: skip, purpose: tool_config}}
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: config_path_short, projection: {kind: identity}}], missing: skip, purpose: tool_config}}
+      - {kind: execute_payload, target: {kind: slot, name: config_path}}
+      - {kind: execute_payload, target: {kind: slot, name: config_path_short}}
+      - {kind: read_path, target: {kind: slot, name: logo_path}}
+      - {kind: read_path, target: {kind: slot, name: logo_path_short}}
+modifiers:
+  - id: config_long
+    matcher: {kind: any_flag, flags: ['--config']}
+    parameters: [{name: config_path, semantic: {kind: payload, language: bash, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: config_short
+    matcher: {kind: any_flag, flags: ['-c']}
+    parameters: [{name: config_path_short, semantic: {kind: payload, language: bash, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: logo_long
+    matcher: {kind: any_flag, flags: ['--ascii']}
+    parameters: [{name: logo_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: logo_short
+    matcher: {kind: any_flag, flags: ['-a']}
+    parameters: [{name: logo_path_short, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/neofetch (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/bullseye/neofetch/neofetch.1.en.html"]
+  caushell.profile/known_limitations: ["The explicit --config file is a shell script and is represented as a recursive Bash payload; actual file content is runtime-dependent and is not read from the filesystem by static profile binding alone.", "Default native config files may also be loaded and executed by neofetch, but no system/user config lookup is declared here; the exact startup precedence remains unmodeled.", "The source's startup echo redirection is executable shell prefix materialized separately; interactive recipe steps are not shell source.", "The --ascii file contributes text to stdout alongside system information; formatting and terminal dimensions are not modeled."]

@@ -1,0 +1,48 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: chroot, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+
+forms:
+  - id: execute_at_host_root
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 1}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '/'}}
+    parameters:
+      - {name: new_root, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: new_root}}
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [], default_value: '/', missing: skip}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}
+  - id: default_shell_at_host_root
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '/'}}
+    parameters:
+      - {name: new_root, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: new_root}}
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [], default_value: '/', missing: skip}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+
+modifiers:
+  - {id: userspec, matcher: {kind: any_flag, flags: ['--userspec']}, parameters: [{name: user_spec, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: groups, matcher: {kind: any_flag, flags: ['--groups']}, parameters: [{name: group_list, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/chroot/
+    - https://www.gnu.org/software/coreutils/manual/html_node/chroot-invocation.html
+  caushell.profile/scope: These concrete forms require new_root exactly /. In this case chroot changes child execution cwd to / before launching its explicit child and argv or its default interactive shell. For any non-/ root, selection remains unresolved because the DSL cannot map child paths through a separate chroot filesystem namespace; such children must not be dispatched as original-host paths. --skip-chdir is unsupported because it preserves the caller's prior cwd rather than setting /.

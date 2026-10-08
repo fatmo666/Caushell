@@ -1,0 +1,276 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: tcpdump
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+- id: capture_with_postrotate
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_modifier
+      modifier: write_file
+    - &2
+      kind: not
+      item: &5
+        kind: has_modifier_parameter_matching
+        modifier: write_file
+        parameter: capture_output
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: all
+      items:
+      - kind: has_modifier
+        modifier: postrotate
+      - kind: has_modifier
+        modifier: rotation
+  parameters:
+  - &3
+    name: capture_filter
+    semantic: &6
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  - name: postrotate_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-z"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: postrotate_payload
+  stream_contract: &4
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: write_capture
+  selector:
+    kind: all
+    items:
+    - *1
+    - *2
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: rotation
+  parameters:
+  - *3
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: capture_output
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  stream_contract: *4
+- id: rotated_capture
+  selector:
+    kind: all
+    items:
+    - *1
+    - *2
+    - kind: has_modifier
+      modifier: rotation
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: postrotate
+  parameters:
+  - *3
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract: *4
+- id: stream_capture
+  selector:
+    kind: any
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: write_file
+    - *5
+  parameters:
+  - *3
+  effects: []
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+modifiers:
+- id: postrotate
+  matcher:
+    kind: any_flag
+    flags:
+    - "-z"
+  parameters:
+  - name: postrotate_command
+    semantic: *6
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: write_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-w"
+  parameters:
+  - name: capture_output
+    semantic: *6
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: rotation
+  matcher:
+    kind: any_flag
+    flags:
+    - "-G"
+    - "-C"
+  parameters:
+  - name: rotation_value
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: interface
+  matcher:
+    kind: any_flag
+    flags:
+    - "-i"
+  parameters:
+  - name: interface_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_many
+- id: count
+  matcher:
+    kind: any_flag
+    flags:
+    - "-c"
+  parameters:
+  - name: packet_count
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: drop_user
+  matcher:
+    kind: any_flag
+    flags:
+    - "-Z"
+  parameters:
+  - name: drop_user
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: capture_flags
+  matcher:
+    kind: any_flag
+    flags:
+    - "-l"
+    - "-n"
+- id: file_count
+  matcher:
+    kind: any_flag
+    flags:
+    - "-W"
+  parameters:
+  - name: file_count
+    semantic: *6
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: read_capture
+  matcher:
+    kind: any_flag
+    flags:
+    - "-r"
+  parameters:
+  - name: capture_input
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: capture_input
+- id: display_flags
+  matcher:
+    kind: any_flag
+    flags:
+    - "-A"
+    - "-X"
+    - "-x"
+- id: interfaces
+  matcher:
+    kind: any_flag
+    flags:
+    - "-D"
+extensions:
+  caushell.profile/source_research:
+  - https://www.tcpdump.org/manpages/tcpdump.1.html
+  caushell.profile/known_limitations:
+  - tcpdump -z starts a separate post-rotation process and appends the generated capture
+    filename as an argument; that argument is not invented or parsed as Bash.
+  - Capture output naming depends on -w/-G/-W rotation settings; unmodeled outputs
+    and packet source details remain unknown.
+  - Normal capture requires packet-capture permissions and a running interface; this
+    profile does not simulate traffic.
+  - The -w - stream is not a file write. Rotation (-G/-C) produces unknown filenames;
+    -W alone limits file count. A -z command is an active opaque callback only for
+    rotated file output. -r is a real file read; remaining capture filters are data.

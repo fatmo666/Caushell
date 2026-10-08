@@ -1,0 +1,119 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: rake
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: rakefile
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: rakefile_flag
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: rakefile
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-f"
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: source_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: rakefile
+- id: ruby_pager
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: eval_flag
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: ruby_code
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-p"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: ruby_code
+modifiers:
+- id: rakefile_flag
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+- id: eval_flag
+  matcher:
+    kind: any_flag
+    flags:
+    - "-p"
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/rake/
+  caushell.profile/known_limitations:
+  - A -f Rakefile is parsed as Ruby, while the documented -p inheritance form delegates
+    to Ruby's code semantics. Error leakage content is version/source dependent.

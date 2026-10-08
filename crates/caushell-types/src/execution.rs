@@ -21,6 +21,15 @@ pub enum TerminalSessionOperationKind {
     Opaque,
 }
 
+/// Static changes to the owning shell's job management, not signals or proof
+/// that a job exists, has detached, or will survive its shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellJobOperationKind {
+    RemoveFromJobTable,
+    SuppressSighup,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractiveEscapeSurfaceKind {
@@ -82,6 +91,8 @@ pub enum ProcessControlTargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionSemantics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shell_job_operations: Vec<ShellJobOperationKind>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub operation_semantics_unresolved: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -102,6 +113,9 @@ pub struct ExecutionSemantics {
     pub loads_in_process_code: bool,
     pub in_process_code_load_kinds: Vec<InProcessCodeLoadKind>,
     pub mutates_current_shell: bool,
+    /// Static enclosing-frame termination intent; not proof of runtime exit.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub terminates_current_shell: bool,
     pub executes_remote_command: bool,
     pub executes_hook: bool,
     pub loads_startup_config: bool,
@@ -118,6 +132,7 @@ pub struct ExecutionSemantics {
 impl ExecutionSemantics {
     pub fn new(normalized_command_name: impl Into<String>, form_id: impl Into<String>) -> Self {
         Self {
+            shell_job_operations: Vec::new(),
             terminal_session_operations: Vec::new(),
             operation_semantics_unresolved: false,
             database_operations: Vec::new(),
@@ -134,6 +149,7 @@ impl ExecutionSemantics {
             loads_in_process_code: false,
             in_process_code_load_kinds: Vec::new(),
             mutates_current_shell: false,
+            terminates_current_shell: false,
             executes_remote_command: false,
             executes_hook: false,
             loads_startup_config: false,
@@ -284,6 +300,23 @@ impl NetworkListener {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn shell_termination_is_additive_and_legacy_semantics_still_deserialize() {
+        let mut semantics = super::ExecutionSemantics::new("exit", "terminate_shell");
+        let old = serde_json::to_value(&semantics).unwrap();
+        assert!(old.get("terminates_current_shell").is_none());
+        assert_eq!(
+            serde_json::from_value::<super::ExecutionSemantics>(old).unwrap(),
+            semantics
+        );
+        semantics.terminates_current_shell = true;
+        let encoded = serde_json::to_value(&semantics).unwrap();
+        assert_eq!(encoded["terminates_current_shell"], true);
+        assert_eq!(
+            serde_json::from_value::<super::ExecutionSemantics>(encoded).unwrap(),
+            semantics
+        );
+    }
+    #[test]
     fn unresolved_operations_roundtrip_without_changing_legacy_json() {
         use super::*;
         let mut semantics = ExecutionSemantics::new("fixture", "run");
@@ -352,6 +385,60 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ExecutionSemantics>(wire).unwrap(),
             semantics
+        );
+    }
+
+    #[test]
+    fn shell_job_operations_roundtrip_and_legacy_semantics_default_empty() {
+        use super::*;
+        let mut semantics = ExecutionSemantics::new("job-tool", "run");
+        let old = serde_json::to_value(&semantics).unwrap();
+        assert!(old.get("shell_job_operations").is_none());
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(old).unwrap(),
+            semantics
+        );
+        semantics.shell_job_operations = vec![
+            ShellJobOperationKind::RemoveFromJobTable,
+            ShellJobOperationKind::SuppressSighup,
+        ];
+        let wire = serde_json::to_value(&semantics).unwrap();
+        assert_eq!(
+            wire["shell_job_operations"],
+            serde_json::json!(["remove_from_job_table", "suppress_sighup"])
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionSemantics>(wire).unwrap(),
+            semantics
+        );
+    }
+
+    #[test]
+    fn shell_job_public_facts_roundtrip_and_legacy_fact_defaults_empty() {
+        use super::*;
+        let mut wire = serde_json::to_value(ExecutionSemantics::new("job-tool", "run")).unwrap();
+        wire["node_id"] = serde_json::json!("semantics:job-tool");
+        wire["source"] = serde_json::json!({"node_id": "command:job-tool", "execution_kind": "top_level", "root_sequence_no": 1, "depth": 0, "raw_text": "job-tool", "shell_kind": "bash"});
+        let old = serde_json::from_value::<crate::ExecutionSemanticsFact>(wire.clone()).unwrap();
+        assert!(old.shell_job_operations.is_empty());
+        assert!(
+            serde_json::to_value(old)
+                .unwrap()
+                .get("shell_job_operations")
+                .is_none()
+        );
+        wire["shell_job_operations"] = serde_json::json!(["suppress_sighup"]);
+        let fact = serde_json::from_value::<crate::ExecutionSemanticsFact>(wire).unwrap();
+        assert_eq!(
+            fact.shell_job_operations,
+            [ShellJobOperationKind::SuppressSighup]
+        );
+        assert_eq!(
+            serde_json::from_value::<crate::ExecutionSemanticsFact>(
+                serde_json::to_value(&fact).unwrap()
+            )
+            .unwrap(),
+            fact
         );
     }
     #[test]

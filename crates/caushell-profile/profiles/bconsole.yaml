@@ -1,0 +1,47 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: bconsole, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: interactive_console
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}, {kind: not, item: {kind: has_flag, flag: -?}}]}
+    parameters: []
+    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: console_with_config
+    selector: {kind: all, items: [{kind: has_flag, flag: -c}, {kind: not, item: {kind: has_flag, flag: -t}}, {kind: not, item: {kind: has_flag, flag: -?}}]}
+    parameters: []
+    effects:
+      - {kind: read_path, target: {kind: slot, name: config_path}}
+      - {kind: load_config, target: {kind: slot, name: config_path}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: config_test
+    selector: {kind: all, items: [{kind: has_flag, flag: -c}, {kind: has_flag, flag: -t}]}
+    parameters: []
+    effects:
+      - {kind: read_path, target: {kind: slot, name: config_path}}
+      - {kind: load_config, target: {kind: slot, name: config_path}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: help
+    selector: {kind: has_flag, flag: -?}
+    parameters: []
+    effects: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+modifiers:
+  - id: test_config
+    matcher: {kind: any_flag, flags: [-t]}
+    parameters: []
+  - id: help
+    matcher: {kind: any_flag, flags: [-?]}
+    parameters: []
+  - id: config_file
+    matcher: {kind: any_flag, flags: [-c]}
+    parameters: [{name: config_path, semantic: {kind: path, role: config, purpose: tool_config}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+subcommands: null
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/bconsole (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://www.bacula.org/15.0.x-manuals/en/main/main.pdf"]
+  caushell.profile/known_limitations: ["-c selects and loads a Bacula Console configuration; the profile records the explicit path read and config load, not the Director connection or config-defined endpoints.", "The native @exec /bin/sh command at the bconsole prompt is not shell argv and is represented as an interactive escape surface. The optionless form can also run in batch contexts, which are not distinguished."]

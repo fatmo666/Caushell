@@ -1,0 +1,248 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: gem
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: open_editor
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: open
+      - kind: has_flag
+        flag: "-e"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: gem_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+- id: open_default_editor
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: open
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: editor_command
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: terminal_ui
+      requires_tty: true
+      capabilities:
+      - run_command
+      - spawn_shell
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: gem_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+- id: ruby_source_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: build
+      - kind: has_positional_at
+        index: 1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: ruby_source
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: source_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: ruby_source
+- id: install_ruby_source_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: install
+      - kind: has_modifier
+        modifier: file_option
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: ruby_source
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--file"
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: source_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: ruby_source
+modifiers:
+- id: editor_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "-e"
+  parameters:
+  - name: editor_command
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: editor_command
+- id: file_option
+  matcher:
+    kind: any_flag
+    flags:
+    - "--file"
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://guides.rubygems.org/command-reference/
+  - https://gtfobins.org/gtfobins/gem/
+  caushell.profile/known_limitations:
+  - gem open -e delegates an editor command for an installed gem; build/install parse
+    and execute Ruby source. The exact gem lookup and editor internals vary.

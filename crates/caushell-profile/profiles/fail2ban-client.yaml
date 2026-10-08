@@ -1,0 +1,187 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: fail2ban-client
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: action_callback
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: set
+    - kind: has_positional_at_matching
+      index: 4
+      matcher:
+        kind: literal
+        value: actionban
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: action_definition
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 5
+    cardinality: required_one
+  - name: remaining_native_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects: []
+- id: jail_mutation
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: "^(add|set)$"
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 4
+        matcher:
+          kind: literal
+          value: actionban
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: jail_operation_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects: []
+- id: action_hook_trigger
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: "^(start|banip|unbanip|stop)$"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: trigger_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: execute_hook
+    target:
+      kind: none
+- id: load_action_configuration
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: configuration_directory
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: configuration_command_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects: []
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "--help"
+- id: configuration_directory
+  matcher:
+    kind: any_flag
+    flags:
+    - "-c"
+    - "--conf"
+  parameters:
+  - name: configuration_directory_path
+    semantic:
+      kind: path
+      role: config
+      purpose: tool_config
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: configuration_directory_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: configuration_directory_path
+  - kind: execute_hook
+    target:
+      kind: slot
+      name: configuration_directory_path
+- id: verbose
+  matcher:
+    kind: any_flag
+    flags:
+    - "-v"
+    - "--verbose"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/fail2ban-client
+    (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://fail2ban.readthedocs.io/en/latest/fail2ban.server.action.html
+  - https://github.com/fail2ban/fail2ban/blob/master/fail2ban/client/fail2bancmdline.py
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - The subprocess is immediately sent to the background, but `fail2ban-client` waits
+    on a return code from the subprocess. The `banip` command will hang until the
+    subprocess returns.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.

@@ -1,0 +1,258 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: enscript
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: interpret_input_files
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: not
+        item: &2
+          kind: has_modifier_parameter_matching
+          modifier: interpreter_command
+          parameter: interpreter_command
+          matcher:
+            kind: regex_pattern
+            pattern: "[%$]"
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: output_file
+        parameter: output_path
+        matcher:
+          kind: literal
+          value: "-"
+  parameters:
+  - name: input_paths
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+    value_constraints:
+    - kind: exclude_literal
+      value: "-"
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: output_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command_string:
+        slot: interpreter_command
+        syntax: posix_shell
+      stdin_from_tool: true
+- id: interpret_input_files_to_stdout
+  selector:
+    kind: all
+    items:
+    - *1
+    - kind: has_modifier_parameter_matching
+      modifier: output_file
+      parameter: output_path
+      matcher:
+        kind: literal
+        value: "-"
+  parameters:
+  - name: input_paths
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+    value_constraints:
+    - kind: exclude_literal
+      value: "-"
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command_string:
+        slot: interpreter_command
+        syntax: posix_shell
+      stdin_from_tool: true
+      stdout_to_parent: true
+- id: interpret_stdin
+  selector:
+    kind: all
+    items:
+    - &3
+      kind: all
+      items:
+      - kind: no_positional_args
+      - kind: not
+        item: *2
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: output_file
+        parameter: output_path
+        matcher:
+          kind: literal
+          value: "-"
+  implicit_inputs:
+  - source: stdin_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: stdin
+      recursive: false
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+  effects:
+  - kind: consume_stdin
+    target:
+      kind: implicit_input
+      source: stdin_payload
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: output_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command_string:
+        slot: interpreter_command
+        syntax: posix_shell
+      stdin_from_tool: true
+- id: interpret_stdin_to_stdout
+  selector:
+    kind: all
+    items:
+    - *3
+    - kind: has_modifier_parameter_matching
+      modifier: output_file
+      parameter: output_path
+      matcher:
+        kind: literal
+        value: "-"
+  implicit_inputs:
+  - source: stdin_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: stdin
+      recursive: false
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  effects:
+  - kind: consume_stdin
+    target:
+      kind: implicit_input
+      source: stdin_payload
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command_string:
+        slot: interpreter_command
+        syntax: posix_shell
+      stdin_from_tool: true
+      stdout_to_parent: true
+modifiers:
+- id: interpreter_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "-I"
+    - "--filter"
+  parameters:
+  - name: interpreter_command
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: output_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-o"
+    - "-p"
+    - "--output"
+  parameters:
+  - name: output_path
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: quiet
+  matcher:
+    kind: any_flag
+    flags:
+    - "-q"
+    - "--quiet"
+extensions:
+  caushell.profile/source_research:
+  - https://www.gnu.org/software/enscript/
+  - https://manpages.debian.org/bookworm/enscript/enscript.1.en.html
+  caushell.profile/known_limitations:
+  - "-I/--filter uses shell command dispatch only when no runtime percent/dollar substitutions
+    occur. Formatted strings have no supported form and require unresolved-form approval;
+    they are never fabricated as literal Bash children."
+  - "-o/-p/--output FILE is a write; - is stdout. Default printer/spooler destination
+    is an unknown write. Input file reads do not consume unrelated preceding stdin."
+  - The filter child gets tool-provided input. Its stdout is routed into the generated
+    artifact, not directly connected to parent stdout; exact transformed filter-to-document
+    provenance and printer configuration remain partial. Mixed explicit dash-plus-file
+    input remains unresolved.

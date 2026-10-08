@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: genie, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: show_help
+    selector: {kind: has_flag, flag: '--help'}
+  - id: run_command
+    selector: {kind: has_modifier, modifier: command}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}
+  - id: enter_shell
+    selector: {kind: has_modifier, modifier: shell}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects:
+      - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+  - id: list_or_status
+    selector: {kind: any, items: [{kind: has_modifier, modifier: is_running}, {kind: has_modifier, modifier: is_in_bottle}]}
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+  - {id: command, matcher: {kind: any_flag, flags: ['-c', '--command']}}
+  - {id: shell, matcher: {kind: any_flag, flags: ['-s', '--shell']}}
+  - {id: initialize, matcher: {kind: any_flag, flags: ['-i', '--initialize']}}
+  - {id: login, matcher: {kind: any_flag, flags: ['-l', '--login']}}
+  - {id: shutdown, matcher: {kind: any_flag, flags: ['-u', '--shutdown']}}
+  - {id: is_running, matcher: {kind: any_flag, flags: ['-r', '--is-running']}}
+  - {id: is_in_bottle, matcher: {kind: any_flag, flags: ['-b', '--is-in-bottle']}}
+  - {id: as_user, matcher: {kind: any_flag, flags: ['-a', '--as-user']}, parameters: [{name: requested_user, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/arkane-systems/genie
+    - https://gtfobins.org/gtfobins/genie/
+  caushell.profile/known_limitations:
+    - The -c path dispatches the explicit argv command. Bottle creation, systemd startup and namespace transitions are runtime behavior; no child command is inferred for them.

@@ -1,0 +1,170 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_matching: exact_names
+opaque_on_unresolved: true
+identity:
+  canonical_name: latexmk
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: perl_configuration_eval
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: eval
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: input_path
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  - kind: write_path
+    target:
+      kind: none
+- id: read_tex_input
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: eval
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: driver
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: args_with_prefix
+      prefix: "-pdflatex="
+      before_dash_dash: true
+    cardinality: optional_one
+  - name: source
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: input_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: source
+  - kind: write_path
+    target:
+      kind: none
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: driver
+modifiers:
+- id: eval
+  matcher:
+    kind: any_flag
+    flags:
+    - "-e"
+  parameters:
+  - name: perl_code
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: perl_code
+- id: format
+  matcher:
+    kind: any_flag
+    flags:
+    - "-pdf"
+    - "-dvi"
+    - "-ps"
+    - "-pdfdvi"
+    - "-pdflua"
+    - "-pdfxe"
+  parameters: []
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-help"
+    - "--help"
+    - "-version"
+  parameters: []
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://tug.ctan.org/support/latexmk/latexmk.pdf
+  - https://gtfobins.org/gtfobins/latexmk/
+  caushell.profile/known_limitations:
+  - "-e evaluates native Perl using the existing bounded Perl analyzer. -pdflatex=
+    configures a command string with generated arguments and is kept opaque. TeX input
+    files are opaque executable source and read paths; generated writes stay unknown.
+    Other driver options and config-driven behavior remain unresolved."
+  - Native embedded Perl configuration/condition expressions are an opaque non-shell
+    execution boundary, not assumed to follow the standalone perl command adapter
+    grammar.
+option_scope: all_arguments

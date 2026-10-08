@@ -1,0 +1,31 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: zsoelim, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: show_help_or_version
+    selector: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
+  - id: satisfy_so_requests_from_files
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}]}
+    parameters: [{name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: satisfy_so_requests_from_stdin
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: compatible_so_syntax, matcher: {kind: any_flag, flags: ['-C', '--compatible']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: [https://man7.org/linux/man-pages/man1/zsoelim.1.html, GTFOBins fixed snapshot zsoelim/file-read/0]
+  caushell.profile/known_limitations:
+    - zsoelim supports -C, -V, and -h; it does not share GNU soelim's -I, -r, or -t options.
+    - .so requests cause additional reads; the include path is content-derived and may resolve to compressed .gz, .Z, or .z files. Their exact paths are unknown.
+    - With no file operands, zsoelim parses stdin. A literal '-' operand and option parsing failures remain opaque.

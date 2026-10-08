@@ -1,0 +1,45 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: nasm, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+argument_files:
+  - {prefix: '-@', possible_effects: [read_path, write_path]}
+forms:
+  - id: parse_argument_file
+    selector: {kind: has_modifier, modifier: argument_file}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: unknown}
+  - id: assemble_to_default_output
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: argument_file}}, {kind: not, item: {kind: has_modifier, modifier: output_file}}]}
+    parameters: [{name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}, {kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: inputs}
+  - id: assemble_to_explicit_output
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: argument_file}}, {kind: has_modifier, modifier: output_file}]}
+    parameters: [{name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: inputs}
+modifiers:
+  - id: argument_file
+    matcher: {kind: any_flag, flags: ['-@']}
+    parameters: [{name: response_file_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: response_file_paths}}]
+  - id: format
+    matcher: {kind: any_flag, flags: ['-f']}
+    parameters: [{name: object_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: output_file
+    matcher: {kind: any_flag, flags: ['-o']}
+    parameters: [{name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: write_path, target: {kind: slot, name: output_file}}]
+  - id: listing_file
+    matcher: {kind: any_flag, flags: ['-l']}
+    parameters: [{name: listing_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: write_path, target: {kind: slot, name: listing_file}}]
+subcommands: null
+extensions:
+  caushell.profile/source_research: [https://www.nasm.us/doc/nasm02.html, GTFOBins fixed snapshot nasm/file-read/0]
+  caushell.profile/known_limitations:
+    - NASM -@ FILE expands command-line options from a file; it is not an assembly source operand.
+    - Expanded arguments can select source/include reads, object and listing writes, and other options. The argument-file read path is resolved; additional effects remain target-unknown through argument_files. Ordinary assembly without -o has an unresolved default output path; -o makes the object output explicit.
+    - Argument-file expansion, option ordering inside the file, and the resulting assembly are not interpreted.

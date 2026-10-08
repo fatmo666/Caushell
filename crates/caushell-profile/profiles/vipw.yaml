@@ -1,0 +1,23 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: vipw, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: shadow_database_editor_ui
+    selector: {kind: has_flag, flag: -s}
+    parameters: []
+    effects: [{kind: write_path, target: {kind: configured_path, sources: [], default_value: /etc/shadow, missing: skip}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell, write_buffer_to_path]}}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: passwd_editor_ui
+    selector: {kind: all, items: [{kind: lacks_flag, flag: -s}, {kind: no_positional_args}]}
+    parameters: []
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: write_path, target: {kind: configured_path, sources: [], default_value: /etc/passwd, missing: skip}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell, write_buffer_to_path]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/vipw (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://man7.org/linux/man-pages/man8/vipw.8.html"]
+  caushell.profile/known_limitations: ["vipw edits /etc/passwd by default and /etc/shadow with -s; it deliberately runs the configured editor as the invoking unprivileged user and does not imply root editor execution.", "Editor choice, lock handling, temporary-file path and database updates are delegated to vipw and are not projected."]

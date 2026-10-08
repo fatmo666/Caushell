@@ -5,10 +5,18 @@ identity:
   canonical_name: gcc
   aliases:
     - cc
+    - c89
+    - c99
+    - g++
 
 trust:
   tier: tier_a
   source: built_in
+
+opaque_on_unresolved: true
+
+argument_files:
+  - {prefix: '@', possible_effects: [read_path, write_path]}
 
 platform:
   os_families:
@@ -19,10 +27,128 @@ platform:
   requires_features: []
 
 forms:
+  - id: shell_wrapper_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: wrapper_program}
+        - kind: has_modifier_parameter_matching
+          modifier: wrapper_program
+          parameter: wrapper_command
+          matcher: {kind: literal, value: '/bin/sh,-s'}
+    parameters:
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: dispatch_command, target: {kind: dispatch, command_literal: /bin/sh, argv_suffix: ['-s'], stdin_from_parent: true, stdout_to_parent: true}}
+
+  - id: preprocess_stdin_to_stdout
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: preprocess_only}
+        - {kind: not, item: {kind: has_modifier, modifier: output_path}}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+        - kind: any
+          items:
+            - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters:
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stdout_dependency: inputs, stderr_mode: opaque}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+
+  - id: preprocess_to_stdout
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: preprocess_only}
+        - {kind: not, item: {kind: has_modifier, modifier: output_path}}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stdout_dependency: inputs, stderr_mode: opaque}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+
+  - id: preprocess_stdin_to_file
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: preprocess_only}
+        - {kind: has_modifier, modifier: output_path}
+        - kind: has_modifier_parameter_matching
+          modifier: output_path
+          parameter: output_path
+          matcher: {kind: regex_pattern, pattern: '^.+$'}
+        - kind: not
+          item: {kind: has_modifier_parameter_matching, modifier: output_path, parameter: output_path, matcher: {kind: literal, value: '-'}}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+        - kind: any
+          items:
+            - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stdout_dependency: independent, stderr_mode: opaque}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+
+  - id: preprocess_to_file
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: preprocess_only}
+        - {kind: has_modifier, modifier: output_path}
+        - kind: has_modifier_parameter_matching
+          modifier: output_path
+          parameter: output_path
+          matcher: {kind: regex_pattern, pattern: '^.+$'}
+        - kind: not
+          item: {kind: has_modifier_parameter_matching, modifier: output_path, parameter: output_path, matcher: {kind: literal, value: '-'}}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stdout_dependency: independent, stderr_mode: opaque}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+
+  - id: response_file_arguments
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@.+'}}
+    parameters:
+      - name: response_argument
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - matcher: {kind: prefix, value: '@'}
+              target: {name: response_file_path, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: response_file_path}}
+    # Response files may contain additional options and alter inputs/outputs; do not infer stream or mutation effects from their contents.
+
   - id: compile_to_explicit_output
     selector:
-      kind: has_modifier
-      modifier: output_path
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: output_path}
+        - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
     parameters:
       - name: input_paths
         semantic:
@@ -40,10 +166,13 @@ forms:
 
   - id: compile_to_default_output
     selector:
-      kind: not
-      item:
-        kind: has_modifier
-        modifier: output_path
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: output_path}}
+        - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
+        - {kind: not, item: {kind: has_modifier, modifier: wrapper_program}}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
     parameters:
       - name: input_paths
         semantic:
@@ -66,6 +195,21 @@ forms:
           purpose: generic_operand
 
 modifiers:
+  - id: preprocess_only
+    matcher:
+      kind: any_flag
+      flags: ["-E"]
+
+  - id: language
+    matcher:
+      kind: any_flag
+      flags: ["-x"]
+    parameters:
+      - name: language_name
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
   - id: output_path
     matcher:
       kind: any_flag
@@ -81,6 +225,7 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+        value_constraints: [{kind: exclude_literal, value: '-'}]
     effects:
       - kind: write_path
         target:
@@ -186,11 +331,6 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: optional_one
-    effects:
-      - kind: dispatch_command
-        target:
-          kind: dispatch
-          command: wrapper_command
 
   - id: compile_mode
     matcher:
@@ -208,5 +348,6 @@ extensions:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
-    - Compiler driver response files and linker plugin side effects are not expanded yet.
+    - Compiler response files carry arbitrary options; their contents are not expanded. The argument-file declaration retains the concrete response-file read and possible output-file writes; nested wrapper and plugin options are not reconstructed.
+    - GTFOBins' /bin/sh,-s wrapper syntax is projected as the known shell and -s argument. Other -wrapper comma lists cannot currently be split into a concrete command and argv using the existing declarative projections and remain unresolved.
     - Attached output operands such as -oapp depend on projection support for short-option attached values in this profile.

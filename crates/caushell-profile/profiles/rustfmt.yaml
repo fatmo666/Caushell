@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity: {canonical_name: rustfmt, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: format_named_files
+    selector: {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: inputs}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, target: {kind: slot, name: input_paths}}
+  - id: format_stdin
+    selector: {kind: no_positional_args}
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: false}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}]
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/rust-lang/rustfmt
+  caushell.profile/known_limitations:
+    - rustfmt filename mode reads and rewrites files in place; parse diagnostics may disclose partial source. The profile records the path read/write but does not predict diagnostics or module traversal.
+    - stdin mode and --emit variants have separate output behavior; stdin is data rather than Rust code execution. Child module files, config-discovered paths, and all other option combinations are unresolved.

@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ssh-copy-id, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: copy_public_key_to_remote
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+    parameters:
+      - {name: remote_host, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: upload_target}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: identity_files}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_host}}
+      - {kind: write_path, target: {kind: none}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: preview_remote_copy
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: dry_run}
+    parameters:
+      - {name: remote_host, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: upload_target}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: identity_files}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_host}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+modifiers:
+  - id: identity
+    matcher: {kind: any_flag, flags: ['-i']}
+    parameters: [{name: identity_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - id: target_path
+    matcher: {kind: any_flag, flags: ['-t']}
+    parameters: [{name: remote_target_path, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: force
+    matcher: {kind: any_flag, flags: ['-f']}
+  - id: dry_run
+    matcher: {kind: any_flag, flags: ['-n']}
+  - id: port
+    matcher: {kind: any_flag, flags: ['-p']}
+    parameters: [{name: port_number, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+extensions:
+  caushell.profile/source_research: [https://man7.org/linux/man-pages/man1/ssh-copy-id.1.html]
+  caushell.profile/known_limitations:
+    - -i names a local public-key source; no implicit .pub suffix is guessed. Exact -i PATH.pub inputs are local read paths.
+    - ssh-copy-id appends the key to a path on the remote host (default authorized_keys or -t PATH). That is a remote write, not a local filesystem output. The remote destination is retained as plain data and only the network endpoint plus an untargeted write effect are represented; remote filesystem paths are not emitted as local Graph paths. The -n preview form omits the write effect.
+    - SSH configuration, authentication, default identities, remote shell behavior, and server-side destination expansion are runtime-dependent and not expanded.

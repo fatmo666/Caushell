@@ -1,0 +1,79 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+identity:
+  canonical_name: run-parts
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families: [posix, linux]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: execute_matching_directory_entries
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_flag, flag: "--test"}
+              - {kind: has_flag, flag: "--list"}
+    parameters:
+      - name: script_directory
+        semantic: {kind: path, role: read, purpose: script_source}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    effects:
+      - {kind: read_path, target: {kind: slot, name: script_directory}}
+      - {kind: execute_payload, target: {kind: slot, name: script_directory}}
+
+  - id: list_matching_directory_entries
+    selector:
+      kind: any
+      items:
+        - {kind: has_flag, flag: "--test"}
+        - {kind: has_flag, flag: "--list"}
+    parameters:
+      - name: script_directory
+        semantic: {kind: path, role: read, purpose: script_source}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    effects:
+      - {kind: read_path, target: {kind: slot, name: script_directory}}
+
+modifiers:
+  - id: test_mode
+    matcher: {kind: any_flag, flags: ["--test"]}
+  - id: list_mode
+    matcher: {kind: any_flag, flags: ["--list"]}
+  - id: filename_regex
+    matcher: {kind: any_flag, flags: ["--regex"]}
+    parameters:
+      - name: filename_regex
+        semantic: {kind: structured_value, context: regex}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: script_argument
+    matcher: {kind: any_flag, flags: ["--arg", "-a"]}
+    parameters:
+      - name: script_arguments
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: optional_many
+  - id: new_session
+    matcher: {kind: any_flag, flags: ["--new-session"]}
+
+extensions:
+  caushell.profile/known_limitations:
+    - Directory entries, executable bits, names, and actual selected programs are runtime filesystem facts. The directory is read and execution is marked opaque; filename regex text alone does not identify a concrete child such as /bin/sh.

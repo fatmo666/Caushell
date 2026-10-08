@@ -1,0 +1,57 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: disown
+  aliases: []
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bash]
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters:
+      - name: arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+  - id: suppress_sighup
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: has_flag, flag: -h}
+    parameters:
+      - name: jobs
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    effects:
+      - kind: shell_job_operation
+        shell_job_operation: suppress_sighup
+        target: {kind: none}
+  - id: remove_from_job_table
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: not, item: {kind: has_flag, flag: -h}}
+    parameters:
+      - name: jobs
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    effects:
+      - kind: shell_job_operation
+        shell_job_operation: remove_from_job_table
+        target: {kind: none}
+modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: [--help]}
+  - id: job_modes
+    matcher: {kind: any_flag, flags: [-a, -r, -h]}
+subcommands: null
+extensions: {}

@@ -1,0 +1,73 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: go
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: run_source_file
+  selector:
+    kind: has_positional_at_matching
+    index: 0
+    matcher:
+      kind: literal
+      value: run
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: source_program
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: source_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  - name: program_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: source_program
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/go/
+  caushell.profile/known_limitations:
+  - Go source is compiled and executed. The examples' Go literals demonstrate file
+    I/O, networking and process execution, but inner targets/callback argv are preserved
+    as opaque source and not guessed. Build scripts and cgo effects are outside this
+    form.

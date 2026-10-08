@@ -1,0 +1,68 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity:
+  canonical_name: perlbug
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: data_report
+    selector: {kind: has_modifier, modifier: data_mode}
+
+  - id: editor_command
+    selector: {kind: has_modifier, modifier: editor}
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: editor_command}}
+
+  - id: inherited_interactive_editor
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: editor}}
+        - {kind: not, item: {kind: has_modifier, modifier: data_mode}}
+    effects:
+      - kind: open_interactive_escape_surface
+        target: {kind: none}
+        surface:
+          kind: editor
+          requires_tty: true
+          capabilities: [spawn_shell, run_command, write_buffer_to_path]
+
+modifiers:
+  - id: editor
+    matcher: {kind: any_flag, flags: ["-e"]}
+    parameters:
+      - name: editor_command
+        semantic: {kind: payload, language: sh, source: inline_string, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: data_mode
+    matcher: {kind: any_flag, flags: ["-d"]}
+  - id: subject
+    matcher: {kind: any_flag, flags: ["-s"]}
+    parameters:
+      - {name: subject, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: return_address
+    matcher: {kind: any_flag, flags: ["-r"]}
+    parameters:
+      - {name: return_address, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: copy_address
+    matcher: {kind: any_flag, flags: ["-c"]}
+    parameters:
+      - {name: copy_address, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+
+extensions:
+  caushell.profile/known_limitations:
+    - -e selects the editor command used for interactive report editing; it is not a Perl program option. The editor shell command string is recursively parsed as shell source.
+    - If report content is supplied noninteractively, perlbug does not enter its editor path; remaining report and mail options are not interpreted here.

@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ntpdate, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: debug_key_file
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: debug}
+        - {kind: has_modifier, modifier: auth_key}
+        - {kind: has_modifier, modifier: key_file}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters:
+      - {name: servers, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: key_file_path}}
+      - {kind: network_endpoint, target: {kind: slot, name: servers}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - {id: debug, matcher: {kind: any_flag, flags: ['-d']}}
+  - {id: auth_key, matcher: {kind: any_flag, flags: ['-a']}, parameters: [{name: key_id, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: key_file, matcher: {kind: any_flag, flags: ['-k']}, parameters: [{name: key_file_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+extensions:
+  caushell.profile/source_research:
+    - https://gtfobins.org/gtfobins/ntpdate/
+    - https://manpages.debian.org/testing/ntpsec-ntpdate/ntpdate.8.en.html
+  caushell.profile/known_limitations:
+    - Only the source's authenticated debug form is modeled. NTP debug mode still sends requests to the explicit servers, but does not adjust the local clock.
+    - Ordinary ntpdate modes can step or slew the system clock and remain unresolved; this profile does not treat arbitrary invocations as read-only.
+    - Diagnostic streams may expose parsed key-file lines. Authentication key IDs are data, not paths.

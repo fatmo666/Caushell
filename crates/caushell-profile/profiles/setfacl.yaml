@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: setfacl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: modify_acl_spec
+    selector: {kind: has_modifier, modifier: modify}
+    parameters:
+      - {name: targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - kind: metadata_mutation
+        target: {kind: slot, name: targets}
+        extensions: {metadata_mutation.raw_operand_slot: acl_spec}
+modifiers:
+  - id: modify
+    matcher: {kind: any_flag, flags: ['-m', '--modify']}
+    parameters: [{name: acl_spec, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: remove, matcher: {kind: any_flag, flags: ['-x', '--remove']}}
+  - {id: set, matcher: {kind: any_flag, flags: ['-b', '--remove-all', '--set']}}
+  - {id: recursive, matcher: {kind: any_flag, flags: ['-R', '--recursive']}}
+subcommands: null
+extensions:
+  caushell.profile/source: https://man7.org/linux/man-pages/man1/setfacl.1.html
+  caushell.profile/known_limitations:
+    - -M/-X ACL files and --restore consume data files and may mutate paths beyond ordinary positional FILE operands; remain unresolved.

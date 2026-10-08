@@ -1,6 +1,8 @@
+mod argument_regions;
 mod bind;
 mod builtin;
 mod dispatch;
+mod dispatch_string;
 mod loader;
 mod lookup;
 mod materialize;
@@ -13,11 +15,13 @@ mod raw;
 mod recursive;
 mod registry;
 mod resolve;
+mod runtime_variables;
 mod structured_projection;
 mod types;
 mod value_projection;
 mod value_shape;
 
+pub use argument_regions::BoundArgumentRegion;
 pub use bind::{
     ArgumentScope, BindError, InvocationSelection, InvocationShape, SelectedModifier,
     bind_invocation, match_modifiers, select_form, select_invocation,
@@ -38,8 +42,9 @@ pub use materialize::{
     BindingOrigin, BindingValueRef, EnvironmentValueRef, MaterializedProjectedInvocation,
     MaterializedRecursivePayloadCandidate, MaterializedShellField, SessionBindings, SessionValue,
     ShellAllPositionalsKind, ShellParameterExpansionOperator, ShellParameterName,
-    ShellParameterReference, ValueMaterialization, exact_scalar_shell_parameter_reference_value,
-    exact_scalar_shell_parameter_value, exact_shell_parameter_reference, materialize_command_name,
+    ShellParameterReference, ValueMaterialization, VariablePresence,
+    exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
+    exact_shell_parameter_reference, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_projected_invocation,
     materialize_recursive_payload_candidate, materialize_shell_assignment_value,
     parse_shell_parameter_reference_after_dollar,
@@ -53,9 +58,10 @@ pub use projection::{
 };
 pub use raw::{
     RawArgumentFileRule, RawBindingSpec, RawCardinality, RawCatastrophicEffectMetadata,
-    RawCatastrophicSemanticClass, RawCommandIdentity, RawCommandProfile, RawConfiguredPathAnchor,
-    RawConfiguredPathMissing, RawConfiguredPathSource, RawConfiguredScalar,
-    RawDefaultSubcommandBehavior, RawDerivedPathRule, RawDerivedPathSource, RawDispatchKind,
+    RawCatastrophicSemanticClass, RawCommandIdentity, RawCommandProfile,
+    RawConditionalEnvironmentUnset, RawConfiguredPathAnchor, RawConfiguredPathMissing,
+    RawConfiguredPathSource, RawConfiguredScalar, RawDefaultSubcommandBehavior, RawDerivedPathRule,
+    RawDerivedPathSource, RawDispatchCommandString, RawDispatchKind, RawDispatchStringSyntax,
     RawEffect, RawEffectKind, RawEffectTarget, RawEndpointKind, RawEndpointUsage,
     RawEnvironmentValueSource, RawFlagOperandMode, RawForm, RawHostRiskEffectMetadata,
     RawHostRiskSemanticClass, RawImplicitInput, RawImplicitInputSource, RawInProcessCodeLoadKind,
@@ -70,6 +76,7 @@ pub use raw::{
     RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
     RawValueMatcher, RawValueProjection,
 };
+pub use raw::{RawArgumentRegion, RawArgumentRegionTerminator};
 pub use raw::{RawPayloadFormat, RawPayloadInputSource, RawPayloadProjection};
 pub use raw::{
     RawStructuredProjection, RawStructuredProjectionBranch, RawStructuredProjectionMatcher,
@@ -87,32 +94,36 @@ pub use resolve::{
     ResolveInvocationArtifactResult, ResolveInvocationResult, ResolvedInvocation,
     ResolvedInvocationArtifact, resolve_invocation, resolve_invocation_artifact,
     resolve_invocation_artifact_with_bindings, resolve_invocation_artifact_with_summary,
-    resolve_invocation_with_bindings, resolve_invocation_with_summary,
+    resolve_invocation_in_namespace, resolve_invocation_with_bindings,
+    resolve_invocation_with_summary,
 };
+pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
+pub use types::PathAccessKind;
 pub use types::{
-    ArgumentBindingSource, ArgumentFileRule, BindingSpec, BoundArgumentMaterialization,
-    BoundImplicitInput, BoundInvocation, BoundParameter, BoundValue, Cardinality,
-    CatastrophicEffectMetadata, CatastrophicSemanticClass, CommandIdentity, CommandName,
-    CommandProfile, CommandRefSemantic, ConfiguredPathAnchor, ConfiguredPathMissing,
-    ConfiguredPathSource, ConfiguredPathTarget, ConfiguredScalar, DefaultSubcommandBehavior,
-    DerivedPathSource, DerivedPathTarget, DispatchCommandSource, DispatchKind, DispatchTarget,
-    Effect, EffectKind, EffectTarget, EndpointKind, EndpointSemantic, EndpointUsage,
-    EnvironmentValueSource, ExtensionMap, FlagName, FlagOperandMode, Form, FormId,
-    HostRiskEffectMetadata, HostRiskSemanticClass, ImplicitInput, ImplicitInputSource,
-    InProcessCodeLoadSemantic, InteractiveEscapeSurface, Modifier, ModifierConstraint, ModifierId,
-    ModifierMatcher, MutationScopeTarget, NetworkListenerTarget, OptionMatchingPolicy,
-    OptionPrefixPolicy, OptionScopePolicy, OsFamily, PackageLocatorKind, PackageLocatorSemantic,
-    PackageManagerKind, Parameter, PathPurpose, PathRole, PathSemantic, PayloadLanguage,
-    PayloadSemantic, PayloadSource, PlatformConstraints, PositionalBindingSource,
-    ProcessTargetKind, ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata,
-    ProfileTrustTier, ProjectedSemanticValue, ProjectionAbsentPolicy, ProjectionUnknownReason,
-    Residual, ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate,
-    SemanticType, SemanticValueRef, SemanticValueResolution, ShellFamily, SlotName, StreamContract,
+    ArgumentBindingSource, ArgumentFileRule, ArgumentRegion, ArgumentRegionTerminator, BindingSpec,
+    BoundArgumentMaterialization, BoundImplicitInput, BoundInvocation, BoundParameter, BoundValue,
+    Cardinality, CatastrophicEffectMetadata, CatastrophicSemanticClass, CommandIdentity,
+    CommandName, CommandProfile, CommandRefSemantic, ConditionalEnvironmentUnset,
+    ConfiguredPathAnchor, ConfiguredPathMissing, ConfiguredPathSource, ConfiguredPathTarget,
+    ConfiguredScalar, DefaultSubcommandBehavior, DerivedPathSource, DerivedPathTarget,
+    DispatchCommandSource, DispatchKind, DispatchStringSyntax, DispatchTarget, Effect, EffectKind,
+    EffectTarget, EndpointKind, EndpointSemantic, EndpointUsage, EnvironmentValueSource,
+    ExtensionMap, FlagName, FlagOperandMode, Form, FormId, HostRiskEffectMetadata,
+    HostRiskSemanticClass, ImplicitInput, ImplicitInputSource, InProcessCodeLoadSemantic,
+    InteractiveEscapeSurface, Modifier, ModifierConstraint, ModifierId, ModifierMatcher,
+    MutationScopeTarget, NetworkListenerTarget, OptionMatchingPolicy, OptionPrefixPolicy,
+    OptionScopePolicy, OsFamily, PackageLocatorKind, PackageLocatorSemantic, PackageManagerKind,
+    Parameter, PathPurpose, PathRole, PathSemantic, PayloadLanguage, PayloadSemantic,
+    PayloadSource, PlatformConstraints, PositionalBindingSource, ProcessTargetKind,
+    ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata, ProfileTrustTier,
+    ProjectedSemanticValue, ProjectionAbsentPolicy, ProjectionUnknownReason, Residual,
+    ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType,
+    SemanticValueRef, SemanticValueResolution, ShellFamily, SlotName, StreamContract,
     StreamInputMode, StreamOutputMode, StructuredValueContext, StructuredValueSemantic,
     SubcommandNode, SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
     ValueProjection,
 };
-pub use types::{PayloadFormat, PayloadInputSource, PayloadProjection};
+pub use types::{ModuleEntrypoint, PayloadFormat, PayloadInputSource, PayloadProjection};
 pub use types::{
     StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher,
     StructuredProjectionTarget,

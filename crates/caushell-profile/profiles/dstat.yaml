@@ -1,0 +1,85 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: dstat
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: external_python_plugin
+  selector:
+    kind: all
+    items:
+    - kind: has_argument_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: "^--[A-Za-z0-9_-]+$"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: plugin_source
+    semantic:
+      kind: payload
+      language: python
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: args_with_prefix
+      prefix: "--"
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+  - kind: load_in_process_code
+    target:
+      kind: slot
+      name: plugin_source
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "--help"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/dstat (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - '`dstat` allows you to run arbitrary Python scripts loaded as "external plugins"
+    if they are located in one of the directories, stated in the `dstat` man page
+    under "FILES":  - `~/.dstat/` - `(path of binary)/plugins/` - `/usr/share/dstat/`
+    - `/usr/local/share/dstat/`  Pick the one that you can write into. The plugin
+    named `xxx` file name must be defined in the `dstat_xxx.py` file.'
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

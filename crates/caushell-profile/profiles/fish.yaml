@@ -1,0 +1,245 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: fish
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: information
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_modifier
+        modifier: information
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: code
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: program_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: syntax_only
+- id: command_string
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_modifier
+        modifier: code
+      - &3
+        kind: no_positional_args
+      - &1
+        kind: not
+        item:
+          kind: has_modifier
+          modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: syntax_only
+  parameters:
+  - &2
+    name: program_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: code_payload
+- id: script_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: code
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: program_file
+      - *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: syntax_only
+  parameters:
+  - name: script_program
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: script_reads
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  - *2
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: script_reads
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: script_program
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: interactive_shell
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - *3
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: code
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: program_file
+      - *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: syntax_only
+  implicit_inputs:
+  - source: interactive_session
+    semantic:
+      kind: payload
+      language: opaque
+      source: interactive
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: interactive_session
+  stream_contract:
+    stdin_mode: payload_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: syntax_check
+  selector:
+    kind: has_modifier
+    modifier: syntax_only
+  parameters:
+  - name: syntax_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers:
+- id: code
+  matcher:
+    kind: any_flag
+    flags:
+    - "-c"
+    - "--command"
+  parameters:
+  - name: program
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: code_payload
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects: []
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "--help"
+    - "-v"
+    - "--version"
+  parameters: []
+  effects: []
+- id: mode_switches
+  matcher:
+    kind: any_flag
+    flags:
+    - "-i"
+    - "--interactive"
+    - "-l"
+    - "--login"
+    - "-N"
+    - "--no-config"
+  parameters: []
+  effects: []
+- id: syntax_only
+  matcher:
+    kind: any_flag
+    flags:
+    - "-n"
+    - "--no-execute"
+  parameters: []
+  effects: []
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/fish/
+  - https://fishshell.com/docs/current/cmds/fish
+  caushell.profile/known_limitations:
+  - Interactive fish commands are opaque and are not interpreted as Bash.
+  - Only declared native entry grammar is supported. Foreign program content, runtime
+    startup/config files and argument-dependent inner effects stay opaque. Unknown
+    CLI options use the existing unresolved-operation boundary; no suffix-based file
+    type guess. Mixed metadata/code and complex repeated native operations are not
+    claimed as normal metadata-only calls.

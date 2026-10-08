@@ -1,0 +1,90 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: systemd-resolve
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: information_subcommand
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_modifier
+      modifier: status
+    - kind: not
+      item: &2
+        kind: has_modifier
+        modifier: no_pager
+    - kind: not
+      item: &3
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: pager
+      requires_tty: true
+      capabilities:
+      - run_command
+      - spawn_shell
+- id: query_without_pager
+  selector:
+    kind: all
+    items:
+    - *1
+    - *2
+    - kind: not
+      item: *3
+  effects: []
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: status
+  matcher:
+    kind: any_flag
+    flags:
+    - "--status"
+- id: no_pager
+  matcher:
+    kind: any_flag
+    flags:
+    - "--no-pager"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/systemd-resolve
+    (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://raw.githubusercontent.com/systemd/systemd/v238/man/systemd-resolve.xml
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

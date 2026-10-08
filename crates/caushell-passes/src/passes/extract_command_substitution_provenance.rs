@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::support::{
-    graph_backed_execution_resolve_records, normalized_command_names_by_source_node,
+    StreamSemanticsIndex, annotate_stream_output, graph_backed_execution_resolve_records,
+    normalized_command_names_by_source_node,
 };
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_profile::{BoundValue, ResolveInvocationArtifactResult};
@@ -24,12 +25,25 @@ impl SessionTransformPass for ExtractCommandSubstitutionProvenancePass {
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
         let normalized_command_names = normalized_command_names_by_source_node(ctx);
         let records = collect_command_substitution_provenance_records(ctx);
+        if records.is_empty() {
+            return;
+        }
+        let streams = StreamSemanticsIndex::new(ctx);
 
         for record in &records {
             let artifact_node_id =
                 command_substitution_output_artifact_node_id(ctx.request(), &record.artifact_key);
 
             for producer_node_id in &record.derived_command_node_ids {
+                let mut semantics = ProvenanceEdgeSemantics::Produce {
+                    produce_kind: ProvenanceProduceKind::CommandSubstitutionOutput,
+                    slot_name: None,
+                    normalized_command_name: normalized_command_names
+                        .get(producer_node_id)
+                        .cloned(),
+                    domain_label: None,
+                };
+                annotate_stream_output(&mut semantics, streams.scope_stdout(producer_node_id));
                 ctx.stage_mutation(PendingMutation::AddProvenanceArtifact {
                     source_node_id: producer_node_id.clone(),
                     node_id: artifact_node_id.clone(),
@@ -39,14 +53,7 @@ impl SessionTransformPass for ExtractCommandSubstitutionProvenancePass {
                         version: ctx.request().sequence_no.0,
                     },
                     relation: EdgeKind::Produces,
-                    semantics: ProvenanceEdgeSemantics::Produce {
-                        produce_kind: ProvenanceProduceKind::CommandSubstitutionOutput,
-                        slot_name: None,
-                        normalized_command_name: normalized_command_names
-                            .get(producer_node_id)
-                            .cloned(),
-                        domain_label: None,
-                    },
+                    semantics,
                 });
             }
 

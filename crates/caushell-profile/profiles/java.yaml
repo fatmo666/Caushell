@@ -1,0 +1,86 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: java
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: launch_class
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--help"
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--version"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: class_name
+    semantic:
+      kind: payload
+      language: opaque
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: program_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: class_name
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/java/
+  caushell.profile/known_limitations:
+  - A Java main class can execute its in-process code. Classpath resolution and ProcessBuilder's
+    actual child argv are encoded in the class and unavailable from this CLI form;
+    no child argv is invented.
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true

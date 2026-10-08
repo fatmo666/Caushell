@@ -1,0 +1,105 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: pkg
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: query_installed_packages
+  selector:
+    kind: has_positional_at_matching
+    index: 0
+    matcher:
+      kind: regex_pattern
+      pattern: "^(info|query|search|which)$"
+  parameters:
+  - name: arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: install_local_packages
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: install
+    - kind: has_positional_at_or_after_matching
+      index: 1
+      matcher:
+        kind: regex_pattern
+        pattern: "^(\\./|/)"
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: package_files
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: package_files
+  - kind: import_package
+    target:
+      kind: slot
+      name: package_files
+  - kind: execute_imported_package_logic
+    target:
+      kind: slot
+      name: package_files
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+extensions:
+  caushell.profile/source_research: GTFOBins pkg example is FreeBSD pkg install of
+    an explicitly relative local archive.
+  caushell.profile/known_limitations:
+  - PackageManagerKind has no FreeBSD pkg member; package operands are modeled as
+    paths without a fabricated manager label.
+  - Only explicit ./ or / package paths establish a local archive. An extension suffix
+    alone is not path evidence.
+  - Package archive import and install script logic are modeled; repository installs
+    remain unresolved.
+  - Package writes retain a genuine unknown target; installation root is not fabricated
+    as a concrete file being written.
+modifiers:
+- id: declared_non_value_options
+  matcher:
+    kind: any_flag
+    flags:
+    - "-y"
+    - "--no-repo-update"

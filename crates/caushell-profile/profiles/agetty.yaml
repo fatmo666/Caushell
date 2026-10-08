@@ -1,0 +1,97 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: agetty
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: custom_login_program
+  selector:
+    kind: has_modifier
+    modifier: login_program
+  parameters:
+  - name: terminal_operands
+    semantic: &1
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: login_program
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: login_program
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: login_program
+  matcher:
+    kind: any_flag
+    flags:
+    - "-l"
+    - "--login-program"
+  parameters:
+  - name: login_program
+    semantic:
+      kind: payload
+      language: opaque
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: login_options
+  matcher:
+    kind: any_flag
+    flags:
+    - "-o"
+    - "--login-options"
+  parameters:
+  - name: login_options
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: autologin
+  matcher:
+    kind: any_flag
+    flags:
+    - "-a"
+    - "--autologin"
+  parameters:
+  - name: autologin_user
+    semantic: *1
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+extensions:
+  caushell.profile/source_research:
+  - https://man7.org/linux/man-pages/man8/agetty.8.html
+  caushell.profile/known_limitations:
+  - agetty invokes a login program with system-provided arguments; the profile records
+    the explicit program and preserves login option text without treating it as shell
+    code or claiming it is the complete child argv. Actual generated login argv
+  - device selection
+  - and terminal setup are unresolved.
+  - 'Runtime-generated callback argv is unknown: retain the actual executable reference
+    as opaque payload, never fabricate a child with empty argv.'

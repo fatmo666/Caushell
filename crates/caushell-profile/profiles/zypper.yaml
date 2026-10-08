@@ -1,0 +1,133 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: zypper
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: read_only_query
+  selector:
+    kind: has_positional_at_matching
+    index: 0
+    matcher:
+      kind: regex_pattern
+      pattern: "^(search|info|list|what-provides|patch-check)$"
+  parameters:
+  - name: arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: install_local_packages
+  selector:
+    kind: has_positional_at_matching
+    index: 0
+    matcher:
+      kind: regex_pattern
+      pattern: "^(install|in)$"
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: packages
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  - name: explicit_package_paths
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: positionals_matching
+      matcher:
+        kind: regex_pattern
+        pattern: "^(\\\\./|/)"
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: explicit_package_paths
+  - kind: import_package
+    target:
+      kind: slot
+      name: packages
+  - kind: execute_imported_package_logic
+    target:
+      kind: slot
+      name: packages
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: external_subcommand_lookup
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: regex_pattern
+          pattern: "^(addrepo|ar|removerepo|rr|refresh|ref|install|in|remove|rm|update|up|patch|list-updates|lu|patch-check|pc|dist-upgrade|dup|search|se|info|if|what-provides|wp|verify|ve|source-install|si|locks|ll|clean|cc|repos|lr|services|ls|patterns|pt|products|pd|packages|pa|licenses|li|help|version)$"
+  parameters:
+  - name: external_entry
+    semantic:
+      kind: payload
+      language: opaque
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: external_entry
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+extensions:
+  caushell.profile/source_research: GTFOBins zypper shell entry uses native external
+    subcommand discovery.
+  caushell.profile/known_limitations:
+  - openSUSE documents external subcommands in zypper_execdir then PATH. External
+    names are explicit dynamic execution entries; zypper-to-zypper-name transformation
+    and actual execdir/PATH resolution remain unknown and no path or argv is fabricated.
+  - The built-in command exclusion set is intentionally finite; newer/native commands
+    may remain unresolved until documented and added.
+  - Package writes retain a genuine unknown target; installation root is not fabricated
+    as a concrete file being written.
+modifiers: []

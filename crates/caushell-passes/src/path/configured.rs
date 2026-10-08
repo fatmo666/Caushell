@@ -85,6 +85,67 @@ fn concrete(text: &str, cwd: &str) -> (PathResolution, bool) {
     (PathResolution::Concrete { path }, relative)
 }
 
+fn input_parent_family(
+    invocation: &BoundInvocation,
+    target: &ConfiguredPathTarget,
+    cwd: &str,
+) -> Option<ConfiguredPathResolution> {
+    if target.fallback_parent_slots.is_empty() {
+        return None;
+    }
+    let mut roots = std::collections::BTreeSet::new();
+    let mut cwd_dependent = false;
+    for slot in &target.fallback_parent_slots {
+        for value in invocation
+            .bound_parameters
+            .iter()
+            .filter(|parameter| parameter.name == *slot)
+            .flat_map(|parameter| parameter.semantic_values())
+        {
+            let selected = match value {
+                caushell_profile::SemanticValueRef::Original(source) => {
+                    project_value(&ValueProjection::Identity, source)
+                }
+                caushell_profile::SemanticValueRef::Projected { value, .. } => {
+                    Some(value.resolution.clone())
+                }
+            };
+            let Some(SemanticValueResolution::Known(text)) = selected else {
+                return Some(ConfiguredPathResolution {
+                    resolution: unknown("input-parent output family has an unresolved input"),
+                    cwd_dependent: true,
+                    implicit_incidental_cache: false,
+                });
+            };
+            // Materialized argv is data: do not expand it a second time. Resolve
+            // dot/.. first, then take the parent (unlike textual prefix rules).
+            let (path, dependent) = concrete(&text, cwd);
+            cwd_dependent |= dependent;
+            let path = path.concrete_path().unwrap();
+            let parent = path
+                .rsplit_once('/')
+                .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
+                .unwrap_or("/");
+            roots.insert(parent.to_string());
+        }
+    }
+    if roots.is_empty() {
+        return Some(ConfiguredPathResolution {
+            resolution: unknown("input-parent output family has no statically known input"),
+            cwd_dependent: false,
+            implicit_incidental_cache: false,
+        });
+    }
+    Some(ConfiguredPathResolution {
+        resolution: PathResolution::BoundedPathSet {
+            roots: roots.into_iter().collect(),
+            may_escape: false,
+        },
+        cwd_dependent,
+        implicit_incidental_cache: false,
+    })
+}
+
 pub(crate) fn resolve_configured_path(
     invocation: &BoundInvocation,
     target: &ConfiguredPathTarget,
@@ -109,6 +170,9 @@ pub(crate) fn resolve_configured_path(
                 .map(|value| SemanticValueResolution::Known(value.clone()))
         });
     let Some(selected) = selected else {
+        if let Some(family) = input_parent_family(invocation, target, cwd) {
+            return Some(family);
+        }
         return match target.missing {
             ConfiguredPathMissing::Skip => None,
             missing => Some(ConfiguredPathResolution {
@@ -323,5 +387,91 @@ modifiers:
             PathResolution::UnsupportedDynamicText { .. }
         ));
         assert!(!path.implicit_incidental_cache);
+    }
+
+    #[test]
+    fn input_parent_fallback_normalizes_then_bounds_every_input() {
+        let (bound, mut target) =
+            bound("configured-tool --output a/../x --output /outside/y --output '/work/$LITERAL'");
+        target.sources.clear();
+        target.fallback_parent_slots = vec![caushell_profile::SlotName::new("output")];
+        let untouched = bound.clone();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
+        assert_eq!(
+            path.resolution,
+            PathResolution::BoundedPathSet {
+                roots: vec!["/outside".into(), "/work".into()],
+                may_escape: false
+            }
+        );
+        assert!(path.cwd_dependent);
+        assert_eq!(bound, untouched);
+        target.default_value = Some("/cache".into());
+        assert_eq!(
+            resolve_configured_path(&bound, &target, "/work", None, None)
+                .unwrap()
+                .resolution
+                .concrete_path(),
+            Some("/cache")
+        );
+    }
+
+    #[test]
+    fn input_parent_fallback_keeps_unknown_input_and_environment_unknown() {
+        for command in [
+            "configured-tool",
+            "configured-tool --output \"$SOURCE\"",
+            "configured-tool --output *.py",
+            "configured-tool --output ~/a.py",
+        ] {
+            let (bound, mut target) = bound(command);
+            target.sources.clear();
+            target.fallback_parent_slots = vec![caushell_profile::SlotName::new("output")];
+            let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
+            assert!(
+                matches!(
+                    path.resolution,
+                    PathResolution::UnsupportedDynamicText { .. }
+                ),
+                "{command}: {:?}",
+                path.resolution
+            );
+        }
+        let (bound, mut target) = bound("configured-tool --output a.py");
+        target.sources.clear();
+        target.fallback_parent_slots = vec![caushell_profile::SlotName::new("output")];
+        target.environment = Some(caushell_profile::EnvironmentValueSource {
+            name: "FIXTURE_CACHE".into(),
+            empty_is_unset: true,
+        });
+        assert!(matches!(
+            resolve_configured_path(&bound, &target, "/work", None, None)
+                .unwrap()
+                .resolution,
+            PathResolution::UnsupportedDynamicText { .. }
+        ));
+    }
+
+    #[test]
+    fn input_parent_fallback_uses_projected_semantics_not_raw_prefix_text() {
+        let (mut bound, mut target) = bound("configured-tool --output tag:/outside/a.py");
+        target.sources.clear();
+        target.fallback_parent_slots = vec![caushell_profile::SlotName::new("output")];
+        // A structured semantic slot can have a different value than its raw
+        // source operand. Reuse the semantic view, not a second text parser.
+        bound.bound_parameters[0].projected_values =
+            Some(vec![caushell_profile::ProjectedSemanticValue {
+                source_index: 0,
+                resolution: SemanticValueResolution::Known("/outside/a.py".into()),
+            }]);
+        assert_eq!(
+            resolve_configured_path(&bound, &target, "/work", None, None)
+                .unwrap()
+                .resolution,
+            PathResolution::BoundedPathSet {
+                roots: vec!["/outside".into()],
+                may_escape: false
+            }
+        );
     }
 }

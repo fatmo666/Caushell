@@ -1,0 +1,41 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: cpulimit, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: limit_and_execute
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: limit}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: target_pid}, {kind: has_modifier, modifier: target_exe}, {kind: has_modifier, modifier: target_path}, {kind: has_modifier, modifier: kill}]}}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: control_process, target: {kind: none}}
+      - kind: dispatch_command
+        target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}
+
+modifiers:
+  - id: limit
+    matcher: {kind: any_flag, flags: ['-l', '--limit']}
+    parameters: [{name: cpu_limit, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: foreground, matcher: {kind: any_flag, flags: ['-f', '--foreground']}}
+  - {id: target_pid, matcher: {kind: any_flag, flags: ['-p', '--pid']}}
+  - {id: target_exe, matcher: {kind: any_flag, flags: ['-e', '--exe']}}
+  - {id: target_path, matcher: {kind: any_flag, flags: ['-P', '--path']}}
+  - {id: kill, matcher: {kind: any_flag, flags: ['-k', '--kill']}}
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/testing/cpulimit/cpulimit.1.en.html
+    - GTFOBins fixed snapshot cpulimit/shell/0
+  caushell.profile/scope: Models only launched-child mode with a declared limit and optional foreground mode. The control_process effect represents cpulimit's stop/continue control of that launched child. Existing-process targets, fork monitoring, kill, other signals, quiet/background behavior, range validation, and timing are not modeled. After --, child flags and data remain child argv.

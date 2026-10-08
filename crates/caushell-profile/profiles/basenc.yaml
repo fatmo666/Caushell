@@ -1,0 +1,92 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity: {canonical_name: basenc, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: []
+  requires_features: []
+
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+# GNU coreutils: FILE (or stdin for absent FILE / '-') -> encoded/decoded stdout.
+# Encoding is a data transform, never a sanitizer or an execution mechanism.
+forms:
+  - id: information
+    selector: &information
+      kind: any
+      items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]
+    parameters:
+      - {name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
+  - id: encode_file
+    selector:
+      kind: all
+      items:
+        - &running {kind: all, items: [{kind: not, item: *information}, {kind: has_modifier, modifier: encoding}]}
+        - &encode {kind: not, item: &decode {kind: has_modifier, modifier: decode}}
+        - &file {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: &file_parameters
+      - name: input_path
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_one
+    effects: &encode_file_effects
+      - &read {kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}
+      - &encode_effect {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}
+    stream_contract: &file_streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: decode_file
+    selector: {kind: all, items: [*running, *decode, *file]}
+    parameters: *file_parameters
+    effects:
+      - *read
+      - &decode_effect {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: *file_streams
+
+  - id: encode_stdin
+    selector:
+      kind: all
+      items:
+        - *running
+        - *encode
+        - &stdin {kind: any, items: [{kind: no_positional_args}, {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}]}
+    parameters: &stdin_parameters
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+    effects: [*encode_effect]
+    stream_contract: &stdin_streams {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: decode_stdin
+    selector: {kind: all, items: [*running, *decode, *stdin]}
+    parameters: *stdin_parameters
+    effects: [*decode_effect]
+    stream_contract: *stdin_streams
+
+modifiers:
+  - id: encoding
+    matcher: {kind: any_flag, flags: ['--base64', '--base64url', '--base32', '--base32hex', '--base16', '--base2msbf', '--base2lsbf', '--z85', '--base58']}
+  - id: decode
+    matcher: {kind: any_flag, flags: ['-d', '--decode']}
+  - id: ignore_garbage
+    matcher: {kind: any_flag, flags: ['-i', '--ignore-garbage']}
+  - id: wrap
+    matcher: {kind: any_flag, flags: ['-w', '--wrap']}
+    parameters:
+      - {name: wrap_columns, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: help
+    matcher: {kind: any_flag, flags: ['--help']}
+  - id: version
+    matcher: {kind: any_flag, flags: ['--version']}
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/coreutils/manual/html_node/basenc-invocation.html
+    - GTFOBins fixed snapshot basenc/file-read/0
+  caushell.profile/known_limitations:
+    - GNU coreutils option words are declared explicitly; undeclared abbreviations, unknown flags, extra operands and missing required encoding retain unresolved-operation approval.
+    - File/stdin access and transform provenance are modeled, not encoded bytes, alphabet validation or exact failure output. Unknown stderr is not a sanitizer.
+    - The base58 option is documented in newer GNU coreutils; container native controls use coreutils 9.1 and test its eight available encoding modes.

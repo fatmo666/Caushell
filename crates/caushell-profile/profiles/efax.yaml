@@ -1,0 +1,21 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: efax, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: open_fax_device
+    selector: {kind: has_modifier, modifier: device}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: inputs}
+modifiers:
+  - id: device
+    matcher: {kind: any_flag, flags: ['-d']}
+    parameters: [{name: device_path, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: device_path}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: device_path}}]
+  - {id: send_mode, matcher: {kind: any_flag, flags: ['-t']}, parameters: [{name: dial_mode, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+extensions:
+  caushell.profile/source_research: [https://manpages.debian.org/unstable/efax/efax.1.en.html]
+  caushell.profile/known_limitations:
+    - -d names a read/write modem device, not an ordinary read-only input file; diagnostic output may expose content consumed from the opened target.
+    - This profile records device open effects, not fax dialing, modem protocol, received-file naming, or commands supplied through -g.

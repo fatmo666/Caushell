@@ -34,7 +34,8 @@ pub use evidence::{
 pub use execution::{
     DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,
     InteractiveEscapeCapability, InteractiveEscapeSurfaceKind, NetworkListenScope, NetworkListener,
-    ProcessControlAction, ProcessControlTargetKind, TerminalSessionOperationKind,
+    ProcessControlAction, ProcessControlTargetKind, ShellJobOperationKind,
+    TerminalSessionOperationKind,
 };
 pub use finding::{Finding, FindingEnforcementClass};
 pub use path::{
@@ -60,7 +61,7 @@ pub use provenance::{
     ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceDomainLabel, ProvenanceEdgeSemantics,
     ProvenanceEndpointKind, ProvenanceEndpointUsage, ProvenanceMaterializedValueState,
     ProvenanceProduceKind, ProvenanceTransformKind, ProvenanceVariableValueState,
-    RuntimeArgumentDomain, RuntimeInputCapture, RuntimeInputSource,
+    RuntimeArgumentDomain, RuntimeInputCapture, RuntimeInputSource, StreamDataDependency,
 };
 pub use query::{
     AliasHistoryAction, AliasHistoryEntry, AliasHistoryQueryRequest, AliasHistoryQueryResponse,

@@ -1,0 +1,40 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: distcc, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+
+forms:
+  - id: information
+    selector: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: show_hosts}]}
+    parameters:
+      - {name: ignored_child_text, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: compiler_or_command_child
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: show_hosts}]}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(^|/)([^/]*-)?(cc|gcc|g\+\+|c\+\+|clang|clang\+\+)(-[0-9.]+)?$'}}}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['--version']}}
+  - {id: show_hosts, matcher: {kind: any_flag, flags: ['--show-hosts']}}
+  - {id: randomize, matcher: {kind: any_flag, flags: ['--randomize']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/distcc/
+    - https://www.distcc.org/man/distcc_1.html
+    - https://github.com/distcc/distcc/blob/master/src/arg.c
+  caushell.profile/scope: Models explicit noncompiler child argv as demonstrated by the source shell entrypoint. Common compiler executable spellings are excluded because their arguments can trigger remote compilation; implicit/custom compiler modes and transport configuration are not claimed as covered. --help/--version/--show-hosts select an information-only form without child execution. --scan-includes and unsupported options remain unresolved.

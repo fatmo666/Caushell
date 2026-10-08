@@ -1,0 +1,98 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: opkg
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: install_local_package_hook
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: install
+    - kind: has_positional_at
+      index: 1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: install_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: package_archive
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: last_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: package_archive
+  - kind: import_package
+    target:
+      kind: slot
+      name: package_archive
+  - kind: execute_imported_package_logic
+    target:
+      kind: slot
+      name: package_archive
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-h"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/opkg (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - Generate the Debian package with [fpm](https://github.com/jordansissel/fpm) and
+    upload it to the target.  ``` echo 'exec /bin/sh' >x.sh fpm -n x -s dir -t deb
+    -a all --before-install x.sh . ```
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

@@ -1,0 +1,49 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: multitime, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+
+forms:
+  - id: time_command
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: batch_file}, {kind: has_modifier, modifier: stdin_command}, {kind: has_modifier, modifier: stdout_command}, {kind: has_modifier, modifier: pre_command}]}}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}
+
+modifiers:
+  - id: run_count
+    matcher: {kind: any_flag, flags: ['-n']}
+    parameters: [{name: run_count, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: sleep_interval
+    matcher: {kind: any_flag, flags: ['-s']}
+    parameters: [{name: sleep_interval, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: batch_file
+    matcher: {kind: any_flag, flags: ['-b']}
+    parameters: [{name: batch_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: stdin_command
+    matcher: {kind: any_flag, flags: ['-i']}
+    parameters: [{name: stdin_command, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: stdout_command
+    matcher: {kind: any_flag, flags: ['-o']}
+    parameters: [{name: stdout_command, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: pre_command
+    matcher: {kind: any_flag, flags: ['-r']}
+    parameters: [{name: pre_command, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/testing/multitime/multitime.1.en.html
+    - GTFOBins fixed snapshot multitime/shell/0
+  caushell.profile/scope: Models command mode for the documented default or explicit run count; the graph projects repeated launches as one instance of the same child argv, so repetition counts are not represented. Batch mode and shell-command hooks for stdin, stdout, or pre-run work remain unresolved because they introduce additional execution paths. Timing output and sleep scheduling are not modeled; the child receives its argv directly.

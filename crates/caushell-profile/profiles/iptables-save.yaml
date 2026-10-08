@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: iptables-save, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: save_rules_to_file
+    selector: {kind: has_modifier, modifier: output_file}
+    parameters: []
+    effects: [{kind: write_path, path_access: content_open, target: {kind: slot, name: output_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: print_rules
+    selector: {kind: not, item: {kind: has_modifier, modifier: output_file}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+modifiers:
+  - id: output_file
+    matcher: {kind: any_flag, flags: ['-f', '--file']}
+    parameters:
+      - {name: output_paths, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: table
+    matcher: {kind: any_flag, flags: ['-t', '--table']}
+    parameters: [{name: table_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: counters, matcher: {kind: any_flag, flags: ['-c', '--counters']}}
+  - id: modprobe
+    matcher: {kind: any_flag, flags: ['-M', '--modprobe']}
+    parameters: [{name: modprobe_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+extensions:
+  caushell.profile/source_research: [https://man7.org/linux/man-pages/man8/iptables-save.8.html]
+  caushell.profile/known_limitations:
+    - -f writes the serialized current rule set to a local file; the destination is represented as a local write path.
+    - Rules may contain data previously supplied to iptables (including comments), but this command only serializes current system state. Cross-command state and exact serialized content are not modeled.

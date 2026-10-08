@@ -1,0 +1,77 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: rpmquery
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: query_packages
+  selector:
+    kind: has_flag
+    flag: "-q"
+  parameters:
+  - name: arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: evaluate_rpm_macro
+  selector:
+    kind: has_modifier
+    modifier: eval_macro
+  parameters: []
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+modifiers:
+- id: query
+  matcher:
+    kind: any_flag
+    flags:
+    - "-q"
+- id: eval_macro
+  matcher:
+    kind: any_flag
+    flags:
+    - "--eval"
+  parameters:
+  - name: macro_expressions
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: macro_expressions
+- id: all_query
+  matcher:
+    kind: any_flag
+    flags:
+    - "-a"
+extensions:
+  caushell.profile/source_research: GTFOBins rpmquery native CLI supports RPM macro
+    evaluation.
+  caushell.profile/known_limitations:
+  - Macro-language content stays opaque and is not parsed as Bash; rpmquery is not
+    treated as an rpm alias.

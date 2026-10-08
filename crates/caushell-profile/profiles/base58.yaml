@@ -1,0 +1,43 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: base58, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: encode_file
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: decode}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}, {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_file
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_modifier, modifier: decode}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}, {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: encode_stdin
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: decode}}]}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_stdin
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: no_positional_args}, {kind: has_modifier, modifier: decode}]}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: decode, matcher: {kind: any_flag, flags: ['-d', '--decode']}}
+  - {id: check, matcher: {kind: any_flag, flags: ['-c', '--check']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/bookworm/base58/base58.1.en.html
+    - https://github.com/keis/base58
+    - GTFOBins fixed snapshot base58/file-read/0
+  caushell.profile/known_limitations:
+    - Models the python-base58 FILE-or-stdin CLI and its decode/check modifiers; checksum validation and malformed input behavior are opaque.
+    - A named input file ignores unrelated stdin; '-' and extra operands remain unresolved. Encoding is not sanitization.

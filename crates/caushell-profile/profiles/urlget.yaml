@@ -1,0 +1,63 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: urlget
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: copy_file_to_stdout
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: "-"
+    - kind: has_positional_at
+      index: 1
+  parameters:
+  - name: source_url
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_path
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+modifiers: []
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://git.savannah.gnu.org/cgit/gettext.git/tree/gettext-tools/src/urlget.c
+  - 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/urlget
+    file-read'
+  caushell.profile/known_limitations:
+  - The executable may be installed outside PATH; this profile models only urlget
+    - FILE. URI handling and other option shapes remain unresolved.

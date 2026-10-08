@@ -1,0 +1,49 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pandoc, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: convert_input_to_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: output}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, target: {kind: configured_path, sources: [{slot: output_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: convert_input_to_stdout
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: output}}, {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}]}]}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: convert_stdin_to_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: output}, {kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
+    effects: [{kind: write_path, target: {kind: configured_path, sources: [{slot: output_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque}
+  - id: convert_stdin_to_stdout
+    selector: {kind: all, items: [{kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - id: output
+    matcher: {kind: any_flag, flags: ['-o', '--output']}
+    parameters: [{name: output_path, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: format, matcher: {kind: any_flag, flags: ['-t', '--to']}, parameters: [{name: output_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+  - id: lua_filter
+    matcher: {kind: any_flag, flags: ['-L', '--lua-filter']}
+    parameters:
+      - name: lua_filter_payloads
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: optional_many
+        structured_projection: {branches: [], fallback: {name: lua_filter_paths, semantic: {kind: path, role: read, purpose: script_source}}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: lua_filter_paths}}
+      - {kind: execute_payload, target: {kind: slot, name: lua_filter_payloads}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: ['https://pandoc.org/MANUAL.html#general-options', 'https://pandoc.org/lua-filters.html', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/pandoc file-read, file-write, inherit lua']
+  caushell.profile/known_limitations: ['Lua filters are opaque Lua source files and are recorded as ExecutePayload; they are not parsed as Bash. Formats and filter internals are opaque. Multiple output flags and input values that are literal - remain unresolved.']

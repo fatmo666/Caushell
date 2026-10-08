@@ -1,0 +1,79 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: terraform, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: console_expression_input
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: console}}
+        - {kind: not, item: {kind: has_modifier, modifier: var_file}}
+        - {kind: not, item: {kind: has_modifier, modifier: state_file}}
+    parameters:
+      - {name: subcommand, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - {name: inline_variable_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: args_with_prefix, prefix: '-var-file=', before_dash_dash: true}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: ''}]}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: inline_variable_files}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: console_with_var_file
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: console}}
+        - {kind: has_modifier, modifier: var_file}
+        - {kind: not, item: {kind: has_modifier, modifier: state_file}}
+    parameters:
+      - {name: subcommand, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - {name: inline_variable_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: args_with_prefix, prefix: '-var-file=', before_dash_dash: true}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: ''}]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: variable_file}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: inline_variable_files}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: console_with_state_file
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: console}}
+        - {kind: has_modifier, modifier: state_file}
+        - {kind: not, item: {kind: has_modifier, modifier: var_file}}
+    parameters:
+      - {name: subcommand, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - {name: inline_variable_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: args_with_prefix, prefix: '-var-file=', before_dash_dash: true}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: ''}]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: state_file}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: inline_variable_files}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - id: var_file
+    matcher: {kind: any_flag, flags: ['-var-file']}
+    parameters: [{name: variable_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: plan, matcher: {kind: any_flag, flags: ['-plan']}}
+  - id: state_file
+    matcher: {kind: any_flag, flags: ['-state']}
+    parameters: [{name: state_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+extensions:
+  caushell.profile/source_research:
+    - https://gtfobins.org/gtfobins/terraform/
+    - https://developer.hashicorp.com/terraform/cli/commands/console
+    - https://developer.hashicorp.com/terraform/language/functions/file
+  caushell.profile/known_limitations:
+    - The source's second line is console HCL input. It must be sent as stdin (for example with a quoted heredoc), not parsed as a second Bash command.
+    - Console HCL is explicitly opaque executable input and requires approval through the existing unresolved-payload policy, including literal heredocs. Explicit var-file and state reads remain represented; arbitrary HCL file() selections are not fabricated as Graph reads and HCL is never parsed as Bash.
+    - Inline -var-file=PATH values are projected with an exact args_with_prefix declaration; the parser does not claim arbitrary suffixes, empty values, or post--- operands as paths.
+    - Terraform console reads working-directory configuration and may load backend state; provider/backend behavior, remote access, and -plan effects are not modeled. A var-file is not inferred from a suffix.

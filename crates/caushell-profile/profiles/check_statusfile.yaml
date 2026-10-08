@@ -1,0 +1,17 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: check_statusfile, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: read_status_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    parameters: [{name: status_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: positional_at, index: 0}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: status_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+extensions:
+  caushell.profile/source_research: [https://packages.debian.org/sid/nagios-plugins-contrib]
+  caushell.profile/known_limitations:
+    - This source entry is the check_statusfile plugin, not the unrelated check_status utility; the source says only the first line is read.
+    - Its supported option and multi-argument behavior is intentionally unresolved.

@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: espeak, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: phoneme_trace_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}
+        - {kind: has_modifier, modifier: quiet}
+        - {kind: has_modifier, modifier: phoneme_trace}
+        - {kind: has_modifier, modifier: file_input}
+        - {kind: not, item: {kind: has_positional_at, index: 0}}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q']}}
+  - {id: phoneme_trace, matcher: {kind: any_flag, flags: ['-X']}}
+  - id: file_input
+    matcher: {kind: any_flag, flags: ['-f']}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://espeak.sourceforge.net/commands.html
+    - https://gtfobins.org/gtfobins/espeak/
+  caushell.profile/scope: 'The source''s -qXf spelling is parsed as the real short-option cluster -q, -X, -f FILE: quiet output, eSpeak phoneme/debug trace, and a file operand. Content-dependent phoneme and error text may appear on either stream; audio/device output, stdin fallback, words after options, and other synthesis controls remain unresolved.'

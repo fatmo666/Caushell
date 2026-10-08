@@ -1,0 +1,131 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: cobc
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: compile_and_run
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: has_flag
+        flag: "-j"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: source_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: payload
+  - kind: write_path
+    target:
+      kind: none
+- id: compile_without_run
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: lacks_flag
+        flag: "-j"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: source_path
+    semantic:
+      kind: path
+      role: read
+      purpose: script_source
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: write_path
+    target:
+      kind: none
+modifiers:
+- id: executable_mode
+  matcher:
+    kind: any_flag
+    flags:
+    - "-x"
+    - "-F"
+    - "-j"
+- id: relaxed_syntax
+  matcher:
+    kind: any_flag
+    flags:
+    - "--frelax-syntax-checks"
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/cobc/
+  caushell.profile/known_limitations:
+  - The COBOL source is read and compiled. Upstream -j runs the generated program,
+    whose COBOL SYSTEM callback is executable but whose runtime child argv is not
+    represented.

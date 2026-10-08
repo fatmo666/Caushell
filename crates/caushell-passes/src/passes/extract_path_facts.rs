@@ -4,6 +4,7 @@ use caushell_graph::EdgeKind;
 use caushell_profile::{
     EffectKind, EffectTarget, PathPurpose, PathRole, ResolveInvocationArtifactResult,
 };
+use caushell_query::IoTarget;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
     DerivedPathBasis, DerivedPathRule, PathResolution, ResolvedPathPurpose, ResolvedPathRole,
@@ -19,8 +20,10 @@ use crate::path::{
 };
 use crate::path::{join_shell_path, normalize_shell_path};
 use crate::support::{
-    ExecutionResolveRecordRef, graph_backed_execution_resolve_records,
-    redirection_parent_command_index, source_node_id_for_redirection,
+    ExecutionResolveRecordRef, StreamSemanticsIndex, annotate_stream_output, bound_invocation,
+    content_io_target, execution_content_io_target, graph_backed_execution_resolve_records,
+    redirection_parent_command_index, slot_uses_content_open, source_node_id_for_redirection,
+    stream_provenance_mutations,
 };
 
 pub struct ExtractPathFactsPass;
@@ -34,7 +37,7 @@ impl SessionTransformPass for ExtractPathFactsPass {
         let cwd = ctx.request().shell_state_before.cwd.clone();
         let home = ctx.request().home.clone();
         let records = graph_backed_execution_resolve_records(ctx);
-        let mut mutations = collect_resolved_path_mutations(&records, &cwd, home.as_deref());
+        let mut mutations = collect_resolved_path_mutations(ctx, &records, &cwd, home.as_deref());
         mutations.extend(collect_mutation_scope_mutations(
             &records,
             &cwd,
@@ -92,13 +95,93 @@ fn collect_mutation_scope_mutations(
 }
 
 fn collect_resolved_path_mutations(
+    ctx: &RunnerContext,
     records: &[ExecutionResolveRecordRef<'_>],
     cwd: &str,
     home: Option<&str>,
 ) -> Vec<PendingMutation> {
-    collect_path_facts(records, cwd, home)
-        .into_iter()
-        .flat_map(|path| {
+    let mut mutations = Vec::new();
+    for &record in records {
+        for path in collect_path_facts(&[record], cwd, home) {
+            let kind = match path.role {
+                PathRole::Read => Some(EffectKind::ReadPath),
+                PathRole::Write => Some(EffectKind::WritePath),
+                _ => None,
+            };
+            if kind.is_some_and(|kind| {
+                bound_invocation(record.result())
+                    .is_some_and(|bound| slot_uses_content_open(bound, &path.slot_name, kind))
+            }) {
+                // Distinct possible shell cwd targets retain separate facts.
+                if path
+                    .resolution
+                    .concrete_path()
+                    .is_some_and(|p| caushell_query::IoTargetQuery::descriptor_alias(p).is_some())
+                {
+                    let entry = ctx.effective_cwd_for_node(record.source_node_id());
+                    let entry_cwds = entry.map_or_else(
+                        || vec![Some(cwd)],
+                        |entry| {
+                            entry
+                                .known_cwds()
+                                .into_iter()
+                                .map(Some)
+                                .chain(entry.has_unknown().then_some(None))
+                                .collect()
+                        },
+                    );
+                    for entry_cwd in entry_cwds {
+                        let target = execution_content_io_target(
+                            ctx,
+                            record.source_node_id(),
+                            record.parsed_scope(),
+                            record.command_index(),
+                            None,
+                            &path.resolution,
+                            path.cwd_dependent,
+                            entry_cwd.unwrap_or(cwd),
+                            home,
+                        );
+                        match target {
+                            IoTarget::Path {
+                                mut resolution,
+                                cwd_dependent,
+                            } => {
+                                if entry_cwd.is_none() && cwd_dependent {
+                                    resolution = PathResolution::UnsupportedDynamicText {
+                                        text:
+                                            "descriptor backing path depends on unknown shell cwd"
+                                                .into(),
+                                    };
+                                }
+                                mutations.extend(project_plain_path_mutations(
+                                    &path.source_node_id,
+                                    path.command_index,
+                                    &path.slot_name,
+                                    &resolution,
+                                    path.role,
+                                    path.purpose,
+                                    Some(&path.normalized_command_name),
+                                ));
+                            }
+                            target => mutations.extend(stream_provenance_mutations(
+                                ctx,
+                                Some(record),
+                                &path.source_node_id,
+                                &target,
+                                path.role,
+                                &path.slot_name,
+                                Some(&path.normalized_command_name),
+                            )),
+                        }
+                    }
+                    continue;
+                }
+                // A null sink has no persistent content artifact.
+                if path.resolution.concrete_path() == Some("/dev/null") {
+                    continue;
+                }
+            }
             let source_node_id = path.source_node_id;
             let resolution = path.resolution;
             let slot_name = path.slot_name;
@@ -107,7 +190,7 @@ fn collect_resolved_path_mutations(
             let node_id =
                 path_fact_node_id(&source_node_id, path.command_index, &slot_name, &resolution);
             let relation = edge_kind_for_path_role(path.role);
-            let mut mutations = vec![match path.metadata_mutation {
+            mutations.push(match path.metadata_mutation {
                 Some(metadata_mutation) => PendingMutation::AddPathMetadataMutationFact {
                     node_id,
                     source_node_id: source_node_id.clone(),
@@ -128,7 +211,7 @@ fn collect_resolved_path_mutations(
                     normalized_command_name: Some(normalized_command_name.clone()),
                     relation,
                 },
-            }];
+            });
 
             if let Some(path_string) = resolution.concrete_path() {
                 if let Some((relation, semantics)) = provenance_edge_for_path_fact(
@@ -146,10 +229,44 @@ fn collect_resolved_path_mutations(
                     });
                 }
             }
+        }
+    }
+    mutations
+}
 
-            mutations
-        })
-        .collect()
+fn project_plain_path_mutations(
+    source: &caushell_graph::NodeId,
+    index: usize,
+    slot: &str,
+    resolution: &PathResolution,
+    role: PathRole,
+    purpose: Option<PathPurpose>,
+    name: Option<&str>,
+) -> Vec<PendingMutation> {
+    let mut mutations = vec![PendingMutation::AddPathFact {
+        source_node_id: source.clone(),
+        node_id: path_fact_node_id(source, index, slot, resolution),
+        resolution: resolution.clone(),
+        role: resolved_path_role_for_profile_role(role),
+        purpose: purpose.map(resolved_path_purpose_for_profile_purpose),
+        slot_name: slot.into(),
+        normalized_command_name: name.map(str::to_string),
+        relation: edge_kind_for_path_role(role),
+    }];
+    if let Some(path) = resolution.concrete_path() {
+        if let Some((relation, semantics)) =
+            provenance_edge_for_path_fact(role, purpose, slot, name)
+        {
+            mutations.push(PendingMutation::AddProvenanceArtifact {
+                source_node_id: source.clone(),
+                node_id: provenance_path_artifact_node_id(path),
+                artifact: provenance_artifact_for_path(path),
+                relation,
+                semantics,
+            });
+        }
+    }
+    mutations
 }
 
 fn collect_redirection_path_mutations(
@@ -159,6 +276,16 @@ fn collect_redirection_path_mutations(
     home: Option<&str>,
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
+    if !records
+        .iter()
+        .any(|record| !record.parsed_scope().redirections.is_empty())
+        && ctx
+            .parsed_command()
+            .is_none_or(|parsed| parsed.redirections.is_empty())
+    {
+        return mutations;
+    }
+    let streams = StreamSemanticsIndex::new(ctx);
 
     for record in records {
         let parsed_scope = record.parsed_scope();
@@ -191,13 +318,66 @@ fn collect_redirection_path_mutations(
                     };
                 }
 
-                mutations.extend(project_redirection_path_mutations(
+                let target = execution_content_io_target(
+                    ctx,
+                    record.source_node_id(),
+                    parsed_scope,
+                    record.command_index(),
+                    Some(path.redirection_index),
+                    &path.resolution,
+                    path.cwd_dependent,
+                    option.unwrap_or(cwd),
+                    home,
+                );
+                if let IoTarget::Path {
+                    resolution,
+                    cwd_dependent,
+                } = target
+                {
+                    path.resolution = if option.is_none() && cwd_dependent {
+                        PathResolution::UnsupportedDynamicText {
+                            text: "descriptor backing path depends on unknown shell cwd".into(),
+                        }
+                    } else {
+                        resolution
+                    };
+                } else {
+                    let mut projected = stream_provenance_mutations(
+                        ctx,
+                        Some(*record),
+                        record.source_node_id(),
+                        &target,
+                        path.role,
+                        &path.slot_name,
+                        None,
+                    );
+                    adjust_redirect_provenance(
+                        &streams,
+                        record.source_node_id(),
+                        &target,
+                        &mut projected,
+                    );
+                    mutations.extend(projected);
+                    continue;
+                }
+                let output_target = caushell_query::IoTarget::Path {
+                    resolution: path.resolution.clone(),
+                    cwd_dependent: false,
+                };
+                let mut projected = project_redirection_path_mutations(
                     record.source_node_id().clone(),
                     path.redirection_index,
                     path.slot_name,
                     path.resolution,
                     path.role,
-                ));
+                );
+                adjust_redirect_provenance(
+                    &streams,
+                    record.source_node_id(),
+                    &output_target,
+                    &mut projected,
+                );
+                mutations.extend(projected);
             }
         }
     }
@@ -212,17 +392,70 @@ fn collect_redirection_path_mutations(
 
             let source_node_id =
                 source_node_id_for_redirection(ctx.request(), parsed_command, &path.fact);
+            let target = content_io_target(
+                parsed_command,
+                None,
+                Some(path.redirection_index),
+                &path.resolution,
+                path.cwd_dependent,
+                cwd,
+                home,
+            );
+            let resolution = if let IoTarget::Path { resolution, .. } = target {
+                resolution
+            } else {
+                mutations.extend(stream_provenance_mutations(
+                    ctx,
+                    None,
+                    &source_node_id,
+                    &target,
+                    path.role,
+                    &path.slot_name,
+                    None,
+                ));
+                continue;
+            };
             mutations.extend(project_redirection_path_mutations(
                 source_node_id,
                 path.redirection_index,
                 path.slot_name,
-                path.resolution,
+                resolution,
                 path.role,
             ));
         }
     }
 
     mutations
+}
+
+fn adjust_redirect_provenance(
+    streams: &StreamSemanticsIndex,
+    source: &caushell_graph::NodeId,
+    target: &caushell_query::IoTarget,
+    mutations: &mut Vec<PendingMutation>,
+) {
+    // Opening a read descriptor is a shell path fact, not consumption of its
+    // bytes. Effective stdin is projected by ExtractRedirectProvenancePass;
+    // explicit /dev/fd operands are projected from their own ReadPath effects.
+    mutations.retain(|mutation| {
+        !matches!(
+            mutation,
+            PendingMutation::AddProvenanceArtifact {
+                relation: EdgeKind::Consumes,
+                ..
+            }
+        )
+    });
+    for mutation in mutations {
+        if let PendingMutation::AddProvenanceArtifact {
+            relation: EdgeKind::Produces,
+            semantics,
+            ..
+        } = mutation
+        {
+            annotate_stream_output(semantics, streams.dependency(source, target));
+        }
+    }
 }
 
 fn project_redirection_path_mutations(
@@ -2923,37 +3156,24 @@ extensions: {}
     #[test]
     fn extract_path_facts_stages_read_path_mutation_for_input_redirection() {
         let ctx = run_pass("cat < ./scripts/build.sh", Some("/home/alice"));
-
+        // The shell open remains a path fact. Only the dedicated effective
+        // stdin projection establishes consumption of its bytes.
         assert_eq!(
             relevant_pending_mutations(&ctx),
-            &[
-                PendingMutation::AddPathFact {
-                    source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new(
-                        "resolved-path:command:sess-1:2:0:0:redirect_target_0:/tmp/project/scripts/build.sh"
-                    ),
-                    resolution: PathResolution::Concrete {
-                        path: "/tmp/project/scripts/build.sh".to_string()
-                    },
-                    role: ResolvedPathRole::Read,
-                    purpose: None,
-                    slot_name: "redirect_target_0".to_string(),
-                    normalized_command_name: None,
-                    relation: EdgeKind::Reads,
+            &[PendingMutation::AddPathFact {
+                source_node_id: NodeId::new("command:sess-1:2:0"),
+                node_id: NodeId::new(
+                    "resolved-path:command:sess-1:2:0:0:redirect_target_0:/tmp/project/scripts/build.sh"
+                ),
+                resolution: PathResolution::Concrete {
+                    path: "/tmp/project/scripts/build.sh".to_string()
                 },
-                PendingMutation::AddProvenanceArtifact {
-                    source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new("artifact:path-content:/tmp/project/scripts/build.sh"),
-                    artifact: path_artifact("/tmp/project/scripts/build.sh"),
-                    relation: EdgeKind::Consumes,
-                    semantics: ProvenanceEdgeSemantics::Consume {
-                        consume_kind: ProvenanceConsumeKind::PathRead,
-                        slot_name: Some("redirect_target_0".to_string()),
-                        normalized_command_name: None,
-                        domain_label: path_domain_label(ResolvedPathRole::Read, None),
-                    },
-                }
-            ]
+                role: ResolvedPathRole::Read,
+                purpose: None,
+                slot_name: "redirect_target_0".to_string(),
+                normalized_command_name: None,
+                relation: EdgeKind::Reads,
+            },]
         );
     }
 

@@ -1,0 +1,129 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: jrunscript
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: evaluate_javascript
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_flag
+        flag: "-e"
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--help"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: script_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects: []
+- id: interactive_repl
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: no_arguments
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--help"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  implicit_inputs:
+  - source: interactive_session
+    semantic:
+      kind: payload
+      language: opaque
+      source: interactive
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: interactive_session
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: terminal_ui
+      requires_tty: true
+      capabilities:
+      - run_command
+modifiers:
+- id: eval
+  matcher:
+    kind: any_flag
+    flags:
+    - "-e"
+  ends_option_scope: true
+  parameters:
+  - name: code
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: code
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-help"
+    - "-?"
+  parameters: []
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://docs.oracle.com/en/java/javase/17/docs/specs/man/jrunscript.html
+  - https://gtfobins.org/gtfobins/jrunscript/
+  caushell.profile/known_limitations:
+  - Nashorn JavaScript is opaque. Java interop and ProcessBuilder effects are present
+    in the pinned examples, but their runtime child argv and file paths stay within
+    opaque code and are not extracted.
+option_matching: exact_names

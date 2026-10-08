@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: exit
+  aliases: []
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bourne, bash, sh, dash]
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+  - id: help
+    selector:
+      kind: has_argument_at_matching
+      index: 0
+      matcher: {kind: literal, value: --help}
+    parameters:
+      - name: arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+  - id: terminate_shell
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: --help}}
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: --}}
+    parameters:
+      - name: status
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_one
+    effects:
+      - kind: terminate_current_shell
+        target: {kind: none}
+  - id: terminate_shell_after_dashdash
+    selector: {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: --}}
+    parameters:
+      - name: status
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals_after_dash_dash}
+        cardinality: optional_one
+    effects:
+      - kind: terminate_current_shell
+        target: {kind: none}
+modifiers: []
+subcommands: null
+extensions: {}

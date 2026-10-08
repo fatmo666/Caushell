@@ -1,17 +1,10 @@
-use caushell_parse::{
-    AssignmentOperator, AssignmentValueFact, DeclarationCommandKind, ParsedCommandArtifact,
-};
-use caushell_profile::SessionValue;
-use caushell_query::{QuerySession, VariableBindingQuery};
+use caushell_parse::ParsedCommandArtifact;
+use caushell_profile::EnvironmentValueRef;
+use caushell_query::QuerySession;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
-use caushell_types::{
-    CheckRequest, CommandSequenceNo, SessionVariableBinding, SessionVariableValue,
-};
+use caushell_types::{CheckRequest, CommandSequenceNo, SessionVariableBinding};
 
-use crate::support::{
-    PositionalParameterMutation, apply_positional_parameter_mutation,
-    positional_parameter_mutation_for_command, visible_variable_bindings_before_span,
-};
+use crate::support::{PositionalParameterMutation, request_variable_bindings};
 
 pub struct ExtractVariableBindingsPass;
 
@@ -21,9 +14,37 @@ impl SessionTransformPass for ExtractVariableBindingsPass {
     }
 
     fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
+        // Invocation resolution already computed the complete ordered final
+        // state. Reuse it instead of replaying static mutations a second time.
+        // Standalone pass use still has the shared static fallback below.
+        if !ctx.runtime_variable_final_mutations().is_empty() {
+            for mutation in ctx.runtime_variable_final_mutations().to_vec() {
+                ctx.stage_mutation(mutation);
+            }
+            return;
+        }
         let observed_at = ctx.request().sequence_no;
         let Some(parsed) = ctx.parsed_command() else {
             return;
+        };
+        // The audit artifact is untouched. Only the state-propagation view is fenced.
+        let filtered;
+        let parsed = if ctx.has_shell_state_fences() {
+            filtered = {
+                let mut p = parsed.clone();
+                p.assignment_commands
+                    .retain(|a| ctx.shell_state_at_is_reachable(a.span.start_byte));
+                p.declaration_commands
+                    .retain(|a| ctx.shell_state_at_is_reachable(a.span.start_byte));
+                p.unset_commands
+                    .retain(|a| ctx.shell_state_at_is_reachable(a.span.start_byte));
+                p.commands
+                    .retain(|a| ctx.shell_state_at_is_reachable(a.span.start_byte));
+                p
+            };
+            &filtered
+        } else {
+            parsed
         };
 
         let query_session = QuerySession::from_session(&session);
@@ -31,6 +52,41 @@ impl SessionTransformPass for ExtractVariableBindingsPass {
             collect_variable_mutations(parsed, query_session, ctx.request(), observed_at);
 
         for mutation in mutations {
+            if matches!(
+                mutation,
+                PendingMutation::SetPositionalParameters { .. }
+                    | PendingMutation::ForgetPositionalParameters { .. }
+            ) && ctx.runtime_variable_final_mutations().iter().any(|m| {
+                matches!(
+                    m,
+                    PendingMutation::SetPositionalParameters { .. }
+                        | PendingMutation::ForgetPositionalParameters { .. }
+                )
+            }) {
+                continue;
+            }
+            let name = match &mutation {
+                PendingMutation::UpsertVariableBinding { binding } => Some(binding.name.as_str()),
+                PendingMutation::UnsetVariable { name, .. } => Some(name.as_str()),
+                _ => None,
+            };
+            if name.is_some_and(|name| {
+                ctx.runtime_variable_final_mutations()
+                    .iter()
+                    .any(|m| match m {
+                        PendingMutation::UpsertVariableBinding { binding } => binding.name == name,
+                        PendingMutation::UnsetVariable {
+                            name: final_name, ..
+                        } => final_name == name,
+                        _ => false,
+                    })
+            }) {
+                continue;
+            }
+            ctx.stage_mutation(mutation);
+        }
+        // Kept for contexts that provide no final replay mutations.
+        for mutation in ctx.runtime_variable_final_mutations().to_vec() {
             ctx.stage_mutation(mutation);
         }
     }
@@ -42,183 +98,50 @@ fn collect_variable_mutations(
     request: &CheckRequest,
     observed_at: CommandSequenceNo,
 ) -> Vec<PendingMutation> {
-    let mut mutations = Vec::new();
-
-    for declaration in &parsed.declaration_commands {
-        if declaration.kind != DeclarationCommandKind::Export || !declaration.options.is_empty() {
-            continue;
-        }
-
-        for assignment in &declaration.assignments {
-            mutations.push(PendingMutation::UpsertVariableBinding {
+    let overlay = crate::support::static_variable_overlay(
+        request_variable_bindings(session.summary(), request),
+        parsed,
+        observed_at,
+    );
+    let mut mutations = overlay
+        .assigned
+        .into_iter()
+        .map(|name| match overlay.bindings.get(&name) {
+            Some(value) => PendingMutation::UpsertVariableBinding {
                 binding: SessionVariableBinding::new(
-                    assignment.name.clone(),
-                    classify_assignment_value(&assignment.value),
-                    true,
+                    &name,
+                    value.value.to_session_variable_value(),
+                    matches!(
+                        overlay.bindings.environment_value(&name),
+                        EnvironmentValueRef::Present(_)
+                    ),
                     observed_at,
                 ),
-            });
-        }
-
-        for name in &declaration.names {
-            if declaration
-                .assignments
-                .iter()
-                .any(|assignment| assignment.name == *name)
-            {
-                continue;
-            }
-
-            let Some(existing) = VariableBindingQuery::new(name).execute(session) else {
-                continue;
-            };
-
-            mutations.push(PendingMutation::UpsertVariableBinding {
-                binding: SessionVariableBinding::new(
-                    name.clone(),
-                    existing.value().clone(),
-                    true,
-                    observed_at,
-                ),
-            });
-        }
-    }
-
-    for assignment_command in &parsed.assignment_commands {
-        for assignment in &assignment_command.assignments {
-            if assignment.operator != AssignmentOperator::Assign {
-                continue;
-            }
-
-            mutations.push(PendingMutation::UpsertVariableBinding {
-                binding: SessionVariableBinding::new(
-                    assignment.name.clone(),
-                    classify_assignment_value(&assignment.value),
-                    false,
-                    observed_at,
-                ),
-            });
-        }
-    }
-
-    for unset in &parsed.unset_commands {
-        if !unset.options.is_empty() {
-            continue;
-        }
-
-        for name in &unset.names {
-            mutations.push(PendingMutation::UnsetVariable {
-                name: name.clone(),
-                observed_at,
-            });
-        }
-    }
-
-    if let Some(result) =
-        final_positional_parameters_after_static_mutations(parsed, session, request, observed_at)
-    {
+            },
+            None => PendingMutation::UnsetVariable { name, observed_at },
+        })
+        .collect::<Vec<_>>();
+    if let Some(result) = overlay.positional_state {
         match result {
-            PositionalParameterMutationResult::Known(values) => {
+            PositionalParameterMutation::Replace(values) => {
                 mutations.push(PendingMutation::SetPositionalParameters {
                     values: values
                         .iter()
-                        .map(SessionValue::to_session_variable_value)
+                        .map(caushell_profile::SessionValue::to_session_variable_value)
                         .collect(),
                     observed_at,
                 });
             }
-            PositionalParameterMutationResult::Unknown => {
+            PositionalParameterMutation::Forget => {
                 mutations.push(PendingMutation::ForgetPositionalParameters { observed_at });
+            }
+            PositionalParameterMutation::Shift(_) => {
+                unreachable!("overlay returns final positional state")
             }
         }
     }
 
     mutations
-}
-
-enum PositionalParameterMutationResult {
-    Known(Vec<SessionValue>),
-    Unknown,
-}
-
-fn final_positional_parameters_after_static_mutations(
-    parsed: &ParsedCommandArtifact,
-    session: QuerySession<'_>,
-    request: &CheckRequest,
-    observed_at: CommandSequenceNo,
-) -> Option<PositionalParameterMutationResult> {
-    let mut final_values = None;
-
-    for command in &parsed.commands {
-        if !matches!(command.command_name.as_deref(), Some("set" | "shift")) {
-            continue;
-        }
-
-        let mut bindings = visible_variable_bindings_before_span(
-            session.summary(),
-            request,
-            parsed,
-            command.span.start_byte,
-            observed_at,
-        );
-
-        let Some(mutation) = positional_parameter_mutation_for_command(command, &bindings) else {
-            continue;
-        };
-        let unknown = matches!(mutation, PositionalParameterMutation::Forget);
-        apply_positional_parameter_mutation(&mut bindings, mutation);
-        final_values = Some(if unknown {
-            PositionalParameterMutationResult::Unknown
-        } else {
-            PositionalParameterMutationResult::Known(bindings.positional_parameters().to_vec())
-        });
-    }
-
-    final_values
-}
-
-fn classify_assignment_value(value: &AssignmentValueFact) -> SessionVariableValue {
-    match value.node_kind.as_str() {
-        "empty" => SessionVariableValue::exact_scalar(String::new()),
-        "raw_string" | "ansi_c_string" | "number" => {
-            SessionVariableValue::exact_scalar(value.text.clone())
-        }
-        "string" if is_plain_quoted_literal(&value.text) => {
-            SessionVariableValue::exact_scalar(value.text.clone())
-        }
-        "word" if is_plain_unquoted_literal(&value.text) => {
-            SessionVariableValue::exact_scalar(value.text.clone())
-        }
-        _ => SessionVariableValue::opaque_dynamic(value.text.clone()),
-    }
-}
-
-fn is_plain_quoted_literal(text: &str) -> bool {
-    !text.contains('\\') && !contains_unescaped_dynamic_syntax(text)
-}
-
-fn is_plain_unquoted_literal(text: &str) -> bool {
-    !text.contains('\\') && !text.contains('~') && !contains_unescaped_dynamic_syntax(text)
-}
-
-fn contains_unescaped_dynamic_syntax(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            index += 2;
-            continue;
-        }
-
-        if bytes[index] == b'$' || bytes[index] == b'`' {
-            return true;
-        }
-
-        index += 1;
-    }
-
-    false
 }
 
 #[cfg(test)]
@@ -396,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_variable_bindings_stages_unset_for_each_name_without_options() {
+    fn extract_variable_bindings_stages_final_unsets_in_stable_name_order() {
         let summary = SessionSummary::new();
         let ctx = run_pass(&summary, 6, "unset SCRIPT OTHER");
 
@@ -404,11 +327,11 @@ mod tests {
             ctx.pending_mutations(),
             &[
                 PendingMutation::UnsetVariable {
-                    name: "SCRIPT".to_string(),
+                    name: "OTHER".to_string(),
                     observed_at: CommandSequenceNo::new(6),
                 },
                 PendingMutation::UnsetVariable {
-                    name: "OTHER".to_string(),
+                    name: "SCRIPT".to_string(),
                     observed_at: CommandSequenceNo::new(6),
                 },
             ]

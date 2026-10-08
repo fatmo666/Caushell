@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: chattr, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_matching: exact_names
+option_prefixes: dash_and_plus
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: add_immutable
+    selector: {kind: has_modifier, modifier: add_immutable}
+    parameters:
+      - {name: targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - {kind: metadata_mutation, target: {kind: slot, name: targets}}
+  - id: remove_immutable
+    selector: {kind: has_modifier, modifier: remove_immutable}
+    parameters:
+      - {name: targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: targets}}]
+modifiers:
+  - {id: add_immutable, matcher: {kind: any_flag, flags: ['+i']}}
+  - {id: remove_immutable, matcher: {kind: any_flag, flags: ['-i']}}
+subcommands: null
+extensions:
+  caushell.profile/source: https://man7.org/linux/man-pages/man1/chattr.1.html
+  caushell.profile/known_limitations:
+    - Only the GTFOBins immutable-attribute forms +i and -i are modeled; other chattr symbolic attributes, -R operands, and project/version modifiers remain unresolved.

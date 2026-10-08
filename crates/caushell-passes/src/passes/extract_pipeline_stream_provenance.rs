@@ -11,11 +11,77 @@ use caushell_types::{
 };
 
 use crate::support::{
-    collect_pipeline_groups, pipeline_segment_node_id, pipeline_stream_artifact_node_id,
-    top_level_node_id_for_command, transform_output_artifact_node_id,
+    EffectiveStdinSource, ExecutionResolveRecordRef, StreamSemanticsIndex, annotate_stream_output,
+    collect_pipeline_groups, collect_shell_io_scope_mutations, effective_stdin_source,
+    pipeline_segment_node_id, pipeline_stream_artifact_node_id, top_level_node_id_for_command,
+    transform_output_artifact_node_id,
 };
 
 pub struct ExtractPipelineStreamProvenancePass;
+
+/// Reuse the very same stream/transform artifact identity for explicit FD
+/// aliases. Otherwise an alias would sever the producer-to-consumer chain.
+pub(crate) fn inherited_pipeline_artifact(
+    ctx: &RunnerContext,
+    record: ExecutionResolveRecordRef<'_>,
+    descriptor: &str,
+) -> Option<(NodeId, ProvenanceArtifact)> {
+    if !matches!(descriptor, "0" | "1") {
+        return None;
+    }
+    let parsed = record.parsed_scope();
+    let group = collect_pipeline_groups(parsed).into_iter().find(|group| {
+        group
+            .commands
+            .iter()
+            .any(|command| command.command_index == record.command_index())
+    })?;
+    let position = group
+        .commands
+        .iter()
+        .position(|command| command.command_index == record.command_index())?;
+    let stream_index = match descriptor {
+        "0" => position.checked_sub(1)?,
+        "1" if position + 1 < group.commands.len() => position,
+        _ => return None,
+    };
+    let producer_index = group.commands[stream_index].command_index;
+    let scope = ctx.parsed_command_scopes().iter().find(|scope| {
+        scope.command_node_id(record.command_index()) == Some(record.source_node_id())
+    });
+    let (scope_node, producer_node) = match scope {
+        Some(scope) => (
+            scope.scope_node_id.clone(),
+            scope.command_node_id(producer_index)?.clone(),
+        ),
+        None => (
+            top_level_node_id_for_command(ctx.request(), parsed, group.commands[0].command_index)?,
+            pipeline_segment_node_id(
+                &ctx.request().session_id,
+                ctx.request().sequence_no,
+                producer_index,
+            ),
+        ),
+    };
+    let names = normalized_command_names_by_source_node(ctx);
+    let transforms = transform_kinds_by_source_node(ctx);
+    Some((
+        output_artifact_node_id(
+            &scope_node,
+            group.group_index,
+            stream_index,
+            &producer_node,
+            &transforms,
+        ),
+        output_artifact(
+            ctx.request().sequence_no,
+            group.group_index,
+            stream_index,
+            names.get(&producer_node).map(String::as_str),
+            transforms.get(&producer_node).copied(),
+        ),
+    ))
+}
 
 impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
     fn name(&self) -> &'static str {
@@ -26,34 +92,79 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
         let Some(parsed) = ctx.parsed_command() else {
             return;
         };
+        if !parsed.commands.iter().any(|command| command.in_pipeline)
+            && !ctx.parsed_command_scopes().iter().any(|scope| {
+                scope
+                    .parsed
+                    .commands
+                    .iter()
+                    .any(|command| command.in_pipeline)
+            })
+            && !ctx.execution_unit_resolve_records().iter().any(|record| {
+                matches!(
+                    record.origin_kind,
+                    caushell_runner::ExecutionUnitOriginKind::Dispatch
+                        | caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
+                        | caushell_runner::ExecutionUnitOriginKind::RecursivePayload
+                        | caushell_runner::ExecutionUnitOriginKind::NestedPayload
+                        | caushell_runner::ExecutionUnitOriginKind::FunctionExpansion
+                )
+            })
+        {
+            return;
+        }
 
         let normalized_command_names = normalized_command_names_by_source_node(ctx);
         let transform_kinds = transform_kinds_by_source_node(ctx);
+        let streams = StreamSemanticsIndex::new(ctx);
 
-        for mutation in collect_top_level_pipeline_stream_provenance_mutations(
+        for mut mutation in collect_top_level_pipeline_stream_provenance_mutations(
             ctx.request(),
             parsed,
             &normalized_command_names,
             &transform_kinds,
+            &streams,
         ) {
+            annotate_output_mutation(&streams, &mut mutation);
             ctx.stage_mutation(mutation);
         }
 
-        for mutation in collect_scoped_pipeline_stream_provenance_mutations(
+        for mut mutation in collect_scoped_pipeline_stream_provenance_mutations(
             ctx.request(),
             ctx.parsed_command_scopes(),
             &normalized_command_names,
             &transform_kinds,
+            &streams,
         ) {
+            annotate_output_mutation(&streams, &mut mutation);
             ctx.stage_mutation(mutation);
         }
-        for mutation in collect_dispatch_stream_provenance_mutations(ctx) {
+        for mut mutation in collect_dispatch_stream_provenance_mutations(ctx, &streams) {
+            annotate_output_mutation(&streams, &mut mutation);
+            ctx.stage_mutation(mutation);
+        }
+        for mutation in collect_shell_io_scope_mutations(ctx, &streams) {
             ctx.stage_mutation(mutation);
         }
     }
 }
 
-fn collect_dispatch_stream_provenance_mutations(ctx: &RunnerContext) -> Vec<PendingMutation> {
+fn annotate_output_mutation(streams: &StreamSemanticsIndex, mutation: &mut PendingMutation) {
+    if let PendingMutation::AddProvenanceArtifact {
+        source_node_id,
+        relation: EdgeKind::Produces,
+        semantics,
+        ..
+    } = mutation
+    {
+        annotate_stream_output(semantics, streams.inherited_stdout(source_node_id));
+    }
+}
+
+fn collect_dispatch_stream_provenance_mutations(
+    ctx: &RunnerContext,
+    streams: &StreamSemanticsIndex,
+) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
     let mut inherited_streams: BTreeMap<NodeId, (NodeId, ProvenanceArtifact)> = BTreeMap::new();
     for record in ctx.execution_unit_resolve_records() {
@@ -99,6 +210,12 @@ fn collect_dispatch_stream_provenance_mutations(ctx: &RunnerContext) -> Vec<Pend
         if record.origin_locator
             == caushell_runner::ExecutionUnitOriginLocator::DispatchInheritedStdin
         {
+            if effective_stdin_source(&record.parsed_scope, record.command_ref.command_index)
+                != EffectiveStdinSource::Inherited
+                || streams.ignores_stdin(&record.source_node_id)
+            {
+                continue;
+            }
             if let Some((node_id, artifact)) = inherited_streams
                 .get(&record.parent_execution_node_id)
                 .cloned()
@@ -162,6 +279,9 @@ fn collect_dispatch_stream_provenance_mutations(ctx: &RunnerContext) -> Vec<Pend
                 },
             ),
         ] {
+            if relation == EdgeKind::Consumes && streams.ignores_stdin(&source_node_id) {
+                continue;
+            }
             mutations.push(PendingMutation::AddProvenanceArtifact {
                 source_node_id,
                 node_id: node_id.clone(),
@@ -179,6 +299,7 @@ fn collect_top_level_pipeline_stream_provenance_mutations(
     parsed: &caushell_parse::ParsedCommandArtifact,
     normalized_command_names: &BTreeMap<NodeId, String>,
     transform_kinds: &BTreeMap<NodeId, ProvenanceTransformKind>,
+    streams: &StreamSemanticsIndex,
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
 
@@ -231,6 +352,12 @@ fn collect_top_level_pipeline_stream_provenance_mutations(
                 },
             });
 
+            if streams.ignores_stdin(&consumer_node_id)
+                || effective_stdin_source(parsed, to.command_index)
+                    != EffectiveStdinSource::Inherited
+            {
+                continue;
+            }
             mutations.push(PendingMutation::AddProvenanceArtifact {
                 source_node_id: consumer_node_id.clone(),
                 node_id: artifact_node_id,
@@ -254,6 +381,7 @@ fn collect_scoped_pipeline_stream_provenance_mutations(
     scopes: &[ParsedCommandScope],
     normalized_command_names: &BTreeMap<NodeId, String>,
     transform_kinds: &BTreeMap<NodeId, ProvenanceTransformKind>,
+    streams: &StreamSemanticsIndex,
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
 
@@ -298,6 +426,12 @@ fn collect_scoped_pipeline_stream_provenance_mutations(
                     },
                 });
 
+                if streams.ignores_stdin(consumer_node_id)
+                    || effective_stdin_source(&scope.parsed, to.command_index)
+                        != EffectiveStdinSource::Inherited
+                {
+                    continue;
+                }
                 mutations.push(PendingMutation::AddProvenanceArtifact {
                     source_node_id: consumer_node_id.clone(),
                     node_id: artifact_node_id,
@@ -418,6 +552,14 @@ fn transform_kinds_by_source_node(
             let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
                 return None;
             };
+
+            // A transform may write a real file rather than stdout. Do not
+            // label an independent output port as transformed input bytes.
+            if resolved.proven_stream_contract().is_some_and(|contract| {
+                contract.stdout_dependency == caushell_types::StreamDataDependency::Independent
+            }) {
+                return None;
+            }
 
             let transform_kind = resolved
                 .bound

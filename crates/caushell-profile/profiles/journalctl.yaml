@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: journalctl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: print_journal_without_pager
+    selector: {kind: has_flag, flag: '--no-pager'}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: [{kind: read_path, target: {kind: slot, name: journal_file}}]
+  - id: display_journal_with_pager
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: '--no-pager'}}]}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects: [{kind: read_path, target: {kind: slot, name: journal_file}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+modifiers:
+  - id: no_pager
+    matcher: {kind: any_flag, flags: ['--no-pager']}
+  - id: journal_file
+    matcher: {kind: any_flag, flags: ['--file']}
+    parameters: [{name: journal_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: line_count
+    matcher: {kind: any_flag, flags: ['-n']}
+    parameters: [{name: line_count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: line_count_long
+    matcher: {kind: any_flag, flags: ['--lines']}
+    parameters: [{name: line_count_long, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/journalctl (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/unstable/systemd/journalctl.1.en.html"]
+  caushell.profile/known_limitations: ["GTFOBins inherits the less pager escape. --no-pager selects stdout data with no interactive surface; pager selection and TTY behavior otherwise depend on runtime configuration.", "Only explicit --file is modeled as a journal file read. The short -f is journal follow mode, not a file operand. No journal contents or log paths are inferred from default journal selection, and unprivileged access depends on runtime configuration."]

@@ -624,22 +624,30 @@ impl PendingMutation {
                     ..Default::default()
                 }
             }
-            Self::UpsertFunctionBinding { binding } => GraphMutationProjection {
-                nodes: vec![GraphNode::new(
-                    function_binding_node_id(&binding.name, binding.observed_at),
-                    caushell_graph::NodeKind::FunctionBinding {
-                        name: binding.name.clone(),
-                        body_repr: binding.body.clone(),
-                        version: binding.observed_at.0,
-                    },
-                )],
-                edges: vec![Edge::new(
-                    command_node_id.clone(),
-                    function_binding_node_id(&binding.name, binding.observed_at),
-                    EdgeKind::Defines,
-                )],
-                ..Default::default()
-            },
+            Self::UpsertFunctionBinding { binding } => {
+                // An uncertain binding is a persisted analysis fact, not a
+                // new function definition. Keep historical content immutable.
+                if binding.uncertainty.is_some() {
+                    return GraphMutationProjection::default();
+                }
+                let node_id = function_binding_node_id_for_binding(binding);
+                GraphMutationProjection {
+                    nodes: vec![GraphNode::new(
+                        node_id.clone(),
+                        caushell_graph::NodeKind::FunctionBinding {
+                            name: binding.name.clone(),
+                            body_repr: binding.body.clone(),
+                            version: binding.observed_at.0,
+                        },
+                    )],
+                    edges: vec![Edge::new(
+                        command_node_id.clone(),
+                        node_id,
+                        EdgeKind::Defines,
+                    )],
+                    ..Default::default()
+                }
+            }
             Self::UnsetAlias { name, observed_at } => {
                 let node_id =
                     alias_mutation_node_id(name, *observed_at, AliasMutationAction::Unset);
@@ -1275,8 +1283,15 @@ impl PendingMutation {
     }
 }
 
-fn function_binding_node_id(name: &str, observed_at: caushell_types::CommandSequenceNo) -> NodeId {
-    NodeId::new(format!("function-binding:{name}:{}", observed_at.0))
+fn function_binding_node_id_for_binding(binding: &SessionFunctionBinding) -> NodeId {
+    // Like aliases, distinct bodies can be observed within one action. Keep
+    // immutable content versions; identical observations remain idempotent.
+    NodeId::new(format!(
+        "function-binding:{}:{}:{:016x}",
+        binding.name,
+        binding.observed_at.0,
+        stable_str_fingerprint(&binding.name, &binding.body)
+    ))
 }
 
 fn alias_binding_node_id_for_binding(binding: &SessionAliasBinding) -> NodeId {
@@ -1728,7 +1743,12 @@ mod tests {
         mutation.apply_summary(&mut summary);
 
         let node = graph
-            .get_node(&NodeId::new("function-binding:deploy:4"))
+            .nodes()
+            .find(|node| {
+                matches!(&node.kind,
+                NodeKind::FunctionBinding {name, body_repr, version}
+                if name == "deploy" && body_repr == "bash ./scripts/deploy.sh;" && *version == 4)
+            })
             .expect("expected function binding node");
         match &node.kind {
             NodeKind::FunctionBinding {
@@ -1743,9 +1763,7 @@ mod tests {
             other => panic!("expected function binding node, got {other:?}"),
         }
         assert!(graph.edges().iter().any(|edge| {
-            edge.from == command_node_id
-                && edge.to == NodeId::new("function-binding:deploy:4")
-                && edge.kind == EdgeKind::Defines
+            edge.from == command_node_id && edge.to == node.id && edge.kind == EdgeKind::Defines
         }));
 
         let binding = summary
@@ -1753,6 +1771,194 @@ mod tests {
             .expect("expected deploy binding to exist");
         assert_eq!(binding.body, "bash ./scripts/deploy.sh;");
         assert_eq!(binding.observed_at, CommandSequenceNo::new(4));
+    }
+
+    #[test]
+    fn different_function_bodies_in_one_action_get_distinct_immutable_nodes() {
+        let mut graph = SessionGraph::new();
+        let command = NodeId::new("command:sess-1:4");
+        let _ = graph.add_command_invocation(
+            command.clone(),
+            SessionId::new("sess-1"),
+            CommandSequenceNo::new(4),
+            "f() { printf first; }; unset -f f; f() { printf second; }",
+            "/tmp/project",
+            ShellKind::Bash,
+        );
+        let mutations = [
+            PendingMutation::UpsertFunctionBinding {
+                binding: SessionFunctionBinding::new(
+                    "f",
+                    "printf first;",
+                    CommandSequenceNo::new(4),
+                ),
+            },
+            PendingMutation::UnsetFunction {
+                name: "f".into(),
+                observed_at: CommandSequenceNo::new(4),
+            },
+            PendingMutation::UpsertFunctionBinding {
+                binding: SessionFunctionBinding::new(
+                    "f",
+                    "printf second;",
+                    CommandSequenceNo::new(4),
+                ),
+            },
+        ];
+        PendingMutation::apply_graph_batch(&mut graph, &command, &mutations).unwrap();
+        let nodes = graph.nodes().filter(|n| matches!(&n.kind, NodeKind::FunctionBinding { name, version, .. } if name == "f" && *version == 4)).collect::<Vec<_>>();
+        assert_eq!(nodes.len(), 2);
+        assert_ne!(nodes[0].id, nodes[1].id);
+        for body in ["printf first;", "printf second;"] {
+            assert!(nodes.iter().any(|n| matches!(&n.kind, NodeKind::FunctionBinding {body_repr, ..} if body_repr == body)));
+        }
+        assert!(nodes.iter().all(|n| {
+            graph
+                .edges()
+                .iter()
+                .any(|e| e.from == command && e.to == n.id && e.kind == EdgeKind::Defines)
+        }));
+        let mut summary = SessionSummary::new();
+        for mutation in mutations {
+            mutation.apply_summary(&mut summary);
+        }
+        assert_eq!(
+            summary.function_binding("f").unwrap().body,
+            "printf second;"
+        );
+    }
+
+    #[test]
+    fn identical_function_content_in_one_action_is_idempotent() {
+        let mut graph = SessionGraph::new();
+        let command = NodeId::new("command:sess-1:4");
+        let _ = graph.add_command_invocation(
+            command.clone(),
+            SessionId::new("sess-1"),
+            CommandSequenceNo::new(4),
+            "f() { printf same; }; f() { printf same; }",
+            "/tmp/project",
+            ShellKind::Bash,
+        );
+        let mutation = PendingMutation::UpsertFunctionBinding {
+            binding: SessionFunctionBinding::new("f", "printf same;", CommandSequenceNo::new(4)),
+        };
+        PendingMutation::apply_graph_batch(
+            &mut graph,
+            &command,
+            &[mutation.clone(), mutation.clone()],
+        )
+        .unwrap();
+        PendingMutation::apply_graph_batch(&mut graph, &command, &[mutation]).unwrap();
+        assert_eq!(
+            graph
+                .nodes()
+                .filter(|n| matches!(&n.kind, NodeKind::FunctionBinding { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn function_identity_is_deterministic_and_includes_name_sequence_and_content() {
+        let mut ids = std::collections::BTreeSet::new();
+        for name in ["f", "g"] {
+            for sequence in [1, 2] {
+                for body in ["printf first;", "printf second;"] {
+                    let binding =
+                        SessionFunctionBinding::new(name, body, CommandSequenceNo::new(sequence));
+                    let id = super::function_binding_node_id_for_binding(&binding);
+                    assert_eq!(id, super::function_binding_node_id_for_binding(&binding));
+                    assert!(id.0.starts_with(&format!("function-binding:{name}:{sequence}:")));
+                    assert!(ids.insert(id));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_function_nodes_restore_unchanged_and_accept_new_content() {
+        let mut graph = SessionGraph::new();
+        let command = NodeId::new("command:sess-1:4");
+        let _ = graph.add_command_invocation(
+            command.clone(),
+            SessionId::new("sess-1"),
+            CommandSequenceNo::new(4),
+            "f() { printf legacy; }",
+            "/tmp/project",
+            ShellKind::Bash,
+        );
+        let legacy = caushell_graph::GraphNode::new(
+            NodeId::new("function-binding:f:4"),
+            NodeKind::FunctionBinding {
+                name: "f".into(),
+                body_repr: "printf legacy;".into(),
+                version: 4,
+            },
+        );
+        let _ = graph.add_node(legacy.clone());
+        graph
+            .add_edge(caushell_graph::Edge::new(
+                command.clone(),
+                legacy.id.clone(),
+                EdgeKind::Defines,
+            ))
+            .unwrap();
+        let mut restored = SessionGraph::from_snapshot(graph.to_snapshot()).unwrap();
+        let mutation = PendingMutation::UpsertFunctionBinding {
+            binding: SessionFunctionBinding::new("f", "printf new;", CommandSequenceNo::new(4)),
+        };
+        mutation.apply_graph(&mut restored, &command).unwrap();
+        let roundtrip = SessionGraph::from_snapshot(restored.to_snapshot()).unwrap();
+        assert_eq!(roundtrip.get_node(&legacy.id), Some(&legacy));
+        assert!(
+            roundtrip
+                .edges()
+                .iter()
+                .any(|e| e.from == command && e.to == legacy.id)
+        );
+        assert_eq!(
+            roundtrip
+                .nodes()
+                .filter(|n| matches!(&n.kind, NodeKind::FunctionBinding { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn content_fingerprint_does_not_disable_conflicting_node_validation() {
+        let mut graph = SessionGraph::new();
+        let command = NodeId::new("command:sess-1:4");
+        let _ = graph.add_command_invocation(
+            command.clone(),
+            SessionId::new("sess-1"),
+            CommandSequenceNo::new(4),
+            "f() { printf new; }",
+            "/tmp/project",
+            ShellKind::Bash,
+        );
+        let binding = SessionFunctionBinding::new("f", "printf new;", CommandSequenceNo::new(4));
+        let forged = caushell_graph::GraphNode::new(
+            super::function_binding_node_id_for_binding(&binding),
+            NodeKind::FunctionBinding {
+                name: "f".into(),
+                body_repr: "different body under the same id".into(),
+                version: 4,
+            },
+        );
+        let _ = graph.add_node(forged.clone());
+        let before = graph.to_snapshot();
+        let error = PendingMutation::apply_graph_batch(
+            &mut graph,
+            &command,
+            &[PendingMutation::UpsertFunctionBinding { binding }],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, super::MutationGraphError::ConflictingNode {node_id} if node_id == forged.id)
+        );
+        assert_eq!(graph.to_snapshot(), before);
     }
 
     #[test]

@@ -1,0 +1,112 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: borg
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: extract_with_rsh
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: extract
+    - kind: has_modifier
+      modifier: rsh
+  parameters:
+  - name: operation
+    semantic: &1
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive
+    semantic: *1
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: rsh_command
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: command
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: extract
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: rsh
+  parameters:
+  - name: borg_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- {id: progress, matcher: {kind: any_flag, flags: ['--progress']}}
+- id: rsh
+  matcher:
+    kind: any_flag
+    flags:
+    - "--rsh"
+  parameters:
+  - name: rsh_command
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: rsh_command
+extensions:
+  caushell.profile/source_research:
+  - https://borgbackup.readthedocs.io/en/stable/usage/general.html
+  - https://borgbackup.readthedocs.io/en/stable/usage/extract.html
+  caushell.profile/known_limitations:
+  - Borg's --rsh command is opaque command configuration, not shell text parsed by
+    this profile; generated transport argv and process boundaries are not projected.
+  - Extraction destination paths derive from archive contents and current directory;
+    writes therefore remain configured/unknown.
+  - The pinned GTFO recipe uses a remote archive and tty redirections in the RSH command;
+    version-specific transport behavior is partial.

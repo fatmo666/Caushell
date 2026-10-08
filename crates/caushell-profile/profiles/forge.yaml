@@ -1,0 +1,40 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: forge, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+subcommands:
+  roots:
+    - name: build
+      forms:
+        - {id: build_help, selector: {kind: has_modifier, modifier: information}}
+        - id: build_with_explicit_compiler_path
+          selector: {kind: all, items: [{kind: has_modifier, modifier: compiler_selector}, {kind: has_modifier_parameter_matching, modifier: compiler_selector, parameter: raw_compiler_selector, matcher: {kind: regex_pattern, pattern: '^/'}}]}
+          parameters: [{name: compiler, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_flag, flag: --use, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: compiler_path, semantic: {kind: path, role: read, purpose: generic_operand}}}}]
+          effects: [{kind: read_path, target: {kind: slot, name: compiler_path}}, {kind: execute_payload, target: {kind: slot, name: compiler}}]
+        - id: build_with_compiler_selector
+          selector: {kind: all, items: [{kind: has_modifier, modifier: compiler_selector}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: compiler_selector, parameter: raw_compiler_selector, matcher: {kind: regex_pattern, pattern: '^/'}}}]}
+          parameters: [{name: compiler_selector, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}, binding: {kind: following_flag, flag: --use, operand_mode: next_arg}, cardinality: required_one}]
+          effects: [{kind: execute_payload, target: {kind: slot, name: compiler_selector}}]
+        - id: build_default
+          selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: compiler_selector}}]}
+      modifiers:
+        - {id: information, matcher: {kind: any_flag, flags: [--help, -h]}}
+        - id: compiler_selector
+          matcher: {kind: any_flag, flags: [--use]}
+          parameters: [{name: raw_compiler_selector, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+      children: []
+      default_behavior: reject_unknown
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/forge (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://getfoundry.sh/forge/reference/build/"]
+  caushell.profile/known_limitations:
+    - --use accepts version/compiler identifiers as well as an explicit compiler path. Only slash-prefixed syntax matching the documented absolute source path form is projected as a read path; relative compiler selectors remain opaque/unclassified, and version/compiler identifiers are never guessed as paths.
+    - Forge invokes the selected native compiler helper with dynamically generated arguments. The profile records this opaque executable boundary and any explicit compiler path read, but the current profile DSL cannot express those generated argv; helper dispatch remains partial and is not represented as an empty-argv child.
+    - The source-created helper file is not analyzed and its body is never assumed to be shell code.

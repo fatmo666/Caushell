@@ -57,7 +57,9 @@ fn project_execution_semantics_mutation(
             || bound.effects.iter().any(|effect| {
                 matches!(
                     effect.kind,
-                    EffectKind::DatabaseOperation | EffectKind::TerminalSessionOperation
+                    EffectKind::DatabaseOperation
+                        | EffectKind::TerminalSessionOperation
+                        | EffectKind::ShellJobOperation
                 )
             }) =>
         {
@@ -87,6 +89,17 @@ fn execution_semantics_for_bound(
     for operation in invocation
         .effects
         .iter()
+        .filter(|effect| effect.kind == EffectKind::ShellJobOperation)
+        .filter_map(|effect| effect.shell_job_operation)
+    {
+        if !semantics.shell_job_operations.contains(&operation) {
+            semantics.shell_job_operations.push(operation);
+        }
+    }
+
+    for operation in invocation
+        .effects
+        .iter()
         .filter(|effect| effect.kind == EffectKind::TerminalSessionOperation)
         .filter_map(|effect| effect.terminal_session_operation)
     {
@@ -106,6 +119,10 @@ fn execution_semantics_for_bound(
         }
     }
 
+    semantics.terminates_current_shell = invocation
+        .effects
+        .iter()
+        .any(|effect| effect.kind == EffectKind::TerminateCurrentShell);
     if invocation.effects.iter().any(|effect| {
         matches!(
             effect.kind,
@@ -146,6 +163,16 @@ fn execution_semantics_for_bound(
         );
     }
 
+    // The declared effect establishes control even when action/target metadata
+    // is unavailable. Never erase a generic tool's effect due to its name.
+    if invocation
+        .effects
+        .iter()
+        .any(|effect| effect.kind == EffectKind::ControlProcess)
+    {
+        semantics.controls_process = true;
+        semantics.process_control_target_kind = Some(ProcessControlTargetKind::Unknown);
+    }
     if let Some((action, target_kind, broad_target)) =
         process_control_semantics_for_invocation(normalized_command_name, invocation)
     {
@@ -158,6 +185,8 @@ fn execution_semantics_for_bound(
             EffectKind::SourceScriptIntoCurrentShell
                 | EffectKind::SetCurrentWorkingDirectory
                 | EffectKind::BindVariableFromRuntimeInput
+                | EffectKind::TerminateCurrentShell
+                | EffectKind::ShellJobOperation
         )
     }) {
         semantics = semantics.mutating_current_shell();
@@ -291,7 +320,8 @@ fn process_control_semantics_for_invocation(
         .find(|effect| effect.kind == EffectKind::ControlProcess)?;
     let action = process_control_action(normalized_command_name, invocation.form_id.as_str())?;
     let (target_kind, broad_target) =
-        process_control_target_kind_for_effect_target(invocation, &effect.target)?;
+        process_control_target_kind_for_effect_target(invocation, &effect.target)
+            .unwrap_or((ProcessControlTargetKind::Unknown, false));
 
     Some((action, target_kind, broad_target))
 }
@@ -505,6 +535,35 @@ mod tests {
         assert!(!projected[0].controls_process);
     }
 
+    #[test]
+    fn shell_job_operations_are_generic_deduplicated_and_not_process_control() {
+        let registry = registry_from_yaml(
+            "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: arbitrary-job-tool}\nforms:\n  - id: run\n    selector: {kind: all, items: []}\n    effects:\n      - {kind: shell_job_operation, shell_job_operation: remove_from_job_table, target: {kind: none}}\n      - {kind: shell_job_operation, shell_job_operation: suppress_sighup, target: {kind: none}}\n      - {kind: shell_job_operation, shell_job_operation: suppress_sighup, target: {kind: none}}\n",
+        );
+        let ctx = run_pass_with_registry(sample_request("arbitrary-job-tool"), registry);
+        let projected: Vec<_> = ctx
+            .pending_mutations()
+            .iter()
+            .filter_map(|m| match m {
+                PendingMutation::AddExecutionSemantics { semantics, .. } => Some(semantics),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(
+            projected[0].shell_job_operations,
+            [
+                caushell_types::ShellJobOperationKind::RemoveFromJobTable,
+                caushell_types::ShellJobOperationKind::SuppressSighup,
+            ]
+        );
+        assert!(projected[0].mutates_current_shell);
+        assert!(!projected[0].controls_process && !projected[0].terminates_current_shell);
+        assert!(
+            !projected[0].executes_payload && projected[0].terminal_session_operations.is_empty()
+        );
+    }
+
     fn run_pass(command: &str) -> RunnerContext {
         run_pass_with_request(sample_request(command))
     }
@@ -618,6 +677,7 @@ mod tests {
             semantics,
             &ExecutionSemantics::new("python", "module")
                 .loading_in_process_code(InProcessCodeLoadKind::ModuleName)
+                .dispatching_child_command()
         );
     }
 
@@ -929,6 +989,33 @@ extensions: {}
                 false,
             )
         );
+    }
+
+    #[test]
+    fn declared_process_control_does_not_need_a_command_name_action_mapping() {
+        let registry = ProfileRegistry::from_profiles(vec![
+            load_command_profile_from_str(
+                r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: control-fixture}
+forms:
+  - id: control
+    effects: [{kind: control_process, target: {kind: none}}]
+"#,
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let ctx = run_pass_with_registry(sample_request("control-fixture"), registry);
+        let semantics = semantics_mutation_for_node(&ctx, &NodeId::new("command:sess-1:1:0"));
+        assert!(semantics.controls_process);
+        assert_eq!(semantics.process_control_action, None);
+        assert_eq!(
+            semantics.process_control_target_kind,
+            Some(ProcessControlTargetKind::Unknown)
+        );
+        assert!(!semantics.process_control_broad_target);
     }
 
     #[test]

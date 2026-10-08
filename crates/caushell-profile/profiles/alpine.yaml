@@ -1,0 +1,20 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: alpine, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: read_file_as_message
+    selector: {kind: has_modifier, modifier: file}
+    effects: [{kind: read_path, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: file
+    matcher: {kind: any_flag, flags: ['-F']}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+subcommands: null
+extensions:
+  caushell.profile/source_research: ['https://alpine.x10host.com/alpine/tech-notes/alpine-7.0/tech-notes.html', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/alpine file-read']
+  caushell.profile/known_limitations: [Interactive mail UI and save operations are not modeled; -F reads a message file and can display its contents.]

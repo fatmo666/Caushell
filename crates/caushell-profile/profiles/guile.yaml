@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: guile, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: inline_code
+    selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: script_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters:
+      - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_repl
+    selector: {kind: all, items: [{kind: no_arguments}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}]
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: code
+    matcher: {kind: any_flag, flags: ['-c']}
+    ends_option_scope: true
+    parameters: [{name: code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: code}}]
+  - {id: information, matcher: {kind: any_flag, flags: ['--help', '--version', '-h'],}, ends_option_scope: true}
+  - {id: switches, matcher: {kind: any_flag, flags: ['-s', '-q', '-l', '-L', '-x']}}
+extensions:
+  caushell.profile/source_research: [https://www.gnu.org/software/guile/manual/html_node/Invoking-Guile.html]
+  caushell.profile/known_limitations:
+    - Scheme programs and loaded modules remain opaque; no internal system calls, paths, or network effects are inferred.

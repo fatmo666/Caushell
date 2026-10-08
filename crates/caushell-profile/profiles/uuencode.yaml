@@ -1,0 +1,65 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: uuencode, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: encode_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_positional_at, index: 2}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: encode_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters: [{name: output_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: encode_stdin_explicit
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_positional_at, index: 2}}
+    parameters:
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: base64, matcher: {kind: any_flag, flags: ['-m', '--base64']}}
+  - {id: encode_file_name, matcher: {kind: any_flag, flags: ['-e', '--encode-file-name']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-v', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/sharutils/manual/sharutils.html
+    - GTFOBins fixed snapshot uuencode/file-read/0
+  caushell.profile/known_limitations:
+    - The second positional is only the encoded header's remote output-name metadata; it is never bound as a host path or write target.
+    - The source's /dev/stdout metadata instructs the later uudecode command; uuencode itself emits encoded data to stdout.
+    - Encoding is represented as a data transform and never marks encoded bytes as sanitized. The companion uudecode Profile models decoding separately.
+    - Extra or missing operands, configuration-file effects, and unresolved options are not treated as supported.

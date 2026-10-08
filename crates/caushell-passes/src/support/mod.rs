@@ -3,17 +3,37 @@ mod execution_records;
 mod function_overlay;
 mod hard_deny;
 mod implicit_startup;
+mod io_provenance;
+mod io_target;
 mod listener;
+pub(crate) use io_provenance::stream_provenance_mutations;
+pub(crate) use io_target::{
+    bound_invocation, content_io_target, execution_content_io_target, slot_uses_content_open,
+};
 pub(crate) use listener::{environment_default, network_listeners};
 mod node_ids;
 mod outside_workspace;
 mod payload_hard_deny;
 mod pipeline;
 mod redirection;
+mod runtime_variable_overlay;
 mod shell_sink_hard_deny;
+mod shell_state_options;
+pub(crate) use shell_state_options::{
+    ExportMode, UnsetMode, export_mode, scalar_identifier, state_visible, unset_mode,
+};
+mod shell_io_scope;
 mod static_payload;
+mod stream_semantics;
+pub(crate) use shell_io_scope::{collect_shell_io_scope_mutations, projected_shell_scope_parents};
+pub(crate) use stream_semantics::{StreamSemanticsIndex, annotate_stream_output};
 mod top_level_units;
 mod variable_overlay;
+pub(crate) use runtime_variable_overlay::{
+    RebasedBindingReplay, RuntimeBindingReplay, VariableBindingReplay,
+    apply_runtime_variable_bindings_before_span, runtime_variable_overlay,
+    runtime_visible_variable_bindings_before_span,
+};
 
 pub(crate) use alias::{
     AliasExpansionHop, alias_assignments, apply_alias_command, expand_alias_chain, unalias_names,
@@ -48,7 +68,9 @@ pub(crate) use payload_hard_deny::{
 };
 pub(crate) use pipeline::command_has_pipeline_execution_unit;
 pub(crate) use pipeline::{collect_pipeline_groups, pipeline_has_upstream};
-pub(crate) use redirection::redirection_targets_stdin_payload;
+pub(crate) use redirection::{
+    EffectiveStdinSource, effective_stdin_source, redirection_targets_stdin_payload,
+};
 pub(crate) use shell_sink_hard_deny::{
     collect_bare_shell_sink_hard_deny_reasons, collect_shell_sink_hard_deny_reasons_for_command,
     is_file_write_redirection_operator,
@@ -65,8 +87,6 @@ pub(crate) use top_level_units::{
     top_level_unit_for_bare_redirection, top_level_unit_for_command, top_level_unit_for_span,
 };
 pub(crate) use variable_overlay::{
-    PositionalParameterMutation, apply_positional_parameter_mutation,
-    apply_visible_variable_bindings_before_span, command_environment_bindings,
-    positional_parameter_mutation_for_command, request_variable_bindings,
-    visible_variable_bindings_before_span,
+    PositionalParameterMutation, apply_visible_variable_bindings_before_span,
+    command_environment_bindings, request_variable_bindings, static_variable_overlay,
 };

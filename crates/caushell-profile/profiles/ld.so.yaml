@@ -1,0 +1,60 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity:
+  canonical_name: ld.so
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families: [linux]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: list_dependencies
+    selector: {kind: has_modifier, modifier: list}
+    parameters:
+      - name: target_program
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    effects:
+      - {kind: read_path, target: {kind: slot, name: target_program}}
+
+  - id: load_and_run_program
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: list}}
+    parameters:
+      - name: target_program
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: target_argv
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: target_program
+          argv: [target_argv]
+          environment: []
+          stdout_to_parent: true
+
+modifiers:
+  - {id: list, matcher: {kind: any_flag, flags: ["--list"]}}
+
+extensions:
+  caushell.profile/known_limitations:
+    - Loader options before the executable are loader data. The first executable operand and following argv are dispatched as the loaded program; no loader-name dispatch special case is needed.
+    - --list reads the named executable's dependency metadata and does not launch that program.

@@ -1,0 +1,756 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: certbot
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms: []
+modifiers: []
+subcommands:
+  roots:
+  - name: certonly
+    aliases: []
+    forms:
+    - id: obtain_certificate
+      selector:
+        kind: all
+        items:
+        - kind: not
+          item:
+            kind: any
+            items:
+            - kind: has_modifier
+              modifier: pre_hook
+            - kind: has_modifier
+              modifier: post_hook
+      parameters:
+      - name: domains
+        semantic:
+          kind: endpoint
+          endpoint_kind: host_port
+          usage: generic_endpoint
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+      effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: domains
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    - id: obtain_certificate_with_hooks
+      selector:
+        kind: any
+        items:
+        - kind: has_modifier
+          modifier: pre_hook
+        - kind: has_modifier
+          modifier: post_hook
+      parameters:
+      - name: domains
+        semantic:
+          kind: endpoint
+          endpoint_kind: host_port
+          usage: generic_endpoint
+        binding:
+          kind: remaining_positionals
+        cardinality: optional_many
+      - name: pre_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--pre-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: post_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--post-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      effects:
+      - kind: network_endpoint
+        target:
+          kind: slot
+          name: domains
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: pre_hook_payload
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: post_hook_payload
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    modifiers:
+    - id: dry_run
+      matcher:
+        kind: any_flag
+        flags:
+        - "--dry-run"
+    - id: email
+      matcher:
+        kind: any_flag
+        flags:
+        - "--email"
+      parameters:
+      - name: email
+        semantic:
+          kind: endpoint
+          endpoint_kind: email_address
+          usage: control_plane
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    - id: domain
+      matcher:
+        kind: any_flag
+        flags:
+        - "-d"
+        - "--domains"
+      parameters:
+      - name: domains
+        semantic:
+          kind: endpoint
+          endpoint_kind: host_port
+          usage: generic_endpoint
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+    - id: pre_hook
+      matcher:
+        kind: any_flag
+        flags:
+        - "--pre-hook"
+      parameters:
+      - name: pre_hook_text
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    - id: post_hook
+      matcher:
+        kind: any_flag
+        flags:
+        - "--post-hook"
+      parameters:
+      - name: post_hook_text
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    - id: config_dir
+      matcher:
+        kind: any_flag
+        flags:
+        - "--config-dir"
+      parameters:
+      - name: config_dir
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    - id: logs_dir
+      matcher:
+        kind: any_flag
+        flags:
+        - "--logs-dir"
+      parameters:
+      - name: logs_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+      effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: logs_dir
+    - id: work_dir
+      matcher:
+        kind: any_flag
+        flags:
+        - "--work-dir"
+      parameters:
+      - name: work_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+      effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: work_dir
+    - id: noninteractive_controls
+      matcher:
+        kind: any_flag
+        flags:
+        - "-n"
+        - "--non-interactive"
+        - "--standalone"
+        - "--agree-tos"
+    children: []
+    default_behavior: reject_unknown
+    extensions: {}
+  - name: renew
+    aliases: []
+    forms:
+    - id: renewal_pre_post_hooks
+      selector:
+        kind: all
+        items:
+        - kind: any
+          items:
+          - kind: has_modifier
+            modifier: pre_hook
+          - kind: has_modifier
+            modifier: post_hook
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: deploy_hook
+      parameters:
+      - name: pre_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--pre-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: post_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--post-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: pre_hook_payload
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: post_hook_payload
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    - id: renewal_deploy_hook
+      selector:
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: deploy_hook
+        - kind: not
+          item:
+            kind: all
+            items:
+            - kind: has_modifier
+              modifier: dry_run
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: run_deploy_hooks
+      parameters:
+      - name: deploy_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--deploy-hook"
+          operand_mode: next_arg
+        cardinality: required_one
+      - name: pre_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--pre-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: post_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--post-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: pre_hook_payload
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: post_hook_payload
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: deploy_hook_payload
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    - id: renewal_deploy_hook_skipped_dry_run
+      selector:
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: deploy_hook
+        - kind: has_modifier
+          modifier: dry_run
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: run_deploy_hooks
+        - kind: not
+          item:
+            kind: any
+            items:
+            - kind: has_modifier
+              modifier: pre_hook
+            - kind: has_modifier
+              modifier: post_hook
+      effects:
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    - id: renewal_pre_post_with_skipped_deploy
+      selector:
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: deploy_hook
+        - kind: has_modifier
+          modifier: dry_run
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: run_deploy_hooks
+        - kind: any
+          items:
+          - kind: has_modifier
+            modifier: pre_hook
+          - kind: has_modifier
+            modifier: post_hook
+      parameters:
+      - name: pre_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--pre-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      - name: post_hook_payload
+        semantic:
+          kind: payload
+          language: sh
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_flag
+          flag: "--post-hook"
+          operand_mode: next_arg
+        cardinality: optional_one
+      effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: pre_hook_payload
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: post_hook_payload
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    - id: renewal_without_active_cli_hook
+      selector:
+        kind: all
+        items:
+        - kind: not
+          item:
+            kind: any
+            items:
+            - kind: has_modifier
+              modifier: pre_hook
+            - kind: has_modifier
+              modifier: post_hook
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: deploy_hook
+      effects:
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: config_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: logs_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources:
+          - slot: work_dir
+            projection:
+              kind: identity
+          missing: unknown
+          purpose: generic_operand
+    modifiers:
+    - id: dry_run
+      matcher:
+        kind: any_flag
+        flags:
+        - "--dry-run"
+    - id: pre_hook
+      matcher:
+        kind: any_flag
+        flags:
+        - "--pre-hook"
+      parameters:
+      - name: pre_hook_text
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    - id: post_hook
+      matcher:
+        kind: any_flag
+        flags:
+        - "--post-hook"
+      parameters:
+      - name: post_hook_text
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    - id: deploy_hook
+      matcher:
+        kind: any_flag
+        flags:
+        - "--deploy-hook"
+      parameters:
+      - name: deploy_hook_text
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: optional_one
+    - id: run_deploy_hooks
+      matcher:
+        kind: any_flag
+        flags:
+        - "--run-deploy-hooks"
+    - id: config_dir
+      matcher:
+        kind: any_flag
+        flags:
+        - "--config-dir"
+      parameters:
+      - name: config_dir
+        semantic:
+          kind: path
+          role: config
+          purpose: tool_config
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    - id: logs_dir
+      matcher:
+        kind: any_flag
+        flags:
+        - "--logs-dir"
+      parameters:
+      - name: logs_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+      effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: logs_dir
+    - id: work_dir
+      matcher:
+        kind: any_flag
+        flags:
+        - "--work-dir"
+      parameters:
+      - name: work_dir
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+      effects:
+      - kind: write_path
+        target:
+          kind: slot
+          name: work_dir
+    - id: noninteractive_controls
+      matcher:
+        kind: any_flag
+        flags:
+        - "-n"
+        - "--non-interactive"
+        - "--agree-tos"
+    children: []
+    default_behavior: reject_unknown
+    extensions: {}
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/certbot (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://github.com/certbot/certbot/blob/main/certbot/docs/using.rst
+  - https://raw.githubusercontent.com/certbot/certbot/main/certbot/src/certbot/_internal/main.py
+  - https://raw.githubusercontent.com/certbot/certbot/main/certbot/src/certbot/_internal/hooks.py
+  caushell.profile/known_limitations:
+  - The upstream GTFOBins example attaches --pre-hook to certonly. The native _get_and_save_cert
+    call chain runs pre_hook before obtaining a certificate and post_hook in its finally
+    path, so certonly hooks are modeled as payload execution; the hook's dynamic work
+    is opaque.
+  - Renewal pre/post hooks run around eligible renewal attempts; deploy hooks require
+    successful renewal. During --dry-run, pre/post hooks still run, while deploy hooks
+    are skipped unless --run-deploy-hooks is supplied.
+  - "--dry-run uses the staging ACME server by default, but static analysis neither
+    contacts an ACME endpoint nor assumes certificate issuance. Config, log, and work
+    directories have distinct retained roles."
+  - Renewal can write native config, log and work state even when no deploy callback
+    runs. Explicit directories retain actual paths; undiscovered configured/default
+    directories remain genuine unknown writes, not fabricated root-path mutations.

@@ -1,0 +1,26 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: check_log, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: scan_log_and_update_state
+    selector: {kind: all, items: [{kind: has_modifier, modifier: log_file}, {kind: has_modifier, modifier: old_file}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - id: log_file
+    matcher: {kind: any_flag, flags: ['-F']}
+    parameters: [{name: log_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: log_file}}]
+  - id: old_file
+    matcher: {kind: any_flag, flags: ['-O']}
+    parameters: [{name: old_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: old_file}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: old_file}}]
+  - {id: query, matcher: {kind: any_flag, flags: ['-q']}, parameters: [{name: query, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+  - {id: warning_threshold, matcher: {kind: any_flag, flags: ['-w']}, parameters: [{name: warning_threshold, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+extensions:
+  caushell.profile/source_research: [https://nagios-plugins.org/doc/man/check_log.html]
+  caushell.profile/known_limitations:
+    - -O is mutable state used to track prior log position and is modeled as both a read and write, including when set to /dev/stdout.
+    - The plugin's query output and diagnostics can contain matched log material; streams depend on the log inputs.

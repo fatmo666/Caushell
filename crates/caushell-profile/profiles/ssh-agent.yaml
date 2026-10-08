@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: ssh-agent, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+
+forms:
+  - id: agent_child
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: csh_output}, {kind: has_modifier, modifier: sh_output}, {kind: has_modifier, modifier: debug}, {kind: has_modifier, modifier: foreground}]}}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true, unknown_environment_names: [SSH_AUTH_SOCK, SSH_AGENT_PID]}}
+
+modifiers:
+  - {id: csh_output, matcher: {kind: any_flag, flags: ['-c']}}
+  - {id: sh_output, matcher: {kind: any_flag, flags: ['-s']}}
+  - {id: debug, matcher: {kind: any_flag, flags: ['-d']}}
+  - {id: foreground, matcher: {kind: any_flag, flags: ['-D']}}
+  - {id: bind_address, matcher: {kind: any_flag, flags: ['-a']}, parameters: [{name: socket_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}], effects: [{kind: write_path, target: {kind: slot, name: socket_path}}]}
+  - {id: lifetime, matcher: {kind: any_flag, flags: ['-t']}, parameters: [{name: lifetime_seconds, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/ssh-agent/
+    - https://man.openbsd.org/ssh-agent.1
+    - https://github.com/openssh/openssh-portable/blob/master/ssh-agent.c
+  caushell.profile/scope: Models the documented command-and-arguments subprocess and marks its injected SSH_AUTH_SOCK/SSH_AGENT_PID values unknown. Agent startup without a child, -k environment-addressed agent termination, provider/fingerprint options, platform-specific flags, and the agent socket's temporary default location remain unresolved; a configured -a socket is a write path.

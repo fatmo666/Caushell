@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::support::{
+    EffectiveStdinSource, StreamSemanticsIndex, annotate_stream_output, effective_stdin_source,
     graph_backed_execution_resolve_records, normalized_command_names_by_source_node,
-    redirection_targets_stdin_payload,
+    pipeline_has_upstream, redirection_targets_stdin_payload,
 };
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_profile::{
@@ -21,6 +22,85 @@ use caushell_types::{
 
 pub struct ExtractProcessSubstitutionProvenancePass;
 
+/// Explicit FD0 aliases inside an output substitution refer to its existing
+/// input channel, not a fresh disconnected descriptor artifact. A preceding
+/// body pipeline or local redirection takes precedence in the shared IO query.
+pub(crate) fn inherited_process_substitution_artifact(
+    ctx: &RunnerContext,
+    source: &NodeId,
+    descriptor: &str,
+) -> Option<(NodeId, ProvenanceArtifact)> {
+    if descriptor != "0" {
+        return None;
+    }
+    let record = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .find(|record| &record.source_node_id == source)?;
+    if pipeline_has_upstream(&record.parsed_scope, record.command_ref.command_index) {
+        return None;
+    }
+    let ExecutionUnitOriginLocator::ProcessSubstitutionBody {
+        location_kind,
+        outer_index,
+        location_subindex,
+        substitution_index,
+    } = record.origin_locator
+    else {
+        return None;
+    };
+    let parent = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .find(|parent| parent.source_node_id == record.parent_execution_node_id)?;
+    let descriptor = process_substitution_descriptor_from_parent(
+        parent,
+        location_kind,
+        outer_index,
+        location_subindex,
+        substitution_index,
+    )?;
+    if descriptor.operator != caushell_parse::ProcessSubstitutionOperator::Output {
+        return None;
+    }
+    Some((
+        process_substitution_channel_artifact_node_id(ctx.request(), &descriptor.artifact_key),
+        ProvenanceArtifact::ProcessSubstitutionChannel {
+            expression: descriptor.expression_text,
+            body_text: descriptor.body_text,
+            operator: descriptor.operator.as_str().into(),
+            version: ctx.request().sequence_no.0,
+        },
+    ))
+}
+
+pub(crate) fn redirection_process_substitution_artifact(
+    ctx: &RunnerContext,
+    source: &NodeId,
+    index: usize,
+) -> Option<(NodeId, ProvenanceArtifact)> {
+    let parent = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .find(|record| &record.source_node_id == source)?;
+    let descriptor = process_substitution_descriptor_from_parent(
+        parent,
+        ProcessSubstitutionLocationKind::Redirection,
+        index,
+        0,
+        0,
+    )?;
+    Some((
+        process_substitution_channel_artifact_node_id(ctx.request(), &descriptor.artifact_key),
+        ProvenanceArtifact::ProcessSubstitutionChannel {
+            expression: descriptor.expression_text,
+            body_text: descriptor.body_text,
+            operator: descriptor.operator.as_str().into(),
+            version: ctx.request().sequence_no.0,
+        },
+    ))
+}
+
 impl SessionTransformPass for ExtractProcessSubstitutionProvenancePass {
     fn name(&self) -> &'static str {
         "extract_process_substitution_provenance"
@@ -29,6 +109,10 @@ impl SessionTransformPass for ExtractProcessSubstitutionProvenancePass {
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
         let normalized_command_names = normalized_command_names_by_source_node(ctx);
         let records = collect_process_substitution_provenance_records(ctx);
+        if records.is_empty() {
+            return;
+        }
+        let streams = StreamSemanticsIndex::new(ctx);
 
         for record in &records {
             let artifact_node_id =
@@ -43,42 +127,110 @@ impl SessionTransformPass for ExtractProcessSubstitutionProvenancePass {
             match record.operator {
                 caushell_parse::ProcessSubstitutionOperator::Input => {
                     for producer_node_id in &record.derived_command_node_ids {
+                        let mut semantics = ProvenanceEdgeSemantics::Produce {
+                            produce_kind: ProvenanceProduceKind::ProcessSubstitutionOutput,
+                            slot_name: None,
+                            normalized_command_name: normalized_command_names
+                                .get(producer_node_id)
+                                .cloned(),
+                            domain_label: None,
+                        };
+                        annotate_stream_output(
+                            &mut semantics,
+                            streams.scope_stdout(producer_node_id),
+                        );
                         ctx.stage_mutation(PendingMutation::AddProvenanceArtifact {
                             source_node_id: producer_node_id.clone(),
                             node_id: artifact_node_id.clone(),
                             artifact: artifact.clone(),
                             relation: EdgeKind::Produces,
-                            semantics: ProvenanceEdgeSemantics::Produce {
-                                produce_kind: ProvenanceProduceKind::ProcessSubstitutionOutput,
-                                slot_name: None,
-                                normalized_command_name: normalized_command_names
-                                    .get(producer_node_id)
-                                    .cloned(),
-                                domain_label: None,
-                            },
+                            semantics,
                         });
                     }
 
-                    stage_outer_relation(
-                        ctx,
-                        &normalized_command_names,
-                        &record.parent_execution_node_id,
-                        &artifact_node_id,
-                        artifact,
-                        &record.outer_relation,
-                    );
+                    if let Some(relation) = &record.outer_relation {
+                        if matches!(
+                            relation,
+                            ProcessSubstitutionOuterRelation::Consume {
+                                consume_kind: ProvenanceConsumeKind::StdinExplicit,
+                                ..
+                            }
+                        ) && streams.ignores_stdin(&record.parent_execution_node_id)
+                        {
+                            continue;
+                        }
+                        stage_outer_relation(
+                            ctx,
+                            &normalized_command_names,
+                            &record.parent_execution_node_id,
+                            &artifact_node_id,
+                            artifact,
+                            relation,
+                        );
+                    }
                 }
                 caushell_parse::ProcessSubstitutionOperator::Output => {
-                    stage_outer_relation(
-                        ctx,
-                        &normalized_command_names,
-                        &record.parent_execution_node_id,
-                        &artifact_node_id,
-                        artifact.clone(),
-                        &record.outer_relation,
-                    );
+                    if let Some(relation) = &record.outer_relation {
+                        let mut relation = relation.clone();
+                        // A redirected stream is an output port; an explicit
+                        // tool file operand is a separate real WritePath effect.
+                        if let ProcessSubstitutionOuterRelation::Produce {
+                            slot_name: Some(slot),
+                            domain_label,
+                            ..
+                        } = &mut relation
+                        {
+                            if slot.starts_with("redirect_target_") {
+                                let dependency = streams.dependency(
+                                    &record.parent_execution_node_id,
+                                    &caushell_query::IoTarget::ProcessSubstitution {
+                                        redirection_index: slot
+                                            .trim_start_matches("redirect_target_")
+                                            .parse()
+                                            .unwrap_or(usize::MAX),
+                                    },
+                                );
+                                if dependency != caushell_types::StreamDataDependency::Unknown {
+                                    *domain_label = Some(ProvenanceDomainLabel::StreamOutput {
+                                        dependency,
+                                        domain: domain_label.take().map(Box::new),
+                                    });
+                                }
+                            }
+                        }
+                        stage_outer_relation(
+                            ctx,
+                            &normalized_command_names,
+                            &record.parent_execution_node_id,
+                            &artifact_node_id,
+                            artifact.clone(),
+                            &relation,
+                        );
+                    }
 
                     for consumer_node_id in &record.derived_command_node_ids {
+                        if streams.ignores_stdin(consumer_node_id) {
+                            continue;
+                        }
+                        // Only body commands actually inheriting the outer
+                        // channel consume it. Later pipeline stages receive
+                        // their predecessor, not this additional input.
+                        if ctx
+                            .execution_unit_resolve_records()
+                            .iter()
+                            .find(|consumer| &consumer.source_node_id == consumer_node_id)
+                            .is_some_and(|consumer| {
+                                pipeline_has_upstream(
+                                    &consumer.parsed_scope,
+                                    consumer.command_ref.command_index,
+                                ) || effective_stdin_source(
+                                    &consumer.parsed_scope,
+                                    consumer.command_ref.command_index,
+                                ) != EffectiveStdinSource::Inherited
+                            })
+                        {
+                            continue;
+                        }
                         ctx.stage_mutation(PendingMutation::AddProvenanceArtifact {
                             source_node_id: consumer_node_id.clone(),
                             node_id: artifact_node_id.clone(),
@@ -118,7 +270,7 @@ struct ProcessSubstitutionProvenanceRecord {
     body_text: String,
     operator: caushell_parse::ProcessSubstitutionOperator,
     parent_execution_node_id: NodeId,
-    outer_relation: ProcessSubstitutionOuterRelation,
+    outer_relation: Option<ProcessSubstitutionOuterRelation>,
     derived_command_node_ids: Vec<NodeId>,
 }
 
@@ -223,10 +375,10 @@ fn process_substitution_descriptor_from_parent(
                 body_text: substitution.body_text.clone(),
                 operator: substitution.operator,
                 parent_execution_node_id: parent_record.source_node_id.clone(),
-                outer_relation: process_substitution_argument_outer_relation(
+                outer_relation: Some(process_substitution_argument_outer_relation(
                     parameter,
                     substitution.operator,
-                ),
+                )),
                 derived_command_node_ids: Vec::new(),
             })
         }
@@ -243,6 +395,27 @@ fn process_substitution_descriptor_from_parent(
                     .into_iter()
                     .nth(substitution_index)?;
 
+            let effective_stdin =
+                effective_stdin_source(parsed_scope, parent_record.command_ref.command_index);
+            let outer_relation =
+                if substitution.operator == caushell_parse::ProcessSubstitutionOperator::Input {
+                    // Opening a process-substitution descriptor still starts its
+                    // producer, but only the selected source feeds this stdin.
+                    (effective_stdin == EffectiveStdinSource::Redirect(outer_index)).then(|| {
+                        ProcessSubstitutionOuterRelation::Consume {
+                            consume_kind: ProvenanceConsumeKind::StdinExplicit,
+                            slot_name: Some(format!("redirect_target_{outer_index}")),
+                            domain_label: None,
+                        }
+                    })
+                } else {
+                    Some(process_substitution_redirection_outer_relation(
+                        redirection,
+                        outer_index,
+                        substitution.operator,
+                    ))
+                };
+
             Some(ProcessSubstitutionProvenanceRecord {
                 artifact_key: ProcessSubstitutionArtifactKey::BodyLocator {
                     parent_node_id: parent_record.source_node_id.clone(),
@@ -255,11 +428,7 @@ fn process_substitution_descriptor_from_parent(
                 body_text: substitution.body_text.clone(),
                 operator: substitution.operator,
                 parent_execution_node_id: parent_record.source_node_id.clone(),
-                outer_relation: process_substitution_redirection_outer_relation(
-                    redirection,
-                    outer_index,
-                    substitution.operator,
-                ),
+                outer_relation,
                 derived_command_node_ids: Vec::new(),
             })
         }

@@ -1,0 +1,36 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: jtag, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: interactive_jtag_shell
+    selector: {kind: has_flag, flag: --interactive}
+    parameters: []
+    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: other_jtag_mode
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: --interactive}}, {kind: not, item: {kind: has_flag, flag: --version}}]}
+    parameters: []
+    effects: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: version
+    selector: {kind: has_flag, flag: --version}
+    parameters: []
+    effects: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+modifiers:
+  - id: interactive
+    matcher: {kind: any_flag, flags: [--interactive]}
+    parameters: []
+  - id: version
+    matcher: {kind: any_flag, flags: [--version]}
+    parameters: []
+  - id: no_rc
+    matcher: {kind: any_flag, flags: [--norc]}
+    parameters: []
+subcommands: null
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/jtag (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/unstable/urjtag/jtag.1.en.html"]
+  caushell.profile/known_limitations: ["--interactive opens the UrJTAG prompt, where the source native command shell /bin/sh is entered; that command is not argv.", "UrJTAG adapter, JTAG target, startup rc file and hardware command effects are not inferred. CLI interaction can occur by default when no command files are supplied."]

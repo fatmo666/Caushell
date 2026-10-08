@@ -1,0 +1,101 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: codex
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: sandbox_child
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: sandbox
+      - kind: has_positional_at_matching
+        index: 1
+        matcher:
+          kind: literal
+          value: linux
+      - kind: has_positional_at
+        index: 2
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: platform
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: child_command
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: child_argv
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: child_command
+      argv:
+      - child_argv
+      stdin_from_parent: true
+      stdout_to_parent: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/codex/
+  caushell.profile/known_limitations:
+  - The local Codex harness source confirms the Linux sandbox helper ultimately execs
+    a supplied command. The GTFOBins example's exact public CLI generation/version
+    and sandbox policy defaults are not established by this static form.
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true

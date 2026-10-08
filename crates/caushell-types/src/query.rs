@@ -597,6 +597,8 @@ pub struct DerivedInvocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionSemanticsFact {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shell_job_operations: Vec<crate::ShellJobOperationKind>,
     #[serde(default, skip_serializing_if = "crate::execution::is_false")]
     pub operation_semantics_unresolved: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -621,6 +623,8 @@ pub struct ExecutionSemanticsFact {
     pub process_control_target_kind: Option<ProcessControlTargetKind>,
     pub process_control_broad_target: bool,
     pub mutates_current_shell: bool,
+    #[serde(default, skip_serializing_if = "crate::execution::is_false")]
+    pub terminates_current_shell: bool,
     pub executes_remote_command: bool,
     pub executes_hook: bool,
     pub executes_imported_package_logic: bool,
@@ -810,6 +814,7 @@ pub struct NestedPayloadInputFragment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NestedPayloadLanguage {
+    Opaque,
     Bash,
     Sh,
     Dash,
@@ -923,6 +928,7 @@ impl std::error::Error for NestedPayloadDecodeError {}
 impl NestedPayloadLanguage {
     pub fn from_storage(value: &str) -> Result<Self, NestedPayloadDecodeError> {
         match value {
+            "opaque" => Ok(Self::Opaque),
             "bash" => Ok(Self::Bash),
             "sh" => Ok(Self::Sh),
             "dash" => Ok(Self::Dash),
@@ -2169,6 +2175,7 @@ mod tests {
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
                     terminal_session_operations: Vec::new(),
+                    shell_job_operations: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:2".to_string(),
                     source: ExecutionUnit {
                         node_id: "command:sess-1:2".to_string(),
@@ -2187,6 +2194,7 @@ mod tests {
                     interactive_escape_capabilities: vec![],
                     interactive_escape_requires_tty: false,
                     mutates_current_shell: false,
+                    terminates_current_shell: false,
                     executes_remote_command: false,
                     executes_hook: false,
                     executes_imported_package_logic: false,
@@ -2335,6 +2343,7 @@ mod tests {
                         network_listeners: Vec::new(),
                         database_operations: Vec::new(),
                         terminal_session_operations: Vec::new(),
+                        shell_job_operations: Vec::new(),
                         node_id: "execution-semantics:command:sess-1:2".to_string(),
                         source: ExecutionUnit {
                             node_id: "command:sess-1:2".to_string(),
@@ -2353,6 +2362,7 @@ mod tests {
                         interactive_escape_capabilities: vec![],
                         interactive_escape_requires_tty: false,
                         mutates_current_shell: false,
+                        terminates_current_shell: false,
                         executes_remote_command: false,
                         executes_hook: false,
                         executes_imported_package_logic: false,
@@ -2749,6 +2759,7 @@ mod tests {
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
                 terminal_session_operations: Vec::new(),
+                shell_job_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:5".to_string(),
                 source: ExecutionUnit {
                     node_id: "command:sess-1:5".to_string(),
@@ -2767,6 +2778,7 @@ mod tests {
                 interactive_escape_capabilities: vec![],
                 interactive_escape_requires_tty: false,
                 mutates_current_shell: false,
+                terminates_current_shell: false,
                 executes_remote_command: false,
                 executes_hook: false,
                 executes_imported_package_logic: false,

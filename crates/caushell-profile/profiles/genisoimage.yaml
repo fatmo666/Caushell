@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: genisoimage, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: diagnose_sort_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: sort_file}, {kind: no_positional_args}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+  - id: create_iso_to_stdout
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: path_list}}, {kind: not, item: {kind: all, items: [{kind: has_modifier, modifier: output_image}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output_image, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}}]}
+    parameters: [{name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: create_iso_to_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: path_list}}, {kind: has_modifier, modifier: output_image}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output_image, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: create_iso_with_path_list_to_stdout
+    selector: {kind: all, items: [{kind: has_modifier, modifier: path_list}, {kind: not, item: {kind: all, items: [{kind: has_modifier, modifier: output_image}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output_image, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}}]}
+    parameters: [{name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: create_iso_with_path_list_to_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: path_list}, {kind: has_modifier, modifier: output_image}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output_image, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - id: output_image
+    matcher: {kind: any_flag, flags: ['-o', '--output']}
+    parameters: [{name: output_path, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [{matcher: {kind: literal, value: '-'}, target: null}], fallback: {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}}}}]
+    effects: [{kind: write_path, path_access: content_open, target: {kind: slot, name: output_file}}]
+  - id: sort_file
+    matcher: {kind: any_flag, flags: ['-sort']}
+    parameters: [{name: sort_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: sort_path}}]
+  - id: path_list
+    matcher: {kind: any_flag, flags: ['-path-list']}
+    parameters: [{name: path_list_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: path_list_file}}, {kind: read_path, target: {kind: none}}]
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q', '--quiet']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: [https://manpages.debian.org/testing/genisoimage/mkisofs.1.en.html, GTFOBins fixed snapshot genisoimage/file-read/0, GTFOBins fixed snapshot genisoimage/file-read/1]
+  caushell.profile/known_limitations:
+    - -sort reads a weight file and does not select the ISO image output path.
+    - -o - or no -o sends ISO bytes to stdout; a named -o path writes that host file and does not send image bytes to stdout.
+    - -path-list content can name additional filesystem paths; those content-derived inputs have unknown paths. Graft points, symlink traversal, default paths, and other image options are unresolved.

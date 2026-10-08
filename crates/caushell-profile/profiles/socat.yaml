@@ -1,0 +1,181 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: socat, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+option_scope: leading_options
+forms:
+  - id: information
+    selector: {kind: any, items: [{kind: has_flag, flag: -h}, {kind: has_flag, flag: -V}]}
+    parameters: []
+    effects: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: read_from_file_address
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unidirectional_first_to_second}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}]}
+    parameters:
+      - name: source_address
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'file:'}, target: {name: read_input_file, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+      - name: destination_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+    effects: [{kind: read_path, target: {kind: slot, name: read_input_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: write_to_open_address
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unidirectional_first_to_second}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^exec:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^open:'}}]}
+    parameters:
+      - name: source_address
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'exec:'}, target: {name: exec_command_argv, semantic: {kind: plain_value}}}]
+      - name: destination_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'open:'}, target: {name: exec_output_file, semantic: {kind: path, role: write, purpose: generic_operand}}}]
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command_whitespace_argv: exec_command_argv, argv: [], stdin_from_parent: false, stdin_from_tool: true, stdout_to_parent: false}}
+      - {kind: write_path, target: {kind: slot, name: exec_output_file}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: file_to_tcp_upload
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unidirectional_first_to_second}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^tcp(-connect)?:'}}]}
+    parameters:
+      - name: input_address
+        semantic: {kind: plain_value}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'file:'}, target: {name: upload_input_file, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+      - name: output_address
+        semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: upload_target}
+        binding: {kind: last_positional}
+        cardinality: required_one
+    effects: [{kind: read_path, target: {kind: slot, name: upload_input_file}}, {kind: network_endpoint, target: {kind: slot, name: output_address}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: tcp_to_file_download
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unidirectional_first_to_second}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^tcp(-connect)?:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^open:'}}]}
+    parameters:
+      - name: input_address
+        semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+      - name: output_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'open:'}, target: {name: download_output_file, semantic: {kind: path, role: write, purpose: generic_operand}}}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: input_address}}, {kind: write_path, target: {kind: slot, name: download_output_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: file_first_reverse_receive
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unidirectional_second_to_first}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^tcp(-connect)?:'}}]}
+    parameters:
+      - name: output_address
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'file:'}, target: {name: receive_output_file, semantic: {kind: path, role: write, purpose: generic_operand}}}]
+      - name: input_address
+        semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}
+        binding: {kind: last_positional}
+        cardinality: required_one
+    effects: [{kind: network_endpoint, target: {kind: slot, name: input_address}}, {kind: write_path, target: {kind: slot, name: receive_output_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: file_second_reverse_upload
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unidirectional_second_to_first}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^tcp(-connect)?:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(file|open):'}}]}
+    parameters:
+      - name: output_address
+        semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: upload_target}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+      - name: input_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'file:'}, target: {name: reverse_upload_file_input, semantic: {kind: path, role: read, purpose: generic_operand}}}, {matcher: {kind: prefix, value: 'open:'}, target: {name: reverse_upload_open_input, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: output_address}}, {kind: read_path, target: {kind: slot, name: reverse_upload_file_input}}, {kind: read_path, target: {kind: slot, name: reverse_upload_open_input}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: tcp_reverse_shell
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^tcp(-connect)?:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^exec:'}}]}
+    parameters:
+      - name: endpoint_address
+        semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+      - name: exec_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'exec:'}, target: {name: reverse_command_argv, semantic: {kind: plain_value}}}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint_address}}, {kind: dispatch_command, target: {kind: dispatch, command_whitespace_argv: reverse_command_argv, argv: [], stdin_from_parent: false, stdin_from_tool: true, stdout_to_parent: false}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: tcp_bind_shell
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^tcp(-listen)?:'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^exec:'}}]}
+    parameters:
+      - name: listen_address
+        semantic: {kind: plain_value}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'tcp-listen:'}, target: {name: listen_port, semantic: {kind: plain_value}}}, {matcher: {kind: keyword_value, keyword: bind, allow_quoted_keyword: true}, target: {name: bind_host, semantic: {kind: plain_value}}}]
+      - name: exec_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'exec:'}, target: {name: bind_command_argv, semantic: {kind: plain_value}}}]
+    effects: [{kind: listen_network, target: {kind: network_listener, host: {slot: bind_host}, port: {slot: listen_port}}}, {kind: dispatch_command, target: {kind: dispatch, command_whitespace_argv: bind_command_argv, argv: [], stdin_from_parent: false, stdin_from_tool: true, stdout_to_parent: false}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: stdio_exec_shell
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^exec:'}}]}
+    parameters:
+      - name: stdio_address
+        semantic: {kind: plain_value}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+      - name: exec_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: prefix, value: 'exec:'}, target: {name: stdio_command_argv, semantic: {kind: plain_value}}}]
+    effects: [{kind: dispatch_command, target: {kind: dispatch, command_whitespace_argv: stdio_command_argv, argv: [], stdin_from_parent: true, stdout_to_parent: true}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: native_socat_addresses
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: any, items: [{kind: has_flag, flag: -h}, {kind: has_flag, flag: -V}]}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(file:|exec:|tcp(-connect|-listen)?:|-)'}}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(open:|exec:)'}}}
+    parameters: [{name: address_specs, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: address_specs}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: unidirectional_first_to_second, matcher: {kind: any_flag, flags: [-u]}}
+  - {id: unidirectional_second_to_first, matcher: {kind: any_flag, flags: [-U]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/socat (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://man7.org/linux/man-pages/man1/socat.1.html", "https://manpages.debian.org/testing/socat/socat.1.en.html"]
+  caushell.profile/known_limitations: ["socat address strings use a native grammar: address type/parameters precede comma-separated options. File and EXEC address projections cover simple source forms; unusual quoting and commas inside paths/commands remain unresolved.", "TCP endpoint provenance retains the source's native tcp-connect: prefix with its host/port rather than normalizing those fields; transfer usage labels preserve upload versus fetch direction.", "EXEC values use socat's documented whitespace argv grammar, not a shell grammar. Shells are only derived when the source explicitly supplies an EXEC address.", "TCP listeners preserve a listener role; the source omits bind host and it stays unknown. Socket success, transport bytes, pty wiring and remote server behavior are not inferred."]

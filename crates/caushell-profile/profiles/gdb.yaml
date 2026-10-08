@@ -1,0 +1,295 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: gdb
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: help
+  parameters:
+  - name: ignored_information_operands
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+- id: show_version
+  selector:
+    kind: has_modifier
+    modifier: version
+  parameters:
+  - name: ignored_information_operands
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  - name: ignored_version_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+- id: gdb_eval_command
+  selector:
+    kind: all
+    items:
+    - kind: has_flag
+      flag: "-ex"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: help
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: version
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: debugger_commands
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: long_debugger_commands
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+  parameters:
+  - name: debugger_commands
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-ex"
+      operand_mode: next_arg
+    cardinality: required_many
+  - name: long_debugger_commands
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--eval-command"
+      operand_mode: next_arg
+    cardinality: optional_many
+- id: gdb_eval_long_command
+  selector:
+    kind: all
+    items:
+    - kind: has_flag
+      flag: "--eval-command"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: help
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: version
+    - kind: not
+      item:
+        kind: has_flag
+        flag: "-ex"
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: long_debugger_commands
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+  parameters:
+  - name: long_debugger_commands
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--eval-command"
+      operand_mode: next_arg
+    cardinality: required_many
+- id: gdb_command_file
+  selector:
+    kind: all
+    items:
+    - kind: has_flag
+      flag: "-x"
+    - kind: not
+      item:
+        kind: has_flag
+        flag: "-e"
+    - kind: not
+      item:
+        kind: has_flag
+        flag: "-n"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: help
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: version
+  parameters:
+  - name: command_file
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-x"
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: command_file_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: command_file_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: command_file
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: debugger_prompt
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: execute_command
+    - kind: not
+      item:
+        kind: has_flag
+        flag: "-x"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: help
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: version
+  parameters: []
+  implicit_inputs:
+  - source: interactive_session
+    semantic:
+      kind: payload
+      language: opaque
+      source: interactive
+      recursive: true
+  effects:
+  - kind: open_interactive_escape_surface
+    target:
+      kind: implicit_input
+      source: interactive_session
+    surface:
+      kind: terminal_ui
+      requires_tty: true
+      capabilities:
+      - run_command
+      - spawn_shell
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers:
+- id: help
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: version
+  matcher:
+    kind: any_flag
+    flags:
+    - "--version"
+- id: execute_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "-ex"
+    - "--eval-command"
+- id: no_init_files
+  matcher:
+    kind: any_flag
+    flags:
+    - "-nx"
+- id: no_home_init_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-nh"
+- id: quiet_startup
+  matcher:
+    kind: any_flag
+    flags:
+    - "-q"
+    - "--quiet"
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/gdb (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://sourceware.org/gdb/current/onlinedocs/gdb.html/Invoking-GDB.html
+  - https://sourceware.org/gdb/current/onlinedocs/gdb.html/Shell-Commands.html
+  - https://sourceware.org/gdb/current/onlinedocs/gdb.html/Command-Files.html
+  caushell.profile/known_limitations:
+  - "-ex and -x use GDB's own command language; values stay opaque and are not parsed
+    as shell text."
+  - The source embeds a dump output path in a GDB command string; it cannot be accurately
+    extracted from current CLI projections and is marked partial.
+  - Python code passed inside GDB commands and shell commands remain opaque; no child
+    argv is invented.
+option_matching: exact_names

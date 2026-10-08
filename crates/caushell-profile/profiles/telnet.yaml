@@ -1,0 +1,24 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: telnet, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: connect_to_remote_host
+    selector: {kind: has_positional_at, index: 0}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+  - id: open_telnet_command_mode
+    selector: {kind: no_positional_args}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects:
+      - {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ['https://man.openbsd.org/OpenBSD-5.5/telnet.1', 'GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/telnet reverse-shell and shell']
+  caushell.profile/known_limitations: ['The shell escape is entered in telnet command mode or through its escape character; prompt input remains opaque and is not parsed as caller Bash.', 'The source reverse-shell pipeline invokes /bin/sh as a separate shell process; this profile records telnet endpoint/streams without reinterpreting that child.', 'Telnet dialect, authentication and terminal negotiation vary by implementation.']

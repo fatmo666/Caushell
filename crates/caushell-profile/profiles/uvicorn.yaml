@@ -1,7 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_matching: exact_names
-identity: {canonical_name: uvicorn, aliases: []}
+identity: {canonical_name: uvicorn, aliases: [], module_entrypoints: [{runtime: python, name: uvicorn}]}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 

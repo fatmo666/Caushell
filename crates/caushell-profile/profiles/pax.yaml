@@ -1,0 +1,66 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pax, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: write_archive_to_stdout
+    selector: {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: not, item: {kind: has_modifier, modifier: read}}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: archive_file}}, {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_file_arg, matcher: {kind: literal, value: '-'}}]}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+      - {name: archive_stream_marker, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-f', operand_mode: next_arg}, cardinality: optional_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: write_archive_from_stdin_path_list
+    selector: {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: not, item: {kind: has_modifier, modifier: read}}, {kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier, modifier: archive_file}}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: write_archive_stdout_from_stdin_path_list
+    selector: {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: not, item: {kind: has_modifier, modifier: read}}, {kind: not, item: {kind: has_positional_at, index: 0}}, {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_file_arg, matcher: {kind: literal, value: '-'}}]}
+    parameters: [{name: archive_stream_marker, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-f', operand_mode: next_arg}, cardinality: optional_one}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: write_archive_file_from_stdin_path_list
+    selector: {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: not, item: {kind: has_modifier, modifier: read}}, {kind: not, item: {kind: has_positional_at, index: 0}}, {kind: has_modifier, modifier: archive_file}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_file_arg, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: archive_output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_flag, flag: '-f', operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: read_path, target: {kind: none}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: archive_output_path}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: write_archive_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: not, item: {kind: has_modifier, modifier: read}}, {kind: has_modifier, modifier: archive_file}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_file_arg, matcher: {kind: literal, value: '-'}}}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+      - {name: archive_output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_flag, flag: '-f', operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: archive_output_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: extract_archive_from_stdin
+    selector: {kind: all, items: [{kind: has_modifier, modifier: read}, {kind: not, item: {kind: has_modifier, modifier: write}}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: archive_file}}, {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_file_arg, matcher: {kind: literal, value: '-'}}]}]}
+    parameters:
+      - {name: member_patterns, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+      - {name: archive_stream_marker, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-f', operand_mode: next_arg}, cardinality: optional_one}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: extract_archive_members
+    selector: {kind: all, items: [{kind: has_modifier, modifier: read}, {kind: not, item: {kind: has_modifier, modifier: write}}, {kind: has_modifier, modifier: archive_file}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_file_arg, matcher: {kind: literal, value: '-'}}}]}
+    parameters:
+      - {name: member_patterns, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+      - {name: archive_input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_flag, flag: '-f', operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: archive_input_path}}, {kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - {id: write, matcher: {kind: any_flag, flags: ['-w']}}
+  - {id: read, matcher: {kind: any_flag, flags: ['-r']}}
+  - id: archive_file
+    matcher: {kind: any_flag, flags: ['-f']}
+    parameters: [{name: archive_file_arg, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - {id: check_pattern_exclusion, matcher: {kind: any_flag, flags: ['-c']}}
+  - {id: interact, matcher: {kind: any_flag, flags: ['-i']}}
+  - {id: list, matcher: {kind: any_flag, flags: ['-v']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: [https://www.man7.org/linux/man-pages/man1/pax.1p.html, GTFOBins fixed snapshot pax/file-read/0]
+  caushell.profile/known_limitations:
+    - In write mode, positional operands are host filesystem paths to read; an explicit -f path is the archive output path. Without -f, the archive bytes go to stdout.
+    - In read mode, -f names the archive host path and positional operands are archive-member patterns, not host input paths. Extracted member destinations depend on archive contents and invocation cwd and are retained as an unknown write target.
+    - With -f -, read mode consumes an archive from stdin; write mode with file operands writes the archive to stdout. Write mode with no file operands consumes a pathname list from stdin and reads the listed host files through unknown targets. Combined copy mode (-r -w) remains opaque.

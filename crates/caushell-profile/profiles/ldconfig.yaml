@@ -1,0 +1,258 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: ldconfig
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+- id: list_cache
+  selector:
+    kind: has_modifier
+    modifier: print_cache
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: cache_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: configure_cache
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: print_cache
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: no_cache_rebuild
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: no_link_updates
+  parameters:
+  - name: library_dirs
+    semantic: &1
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: library_dirs
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: cache_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: configure_cache_only
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: print_cache
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: no_cache_rebuild
+    - kind: has_modifier
+      modifier: no_link_updates
+  parameters:
+  - name: library_dirs
+    semantic: *1
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: library_dirs
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: cache_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+- id: configure_links_only
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: print_cache
+    - kind: has_modifier
+      modifier: no_cache_rebuild
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: no_link_updates
+  parameters:
+  - name: library_dirs
+    semantic: *1
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: library_dirs
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: inspect_libraries
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: print_cache
+    - kind: has_modifier
+      modifier: no_cache_rebuild
+    - kind: has_modifier
+      modifier: no_link_updates
+  parameters:
+  - name: library_dirs
+    semantic: *1
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: library_dirs
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config_file
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: print_cache
+  matcher:
+    kind: any_flag
+    flags:
+    - "-p"
+    - "--print-cache"
+- id: config
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+    - "--conf"
+  parameters:
+  - name: config_file
+    semantic: &2
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: cache
+  matcher:
+    kind: any_flag
+    flags:
+    - "-C"
+    - "--cache"
+  parameters:
+  - name: cache_file
+    semantic: *2
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: no_cache_rebuild
+  matcher:
+    kind: any_flag
+    flags:
+    - "-N"
+- id: no_link_updates
+  matcher:
+    kind: any_flag
+    flags:
+    - "-X"
+extensions:
+  caushell.profile/source_research:
+  - https://man7.org/linux/man-pages/man8/ldconfig.8.html
+  caushell.profile/known_limitations:
+  - "-p only reads and prints the cache; it does not modify the cache or trigger a
+    later library load."
+  - Cache rebuilding may write the system loader cache, whose path varies by platform/configuration
+    and is represented as an unknown configured write.
+  - "-f reads a configuration file that can name library directories; library resolution,
+    symlink mutation and future program loading are not expanded."

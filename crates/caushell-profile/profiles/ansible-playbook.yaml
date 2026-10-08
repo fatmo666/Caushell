@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ansible-playbook, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: syntax_check
+    selector: {kind: all, items: [{kind: has_modifier, modifier: syntax_check}, {kind: has_positional_at, index: 0}]}
+    parameters: [{name: playbook_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, target: {kind: slot, name: playbook_path}}]
+  - id: run_playbook
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: syntax_check}}]}
+    parameters:
+      - {name: playbook, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: playbook_path, semantic: {kind: path, role: read, purpose: generic_operand}}}}
+      - {name: playbook_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: read_path, target: {kind: slot, name: playbook_path}}, {kind: execute_payload, target: {kind: slot, name: playbook}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, --version]}}
+  - {id: syntax_check, matcher: {kind: any_flag, flags: [--syntax-check]}}
+  - {id: controls, matcher: {kind: any_flag, flags: [-C, --check, -D, --diff, --list-hosts, --list-tasks, --list-tags, --step, -b, --become, -v, --verbose]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ansible-playbook (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://docs.ansible.com/projects/ansible/latest/cli/ansible-playbook.html"]
+  caushell.profile/known_limitations:
+    - The playbook path is an executable Ansible YAML input file, not a shell script; its task language and module effects are opaque and are never parsed as Bash.
+    - Inventory, remote hosts, become settings, module arguments, and effects of playbook tasks are not inferred. The GTFOBins source writes a playbook and then runs it; the write is a separate shell action and is not attributed to ansible-playbook.

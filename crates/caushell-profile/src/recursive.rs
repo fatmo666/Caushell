@@ -187,6 +187,14 @@ pub fn collect_recursive_payload_candidates(
 pub fn parse_recursive_payload_candidate(
     candidate: &RecursivePayloadCandidate,
 ) -> RecursivePayloadParseResult {
+    // This opt-in boundary is about unsupported executable semantics, not
+    // merely unknown bytes. Even a locally sourced stdin program is opaque;
+    // it must not be delegated to provenance-only runtime-input handling.
+    if candidate.language == PayloadLanguage::Opaque {
+        return RecursivePayloadParseResult::UnsupportedLanguage {
+            candidate: candidate.clone(),
+        };
+    }
     match &candidate.input {
         RecursivePayloadInput::LiteralText { text } => {
             let Some(shell_kind) = shell_kind_for_payload_language(candidate.language) else {
@@ -262,7 +270,8 @@ fn shell_kind_for_payload_language(language: PayloadLanguage) -> Option<ShellKin
     match language {
         PayloadLanguage::Bash => Some(ShellKind::Bash),
         PayloadLanguage::Sh => Some(ShellKind::Sh),
-        PayloadLanguage::Dash
+        PayloadLanguage::Opaque
+        | PayloadLanguage::Dash
         | PayloadLanguage::Python
         | PayloadLanguage::Perl
         | PayloadLanguage::Javascript

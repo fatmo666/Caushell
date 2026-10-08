@@ -1,0 +1,103 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: wg-quick
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: interface_up_from_executable_config
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: up
+    - kind: has_positional_at
+      index: 1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: interface_config_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: positional_at
+      index: 1
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: interface_config_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+  - name: native_up_operation_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: interface_config_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: interface_config_path
+  - kind: execute_hook
+    target:
+      kind: slot
+      name: interface_config_payload
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/wg-quick (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://www.man7.org/linux/man-pages/man8/wg-quick.8.html
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - Interface and route state changes are not process-signal effects; the DSL currently
+    records executable hooks and config input but not the full networking state transition.
+  - Use `wg-quick down /path/to/temp-file.conf` in order to be able to run the shell
+    again.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

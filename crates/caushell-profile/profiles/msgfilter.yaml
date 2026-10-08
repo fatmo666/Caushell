@@ -1,0 +1,358 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: msgfilter
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: filter_catalog
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: output_file
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: input_file
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: input_file
+        parameter: input_file
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: output_file
+        parameter: output_file
+        matcher:
+          kind: literal
+          value: "-"
+  parameters:
+  - name: filter_command
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: filter_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  implicit_inputs:
+  - source: stdin_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: stdin
+      recursive: false
+  effects:
+  - kind: consume_stdin
+    target:
+      kind: implicit_input
+      source: stdin_payload
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: filter_command
+      argv:
+      - filter_args
+      stdin_from_tool: true
+      stdout_to_parent: true
+- id: filter_catalog_from_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: has_modifier
+        modifier: input_file
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: output_file
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: input_file
+        parameter: input_file
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: output_file
+        parameter: output_file
+        matcher:
+          kind: literal
+          value: "-"
+  parameters:
+  - name: filter_command
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: filter_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: filter_command
+      argv:
+      - filter_args
+      stdin_from_tool: true
+      stdout_to_parent: true
+- id: filter_catalog_to_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: has_modifier
+        modifier: output_file
+      - kind: not
+        item:
+          kind: has_modifier
+          modifier: input_file
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: input_file
+        parameter: input_file
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: output_file
+        parameter: output_file
+        matcher:
+          kind: literal
+          value: "-"
+  parameters:
+  - name: filter_command
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: filter_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+  implicit_inputs:
+  - source: stdin_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: stdin
+      recursive: false
+  effects:
+  - kind: consume_stdin
+    target:
+      kind: implicit_input
+      source: stdin_payload
+  - kind: write_path
+    path_access: content_open
+    target:
+      kind: slot
+      name: output_path
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: filter_command
+      argv:
+      - filter_args
+      stdin_from_tool: true
+- id: filter_catalog_from_file_to_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: has_modifier
+        modifier: input_file
+      - kind: has_modifier
+        modifier: output_file
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: input_file
+        parameter: input_file
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: output_file
+        parameter: output_file
+        matcher:
+          kind: literal
+          value: "-"
+  parameters:
+  - name: filter_command
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: filter_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+    stdout_dependency: independent
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_path
+  - kind: write_path
+    path_access: content_open
+    target:
+      kind: slot
+      name: output_path
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: filter_command
+      argv:
+      - filter_args
+      stdin_from_tool: true
+modifiers:
+- id: input_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-i"
+    - "--input"
+  parameters:
+  - name: input_file
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches:
+      - matcher:
+          kind: literal
+          value: "-"
+      fallback:
+        name: input_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+- id: output_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-o"
+    - "--output-file"
+  parameters:
+  - name: output_file
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches:
+      - matcher:
+          kind: literal
+          value: "-"
+      fallback:
+        name: output_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+- id: properties_mode
+  matcher:
+    kind: any_flag
+    flags:
+    - "-P"
+    - "--properties-output"
+extensions:
+  caushell.profile/source_research:
+  - https://www.gnu.org/software/gettext/manual/html_node/msgfilter-Invocation.html
+  caushell.profile/known_limitations:
+  - msgfilter invokes its filter executable once per translation and appends arbitrary
+    filter-option argv. The executable is a command_ref and the following arguments
+    retain argv ownership through wrapper dispatch; stdin_from_tool models the catalog
+    translation sent to each filter. It does not parse filter languages other than
+    the normal nested shell dispatcher.
+  - "-P changes catalog output to Java properties syntax; it does not make arbitrary
+    filter behavior or catalog-derived subprocess effects statically known."
+  - Explicit -i - / -o - routing is currently unresolved, and neither sentinel is
+    fabricated as a local path. Named catalog output is not stdout; child stderr is
+    still independently analyzed.

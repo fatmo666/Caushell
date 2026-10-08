@@ -29,6 +29,31 @@ pub struct ResolvedInvocationArtifact {
     pub bound: BoundInvocation,
 }
 
+impl ResolvedInvocationArtifact {
+    /// Negative stream guarantees require a fully resolved invocation shape.
+    /// A dynamic operand could become '-' or a mode-changing option at runtime.
+    pub fn proven_stream_contract(&self) -> Option<crate::StreamContract> {
+        if self.bound.operation_semantics_unresolved
+            || !self.bound.residuals.is_empty()
+            || self
+                .materialized_projection
+                .arg_resolutions
+                .iter()
+                .any(|value| {
+                    !matches!(
+                        value,
+                        ValueMaterialization::Static
+                            | ValueMaterialization::ResolvedExactScalar { .. }
+                            | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                    )
+                })
+        {
+            return None;
+        }
+        self.bound.stream_contract
+    }
+}
+
 impl<'a> ResolvedInvocation<'a> {
     pub fn into_artifact(self) -> ResolvedInvocationArtifact {
         ResolvedInvocationArtifact {
@@ -131,6 +156,17 @@ pub fn resolve_invocation_with_bindings<'a>(
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
 ) -> ResolveInvocationResult<'a> {
+    resolve_invocation_in_namespace(registry, command, context, bindings, None)
+}
+
+/// Resolve a declared module entry without executable aliases/family matching.
+pub fn resolve_invocation_in_namespace<'a>(
+    registry: &'a ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+    module_runtime: Option<&str>,
+) -> ResolveInvocationResult<'a> {
     let recovered_command = recover_ifs_field_split_command(command, bindings);
     let command = recovered_command.as_ref().unwrap_or(command);
     let materialized_command = materialize_command_word(command, bindings);
@@ -147,7 +183,26 @@ pub fn resolve_invocation_with_bindings<'a>(
         };
     };
 
-    let lookup = registry.lookup(command_name);
+    if module_runtime.is_none()
+        && let Some(reason) = bindings
+            .function_binding(command_name)
+            .and_then(|b| b.uncertainty.as_ref())
+    {
+        return ResolveInvocationResult::SelectionError {
+            normalized_command_name: command_name.into(),
+            gap_kind: ResolveGapKind::OpaqueInvocation,
+            error: BindError::UncertainFunctionBinding {
+                command_name: command_name.into(),
+                reason: reason.clone(),
+            },
+            partial_bound: None,
+        };
+    }
+
+    let lookup = module_runtime.map_or_else(
+        || registry.lookup(command_name),
+        |runtime| registry.lookup_module(runtime, command_name),
+    );
     let normalized_command_name = lookup.normalized_command_name;
     let Some(profile) = lookup.profile else {
         return ResolveInvocationResult::NoProfile {
@@ -167,7 +222,46 @@ pub fn resolve_invocation_with_bindings<'a>(
             let bound = bind_invocation(profile, &materialized_projection.invocation, &selection);
             let bound =
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
-            let bound = attach_argument_file_effects(profile, &materialized_projection, bound);
+            let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
+            // Validate after argv materialization: a known "$name" is valid,
+            // but a dynamic/array destination must not retain an old scalar.
+            let writes = crate::runtime_variable_writes(&bound);
+            if bound.effects.iter().any(|e| {
+                matches!(
+                    e.kind,
+                    crate::EffectKind::TerminateCurrentShell | crate::EffectKind::ShellJobOperation
+                )
+            }) && command
+                .command_name
+                .as_deref()
+                .is_some_and(|name| name.contains('/'))
+            {
+                // A pathname invokes an external executable, not an owning-shell builtin.
+                bound.operation_semantics_unresolved = true;
+            }
+            if bound
+                .effects
+                .iter()
+                .any(|e| e.kind == crate::EffectKind::TerminateCurrentShell)
+                && materialized_projection.arg_resolutions.iter().any(|r| {
+                    !matches!(
+                        r,
+                        crate::ValueMaterialization::Static
+                            | crate::ValueMaterialization::ResolvedExactScalar { .. }
+                            | crate::ValueMaterialization::ResolvedRuntimeProduced { .. }
+                    )
+                })
+            {
+                bound.operation_semantics_unresolved = true;
+            }
+            if writes.unresolved
+                || writes
+                    .names
+                    .iter()
+                    .any(|name| bindings.runtime_variable_target_is_unresolved(name))
+            {
+                bound.operation_semantics_unresolved = true;
+            }
 
             ResolveInvocationResult::Resolved(ResolvedInvocation {
                 normalized_command_name,
@@ -344,8 +438,6 @@ fn attach_bound_argument_materialization(
                 continue;
             };
 
-            let materialized_bound_value =
-                materialize_argument_text(text, *quoted, node_kind, bindings);
             let resolution = materialized_projection
                 .invocation
                 .args
@@ -359,12 +451,40 @@ fn attach_bound_argument_materialization(
                 continue;
             }
             let resolution = resolution.map(|(_, resolution)| resolution);
+            // Binding may already use the materialized argv. Its resulting
+            // bytes (e.g. a literal "$OTHER") are data, not another shell word.
+            // Reuse the known semantic result instead of expanding it again.
+            match resolution {
+                Some(ValueMaterialization::ResolvedExactScalar {
+                    variable_name,
+                    value,
+                    ..
+                }) => {
+                    *text = value.clone();
+                    *materialization = BoundArgumentMaterialization::ResolvedExactScalar {
+                        variable_name: variable_name.clone(),
+                    };
+                    continue;
+                }
+                Some(ValueMaterialization::ResolvedRuntimeProduced {
+                    variable_name,
+                    value,
+                    ..
+                }) => {
+                    *text = value.clone();
+                    *materialization = BoundArgumentMaterialization::ResolvedRuntimeProduced {
+                        variable_name: variable_name.clone(),
+                    };
+                    continue;
+                }
+                _ => {}
+            }
+            // Inline/sub-operand bindings may not match a complete argv word;
+            // those still need their own first materialization.
+            let materialized_bound_value =
+                materialize_argument_text(text, *quoted, node_kind, bindings);
             let bound_resolution = materialized_bound_value.resolution;
             let effective_resolution = match resolution {
-                Some(
-                    resolved @ (ValueMaterialization::ResolvedExactScalar { .. }
-                    | ValueMaterialization::ResolvedRuntimeProduced { .. }),
-                ) => resolved,
                 Some(resolved) if matches!(bound_resolution, ValueMaterialization::Static) => {
                     resolved
                 }
@@ -422,6 +542,7 @@ pub fn resolve_invocation_artifact_with_bindings(
 
 fn gap_kind_for_bind_error(error: &BindError) -> ResolveGapKind {
     match error {
+        BindError::UncertainFunctionBinding { .. } => ResolveGapKind::OpaqueInvocation,
         BindError::UnknownSubcommand { .. } => ResolveGapKind::UnknownSubcommandPath,
         BindError::MultipleFormsMatched { .. } => ResolveGapKind::FormSelectionAmbiguous,
         BindError::NoFormMatched { .. } | BindError::UnsupportedProfileFeature { .. } => {
@@ -11136,7 +11257,12 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::WritePath,
+                        EffectKind::DeletePath,
+                        EffectKind::TransformData,
+                    ]
                 );
                 assert!(matches!(
                     resolved.bound.effects[1].target,
@@ -14408,7 +14534,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::LoadInProcessCode]
+                    vec![EffectKind::LoadInProcessCode, EffectKind::DispatchCommand]
                 );
                 assert!(matches!(
                     find_bound_parameter_opt(&resolved.bound, "module_name")
@@ -14871,6 +14997,8 @@ mod tests {
             pipeline_span: None,
             terminator: None,
             guarded: false,
+            conditional_execution: false,
+            shell_scope_span: None,
             subshell_span: None,
             control_flow_span: None,
             top_level_span: empty_span(),
@@ -15805,7 +15933,7 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "python");
-                assert_eq!(resolved.bound.form_id.as_str(), "pip_module_dispatch");
+                assert_eq!(resolved.bound.form_id.as_str(), "module");
                 assert_eq!(first_argument_text(&resolved.bound, "module_name"), "pip");
                 assert_eq!(
                     argument_texts(&resolved.bound, "module_args"),

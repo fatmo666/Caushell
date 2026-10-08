@@ -1,0 +1,40 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: dnsmasq, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: load_configuration_file
+    selector: {kind: has_modifier, modifier: configuration_file}
+  - id: execute_configuration_script
+    selector: {kind: has_modifier, modifier: conf_script}
+    parameters:
+      - {name: configuration_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: conf_script}}
+      - {kind: dispatch_command, target: {kind: dispatch, command_string: {slot: conf_script, syntax: posix_shell}, stdin_from_parent: true, stdout_to_parent: false}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version]}}
+  - id: conf_script
+    matcher: {kind: any_flag, flags: [--conf-script]}
+    parameters:
+      - {name: conf_script, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: configuration_file
+    matcher: {kind: any_flag, flags: [-C, --conf-file]}
+    parameters:
+      - {name: configuration_file, semantic: {kind: path, role: config, purpose: tool_config}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: load_config, target: {kind: slot, name: configuration_file}}]
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/dnsmasq (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+    - https://dnsmasq.org/docs/dnsmasq-man.html
+    - https://thekelleys.org.uk/dnsmasq/option.c
+    - https://thekelleys.org.uk/dnsmasq/dnsmasq.c
+  caushell.profile/known_limitations:
+    - --conf-script is passed to native popen(file, "r"): its stdout is consumed internally as dnsmasq configuration, not sent to the caller pipeline; the native shell child inherits caller stdin. This is a real POSIX-shell command dispatch and is not recursively borrowed from dnsmasq's outer stdout.
+    - --conf-file is a data configuration file and is modeled only as a configuration read.

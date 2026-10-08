@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: clamscan, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: scan_file_list
+    selector: {kind: has_modifier, modifier: file_list}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: file_lists}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: database_paths}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: scan_explicit_operands
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: file_list}}
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+        - {kind: not, item: {kind: has_modifier, modifier: version}}
+    parameters:
+      - {name: scan_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: scan_paths}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: database_paths}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: show_help
+    selector: {kind: has_modifier, modifier: help}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: show_version
+    selector: {kind: has_modifier, modifier: version}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - id: file_list
+    matcher: {kind: any_flag, flags: ['-f', '--file-list']}
+    parameters: [{name: file_lists, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: database
+    matcher: {kind: any_flag, flags: ['-d', '--database']}
+    parameters: [{name: database_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: no_summary, matcher: {kind: any_flag, flags: ['--no-summary']}}
+  - {id: recursive, matcher: {kind: any_flag, flags: ['-r', '--recursive']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+extensions:
+  caushell.profile/source_research:
+    - https://docs.clamav.net/manual/Usage/Scanning.html
+    - https://docs.clamav.net/manual/Signatures.html
+  caushell.profile/known_limitations:
+    - -f reads a newline-delimited list of scan targets; the list file is modeled as a content read, but the paths inside it are file contents and are not invented as Graph paths.
+    - Files selected through the list can be scanned and reported, but this profile cannot expand content-dependent paths or claim that each listed target is represented. The -d database and explicit scan operands remain distinct from the list input.

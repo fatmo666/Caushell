@@ -1,0 +1,108 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: cabal
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: exec_child
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: literal
+          value: exec
+      - kind: has_dash_dash
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: child_command
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: next_positional_after_dashdash
+    cardinality: required_one
+  - name: child_argv
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals_after_dash_dash
+    cardinality: optional_many
+  effects:
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: child_command
+      argv:
+      - child_argv
+      stdin_from_parent: true
+      stdout_to_parent: true
+modifiers:
+- id: project_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "--project-file"
+  parameters:
+  - name: project_file
+    semantic:
+      kind: path
+      role: read
+      purpose: tool_config
+    binding:
+      kind: following_matched_flag
+      operand_mode: optional_inline_or_short_attached
+    cardinality: optional_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: project_file
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/cabal/
+  caushell.profile/known_limitations:
+  - Unknown options and configuration-driven behavior remain unresolved; the profile
+    records only the demonstrated mechanism.

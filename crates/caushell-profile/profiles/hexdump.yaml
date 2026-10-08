@@ -3,7 +3,7 @@ kind: command_profile
 
 identity:
   canonical_name: hexdump
-  aliases: []
+  aliases: [hd]
 
 trust:
   tier: tier_a
@@ -17,6 +17,8 @@ platform:
   shell_families: []
   requires_features: []
 
+opaque_on_unresolved: true
+
 forms:
   - id: dump_stream
     selector:
@@ -25,6 +27,7 @@ forms:
       stdin_mode: data_optional
       stdout_mode: data
       stderr_mode: opaque
+      stdout_dependency: inputs
     effects:
       - kind: transform_data
         target:
@@ -49,11 +52,13 @@ forms:
           - kind: exclude_literal
             value: "-"
     stream_contract:
-      stdin_mode: data_optional
+      stdin_mode: ignored
       stdout_mode: data
       stderr_mode: opaque
+      stdout_dependency: inputs
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
@@ -80,7 +85,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-e"
-        - "-f"
     parameters:
       - name: format_value
         semantic:
@@ -90,6 +94,15 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: optional_many
+
+  - id: format_file
+    matcher: {kind: any_flag, flags: ["-f", "--format-file"]}
+    parameters:
+      - name: format_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: format_paths}}]
 
   - id: skip_or_length
     matcher:
@@ -110,7 +123,10 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://github.com/util-linux/util-linux/blob/master/text-utils/hexdump.1.adoc
+    - GTFOBins fixed snapshot hd alias and hexdump/file-read/0
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
     - This profile models hexdump as read-only data encoding; shell redirection remains responsible for stdout writes.
+    - hd shares the explicit file/stdin/format-file interface. Literal '-' file operands remain unresolved; undeclared long options are not claimed covered.

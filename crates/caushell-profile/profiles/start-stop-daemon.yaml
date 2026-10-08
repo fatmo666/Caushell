@@ -1,0 +1,141 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity:
+  canonical_name: start-stop-daemon
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families: [posix, linux]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: start_explicit_executable
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: start}
+        - {kind: has_modifier, modifier: executable}
+        - {kind: not, item: {kind: has_modifier, modifier: start_as}}
+        - {kind: not, item: {kind: has_modifier, modifier: chdir}}
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+    parameters:
+      - name: child_argv
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [], default_value: '/', missing: skip}}
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: executable
+          argv: [child_argv]
+          environment: []
+          stdout_to_parent: true
+
+  - id: start_explicit_executable_with_chdir
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: start}
+        - {kind: has_modifier, modifier: executable}
+        - {kind: not, item: {kind: has_modifier, modifier: start_as}}
+        - {kind: has_modifier, modifier: chdir}
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+    parameters:
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: working_directory, projection: {kind: identity}}], missing: skip}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: executable, argv: [child_argv], environment: [], stdout_to_parent: true}}
+
+  - id: start_as_override
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: start}
+        - {kind: has_modifier, modifier: start_as}
+        - {kind: not, item: {kind: has_modifier, modifier: chdir}}
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+    parameters:
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [], default_value: '/', missing: skip}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: start_as, argv: [child_argv], environment: [], stdout_to_parent: true}}
+
+  - id: start_as_override_with_chdir
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: start}
+        - {kind: has_modifier, modifier: start_as}
+        - {kind: has_modifier, modifier: chdir}
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+    parameters:
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: working_directory, projection: {kind: identity}}], missing: skip}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: start_as, argv: [child_argv], environment: [], stdout_to_parent: true}}
+
+  - id: stop_matching_processes
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: stop}
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+    effects:
+      - {kind: control_process, target: {kind: none}}
+
+  - id: dry_run
+    selector: {kind: has_modifier, modifier: dry_run}
+
+modifiers:
+  - id: start
+    matcher: {kind: any_flag, flags: ["-S", "--start"]}
+  - id: stop
+    matcher: {kind: any_flag, flags: ["-K", "--stop"]}
+  - id: executable
+    matcher: {kind: any_flag, flags: ["-x", "--exec"]}
+    parameters:
+      - name: executable
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: start_as
+    matcher: {kind: any_flag, flags: ["-a", "--startas"]}
+    parameters:
+      - name: start_as
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: chdir
+    matcher: {kind: any_flag, flags: ["-d", "--chdir"]}
+    parameters:
+      - name: working_directory
+        semantic: {kind: path, role: cwd_anchor, purpose: working_directory}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+  - id: dry_run
+    matcher: {kind: any_flag, flags: ["-t", "--test"]}
+  - id: pid_file
+    matcher: {kind: any_flag, flags: ["-p", "--pidfile"]}
+    parameters:
+      - name: pid_file
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+    effects:
+      - {kind: read_path, target: {kind: slot, name: pid_file}}
+
+extensions:
+  caushell.profile/known_limitations:
+    - --exec identifies an existing process and supplies the default program to start; --startas overrides only the started executable. Post--- arguments remain argv data.
+    - Started processes default to cwd /; -d/--chdir supplies a process cwd override. --stop only controls matching processes and never dispatches --exec or --startas.
+    - The modeled foreground start preserves child stdout. --background is not modeled and must remain unresolved rather than inheriting this guarantee.

@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: knife, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version, -V]}}
+subcommands:
+  roots:
+    - name: exec
+      forms:
+        - {id: exec_help, selector: {kind: has_modifier, modifier: information}}
+        - id: exec_eval_ruby
+          selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+          parameters:
+            - {name: code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -E, operand_mode: next_arg}, cardinality: optional_one}
+            - {name: long_code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: --exec, operand_mode: next_arg}, cardinality: optional_one}
+          effects: [{kind: execute_payload, target: {kind: slot, name: code}}, {kind: execute_payload, target: {kind: slot, name: long_code}}]
+        - id: exec_script_file
+          selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: code}}]}
+          parameters: [{name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}]
+          effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+      modifiers:
+        - {id: information, matcher: {kind: any_flag, flags: [--help, -h]}}
+        - id: code
+          matcher: {kind: any_flag, flags: [-E, --exec]}
+          parameters: [{name: raw_code, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+      children: []
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/knife (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://docs.chef.io/workstation/26/tools/knife/knife_exec/"]
+  caushell.profile/known_limitations:
+    - knife exec -E executes Ruby code and knife exec SCRIPT reads and executes a Ruby script file; neither is parsed as Bash or projected as a shell child command.
+    - Chef configuration, workstation state, and Ruby effects are opaque. GTFOBins -E inline Ruby is preserved as an opaque native operand.

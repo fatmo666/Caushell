@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: slsh, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: evaluate_expression
+    selector: {kind: all, items: [{kind: has_modifier, modifier: expression}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: expression, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -e, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: expression}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_repl
+    selector: {kind: all, items: [{kind: no_arguments}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects:
+      - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: expression
+    matcher: {kind: any_flag, flags: [-e]}
+    parameters: [{name: raw_expression, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - {id: information, matcher: {kind: any_flag, flags: [-help]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/slsh (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://www.jedsoft.org/slang/doc/pdf/slang.pdf"]
+  caushell.profile/known_limitations:
+    - "The source passes S-Lang code to -e; code is opaque and is never parsed as Bash. system() arguments and inner command effects are not inferred."
+    - "S-Lang startup files, imported modules and privilege context are not modeled."

@@ -1,0 +1,31 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: sqlmap, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: evaluate_python_for_url
+    selector: {kind: all, items: [{kind: has_modifier, modifier: eval}, {kind: has_modifier, modifier: url}]}
+    parameters: [{name: evaluation_code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: --eval, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: evaluation_code}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: target_url
+    selector: {kind: all, items: [{kind: has_modifier, modifier: url}, {kind: not, item: {kind: has_modifier, modifier: eval}}]}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, --version]}}
+  - id: url
+    matcher: {kind: any_flag, flags: [-u, --url]}
+    parameters: [{name: url, semantic: {kind: endpoint, endpoint_kind: url, usage: generic_endpoint}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: url}}]
+  - id: eval
+    matcher: {kind: any_flag, flags: [--eval]}
+    parameters: [{name: raw_evaluation_code, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/sqlmap (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://github.com/sqlmapproject/sqlmap/wiki/usage", "https://github.com/sqlmapproject/sqlmap/wiki/Usage"]
+  caushell.profile/known_limitations:
+    - --eval is Python code executed by sqlmap; the value remains opaque and is not parsed as Bash or as a child command.
+    - The URL option is kept as a native target endpoint. HTTP requests, database behavior, and effects of the Python hook are not inferred.

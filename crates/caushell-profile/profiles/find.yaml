@@ -17,6 +17,20 @@ platform:
   shell_families: []
   requires_features: []
 
+option_matching: exact_names
+opaque_on_unresolved: true
+argument_regions:
+  - id: exec
+    start_flags: ["-exec"]
+    terminators:
+      - {value: ";"}
+      - {value: "+", preceding: "{}"}
+  - id: execdir
+    start_flags: ["-execdir"]
+    terminators:
+      - {value: ";"}
+      - {value: "+", preceding: "{}"}
+
 forms:
   - id: exec_command
     selector:
@@ -32,26 +46,30 @@ forms:
           kind: command_ref
           dispatch: wrapper_command
         binding:
-          kind: following_flag
-          flag: "-exec"
-          operand_mode: next_arg
-        cardinality: optional_one
+          kind: argument_region_command
+          region: exec
+        cardinality: optional_many
       - name: execdir_command
         semantic:
           kind: command_ref
           dispatch: wrapper_command
         binding:
-          kind: following_flag
-          flag: "-execdir"
-          operand_mode: next_arg
-        cardinality: optional_one
+          kind: argument_region_command
+          region: execdir
+        cardinality: optional_many
       - name: exec_args
         semantic:
           kind: plain_value
         binding:
-          kind: args_until_literal
-          terminator: ";"
-          include_terminator: false
+          kind: argument_region_args
+          region: exec
+        cardinality: optional_many
+      - name: execdir_args
+        semantic:
+          kind: plain_value
+        binding:
+          kind: argument_region_args
+          region: execdir
         cardinality: optional_many
       - name: search_roots
         semantic:
@@ -88,7 +106,7 @@ forms:
           kind: dispatch
           command: execdir_command
           argv:
-            - exec_args
+            - execdir_args
 
   - id: enumerate_paths
     selector:
@@ -120,6 +138,16 @@ forms:
           name: search_roots
 
 modifiers:
+  - id: follow_symlinks
+    matcher: {kind: any_flag, flags: ["-L", "-H", "-follow"]}
+  - id: physical_walk
+    matcher: {kind: any_flag, flags: ["-P"]}
+  - id: expression_control
+    matcher:
+      kind: any_flag
+      flags: ["-a", "-and", "-o", "-or", "-not", "-depth", "-xdev", "-mount", "-prune", "-quit"]
+  - id: operand_free_tests
+    matcher: {kind: any_flag, flags: ["-empty", "-true", "-false", "-readable", "-writable", "-executable"]}
   - id: name_pattern
     matcher:
       kind: any_flag
@@ -193,6 +221,7 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
+    - Outer option ownership is opt-in and exact; an undeclared outer option or unknown argv boundary requires approval rather than guessing its operand count. Child argv never supplies outer flags or search roots.
     - Dispatch arguments and bounded search-root domains are modeled for common -exec and -execdir forms, but this is not a full find expression evaluator; uncommon predicates remain residual operands.
     - Semicolon and plus terminators are recognized for dispatch, but batched execution cardinality and all platform-specific find behavior are not modeled exactly.
     - Symlink traversal and execution-directory context that cannot be established conservatively widen or leave the argument domain unknown.

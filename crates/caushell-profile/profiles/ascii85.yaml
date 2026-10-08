@@ -1,0 +1,48 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ascii85, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: encode_file
+    selector:
+      kind: all
+      items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: decode}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}, {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_file
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_modifier, modifier: decode}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}, {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: encode_stdin
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: decode}}]}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_stdin
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: no_positional_args}, {kind: has_modifier, modifier: decode}]}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: decode, matcher: {kind: any_flag, flags: ['-d', '--decode']}}
+  - id: wrap
+    matcher: {kind: any_flag, flags: ['-w', '--wrap']}
+    parameters: [{name: wrap_columns, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['--version', '-V']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/unstable/ruby-ascii85/ascii85.1.en.html
+    - https://github.com/datawraith/ascii85gem
+    - GTFOBins fixed snapshot ascii85/file-read/0
+  caushell.profile/known_limitations:
+    - Models the Debian ruby-ascii85 FILE/default-stdin CLI used by the source snapshot; one named file is explicit, and no FILE consumes actual stdin.
+    - Decode and encode are data transforms; wrapping, decoder validation, multiple FILE operands, and literal '-' remain conservative/unresolved.

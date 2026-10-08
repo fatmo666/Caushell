@@ -1,0 +1,92 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: procmail
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: executable_configuration_config_m
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: config_m
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: configuration_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-m"
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: configuration_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: configuration_payload
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-v"
+- id: config_m
+  matcher:
+    kind: any_flag
+    flags:
+    - "-m"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/procmail (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - The program is picky about the file ownership, and waits for some input.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.

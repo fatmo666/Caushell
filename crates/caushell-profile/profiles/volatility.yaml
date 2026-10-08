@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: volatility, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version, --info]}}
+  - id: memory_image
+    matcher: {kind: any_flag, flags: [-f, --file]}
+    parameters: [{name: memory_image, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, target: {kind: slot, name: memory_image}}]
+subcommands:
+  roots:
+    - name: volshell
+      forms:
+        - id: volshell
+          selector: {kind: no_positional_args}
+          implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+          effects:
+            - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [run_command]}}
+          stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+      children: []
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/volatility (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://github.com/volatilityfoundation/volatility/wiki/command-reference", "https://github.com/volatilityfoundation/volatility3/blob/develop/doc/source/volshell.rst"]
+  caushell.profile/known_limitations:
+    - The -f operand is a memory/core image read as data, never a script or executable payload. volshell's later native prompt is opaque and not parsed as Bash.
+    - Volatility version/plugin differences, image format, symbols, target process, and effects of Python entered later are not inferred.

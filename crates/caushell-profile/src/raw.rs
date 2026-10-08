@@ -12,6 +12,7 @@ pub struct RawCommandProfile {
     pub trust: RawProfileTrustMetadata,
     pub platform: RawPlatformConstraints,
     pub argument_files: Vec<RawArgumentFileRule>,
+    pub argument_regions: Vec<RawArgumentRegion>,
     pub selection_failure_effects: Vec<RawEffect>,
     pub opaque_on_unresolved: bool,
     pub forms: Vec<RawForm>,
@@ -29,6 +30,22 @@ pub struct RawCommandProfile {
 pub struct RawArgumentFileRule {
     pub prefix: String,
     pub possible_effects: Vec<RawEffectKind>,
+}
+
+/// Exact outer option opens a child argv, ending at a declared delimiter.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawArgumentRegion {
+    pub id: String,
+    pub start_flags: Vec<String>,
+    pub terminators: Vec<RawArgumentRegionTerminator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawArgumentRegionTerminator {
+    pub value: String,
+    pub preceding: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -61,6 +78,16 @@ pub enum RawOptionPrefixPolicy {
 pub struct RawCommandIdentity {
     pub canonical_name: String,
     pub aliases: Vec<String>,
+    /// Module-only profiles must not enter the executable name index.
+    pub module_only: bool,
+    pub module_entrypoints: Vec<RawModuleEntrypoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawModuleEntrypoint {
+    pub runtime: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -277,6 +304,10 @@ pub struct RawStreamContract {
     pub stdin_mode: RawStreamInputMode,
     pub stdout_mode: RawStreamOutputMode,
     pub stderr_mode: RawStreamOutputMode,
+    #[serde(default)]
+    pub stdout_dependency: caushell_types::StreamDataDependency,
+    #[serde(default)]
+    pub stderr_dependency: caushell_types::StreamDataDependency,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -284,6 +315,7 @@ pub struct RawStreamContract {
 pub struct RawModifier {
     pub id: String,
     pub matcher: RawModifierMatcher,
+    pub ends_option_scope: bool,
     pub parameters: Vec<RawParameter>,
     pub effects: Vec<RawEffect>,
     pub constraints: Vec<RawModifierConstraint>,
@@ -352,6 +384,8 @@ pub enum RawValueProjection {
 pub struct RawStructuredProjection {
     #[serde(default)]
     pub separator: Option<String>,
+    #[serde(default)]
+    pub first_match_only: bool,
     pub branches: Vec<RawStructuredProjectionBranch>,
     #[serde(default)]
     pub fallback: Option<RawStructuredProjectionTarget>,
@@ -370,6 +404,17 @@ pub struct RawStructuredProjectionBranch {
 pub enum RawStructuredProjectionMatcher {
     Literal { value: String },
     Prefix { value: String },
+    KeywordValue {
+        keyword: String,
+        #[serde(default)]
+        case_insensitive: bool,
+        #[serde(default)]
+        allow_quoted_keyword: bool,
+        #[serde(default)]
+        disabled_values: Vec<String>,
+        #[serde(default)]
+        unresolved_markers: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -422,6 +467,12 @@ pub enum RawFlagOperandMode {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RawBindingSpec {
+    ArgumentRegionCommand {
+        region: String,
+    },
+    ArgumentRegionArgs {
+        region: String,
+    },
     NextPositional,
     #[serde(rename = "next_positional_after_dashdash")]
     NextPositionalAfterDashDash,
@@ -554,6 +605,7 @@ pub enum RawPathPurpose {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawPayloadLanguage {
+    Opaque,
     Bash,
     Sh,
     Dash,
@@ -667,6 +719,9 @@ pub enum RawProcessTargetKind {
 pub struct RawEffect {
     pub kind: RawEffectKind,
     pub target: RawEffectTarget,
+    /// Opt-in content opens; namespace replacement is deliberately not inferred.
+    #[serde(default)]
+    pub path_access: Option<crate::PathAccessKind>,
     #[serde(default)]
     pub surface: Option<RawInteractiveEscapeSurface>,
     #[serde(default)]
@@ -679,6 +734,8 @@ pub struct RawEffect {
     pub database_operation: Option<caushell_types::DatabaseOperationKind>,
     #[serde(default)]
     pub terminal_session_operation: Option<caushell_types::TerminalSessionOperationKind>,
+    #[serde(default)]
+    pub shell_job_operation: Option<caushell_types::ShellJobOperationKind>,
     #[serde(default)]
     pub extensions: BTreeMap<String, JsonValue>,
 }
@@ -751,6 +808,8 @@ pub enum RawEffectKind {
     DispatchCommand,
     ConsumeStdin,
     BindVariableFromRuntimeInput,
+    TerminateCurrentShell,
+    ShellJobOperation,
     PrivilegeModifier,
     NetworkEndpoint,
     ListenNetwork,
@@ -858,6 +917,10 @@ pub enum RawEffectTarget {
         missing: RawConfiguredPathMissing,
         #[serde(default)]
         default_value: Option<String>,
+        /// When all configured sources are proven unset, bound outputs by
+        /// the normalized parents of these input slots. Never a type probe.
+        #[serde(default)]
+        fallback_parent_slots: Vec<String>,
         #[serde(default)]
         purpose: Option<RawPathPurpose>,
     },
@@ -891,15 +954,21 @@ pub enum RawEffectTarget {
     },
     Dispatch {
         #[serde(default)]
+        module_runtime: Option<String>,
+        #[serde(default)]
         command: Option<String>,
         #[serde(default)]
         command_literal: Option<String>,
         #[serde(default)]
         command_whitespace_argv: Option<String>,
         #[serde(default)]
+        command_string: Option<RawDispatchCommandString>,
+        #[serde(default)]
         argv_prefix: Vec<String>,
         #[serde(default)]
         argv: Vec<String>,
+        #[serde(default)]
+        argv_suffix: Vec<String>,
         #[serde(default)]
         environment: Vec<String>,
         #[serde(default)]
@@ -907,11 +976,17 @@ pub enum RawEffectTarget {
         #[serde(default)]
         unset_environment: Vec<String>,
         #[serde(default)]
+        unset_environment_when: Vec<RawConditionalEnvironmentUnset>,
+        #[serde(default)]
         unknown_environment_when: Vec<String>,
         #[serde(default)]
         unknown_environment_from: Vec<RawEnvironmentValueSource>,
         #[serde(default)]
+        unknown_environment_names: Vec<String>,
+        #[serde(default)]
         stdin_from_parent: bool,
+        #[serde(default)]
+        stdin_from_tool: bool,
         #[serde(default)]
         stdout_to_parent: bool,
     },
@@ -920,10 +995,31 @@ pub enum RawEffectTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RawDispatchCommandString {
+    pub slot: String,
+    pub syntax: RawDispatchStringSyntax,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawDispatchStringSyntax {
+    PosixShell,
+    GnuWordsplit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawEnvironmentValueSource {
     pub name: String,
     #[serde(default)]
     pub empty_is_unset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawConditionalEnvironmentUnset {
+    pub modifier: String,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

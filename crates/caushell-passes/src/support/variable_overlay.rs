@@ -1,3 +1,4 @@
+use super::{ExportMode, UnsetMode, export_mode, scalar_identifier, state_visible, unset_mode};
 use caushell_parse::{
     CommandFact, CommandToken, CommandTokenKind, ParsedCommandArtifact, StatementTerminator,
 };
@@ -17,17 +18,6 @@ pub(crate) enum PositionalParameterMutation {
     Forget,
 }
 
-pub(crate) fn visible_variable_bindings_before_span(
-    summary: &SessionSummary,
-    request: &CheckRequest,
-    parsed: &ParsedCommandArtifact,
-    span_start_byte: usize,
-    observed_at: CommandSequenceNo,
-) -> SessionBindings {
-    let bindings = request_variable_bindings(summary, request);
-    apply_visible_variable_bindings_before_span(bindings, parsed, span_start_byte, observed_at)
-}
-
 pub(crate) fn request_variable_bindings(
     summary: &SessionSummary,
     request: &CheckRequest,
@@ -43,12 +33,41 @@ pub(crate) fn request_variable_bindings(
 }
 
 pub(crate) fn apply_visible_variable_bindings_before_span(
-    mut bindings: SessionBindings,
+    bindings: SessionBindings,
     parsed: &ParsedCommandArtifact,
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
 ) -> SessionBindings {
+    apply_variable_overlay(bindings, parsed, span_start_byte, observed_at, None).bindings
+}
+
+pub(crate) fn static_variable_overlay(
+    bindings: SessionBindings,
+    parsed: &ParsedCommandArtifact,
+    observed_at: CommandSequenceNo,
+) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
+    apply_variable_overlay(bindings, parsed, usize::MAX, observed_at, None)
+}
+
+pub(super) fn apply_variable_overlay(
+    mut bindings: SessionBindings,
+    parsed: &ParsedCommandArtifact,
+    span_start_byte: usize,
+    observed_at: CommandSequenceNo,
+    mut runtime: Option<&mut super::runtime_variable_overlay::RuntimeVariableContext<'_>>,
+) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
     let mut events = Vec::new();
+    let mut touched = std::collections::BTreeSet::new();
+    let mut positional_state = None;
+    let mut assigned = std::collections::BTreeSet::new();
+    let mut state_fences = Vec::new();
+    let mut function_mutations = Vec::new();
+
+    for definition in &parsed.function_definitions {
+        if definition.span.end_byte <= span_start_byte {
+            events.push(VariableOverlayEvent::FunctionDefinition(definition));
+        }
+    }
 
     for declaration in &parsed.declaration_commands {
         if declaration.span.end_byte <= span_start_byte {
@@ -74,20 +93,65 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
         {
             events.push(VariableOverlayEvent::SetPositionalParameters(command));
         }
+        if runtime.is_some() && command.span.end_byte <= span_start_byte {
+            events.push(VariableOverlayEvent::RuntimeCommand(command));
+        }
     }
 
     events.sort_by_key(|event| event.start_byte());
 
     for event in events {
+        if state_fences
+            .iter()
+            .any(|(start, end)| event.start_byte() >= *start && event.start_byte() < *end)
+        {
+            continue;
+        }
         match event {
+            VariableOverlayEvent::FunctionDefinition(definition) => {
+                if state_visible(&definition.shell_scope_span, span_start_byte) {
+                    function_mutations.push((
+                        super::function_overlay::define_function(
+                            &mut bindings,
+                            definition,
+                            observed_at,
+                        ),
+                        definition.span.start_byte,
+                    ));
+                }
+            }
             VariableOverlayEvent::Declaration(declaration) => {
+                if !state_visible(&declaration.shell_scope_span, span_start_byte) {
+                    continue;
+                }
                 if declaration.kind != caushell_parse::DeclarationCommandKind::Export
-                    || !declaration.options.is_empty()
+                    && declaration.options.iter().any(|option| {
+                        option.starts_with('-')
+                            && option[1..].chars().any(|c| matches!(c, 'n' | 'a' | 'A'))
+                    })
                 {
+                    for name in declaration
+                        .names
+                        .iter()
+                        .map(String::as_str)
+                        .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
+                    {
+                        bindings.mark_unresolved_runtime_variable_target(name);
+                    }
+                }
+                if declaration.kind != caushell_parse::DeclarationCommandKind::Export {
+                    for name in declaration
+                        .names
+                        .iter()
+                        .map(String::as_str)
+                        .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
+                    {
+                        bindings.mark_variable_presence_unknown(name);
+                    }
                     // Export-affecting declarations beyond plain `export` are
                     // not proved absent merely because the scalar overlay does
                     // not model their option semantics (declare -x, typeset,
-                    // export -n, etc.). Preserve this uncertainty for tools.
+                    // etc.). Preserve this uncertainty for tools.
                     for name in declaration
                         .names
                         .iter()
@@ -101,37 +165,88 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                     }
                     continue;
                 }
-
-                for assignment in &declaration.assignments {
-                    let value = classify_assignment_value(&assignment.value, &bindings);
-                    apply_binding(
-                        &mut bindings,
-                        SessionVariableBinding::new(
-                            assignment.name.clone(),
-                            value,
-                            true,
-                            observed_at,
-                        ),
-                    );
+                let mode = export_mode(&declaration.options);
+                if matches!(mode, ExportMode::Invalid | ExportMode::Functions) {
+                    // Invalid leading options fail before touching operands.
+                    // Function export is a separate, not-yet-modeled namespace.
+                    continue;
                 }
-                for name in &declaration.names {
-                    bindings.export(name);
+                if mode == ExportMode::Unresolved {
+                    invalidate_unknown_scalar_targets(&mut bindings, &mut assigned);
+                    continue;
                 }
-                if !declaration.unconditional_current_shell {
-                    for name in declaration
-                        .names
-                        .iter()
-                        .map(String::as_str)
-                        .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
-                    {
+                if declaration
+                    .names
+                    .iter()
+                    .any(|name| name.contains('$') || name.contains('`'))
+                {
+                    bindings.forget_variable_presence();
+                }
+                // Declaration-builtin operands expand before the builtin
+                // applies any assignment. Unlike a pure assignment command,
+                // a later `B=$A` does not see an earlier `A=new` here.
+                let values = declaration
+                    .assignments
+                    .iter()
+                    .map(|assignment| classify_assignment_value(&assignment.value, &bindings))
+                    .collect::<Vec<_>>();
+                for (assignment, value) in declaration.assignments.iter().zip(values) {
+                    assigned.insert(assignment.name.clone());
+                    if assignment.operator != caushell_parse::AssignmentOperator::Assign {
+                        bindings.insert_opaque_dynamic(
+                            &assignment.name,
+                            "unresolved export assignment operator",
+                        );
+                    } else {
+                        apply_binding(
+                            &mut bindings,
+                            SessionVariableBinding::new(
+                                assignment.name.clone(),
+                                value,
+                                mode == ExportMode::Export,
+                                observed_at,
+                            ),
+                        );
+                    }
+                    if declaration.conditional_execution {
+                        bindings.insert_opaque_dynamic(
+                            &assignment.name,
+                            "conditional export assignment",
+                        );
+                    }
+                }
+                for name in declaration
+                    .names
+                    .iter()
+                    .map(String::as_str)
+                    .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
+                    .filter(|name| scalar_identifier(name))
+                {
+                    // Exporting an unset name marks an attribute but does not
+                    // create a scalar value. Do not persist a fictitious value.
+                    if bindings.get(name).is_some() {
+                        assigned.insert(name.to_string());
+                    }
+                    if declaration.conditional_execution {
+                        bindings.insert_opaque_dynamic(name, "conditional export attribute");
                         bindings.set_environment_value(
                             name,
-                            SessionValue::opaque_dynamic("conditional or isolated export"),
+                            SessionValue::opaque_dynamic("conditional export attribute"),
                         );
+                    } else if mode == ExportMode::Unexport {
+                        bindings.unexport(name);
+                    } else {
+                        // `export NAME` creates a variable symbol even without
+                        // a scalar value. `export -n NAME` alone does not.
+                        bindings.mark_variable_present(name);
+                        bindings.export(name);
                     }
                 }
             }
             VariableOverlayEvent::AssignmentCommand(assignment_command) => {
+                if !state_visible(&assignment_command.shell_scope_span, span_start_byte) {
+                    continue;
+                }
                 for assignment in &assignment_command.assignments {
                     if assignment.operator != caushell_parse::AssignmentOperator::Assign {
                         if !matches!(
@@ -145,7 +260,7 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                         }
                         continue;
                     }
-
+                    assigned.insert(assignment.name.clone());
                     let value = classify_assignment_value(&assignment.value, &bindings);
                     apply_binding(
                         &mut bindings,
@@ -156,7 +271,15 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                             observed_at,
                         ),
                     );
-                    if !assignment_command.unconditional_current_shell
+                    if assignment_command.conditional_execution {
+                        // A conditional/isolated assignment is not proof that
+                        // an invalidated runtime value became exact again.
+                        bindings.insert_opaque_dynamic(
+                            &assignment.name,
+                            "conditional assignment after runtime write",
+                        );
+                    }
+                    if assignment_command.conditional_execution
                         && !matches!(
                             bindings.environment_value(&assignment.name),
                             caushell_profile::EnvironmentValueRef::Absent
@@ -170,10 +293,62 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                 }
             }
             VariableOverlayEvent::Unset(unset) => {
+                if !state_visible(&unset.shell_scope_span, span_start_byte) {
+                    continue;
+                }
+                let mode = unset_mode(&unset.options);
+                if mode == UnsetMode::Unresolved
+                    || (matches!(mode, UnsetMode::Default | UnsetMode::Functions)
+                        && unset
+                            .names
+                            .iter()
+                            .any(|name| name.contains('$') || name.contains('`')))
+                {
+                    function_mutations.extend(
+                        super::function_overlay::invalidate_function_targets(
+                            &mut bindings,
+                            observed_at,
+                        )
+                        .into_iter()
+                        .map(|m| (m, unset.span.start_byte)),
+                    );
+                }
+                match mode {
+                    UnsetMode::Invalid => continue,
+                    UnsetMode::Nameref | UnsetMode::Unresolved => {
+                        // Do not assert exact values for possible indirect or
+                        // dynamic targets. Nameref resolution is deferred.
+                        invalidate_unknown_scalar_targets(&mut bindings, &mut assigned);
+                        continue;
+                    }
+                    UnsetMode::Default | UnsetMode::Variables | UnsetMode::Functions => {}
+                }
                 for name in &unset.names {
-                    if unset.unconditional_current_shell && unset.options.is_empty() {
+                    if name.contains('$')
+                        || name.contains('`')
+                        || (!scalar_identifier(name)
+                            && mode != UnsetMode::Functions
+                            && bindings.function_binding(name).is_none())
+                    {
+                        continue;
+                    }
+                    if let Some(mutation) = super::function_overlay::unset_function_target(
+                        &mut bindings,
+                        name,
+                        mode,
+                        unset.conditional_execution,
+                        observed_at,
+                    ) {
+                        function_mutations.push((mutation, unset.span.start_byte));
+                    }
+                    if mode == UnsetMode::Functions || !scalar_identifier(name) {
+                        continue;
+                    }
+                    assigned.insert(name.clone());
+                    if !unset.conditional_execution {
                         bindings.remove(name);
                     } else {
+                        bindings.insert_opaque_dynamic(name, "conditional unset");
                         bindings.set_environment_value(
                             name,
                             SessionValue::opaque_dynamic("unresolved unset scope/options"),
@@ -203,29 +378,84 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
                 if let Some(mutation) =
                     positional_parameter_mutation_for_command(command, &bindings)
                 {
+                    let forget = matches!(mutation, PositionalParameterMutation::Forget)
+                        || (matches!(positional_state, Some(PositionalParameterMutation::Forget))
+                            && matches!(mutation, PositionalParameterMutation::Shift(_)));
                     apply_positional_parameter_mutation(&mut bindings, mutation);
+                    positional_state = Some(if forget {
+                        PositionalParameterMutation::Forget
+                    } else {
+                        PositionalParameterMutation::Replace(
+                            bindings.positional_parameters().to_vec(),
+                        )
+                    });
+                }
+            }
+            VariableOverlayEvent::RuntimeCommand(command) => {
+                if let Some(runtime) = runtime.as_deref_mut() {
+                    if let Some(fence) = runtime.apply_command(
+                        command,
+                        parsed,
+                        span_start_byte,
+                        &mut bindings,
+                        &mut touched,
+                        &mut function_mutations,
+                    ) {
+                        state_fences.push(fence);
+                    }
                 }
             }
         }
     }
 
-    bindings
+    super::runtime_variable_overlay::RuntimeVariableOverlay {
+        bindings,
+        touched,
+        positional_state,
+        assigned,
+        state_fences,
+        function_mutations,
+    }
+}
+
+fn invalidate_unknown_scalar_targets(
+    bindings: &mut SessionBindings,
+    assigned: &mut std::collections::BTreeSet<String>,
+) {
+    bindings.forget_variable_presence();
+    let names = bindings
+        .variable_names()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    bindings.forget_environment();
+    for name in names {
+        assigned.insert(name.clone());
+        bindings.insert_opaque_dynamic(&name, "unresolved scalar state target");
+        bindings.set_environment_value(
+            &name,
+            SessionValue::opaque_dynamic("unresolved scalar state target"),
+        );
+    }
 }
 
 enum VariableOverlayEvent<'a> {
+    FunctionDefinition(&'a caushell_parse::FunctionDefinitionFact),
     Declaration(&'a caushell_parse::DeclarationCommandFact),
     AssignmentCommand(&'a caushell_parse::AssignmentCommandFact),
     Unset(&'a caushell_parse::UnsetCommandFact),
     SetPositionalParameters(&'a CommandFact),
+    RuntimeCommand(&'a CommandFact),
 }
 
 impl VariableOverlayEvent<'_> {
     fn start_byte(&self) -> usize {
         match self {
+            Self::FunctionDefinition(definition) => definition.span.start_byte,
             Self::Declaration(declaration) => declaration.span.start_byte,
             Self::AssignmentCommand(assignment_command) => assignment_command.span.start_byte,
             Self::Unset(unset) => unset.span.start_byte,
             Self::SetPositionalParameters(command) => command.span.start_byte,
+            Self::RuntimeCommand(command) => command.span.start_byte,
         }
     }
 }

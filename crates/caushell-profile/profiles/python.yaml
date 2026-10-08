@@ -1,231 +1,88 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-
-identity:
-  canonical_name: python
-  aliases:
-    - python3
-    - python3.12
-    - python2
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+option_scope: leading_options
+opaque_on_unresolved: true
+identity: {canonical_name: python, aliases: [python3, python3.12, python2]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+# CPython interface options end interpreter option ownership.
 forms:
-  - id: uvicorn_module_dispatch
-    selector:
-      kind: all
-      items:
-        - {kind: has_flag, flag: '-m'}
-        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: uvicorn}}
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+  - id: module
+    selector: {kind: all, items: [{kind: has_flag, flag: '-m'}, &supported {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: opaque_runtime}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}]}
     parameters:
       - name: module_name
-        semantic: {kind: command_ref, dispatch: interpreter_module}
+        semantic: {kind: in_process_code_load, load_kind: module_name}
         binding: {kind: following_flag, flag: '-m', operand_mode: next_arg}
         cardinality: required_one
-      - name: module_args
-        semantic: {kind: plain_value}
-        binding: {kind: remaining_args}
-        cardinality: optional_many
+      - {name: module_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
     effects:
       - {kind: load_in_process_code, target: {kind: slot, name: module_name}}
-      - {kind: dispatch_command, target: {kind: dispatch, command: module_name, argv: [module_args]}}
-  - id: pip_module_dispatch
-    selector:
-      kind: all
-      items:
-        - kind: has_flag
-          flag: "-m"
-        - kind: has_positional_at_matching
-          index: 0
-          matcher:
-            kind: literal
-            value: pip
-    parameters:
-      - name: module_name
-        semantic:
-          kind: command_ref
-          dispatch: interpreter_module
-        binding:
-          kind: following_flag
-          flag: "-m"
-          operand_mode: next_arg
-        cardinality: required_one
-      - name: module_args
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_args
-        cardinality: optional_many
-    effects:
-      - kind: load_in_process_code
-        target:
-          kind: slot
-          name: module_name
       - kind: dispatch_command
         target:
           kind: dispatch
+          module_runtime: python
           command: module_name
-          argv:
-            - module_args
-
+          argv: [module_args]
+          unset_environment_when: [{modifier: ignore_python_environment, names: [PYTHONPYCACHEPREFIX]}]
+          stdin_from_parent: true
+          stdout_to_parent: true
   - id: command_string
-    selector:
-      kind: has_flag
-      flag: "-c"
+    selector: {kind: all, items: [{kind: has_flag, flag: '-c'}, *supported]}
     parameters:
-      - name: payload
-        semantic:
-          kind: payload
-          language: python
-          source: inline_string
-          recursive: true
-        binding:
-          kind: following_flag
-          flag: "-c"
-          operand_mode: next_positional_after_dashdash
-        cardinality: required_one
-    effects:
-      - kind: execute_payload
-        target:
-          kind: slot
-          name: payload
-
+      - {name: payload, semantic: {kind: payload, language: python, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: '-c', operand_mode: next_arg}, cardinality: required_one}
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: execute_payload, target: {kind: slot, name: payload}}]
+  - id: explicit_stdin
+    selector: {kind: all, items: [*supported, &not_module {kind: lacks_flag, flag: '-m'}, &not_inline {kind: lacks_flag, flag: '-c'}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}
+    parameters:
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    implicit_inputs: &stdin_inputs
+      - {source: stdin_payload, semantic: {kind: payload, language: python, source: stdin, recursive: true}}
+    stream_contract: &stdin_stream {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+    effects: &stdin_effects
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
   - id: script_file
-    selector:
-      kind: all
-      items:
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-c"
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-m"
+    selector: {kind: all, items: [*supported, *not_module, *not_inline, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
     parameters:
-      - name: script_path
-        semantic:
-          kind: path
-          role: read
-          purpose: script_source
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: script_args
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_args
-        cardinality: optional_many
+      - {name: script_path, semantic: {kind: path, role: read, purpose: script_source}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
     effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: script_path
-      - kind: execute_payload
-        target:
-          kind: slot
-          name: script_path
-
+      - {kind: read_path, target: {kind: slot, name: script_path}}
+      - {kind: execute_payload, target: {kind: slot, name: script_path}}
   - id: stdin_script
-    selector:
-      kind: all
-      items:
-        - kind: no_positional_args
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-c"
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-m"
-        - kind: stdin_payload_available
-    implicit_inputs:
-      - source: stdin_payload
-        semantic:
-          kind: payload
-          language: python
-          source: stdin
-          recursive: true
-    stream_contract:
-      stdin_mode: payload_required
-      stdout_mode: opaque
-      stderr_mode: opaque
-    effects:
-      - kind: consume_stdin
-        target:
-          kind: implicit_input
-          source: stdin_payload
-      - kind: execute_payload
-        target:
-          kind: implicit_input
-          source: stdin_payload
-
-  - id: module
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: uvicorn}}
-        - kind: has_flag
-          flag: "-m"
-        - kind: not
-          item:
-            kind: has_positional_at_matching
-            index: 0
-            matcher:
-              kind: literal
-              value: pip
-    parameters:
-      - name: module_name
-        semantic:
-          kind: in_process_code_load
-          load_kind: module_name
-        binding:
-          kind: following_flag
-          flag: "-m"
-          operand_mode: next_arg
-        cardinality: required_one
-      - name: module_args
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_args
-        cardinality: optional_many
-    effects:
-      - kind: load_in_process_code
-        target:
-          kind: slot
-          name: module_name
-
+    selector: {kind: all, items: [*supported, *not_module, *not_inline, {kind: no_positional_args}, {kind: stdin_payload_available}]}
+    implicit_inputs: *stdin_inputs
+    stream_contract: *stdin_stream
+    effects: *stdin_effects
 modifiers:
-  - id: isolated
-    matcher:
-      kind: any_flag
-      flags:
-        - "-I"
-        - "-E"
-        - "-s"
-        - "-S"
-        - "-B"
-        - "-q"
-        - "-u"
-
-subcommands: null
+  - id: module_entry
+    matcher: {kind: any_flag, flags: ['-m']}
+    ends_option_scope: true
+  - id: inline_entry
+    matcher: {kind: any_flag, flags: ['-c']}
+    ends_option_scope: true
+  - id: information
+    matcher: {kind: any_flag, flags: ['-h', '--help', '--help-env', '--help-xoptions', '--help-all', '-V', '--version']}
+    ends_option_scope: true
+  - id: switches
+    matcher: {kind: any_flag, flags: ['-s', '-S', '-B', '-q', '-u', '-O', '-P', '-b', '-d', '-R']}
+  - id: ignore_python_environment
+    matcher: {kind: any_flag, flags: ['-I', '-E']}
+  - id: warning
+    matcher: {kind: any_flag, flags: ['-W']}
+    parameters: [{name: warning, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - id: hash_policy
+    matcher: {kind: any_flag, flags: ['--check-hash-based-pycs']}
+    parameters: [{name: hash_policy, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - id: opaque_runtime
+    matcher: {kind: any_flag, flags: ['-i', '-X']}
+    parameters: [{name: xoption, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-X', operand_mode: next_arg}, cardinality: optional_many}]
 extensions:
   caushell.profile/known_limitations:
-    - Python inline and stdin payloads are recorded as nested payloads, but they are not recursively parsed by the current Bash-oriented parser.
-    - Module execution is modeled as a control surface without resolving module-to-file provenance.
+    - Python bodies and module resolution are not analyzed; only declared module CLI contracts are expanded.
+    - Interactive mode and extended runtime configuration remain opaque.

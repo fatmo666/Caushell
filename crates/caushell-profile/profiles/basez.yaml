@@ -1,0 +1,56 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: basez, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: encode_file
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: decode}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}, {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_file
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_modifier, modifier: decode}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}, {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: encode_stdin
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: decode}}]}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_stdin
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: no_positional_args}, {kind: has_modifier, modifier: decode}]}
+    effects: [{kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: decode, matcher: {kind: any_flag, flags: ['-d', '-D', '--decode']}}
+  - {id: base16, matcher: {kind: any_flag, flags: ['-x', '--hex', '--base16']}}
+  - {id: base32, matcher: {kind: any_flag, flags: ['-j', '--base32']}}
+  - {id: base32hex, matcher: {kind: any_flag, flags: ['-e', '--base32hex']}}
+  - {id: base64, matcher: {kind: any_flag, flags: ['-a', '--base64']}}
+  - {id: base64url, matcher: {kind: any_flag, flags: ['-u', '--base64url']}}
+  - {id: base64pem, matcher: {kind: any_flag, flags: ['-p', '--base64pem']}}
+  - {id: base64mime, matcher: {kind: any_flag, flags: ['-m', '--base64mime']}}
+  - {id: strict, matcher: {kind: any_flag, flags: ['-r', '--strict']}}
+  - {id: ignore_space, matcher: {kind: any_flag, flags: ['-s', '--ignore-all-space']}}
+  - {id: ignore_garbage, matcher: {kind: any_flag, flags: ['-g', '--ignore-garbage']}}
+  - {id: text, matcher: {kind: any_flag, flags: ['-t', '--text']}}
+  - id: wrap
+    matcher: {kind: any_flag, flags: ['-w', '-b', '--wrap', '--break']}
+    parameters: [{name: wrap_columns, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.ubuntu.com/manpages/jammy/man1/basez.1.html
+    - GTFOBins fixed snapshot basez/file-read/0
+  caushell.profile/known_limitations:
+    - Models positional FILE/stdin data flow and the documented encoding modifiers. The optional --input/--output file controls, format aliases as command names, and wrapping arguments remain unresolved.
+    - Output redirection is checked by existing path guards; encoded or decoded content remains tainted data, not sanitized data.

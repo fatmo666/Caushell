@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: dmidecode, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: dump_binary
+    selector: {kind: has_modifier, modifier: dump_bin}
+    effects: []
+  - id: decode
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: dump_bin}}]}
+    effects: [{kind: read_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}]
+modifiers:
+  - id: dump_bin
+    matcher: {kind: any_flag, flags: [--dump-bin]}
+    parameters: [{name: dump_output, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: write_path, target: {kind: slot, name: dump_output}}]
+  - id: source
+    matcher: {kind: any_flag, flags: [-d, --dev-mem]}
+    parameters: [{name: dmi_source, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: dmi_source}}]
+  - {id: no_sysfs, matcher: {kind: any_flag, flags: [--no-sysfs]}}
+extensions:
+  caushell.profile/source_research: [https://dmidecode.nongnu.org/]
+  caushell.profile/known_limitations:
+    - --dump-bin writes a binary SMBIOS representation to the explicit destination; system memory, sysfs and privilege-dependent sources are not resolved.
+    - The GTFO file-write case additionally depends on a specially crafted DMI input, which is treated only as a static input path.

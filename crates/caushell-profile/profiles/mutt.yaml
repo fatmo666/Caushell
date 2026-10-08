@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: mutt, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: load_config_file
+    selector: {kind: has_modifier, modifier: config}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: config_paths}}
+      - {kind: execute_payload, target: {kind: slot, name: config_payloads}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: config
+    matcher: {kind: any_flag, flags: ['-F']}
+    parameters:
+      - name: config_payloads
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection: {branches: [], fallback: {name: config_paths, semantic: {kind: path, role: read, purpose: script_source}}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: ['https://gitlab.com/muttmua/mutt/-/blob/master/init.c', 'https://gitlab.com/muttmua/mutt/-/blob/master/execute.c', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/mutt file-read']
+  caushell.profile/known_limitations: ['The Mutt configuration is an opaque Mutt command language and may invoke commands through hooks or backtick expansion; it is not interpreted as Bash. Error text may expose config contents; diagnostic bytes and other mailbox effects remain opaque.']

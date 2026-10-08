@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: wait
+  aliases: []
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bourne, bash, sh, dash]
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: wait_for_completion
+    selector:
+      kind: any
+      items:
+        - {kind: no_positional_args}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - name: jobs
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+modifiers:
+  - id: wait_modes
+    matcher: {kind: any_flag, flags: [-n, -f]}
+  - id: completion_variable
+    matcher: {kind: any_flag, flags: [-p]}
+    parameters:
+      - name: variable_name
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+    effects:
+      - kind: bind_variable_from_runtime_input
+        target: {kind: slot, name: variable_name}
+subcommands: null
+extensions: {}

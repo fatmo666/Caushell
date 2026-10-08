@@ -1,0 +1,97 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: compileall
+  module_only: true
+  module_entrypoints: [{runtime: python, name: compileall}]
+trust: {tier: tier_a, source: built_in}
+# CPython v3.14.0 Lib/compileall.py. No filesystem file/dir classification.
+# -d/-s/-p affect embedded traceback filenames, not output destinations.
+forms:
+  - id: help
+    selector: {kind: has_modifier, modifier: help}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+  - id: explicit_or_sys_path
+    selector:
+      kind: all
+      items:
+        - &not_help {kind: not, item: {kind: has_modifier, modifier: help}}
+        - &not_list {kind: not, item: {kind: has_modifier, modifier: list}}
+        - &not_legacy {kind: not, item: {kind: has_modifier, modifier: legacy}}
+    parameters: &inputs
+      - {name: inputs, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: &ignored {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - &read_inputs {kind: read_path, target: {kind: slot, name: inputs}}
+      - kind: write_path
+        target: {kind: configured_path, sources: [], environment: &prefix {name: PYTHONPYCACHEPREFIX, empty_is_unset: true}, fallback_parent_slots: [inputs], missing: unknown}
+      - &compile {kind: transform_data, target: {kind: none}}
+  - id: legacy_explicit_or_sys_path
+    selector: {kind: all, items: [*not_help, *not_list, &legacy {kind: has_modifier, modifier: legacy}]}
+    parameters: *inputs
+    stream_contract: *ignored
+    effects:
+      - *read_inputs
+      - {kind: write_path, target: {kind: configured_path, sources: [], fallback_parent_slots: [inputs], missing: unknown}}
+      - *compile
+  - id: file_list
+    selector:
+      kind: all
+      items:
+        - *not_help
+        - &list {kind: has_modifier, modifier: list}
+        - *not_legacy
+        - &file_list {kind: not, item: &stdin_list {kind: has_modifier_parameter_matching, modifier: list, parameter: list_name, matcher: {kind: literal, value: '-'}}}
+    parameters: *inputs
+    stream_contract: *ignored
+    effects:
+      - *read_inputs
+      - &read_list {kind: read_path, target: {kind: configured_path, sources: [{slot: list_name, projection: {kind: identity}}]}}
+      - &unknown_cached {kind: write_path, target: {kind: configured_path, sources: [], environment: *prefix, missing: unknown}}
+      - *compile
+  - id: stdin_list
+    selector: {kind: all, items: [*not_help, *list, *not_legacy, *stdin_list]}
+    parameters: *inputs
+    implicit_inputs: &stdin_inputs [{source: stdin_data, semantic: {kind: plain_value}}]
+    stream_contract: &stdin_stream {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - *read_inputs
+      - &consume_stdin {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - *unknown_cached
+      - *compile
+  - id: legacy_file_list
+    selector: {kind: all, items: [*not_help, *list, *legacy, *file_list]}
+    parameters: *inputs
+    stream_contract: *ignored
+    effects:
+      - *read_inputs
+      - *read_list
+      - &unknown_legacy {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - *compile
+  - id: legacy_stdin_list
+    selector: {kind: all, items: [*not_help, *list, *legacy, *stdin_list]}
+    parameters: *inputs
+    implicit_inputs: *stdin_inputs
+    stream_contract: *stdin_stream
+    effects: [*read_inputs, *consume_stdin, *unknown_legacy, *compile]
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}, ends_option_scope: true}
+  - {id: switches, matcher: {kind: any_flag, flags: ['-l', '-f', '-q', '--hardlink-dupes']}}
+  - {id: legacy, matcher: {kind: any_flag, flags: ['-b']}}
+  - id: tuning
+    matcher: {kind: any_flag, flags: ['-r', '-j', '--workers', '-o', '--invalidation-mode', '-x', '-e']}
+    parameters: [{name: tuning, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - id: traceback_names
+    matcher: {kind: any_flag, flags: ['-d', '-s', '-p']}
+    parameters: [{name: traceback_names, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - id: list
+    matcher: {kind: any_flag, flags: ['-i']}
+    parameters: [{name: list_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+extensions:
+  caushell.profile/known_limitations:
+    - Inputs may be files or directories. Their parent roots conservatively bound both cases without suffix guesses or filesystem probes.
+    - No-target sys.path scans and file-list targets remain unknown unless a known cache prefix bounds all outputs; legacy -b never uses that prefix.
+    - Source symlink resolution and implicit interpreter import caches are not dynamically discovered.
+    - Repeated -i options remain unresolved rather than treating an earlier stdin marker as the final file-list source.

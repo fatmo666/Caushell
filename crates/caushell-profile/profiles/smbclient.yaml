@@ -1,0 +1,22 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: smbclient, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: smbclient_command_list
+    selector: {kind: has_flag, flag: -c}
+    parameters: [{name: smb_commands, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -c, operand_mode: next_arg}, cardinality: required_one}, {name: share, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: share}}, {kind: execute_payload, target: {kind: slot, name: smb_commands}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: smbclient_prompt
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}]}
+    parameters: [{name: share, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: next_positional}, cardinality: optional_one}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: share}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: false, capabilities: [run_command]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/smbclient (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://www.samba.org/samba/docs/current/man-html/smbclient.1.html"]
+  caushell.profile/known_limitations: ["-c commands use smbclient's command language, not shell syntax; local get/put path strings remain embedded in the opaque native value and are not inferred.", "The ! command capability is recorded without synthesizing a local child argv; SMB availability, authentication and transfer results are not modeled."]

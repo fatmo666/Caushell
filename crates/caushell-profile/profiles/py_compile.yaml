@@ -1,0 +1,52 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: py_compile
+  module_only: true
+  module_entrypoints: [{runtime: python, name: py_compile}]
+trust: {tier: tier_a, source: built_in}
+# CPython v3.14.0 Lib/py_compile.py: compile, do not execute source bodies.
+# Explicit compilation writes even under interpreter -B. A sole '-' is a
+# filename list on stdin; '-' among other filenames is an ordinary filename.
+forms:
+  - id: help
+    selector: {kind: has_modifier, modifier: help}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+  - id: stdin_list
+    selector:
+      kind: all
+      items:
+        - &not_help {kind: not, item: {kind: has_modifier, modifier: help}}
+        - &dash {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters: [{name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}]
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], environment: &prefix {name: PYTHONPYCACHEPREFIX, empty_is_unset: true}, missing: unknown}}
+      - {kind: transform_data, target: {kind: none}}
+  - id: files
+    selector:
+      kind: all
+      items:
+        - *not_help
+        - {kind: has_positional_at, index: 0}
+        - {kind: any, items: [{kind: not, item: *dash}, {kind: has_positional_at, index: 1}]}
+    parameters:
+      - {name: inputs, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: inputs}}
+      - kind: write_path
+        target: {kind: configured_path, sources: [], environment: *prefix, fallback_parent_slots: [inputs], missing: unknown}
+      - {kind: transform_data, target: {kind: none}}
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}, ends_option_scope: true}
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q', '--quiet']}}
+extensions:
+  caushell.profile/known_limitations:
+    - Cache tags and atomic temporary filenames are bounded by input parents, not guessed.
+    - Stdin filename lists are not expanded; a proven cache prefix can bound their writes.

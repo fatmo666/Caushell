@@ -29,19 +29,19 @@ use serde_json::Value as JsonValue;
 
 use crate::path::resolve_path_operand;
 use crate::support::{
-    AliasExpansionHop, StaticInputEvidence, apply_alias_command,
-    apply_visible_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
+    AliasExpansionHop, RuntimeBindingReplay, StaticInputEvidence, apply_alias_command,
+    apply_runtime_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
     bound_argument_operands_for_slot, catastrophic_delete_target_for_arg, expand_alias_chain,
     known_literal_path_content_before_execution_unit as static_known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command as static_known_literal_path_content_before_scoped_command,
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
     pipeline_has_upstream, redirection_parent_command_index, redirection_targets_stdin_payload,
-    request_variable_bindings, source_node_id_for_command,
+    request_variable_bindings, runtime_variable_overlay,
+    runtime_visible_variable_bindings_before_span, source_node_id_for_command,
     static_stdin_evidence_for_scoped_command, static_stdin_payloads_for_scoped_command,
     static_stdout_payloads_for_process_substitution_text, top_level_unit_for_command,
-    top_level_unit_for_span, visible_function_bindings_before_span,
-    visible_variable_bindings_before_span,
+    top_level_unit_for_span,
 };
 
 const MAX_ALIAS_EXPANSION_HOPS: usize = 8;
@@ -71,30 +71,41 @@ impl SessionTransformPass for ResolveInvocationPass {
             ctx.pending_mutations(),
         );
         let staged_view = SessionView::from_session(&staged_session);
-        let bindings = request_bindings(staged_view.summary(), ctx.request());
+        let bindings = request_bindings(session.summary(), ctx.request());
+        // The overlay and ordinary resolver see the same merged definitions.
+        // This is a local analysis view, not new runtime/Harness observations.
+        let mut binding_request = ctx.request().clone();
+        binding_request.shell_state_before.aliases =
+            alias_bindings(session.summary(), ctx.request())
+                .values()
+                .map(|a| caushell_types::ShellAliasSnapshot::new(&a.name, &a.body))
+                .collect();
+        binding_request.shell_state_before.observability.aliases =
+            caushell_types::ShellStateKnowledge::Complete;
 
         let (records, alias_derived_commands, function_derived_commands) =
             collect_top_level_command_resolve_records(
                 &self.registry,
-                staged_view.summary(),
-                ctx.request(),
+                session.summary(),
+                &binding_request,
                 &parsed,
             );
         let function_derived_records = collect_top_level_function_command_resolve_records(
             &self.registry,
-            ctx.request(),
+            &binding_request,
             &function_derived_commands,
         );
         let (dispatch_derived_commands, unresolved_dispatches) =
             collect_top_level_dispatch_derived_commands(
+                &self.registry,
                 staged_view.summary(),
-                ctx.request(),
+                &binding_request,
                 &parsed,
                 &records,
             );
         let dispatch_derived_records = collect_top_level_dispatch_command_resolve_records(
             &self.registry,
-            ctx.request(),
+            &binding_request,
             &dispatch_derived_commands,
         );
 
@@ -102,7 +113,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             &self.registry,
             staged_view,
             staged_view.summary(),
-            ctx.request(),
+            &binding_request,
             &parsed,
             &records,
             &function_derived_commands,
@@ -114,7 +125,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         );
         let nested_derived_records = collect_derived_command_resolve_records(
             &self.registry,
-            ctx.request(),
+            &binding_request,
             &nested_payload_records,
         );
         let mut derived_records = dispatch_derived_records.clone();
@@ -124,7 +135,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             collect_execution_unit_resolve_records(
                 &self.registry,
                 staged_view,
-                ctx.request(),
+                &binding_request,
                 &parsed,
                 &records,
                 &function_derived_commands,
@@ -149,7 +160,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             if should_skip_generic_dispatch_projection(resolved) {
                 continue;
             }
-            for candidate in collect_dispatch_command_projection(&resolved.bound).unresolved {
+            for candidate in registered_dispatch_projection(&self.registry, resolved).unresolved {
                 unresolved_records.push(UnresolvedDispatchRecord::new(
                     record.source_node_id.clone(),
                     record.command_ref.clone(),
@@ -192,7 +203,13 @@ impl SessionTransformPass for ResolveInvocationPass {
             for mutation in project_derived_invocation_mutations(ctx.request(), record) {
                 ctx.stage_mutation(mutation);
             }
-            if let Some(evidence) = project_nested_payload_evidence(record, &parsed) {
+            if let Some(evidence) = project_nested_payload_evidence_with_runtime_state(
+                &self.registry,
+                &binding_request,
+                &bindings,
+                record,
+                &parsed,
+            ) {
                 ctx.add_evidence(evidence);
             }
         }
@@ -206,6 +223,62 @@ impl SessionTransformPass for ResolveInvocationPass {
         }
 
         ctx.set_nested_payload_records(nested_payload_records);
+        let final_overlay = runtime_variable_overlay(
+            &self.registry,
+            &binding_request,
+            bindings,
+            &parsed,
+            usize::MAX,
+            ctx.request().sequence_no,
+        );
+        ctx.set_shell_state_fences(final_overlay.state_fences);
+        ctx.set_runtime_function_mutations(final_overlay.function_mutations);
+        let mut mutations: Vec<PendingMutation> = final_overlay
+            .touched
+            .into_iter()
+            .chain(final_overlay.assigned)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|name| match final_overlay.bindings.get(&name) {
+                Some(value) => PendingMutation::UpsertVariableBinding {
+                    binding: caushell_types::SessionVariableBinding::new(
+                        &name,
+                        value.value.to_session_variable_value(),
+                        matches!(
+                            final_overlay.bindings.environment_value(&name),
+                            caushell_profile::EnvironmentValueRef::Present(_)
+                        ),
+                        ctx.request().sequence_no,
+                    ),
+                },
+                None => PendingMutation::UnsetVariable {
+                    name,
+                    observed_at: ctx.request().sequence_no,
+                },
+            })
+            .collect();
+        if let Some(positional) = final_overlay.positional_state {
+            mutations.push(match positional {
+                crate::support::PositionalParameterMutation::Forget => {
+                    PendingMutation::ForgetPositionalParameters {
+                        observed_at: ctx.request().sequence_no,
+                    }
+                }
+                crate::support::PositionalParameterMutation::Replace(values) => {
+                    PendingMutation::SetPositionalParameters {
+                        values: values
+                            .iter()
+                            .map(SessionValue::to_session_variable_value)
+                            .collect(),
+                        observed_at: ctx.request().sequence_no,
+                    }
+                }
+                crate::support::PositionalParameterMutation::Shift(_) => {
+                    unreachable!("final overlay stores the resulting positional values")
+                }
+            });
+        }
+        ctx.set_runtime_variable_final_mutations(mutations);
     }
 }
 
@@ -235,6 +308,18 @@ fn request_bindings(
     request: &CheckRequest,
 ) -> SessionBindings {
     request_variable_bindings(summary, request)
+}
+
+fn runtime_binding_replay<'a>(
+    registry: &'a ProfileRegistry,
+    request: &'a CheckRequest,
+    bindings: &'a SessionBindings,
+) -> RuntimeBindingReplay<'a> {
+    RuntimeBindingReplay {
+        registry,
+        request,
+        bindings,
+    }
 }
 
 fn collect_config_defined_task_recursive_payload_candidates(
@@ -369,6 +454,7 @@ fn alias_bindings(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TopLevelDispatchDerivedCommand {
+    module_runtime: Option<String>,
     source_command_index: usize,
     dispatch_index: usize,
     command_slot: String,
@@ -424,14 +510,8 @@ fn collect_top_level_command_resolve_records(
 
     for (command_index, command) in parsed.commands.iter().enumerate() {
         let source_node_id = source_node_id_for_command(request, parsed, command_index, command);
-        let function_overlay = function_bindings_before_command(
-            summary,
-            request,
-            parsed,
-            command,
-            request.sequence_no,
-        );
-        let variable_overlay = visible_variable_bindings_before_span(
+        let variable_overlay = runtime_visible_variable_bindings_before_span(
+            registry,
             summary,
             request,
             parsed,
@@ -455,9 +535,15 @@ fn collect_top_level_command_resolve_records(
         if let Some(binding) = resolved_command
             .command_name
             .as_deref()
-            .and_then(|command_name| function_overlay.get(command_name))
+            .and_then(|command_name| {
+                caushell_profile::materialize_command_name(command_name, &variable_overlay)
+            })
+            .as_deref()
+            .and_then(|command_name| variable_overlay.function_binding(command_name))
+            .filter(|binding| binding.uncertainty.is_none())
         {
             function_derived_commands.extend(project_function_derived_commands(
+                registry,
                 request,
                 command_index,
                 &source_node_id,
@@ -483,16 +569,6 @@ fn collect_top_level_command_resolve_records(
     }
 
     (records, alias_derived_commands, function_derived_commands)
-}
-
-fn function_bindings_before_command(
-    summary: &caushell_types::SessionSummary,
-    request: &CheckRequest,
-    parsed: &caushell_parse::ParsedCommandArtifact,
-    command: &caushell_parse::CommandFact,
-    observed_at: caushell_types::CommandSequenceNo,
-) -> BTreeMap<String, SessionFunctionBinding> {
-    visible_function_bindings_before_span(summary, request, parsed, &command.span, observed_at)
 }
 
 fn project_alias_derived_commands(
@@ -527,6 +603,7 @@ fn project_alias_derived_commands(
 }
 
 fn project_function_derived_commands(
+    registry: &ProfileRegistry,
     request: &CheckRequest,
     source_command_index: usize,
     source_node_id: &caushell_graph::NodeId,
@@ -547,7 +624,9 @@ fn project_function_derived_commands(
                 function_name: binding.name.clone(),
                 derived_command_index,
                 parent_node_id: source_node_id.clone(),
-                bindings: apply_visible_variable_bindings_before_span(
+                bindings: apply_runtime_variable_bindings_before_span(
+                    registry,
+                    request,
                     bindings.clone(),
                     &parsed_body,
                     command.span.start_byte,
@@ -753,6 +832,7 @@ fn indexed_scope_command_node_ids(
 }
 
 fn collect_top_level_dispatch_derived_commands(
+    registry: &ProfileRegistry,
     summary: &caushell_types::SessionSummary,
     request: &CheckRequest,
     parsed: &caushell_parse::ParsedCommandArtifact,
@@ -773,11 +853,13 @@ fn collect_top_level_dispatch_derived_commands(
         }
 
         let projection = dispatch_candidates_for_resolved(
+            registry,
             resolved,
             request.shell_state_before.cwd(),
             request.home.as_deref(),
         );
-        let parent_bindings = visible_variable_bindings_before_span(
+        let parent_bindings = runtime_visible_variable_bindings_before_span(
+            registry,
             summary,
             request,
             parsed,
@@ -795,7 +877,9 @@ fn collect_top_level_dispatch_derived_commands(
             let child_bindings =
                 dispatch_child_session_bindings(&parent_bindings, &candidate, &command);
             commands.push(TopLevelDispatchDerivedCommand {
+                module_runtime: candidate.module_runtime.clone(),
                 stdin_available: candidate.stdin_from_parent
+                    || candidate.stdin_from_tool
                     || resolved.projection.stdin_payload_available,
                 source_command_index: record.command_ref.command_index,
                 dispatch_index: candidate.dispatch_index,
@@ -858,18 +942,67 @@ fn parsed_dispatch_scope(
 }
 
 fn dispatch_candidates_for_resolved(
+    registry: &ProfileRegistry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     cwd: &str,
     home: Option<&str>,
 ) -> caushell_profile::DispatchCommandProjection {
-    if resolved.normalized_command_name.as_str() == "find" {
+    if resolved.normalized_command_name.as_str() == "find"
+        && !resolved.bound.argument_regions.is_empty()
+        && resolved
+            .bound
+            .argument_regions
+            .iter()
+            .all(|r| matches!(r.id.as_str(), "exec" | "execdir"))
+    {
+        let candidates = find_dispatch_candidates(resolved, cwd, home);
+        let unresolved = candidates
+            .iter()
+            .filter(|c| c.command.implicit_input_source.is_some())
+            .map(|c| caushell_profile::UnresolvedDispatchCommand {
+                module_runtime: None,
+                dispatch_index: c.dispatch_index,
+                command_slot: c.command.slot.clone(),
+            })
+            .collect();
+        // Each validated region owns one child. The old singular-slot
+        // projection cannot classify a multi-action find invocation and must
+        // not contribute independent, contradictory resolution records.
         return caushell_profile::DispatchCommandProjection {
-            resolved: find_dispatch_candidates(resolved, cwd, home),
-            unresolved: collect_dispatch_command_projection(&resolved.bound).unresolved,
+            resolved: candidates
+                .into_iter()
+                .filter(|c| c.command.implicit_input_source.is_none())
+                .collect(),
+            unresolved,
         };
     }
 
-    collect_dispatch_command_projection(&resolved.bound)
+    registered_dispatch_projection(registry, resolved)
+}
+
+fn registered_dispatch_projection(
+    registry: &ProfileRegistry,
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+) -> caushell_profile::DispatchCommandProjection {
+    let mut projection = collect_dispatch_command_projection(&resolved.bound);
+    projection.resolved.retain(|candidate| {
+        candidate.module_runtime.as_deref().is_none_or(|runtime| {
+            registry
+                .lookup_module(runtime, &candidate.command.text)
+                .profile
+                .is_some()
+        })
+    });
+    // Preserve unknown-module code-load policy, but retain unknown argv gaps of
+    // registered module invocations. Ordinary wrappers are unchanged.
+    projection.unresolved.retain(|gap| {
+        gap.module_runtime.is_none()
+            || projection
+                .resolved
+                .iter()
+                .any(|candidate| candidate.dispatch_index == gap.dispatch_index)
+    });
+    projection
 }
 
 fn find_dispatch_candidates(
@@ -941,34 +1074,27 @@ fn find_dispatch_candidates(
             })
             .collect()
     };
-    let follows_symlinks = tokens
+    let follows_symlinks = resolved
+        .bound
+        .applied_modifiers
         .iter()
-        .zip(decoded.iter())
-        .any(|(_, token)| matches!(token.as_deref(), Some("-L" | "-H" | "-follow")));
+        .any(|modifier| modifier.as_str() == "follow_symlinks");
     let mut candidates = Vec::new();
-    let mut index = 0;
 
-    while index < tokens.len() {
-        let action = match decoded[index].as_deref() {
-            Some("-exec") => Some(("exec_command", false)),
-            Some("-execdir") => Some(("execdir_command", true)),
+    // Use the same ownership result as Profile selection and binding. Do not
+    // rediscover actions inside option operands or child argv.
+    for region in &resolved.bound.argument_regions {
+        let action = match region.id.as_str() {
+            "exec" => Some(("exec_command", false)),
+            "execdir" => Some(("execdir_command", true)),
             _ => None,
         };
         let Some((command_slot, execdir)) = action else {
-            index += 1;
             continue;
         };
-
-        let Some(command_token) = tokens.get(index + 1) else {
-            break;
-        };
-        let mut end = index + 2;
-        while end < tokens.len() && !matches!(decoded[end].as_deref(), Some(";" | "+")) {
-            end += 1;
-        }
-        let Some(_terminator) = tokens.get(end) else {
-            break;
-        };
+        let command_index = region.command_index;
+        let end = region.end_index;
+        let command_token = &tokens[command_index];
 
         let make_argument = |slot: &str,
                              token: &caushell_profile::ProjectedArg,
@@ -1007,14 +1133,16 @@ fn find_dispatch_candidates(
             }
         };
 
-        let command_value = decoded.get(index + 1).and_then(|value| value.as_deref());
+        let command_value = decoded
+            .get(command_index)
+            .and_then(|value| value.as_deref());
         let command = make_argument(command_slot, command_token, command_value, false);
-        let argv = tokens[index + 2..end]
+        let argv = tokens[command_index + 1..end]
             .iter()
             .enumerate()
             .map(|(offset, token)| {
                 let value = decoded
-                    .get(index + 2 + offset)
+                    .get(command_index + 1 + offset)
                     .and_then(|value| value.as_deref());
                 let find_substitution = value.is_some_and(|value| value.contains("{}"));
                 make_argument("exec_args", token, value, find_substitution)
@@ -1022,7 +1150,9 @@ fn find_dispatch_candidates(
             .collect();
 
         candidates.push(DispatchCommandCandidate {
+            module_runtime: None,
             stdin_from_parent: false,
+            stdin_from_tool: false,
             stdout_to_parent: false,
             dispatch_index: candidates.len(),
             command,
@@ -1031,10 +1161,10 @@ fn find_dispatch_candidates(
             clear_environment: false,
             unknown_environment: false,
             unknown_environment_from: Vec::new(),
+            unknown_environment_names: Vec::new(),
             unset_environment: Vec::new(),
             execution_cwd_unknown: execdir,
         });
-        index = end + 1;
     }
 
     candidates
@@ -1075,6 +1205,18 @@ fn dispatch_child_bindings(
 ) -> SessionBindings {
     let mut bindings = base.clone();
 
+    // An unknown tool-decoded overlay may replace any inherited or explicitly
+    // known variable. Do not let one harmless known assignment mask it. This
+    // runs after clear_environment, because clearing inheritance cannot remove
+    // uncertainty in the explicitly supplied overlay itself.
+    if environment
+        .iter()
+        .any(|assignment| assignment.implicit_input_source.is_some())
+    {
+        bindings.reset_child_environment(false);
+        return bindings;
+    }
+
     for assignment in environment {
         let Some((name, value)) = assignment.text.split_once('=') else {
             continue;
@@ -1109,6 +1251,9 @@ fn dispatch_child_session_bindings(
     command: &caushell_parse::CommandFact,
 ) -> SessionBindings {
     let mut bindings = base.clone();
+    // A dispatched executable does not perform the caller's shell function
+    // lookup. Function export into a new interpreter is a separate capability.
+    bindings.replace_function_bindings(std::iter::empty());
     if candidate.unknown_environment
         || candidate.unknown_environment_from.iter().any(|source| {
             match base.environment_value(&source.name) {
@@ -1126,6 +1271,10 @@ fn dispatch_child_session_bindings(
         bindings.reset_child_environment(true);
     }
     for unset in &candidate.unset_environment {
+        if unset.implicit_input_source.is_some() {
+            bindings.reset_child_environment(false);
+            continue;
+        }
         let name = if unset.runtime_data {
             Some(unset.text.clone())
         } else {
@@ -1139,6 +1288,12 @@ fn dispatch_child_session_bindings(
             Some(name) => bindings.remove(&name),
             None => bindings.reset_child_environment(false),
         }
+    }
+    for name in &candidate.unknown_environment_names {
+        bindings.set_child_environment_value(
+            name,
+            caushell_profile::SessionValue::opaque_dynamic("tool-generated environment value"),
+        );
     }
     let bindings = dispatch_child_bindings(&bindings, &candidate.environment);
     let Some(positional_args) = shell_dispatch_positional_arguments(command) else {
@@ -1239,7 +1394,7 @@ fn collect_top_level_dispatch_command_resolve_records(
                     command.dispatch_index,
                 ),
                 ParsedCommandRef::new(command.dispatch_index, command.command.span.clone()),
-                resolve_invocation_artifact_with_bindings(
+                caushell_profile::resolve_invocation_in_namespace(
                     registry,
                     &command.command,
                     InvocationRuntimeContext {
@@ -1247,7 +1402,9 @@ fn collect_top_level_dispatch_command_resolve_records(
                         interactive_session: false,
                     },
                     &command.bindings,
-                ),
+                    command.module_runtime.as_deref(),
+                )
+                .into_artifact(),
             )
         })
         .collect()
@@ -1297,7 +1454,9 @@ fn collect_derived_command_resolve_records(
         };
 
         for (derived_command_index, command) in parsed.commands.iter().enumerate() {
-            let command_bindings = apply_visible_variable_bindings_before_span(
+            let command_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
                 record.bindings.clone(),
                 parsed,
                 command.span.start_byte,
@@ -1358,6 +1517,8 @@ struct ExpandedFrontierEntry {
 /// A single opt-in gate for top-level and expanded executions. Data formats do
 /// not become recursive shell payloads, and no command-name special case lives here.
 fn refresh_execution_payload_projections(
+    registry: &ProfileRegistry,
+
     session: SessionView<'_>,
     request: &CheckRequest,
     entry: &mut ExpandedFrontierEntry,
@@ -1392,8 +1553,12 @@ fn refresh_execution_payload_projections(
         &entry.static_payload_scope.parsed_scope,
         entry.static_payload_scope.command_index,
         request.sequence_no,
-        &entry.static_payload_scope.bindings,
-        &entry.static_payload_scope.scope_base_bindings,
+        &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
+        &runtime_binding_replay(
+            registry,
+            request,
+            &entry.static_payload_scope.scope_base_bindings,
+        ),
         cwd,
         reliable,
         request.home.as_deref(),
@@ -1437,7 +1602,8 @@ fn collect_execution_unit_resolve_records(
         else {
             continue;
         };
-        let command_bindings = visible_variable_bindings_before_span(
+        let command_bindings = runtime_visible_variable_bindings_before_span(
+            registry,
             session.summary(),
             request,
             parsed_request,
@@ -1532,7 +1698,9 @@ fn collect_execution_unit_resolve_records(
                 record.record_id.0,
                 derived_command_index,
             );
-            let command_bindings = apply_visible_variable_bindings_before_span(
+            let command_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
                 record.bindings.clone(),
                 parsed,
                 command.span.start_byte,
@@ -1614,7 +1782,13 @@ fn collect_execution_unit_resolve_records(
             continue;
         }
 
-        refresh_execution_payload_projections(session, request, &mut entry, max_nested_parse_depth);
+        refresh_execution_payload_projections(
+            registry,
+            session,
+            request,
+            &mut entry,
+            max_nested_parse_depth,
+        );
 
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();
@@ -1695,7 +1869,7 @@ fn collect_execution_unit_resolve_records(
             let unresolved_dispatch_count = if should_skip_generic_dispatch_projection(resolved) {
                 0
             } else {
-                collect_dispatch_command_projection(&resolved.bound)
+                registered_dispatch_projection(registry, resolved)
                     .unresolved
                     .len()
             };
@@ -1761,7 +1935,8 @@ fn expanded_assignment_command_substitution_body_roots(
             continue;
         };
         let parent_execution_node_id = parent_unit.node_id(request);
-        let base_bindings = visible_variable_bindings_before_span(
+        let base_bindings = runtime_visible_variable_bindings_before_span(
+            registry,
             session.summary(),
             request,
             parsed_request,
@@ -1813,7 +1988,9 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
             continue;
         }
 
-        let assignment_bindings = apply_visible_variable_bindings_before_span(
+        let assignment_bindings = apply_runtime_variable_bindings_before_span(
+            registry,
+            request,
             base_bindings.clone(),
             parsed_scope,
             assignment_command.span.start_byte,
@@ -1839,7 +2016,9 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                     let source_suffix = source_suffix_prefix
                         .map(|prefix| format!("{prefix}:{assignment_suffix}"))
                         .unwrap_or(assignment_suffix);
-                    let command_bindings = apply_visible_variable_bindings_before_span(
+                    let command_bindings = apply_runtime_variable_bindings_before_span(
+                        registry,
+                        request,
                         assignment_bindings.clone(),
                         &parsed_substitution,
                         child_command.span.start_byte,
@@ -1921,6 +2100,7 @@ fn expanded_dispatch_children(
     );
 
     for child in dispatch_candidates_for_resolved(
+        registry,
         resolved,
         request.shell_state_before.cwd(),
         request.home.as_deref(),
@@ -1941,9 +2121,10 @@ fn expanded_dispatch_children(
         let Some((parsed_scope, command)) = parsed_dispatch_scope(command, entry.shell_kind) else {
             continue;
         };
-        let stdin_available =
-            child.stdin_from_parent || resolved.projection.stdin_payload_available;
-        let resolved_child = resolve_invocation_artifact_with_bindings(
+        let stdin_available = child.stdin_from_parent
+            || child.stdin_from_tool
+            || resolved.projection.stdin_payload_available;
+        let resolved_child = caushell_profile::resolve_invocation_in_namespace(
             registry,
             &command,
             InvocationRuntimeContext {
@@ -1951,7 +2132,9 @@ fn expanded_dispatch_children(
                 interactive_session: false,
             },
             &child_bindings,
-        );
+            child.module_runtime.as_deref(),
+        )
+        .into_artifact();
         let source_node_id = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
             dispatch_derived_invocation_node_id(
                 &request.session_id,
@@ -1965,6 +2148,13 @@ fn expanded_dispatch_children(
         let mut static_payload_scope = entry.static_payload_scope.clone();
         static_payload_scope.bindings = child_bindings.clone();
         static_payload_scope.stdin_is_parent_output |= child.stdin_from_parent;
+        if child.stdin_from_tool {
+            // Tool-produced bytes are not the caller's stdin or prior pipeline
+            // output. An interpreter must retain runtime-input uncertainty.
+            static_payload_scope.parsed_scope = parsed_scope.clone();
+            static_payload_scope.command_index = 0;
+            static_payload_scope.stdin_is_parent_output = false;
+        }
         children.push(ExpandedFrontierEntry {
             source_node_id,
             command_ref: ParsedCommandRef::new(child.dispatch_index, command.span.clone()),
@@ -2026,7 +2216,9 @@ fn expanded_shell_payload_children(
         .iter()
         .enumerate()
         .map(|(command_index, command)| {
-            let command_bindings = apply_visible_variable_bindings_before_span(
+            let command_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
                 shell_bindings.clone(),
                 &parsed_payload,
                 command.span.start_byte,
@@ -2044,7 +2236,16 @@ fn expanded_shell_payload_children(
                 result: resolve_invocation_artifact_with_bindings(
                     registry,
                     command,
-                    runtime_context_for_parsed_command(&parsed_payload, command_index, command),
+                    InvocationRuntimeContext {
+                        stdin_payload_available: resolved.projection.stdin_payload_available
+                            || runtime_context_for_parsed_command(
+                                &parsed_payload,
+                                command_index,
+                                command,
+                            )
+                            .stdin_payload_available,
+                        interactive_session: false,
+                    },
                     &command_bindings,
                 ),
                 shell_kind,
@@ -2107,25 +2308,35 @@ fn expanded_recursive_payload_children(
     }
 
     let script_file_candidates = script_file_payload_candidates_from_literal_writes(
+        registry,
         session,
         request,
         resolved,
-        &entry.static_payload_scope.bindings,
+        &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
         &entry.static_payload_scope.parsed_scope,
         entry.static_payload_scope.command_index,
-        &entry.static_payload_scope.scope_base_bindings,
+        &runtime_binding_replay(
+            registry,
+            request,
+            &entry.static_payload_scope.scope_base_bindings,
+        ),
         &entry.history_anchor_node_id,
         max_nested_parse_depth.saturating_sub(entry.depth),
     );
     let mut candidates = if matches!(resolved.normalized_command_name.as_str(), "bash" | "sh") {
         let mut candidates = recursive_payload_candidates_for_scoped_command(
+            registry,
             session,
             request,
             &entry.static_payload_scope.parsed_scope,
             entry.static_payload_scope.command_index,
             &resolved.bound,
-            &entry.static_payload_scope.bindings,
-            &entry.static_payload_scope.scope_base_bindings,
+            &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
+            &runtime_binding_replay(
+                registry,
+                request,
+                &entry.static_payload_scope.scope_base_bindings,
+            ),
             max_nested_parse_depth.saturating_sub(entry.depth),
         )
         .into_iter()
@@ -2135,13 +2346,18 @@ fn expanded_recursive_payload_children(
         candidates
     } else {
         let mut candidates = recursive_payload_candidates_for_scoped_command(
+            registry,
             session,
             request,
             &entry.static_payload_scope.parsed_scope,
             entry.static_payload_scope.command_index,
             &resolved.bound,
-            &entry.static_payload_scope.bindings,
-            &entry.static_payload_scope.scope_base_bindings,
+            &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
+            &runtime_binding_replay(
+                registry,
+                request,
+                &entry.static_payload_scope.scope_base_bindings,
+            ),
             max_nested_parse_depth.saturating_sub(entry.depth),
         );
         candidates.extend(script_file_candidates);
@@ -2169,7 +2385,9 @@ fn expanded_recursive_payload_children(
         let parsed = parsed_payload.artifact;
 
         for (command_index, command) in parsed.commands.iter().enumerate() {
-            let command_bindings = apply_visible_variable_bindings_before_span(
+            let command_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
                 entry.bindings.clone(),
                 &parsed,
                 command.span.start_byte,
@@ -2237,7 +2455,9 @@ fn expanded_command_substitution_body_children(
             };
 
             for (command_index, child_command) in parsed_substitution.commands.iter().enumerate() {
-                let command_bindings = apply_visible_variable_bindings_before_span(
+                let command_bindings = apply_runtime_variable_bindings_before_span(
+                    registry,
+                    request,
                     entry.bindings.clone(),
                     &parsed_substitution,
                     child_command.span.start_byte,
@@ -2347,7 +2567,9 @@ fn expanded_command_substitution_materialization_children(
         .iter()
         .enumerate()
         .map(|(command_index, rendered_child)| {
-            let command_bindings = apply_visible_variable_bindings_before_span(
+            let command_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
                 entry.bindings.clone(),
                 &parsed_command,
                 rendered_child.span.start_byte,
@@ -2426,7 +2648,9 @@ fn expanded_process_substitution_body_children(
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
                 {
-                    let command_bindings = apply_visible_variable_bindings_before_span(
+                    let command_bindings = apply_runtime_variable_bindings_before_span(
+                        registry,
+                        request,
                         entry.bindings.clone(),
                         &parsed_substitution,
                         child_command.span.start_byte,
@@ -2533,7 +2757,9 @@ fn expanded_process_substitution_body_children(
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
                 {
-                    let command_bindings = apply_visible_variable_bindings_before_span(
+                    let command_bindings = apply_runtime_variable_bindings_before_span(
+                        registry,
+                        request,
                         entry.bindings.clone(),
                         &parsed_substitution,
                         child_command.span.start_byte,
@@ -2640,7 +2866,9 @@ fn expanded_process_substitution_body_children(
             };
 
             for (command_index, child_command) in parsed_substitution.commands.iter().enumerate() {
-                let command_bindings = apply_visible_variable_bindings_before_span(
+                let command_bindings = apply_runtime_variable_bindings_before_span(
+                    registry,
+                    request,
                     entry.bindings.clone(),
                     &parsed_substitution,
                     child_command.span.start_byte,
@@ -2747,8 +2975,12 @@ fn expanded_static_xargs_children(
             &entry.static_payload_scope.parsed_scope,
             entry.static_payload_scope.command_index,
             request.sequence_no,
-            &entry.static_payload_scope.bindings,
-            &entry.static_payload_scope.scope_base_bindings,
+            &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
+            &runtime_binding_replay(
+                registry,
+                request,
+                &entry.static_payload_scope.scope_base_bindings,
+            ),
             request.shell_state_before.cwd(),
             !entry
                 .inherited_scope
@@ -2878,12 +3110,14 @@ fn expanded_static_xargs_children(
         }
 
         let command = child_candidate.to_command_fact();
+        let child_bindings =
+            dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
         let resolved_child = resolve_invocation_artifact_with_bindings(
             registry,
             &command,
             InvocationRuntimeContext::new(),
-            &entry.bindings,
+            &child_bindings,
         );
         children.push(ExpandedFrontierEntry {
             source_node_id: expanded_virtual_node_id("xargs", &entry.source_node_id, command_index),
@@ -2895,12 +3129,12 @@ fn expanded_static_xargs_children(
             root_command_index: entry.root_command_index,
             depth: entry.depth.saturating_add(1),
             parent_execution_node_id: entry.source_node_id.clone(),
-            bindings: entry.bindings.clone(),
+            bindings: child_bindings.clone(),
             static_payload_scope: StaticPayloadLookupScope {
                 parsed_scope: parsed_child,
                 command_index: 0,
-                bindings: entry.bindings.clone(),
-                scope_base_bindings: entry.bindings.clone(),
+                bindings: child_bindings.clone(),
+                scope_base_bindings: child_bindings,
                 stdin_is_parent_output: false,
             },
             history_anchor_node_id: entry.history_anchor_node_id.clone(),
@@ -4112,11 +4346,63 @@ fn project_nested_payload_mutation(
     }
 }
 
+fn project_nested_payload_evidence_with_runtime_state(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    bindings: &SessionBindings,
+    record: &NestedPayloadRecord,
+    parsed_request: &caushell_parse::ParsedCommandArtifact,
+) -> Option<Evidence> {
+    // Local stdin is normally left to provenance guards. But local input
+    // presence does not prove the bytes after a runtime variable assignment.
+    // Retain the existing unresolved-input evidence in that case; do not
+    // manufacture a literal script or introduce a separate risk decision.
+    let runtime_unknown = match &record.parent_ref {
+        NestedPayloadParentRef::RootCommand { command_index } => parsed_request
+            .commands
+            .get(*command_index)
+            .map(|command| {
+                runtime_variable_overlay(
+                    registry,
+                    request,
+                    bindings.clone(),
+                    parsed_request,
+                    command.span.start_byte,
+                    request.sequence_no,
+                )
+            })
+            .is_some_and(|overlay| {
+                overlay.touched.iter().any(|name| {
+                    overlay.bindings.get(name).is_some_and(|v| {
+                        matches!(
+                            v.value,
+                            SessionValue::OpaqueDynamic { .. } | SessionValue::RuntimeInput { .. }
+                        )
+                    })
+                })
+            }),
+        _ => false,
+    };
+    project_nested_payload_evidence_inner(record, parsed_request, !runtime_unknown)
+}
+
+#[cfg(test)]
 fn project_nested_payload_evidence(
     record: &NestedPayloadRecord,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
 ) -> Option<Evidence> {
-    if suppress_local_stdin_nested_payload_unresolved_evidence(record, parsed_request) {
+    project_nested_payload_evidence_inner(record, parsed_request, true)
+}
+
+fn project_nested_payload_evidence_inner(
+    record: &NestedPayloadRecord,
+    parsed_request: &caushell_parse::ParsedCommandArtifact,
+    allow_local_stdin_suppression: bool,
+) -> Option<Evidence> {
+    if allow_local_stdin_suppression
+        && record.candidate.candidate.language != caushell_profile::PayloadLanguage::Opaque
+        && suppress_local_stdin_nested_payload_unresolved_evidence(record, parsed_request)
+    {
         return None;
     }
 
@@ -4382,6 +4668,7 @@ fn nested_language_evidence(
     language: caushell_profile::PayloadLanguage,
 ) -> NestedPayloadLanguageEvidence {
     match language {
+        caushell_profile::PayloadLanguage::Opaque => NestedPayloadLanguageEvidence::Opaque,
         caushell_profile::PayloadLanguage::Bash => NestedPayloadLanguageEvidence::Bash,
         caushell_profile::PayloadLanguage::Sh => NestedPayloadLanguageEvidence::Sh,
         caushell_profile::PayloadLanguage::Dash => NestedPayloadLanguageEvidence::Dash,
@@ -4395,6 +4682,7 @@ fn nested_language_evidence(
 
 fn nested_language_string(language: caushell_profile::PayloadLanguage) -> String {
     match language {
+        caushell_profile::PayloadLanguage::Opaque => "opaque",
         caushell_profile::PayloadLanguage::Bash => "bash",
         caushell_profile::PayloadLanguage::Sh => "sh",
         caushell_profile::PayloadLanguage::Dash => "dash",
@@ -4647,6 +4935,9 @@ fn unresolved_execution_payload_subtype(
     record: &NestedPayloadRecord,
     parsed_request: Option<&caushell_parse::ParsedCommandArtifact>,
 ) -> Option<UnresolvedExecutionPayloadSubtype> {
+    if record.candidate.candidate.language == caushell_profile::PayloadLanguage::Opaque {
+        return Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell);
+    }
     Some(match &record.candidate.candidate.input {
         caushell_profile::RecursivePayloadInput::ArgumentFragments { .. } => {
             if !matches!(
@@ -4741,7 +5032,8 @@ fn collect_nested_payload_records(
             continue;
         };
 
-        let top_level_bindings = visible_variable_bindings_before_span(
+        let top_level_bindings = runtime_visible_variable_bindings_before_span(
+            registry,
             summary,
             request,
             parsed_request,
@@ -4753,6 +5045,7 @@ fn collect_nested_payload_records(
             .get(record.command_ref.command_index)
             .and_then(shell_dispatch_positional_arguments);
         for candidate in top_level_recursive_payload_candidates(
+            registry,
             session,
             request,
             parsed_request,
@@ -4779,7 +5072,8 @@ fn collect_nested_payload_records(
             });
         }
 
-        let top_level_bindings = visible_variable_bindings_before_span(
+        let top_level_bindings = runtime_visible_variable_bindings_before_span(
+            registry,
             summary,
             request,
             parsed_request,
@@ -4787,6 +5081,7 @@ fn collect_nested_payload_records(
             request.sequence_no,
         );
         for candidate in script_file_payload_candidates_from_prior_literal_writes(
+            registry,
             session,
             request,
             parsed_request,
@@ -4841,6 +5136,7 @@ fn collect_nested_payload_records(
         };
 
         for candidate in recursive_payload_candidates_for_scoped_command(
+            registry,
             session,
             request,
             &command.parsed_body,
@@ -4877,6 +5173,7 @@ fn collect_nested_payload_records(
         };
 
         let mut candidates = recursive_payload_candidates_for_scoped_command(
+            registry,
             session,
             request,
             parsed_request,
@@ -4887,6 +5184,7 @@ fn collect_nested_payload_records(
             max_nested_parse_depth,
         );
         candidates.extend(script_file_payload_candidates_from_literal_writes(
+            registry,
             session,
             request,
             resolved,
@@ -5151,7 +5449,8 @@ fn nested_payload_is_inline_shell_child(
             let Some(command) = parsed_request.commands.get(*command_index) else {
                 return false;
             };
-            let bindings = visible_variable_bindings_before_span(
+            let bindings = runtime_visible_variable_bindings_before_span(
+                registry,
                 session.summary(),
                 request,
                 parsed_request,
@@ -5216,6 +5515,8 @@ fn nested_payload_is_inline_shell_child(
 }
 
 fn top_level_recursive_payload_candidates(
+    registry: &ProfileRegistry,
+
     session: SessionView<'_>,
     request: &CheckRequest,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
@@ -5226,6 +5527,7 @@ fn top_level_recursive_payload_candidates(
     max_nested_parse_depth: u8,
 ) -> Vec<caushell_profile::RecursivePayloadCandidate> {
     recursive_payload_candidates_for_scoped_command(
+        registry,
         session,
         request,
         parsed_request,
@@ -5238,6 +5540,8 @@ fn top_level_recursive_payload_candidates(
 }
 
 fn script_file_payload_candidates_from_prior_literal_writes(
+    registry: &ProfileRegistry,
+
     session: SessionView<'_>,
     request: &CheckRequest,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
@@ -5248,6 +5552,7 @@ fn script_file_payload_candidates_from_prior_literal_writes(
     max_nested_parse_depth: u8,
 ) -> Vec<caushell_profile::RecursivePayloadCandidate> {
     script_file_payload_candidates_from_literal_writes(
+        registry,
         session,
         request,
         resolved,
@@ -5261,6 +5566,8 @@ fn script_file_payload_candidates_from_prior_literal_writes(
 }
 
 fn script_file_payload_candidates_from_literal_writes(
+    registry: &ProfileRegistry,
+
     session: SessionView<'_>,
     request: &CheckRequest,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
@@ -5314,7 +5621,7 @@ fn script_file_payload_candidates_from_literal_writes(
                     command_index,
                     &path,
                     request.sequence_no,
-                    scope_base_bindings,
+                    &runtime_binding_replay(registry, request, scope_base_bindings),
                     request.shell_state_before.cwd(),
                     request.home.as_deref(),
                 )
@@ -5489,6 +5796,8 @@ fn recursive_payload_candidates_for_parsed_command(
 }
 
 fn recursive_payload_candidates_for_scoped_command(
+    registry: &ProfileRegistry,
+
     session: SessionView<'_>,
     request: &CheckRequest,
     parsed_command: &caushell_parse::ParsedCommandArtifact,
@@ -5500,16 +5809,8 @@ fn recursive_payload_candidates_for_scoped_command(
 ) -> Vec<caushell_profile::RecursivePayloadCandidate> {
     let mut candidates =
         recursive_payload_candidates_for_parsed_command(parsed_command, command_index, bound);
-    candidates.extend(tar_checkpoint_action_exec_payload_candidates(
-        session,
-        request,
-        parsed_command,
-        command_index,
-        bound,
-        bindings,
-        max_nested_parse_depth,
-    ));
     rewrite_static_stdin_payload_candidates(
+        registry,
         session,
         request,
         parsed_command,
@@ -5522,164 +5823,9 @@ fn recursive_payload_candidates_for_scoped_command(
     candidates
 }
 
-fn tar_checkpoint_action_exec_payload_candidates(
-    session: SessionView<'_>,
-    request: &CheckRequest,
-    parsed_command: &caushell_parse::ParsedCommandArtifact,
-    command_index: usize,
-    bound: &caushell_profile::BoundInvocation,
-    bindings: &SessionBindings,
-    max_nested_parse_depth: u8,
-) -> Vec<caushell_profile::RecursivePayloadCandidate> {
-    if bound.command_name.as_str() != "tar" {
-        return Vec::new();
-    }
-
-    let Some(command) = parsed_command.commands.get(command_index) else {
-        return Vec::new();
-    };
-
-    let mut candidates = Vec::new();
-    let mut index = 0usize;
-    while index < command.tokens.len() {
-        let token = &command.tokens[index];
-        if matches!(token.kind, caushell_parse::CommandTokenKind::DashDash) {
-            break;
-        }
-
-        let Some(argument) = materialized_static_shell_word_argument(
-            token,
-            session,
-            request,
-            bindings,
-            max_nested_parse_depth,
-        ) else {
-            index += 1;
-            continue;
-        };
-
-        let action = if let Some(action) = argument.strip_prefix("--checkpoint-action=") {
-            Some(action.to_string())
-        } else if argument == "--checkpoint-action" {
-            index += 1;
-            command.tokens.get(index).and_then(|next| {
-                if matches!(next.kind, caushell_parse::CommandTokenKind::DashDash) {
-                    return None;
-                }
-                materialized_static_shell_word_argument(
-                    next,
-                    session,
-                    request,
-                    bindings,
-                    max_nested_parse_depth,
-                )
-            })
-        } else {
-            None
-        };
-
-        if let Some(payload) = action.and_then(|action| tar_checkpoint_exec_payload(&action)) {
-            candidates.push(caushell_profile::RecursivePayloadCandidate {
-                language: PayloadLanguage::Sh,
-                source: PayloadSource::InlineString,
-                origin: RecursivePayloadOrigin::Parameter {
-                    slot: SlotName::new("checkpoint_action"),
-                },
-                input: RecursivePayloadInput::LiteralText { text: payload },
-            });
-        }
-
-        index += 1;
-    }
-
-    candidates
-}
-
-fn tar_checkpoint_exec_payload(action: &str) -> Option<String> {
-    let payload = action.strip_prefix("exec=")?.trim();
-    (!payload.is_empty()).then(|| payload.to_string())
-}
-
-fn materialized_static_shell_word_argument(
-    token: &caushell_parse::CommandToken,
-    session: SessionView<'_>,
-    request: &CheckRequest,
-    bindings: &SessionBindings,
-    max_nested_parse_depth: u8,
-) -> Option<String> {
-    let materialized = materialize_static_token_command_substitutions(
-        &token.text,
-        &token.command_substitutions,
-        caushell_query::QuerySession::from_session(&session),
-        request.shell_kind,
-        request.sequence_no,
-        bindings,
-        request.shell_state_before.cwd(),
-        request.home.as_deref(),
-        max_nested_parse_depth,
-    )?;
-
-    if token.quoted
-        && matches!(
-            token.node_kind.as_str(),
-            "string" | "raw_string" | "ansi_c_string"
-        )
-    {
-        return Some(materialized);
-    }
-
-    static_shell_word_to_argument(&materialized)
-}
-
-fn static_shell_word_to_argument(text: &str) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    let mut quote = StaticShellWordQuote::None;
-
-    while let Some(ch) = chars.next() {
-        match quote {
-            StaticShellWordQuote::None => match ch {
-                '\'' => quote = StaticShellWordQuote::Single,
-                '"' => quote = StaticShellWordQuote::Double,
-                '\\' => match chars.next() {
-                    Some(next) => out.push(next),
-                    None => out.push(ch),
-                },
-                _ => out.push(ch),
-            },
-            StaticShellWordQuote::Single => {
-                if ch == '\'' {
-                    quote = StaticShellWordQuote::None;
-                } else {
-                    out.push(ch);
-                }
-            }
-            StaticShellWordQuote::Double => match ch {
-                '"' => quote = StaticShellWordQuote::None,
-                '\\' => match chars.next() {
-                    Some(next @ ('$' | '`' | '"' | '\\' | '\n')) => out.push(next),
-                    Some(next) => {
-                        out.push('\\');
-                        out.push(next);
-                    }
-                    None => out.push(ch),
-                },
-                _ => out.push(ch),
-            },
-        }
-    }
-
-    (quote == StaticShellWordQuote::None).then_some(out)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StaticShellWordQuote {
-    None,
-    Single,
-    Double,
-}
-
 fn rewrite_static_stdin_payload_candidates(
+    registry: &ProfileRegistry,
+
     session: SessionView<'_>,
     request: &CheckRequest,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
@@ -5694,8 +5840,8 @@ fn rewrite_static_stdin_payload_candidates(
         parsed_request,
         command_index,
         request.sequence_no,
-        bindings,
-        scope_base_bindings,
+        &runtime_binding_replay(registry, request, bindings),
+        &runtime_binding_replay(registry, request, scope_base_bindings),
         request.shell_state_before.cwd(),
         request.home.as_deref(),
         max_nested_parse_depth,
@@ -5743,7 +5889,9 @@ fn collect_child_frontier_entries(
     let mut entries = Vec::new();
 
     for (derived_command_index, command) in parsed.commands.iter().enumerate() {
-        let command_bindings = apply_visible_variable_bindings_before_span(
+        let command_bindings = apply_runtime_variable_bindings_before_span(
+            registry,
+            request,
             parent_bindings.clone(),
             parsed,
             command.span.start_byte,
@@ -5761,6 +5909,7 @@ fn collect_child_frontier_entries(
         };
 
         for child_candidate in recursive_payload_candidates_for_scoped_command(
+            registry,
             session,
             request,
             parsed,
@@ -5845,6 +5994,260 @@ mod tests {
 
         ProfileRegistry::load_dir(&profiles_dir)
             .expect("expected built-in profiles directory to load")
+    }
+
+    // This fixture exercises the shared consumer, independently of any tool
+    // profile or command-name-specific dispatch behavior.
+    fn projected_dispatch_fixture() -> (
+        caushell_profile::DispatchCommandCandidate,
+        caushell_parse::CommandFact,
+    ) {
+        let command = caushell_parse::parse_command("echo ok", ShellKind::Bash)
+            .unwrap()
+            .commands
+            .remove(0);
+        let child = caushell_profile::DispatchCommandCandidate {
+            module_runtime: None,
+            dispatch_index: 0,
+            command: caushell_profile::DispatchArgument {
+                slot: caushell_profile::SlotName::new("child"),
+                text: "echo".into(),
+                implicit_input_source: None,
+                runtime_argument_domain: None,
+                runtime_data: true,
+                quoted: false,
+                node_kind: "word".into(),
+                span: command.span.clone(),
+                binding_source: caushell_profile::ArgumentBindingSource::RemainingArg,
+            },
+            argv: Vec::new(),
+            environment: Vec::new(),
+            unset_environment: Vec::new(),
+            clear_environment: false,
+            unknown_environment: false,
+            unknown_environment_from: Vec::new(),
+            unknown_environment_names: Vec::new(),
+            execution_cwd_unknown: false,
+            stdin_from_parent: false,
+            stdin_from_tool: false,
+            stdout_to_parent: false,
+        };
+        (child, command)
+    }
+
+    fn projected_dispatch_env_argument(
+        child: &caushell_profile::DispatchCommandCandidate,
+        text: &str,
+        unknown: bool,
+    ) -> caushell_profile::DispatchArgument {
+        let mut argument = child.command.clone();
+        argument.slot = caushell_profile::SlotName::new("environment");
+        argument.text = text.into();
+        argument.runtime_data = !unknown;
+        if unknown {
+            argument.implicit_input_source =
+                Some(caushell_types::ImplicitInputSource::DispatchOutput);
+            argument.runtime_argument_domain =
+                Some(caushell_types::RuntimeArgumentDomain::Unbounded);
+        }
+        argument
+    }
+
+    #[test]
+    fn projected_dispatch_environment_literal_values_and_parent_isolation() {
+        let mut parent = caushell_profile::SessionBindings::new()
+            .with_exact_scalar("OUT", "/opt/not-the-child-value");
+        parent.export("OUT");
+        let (mut candidate, command) = projected_dispatch_fixture();
+        candidate.environment = vec![projected_dispatch_env_argument(
+            &candidate,
+            "TARGET=$OUT",
+            false,
+        )];
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(child.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Present(caushell_profile::SessionValue::ExactScalar(v)) if v == "$OUT"));
+        assert!(matches!(
+            parent.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Unknown
+        ));
+        assert_eq!(
+            parent.environment_value("OUT"),
+            child.environment_value("OUT")
+        );
+    }
+
+    #[test]
+    fn projected_dispatch_environment_unknown_overlay_dominates_known_values() {
+        for clear in [false, true] {
+            for unknown_first in [false, true] {
+                let mut parent = caushell_profile::SessionBindings::new()
+                    .with_exact_scalar("TARGET", "/tmp/project/safe");
+                parent.export("TARGET");
+                let (mut candidate, command) = projected_dispatch_fixture();
+                candidate.clear_environment = clear;
+                let known = projected_dispatch_env_argument(
+                    &candidate,
+                    "TARGET=/tmp/project/also-safe",
+                    false,
+                );
+                let unknown = projected_dispatch_env_argument(&candidate, "", true);
+                candidate.environment = if unknown_first {
+                    vec![unknown, known]
+                } else {
+                    vec![known, unknown]
+                };
+                let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+                assert!(matches!(
+                    child.environment_value("TARGET"),
+                    caushell_profile::EnvironmentValueRef::Unknown
+                ));
+                assert!(child.get("TARGET").is_none());
+                assert!(matches!(
+                    child.environment_value("OTHER"),
+                    caushell_profile::EnvironmentValueRef::Unknown
+                ));
+                assert!(matches!(
+                    parent.environment_value("TARGET"),
+                    caushell_profile::EnvironmentValueRef::Present(_)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn projected_dispatch_environment_known_unset_removes_only_child_binding() {
+        let mut parent =
+            caushell_profile::SessionBindings::new().with_exact_scalar("TARGET", "value");
+        parent.export("TARGET");
+        let (mut candidate, command) = projected_dispatch_fixture();
+        candidate.unset_environment =
+            vec![projected_dispatch_env_argument(&candidate, "TARGET", false)];
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(
+            child.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Absent
+        ));
+        assert!(child.get("TARGET").is_none());
+        assert!(matches!(
+            parent.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Present(_)
+        ));
+    }
+
+    #[test]
+    fn declarative_environment_removal_preserves_unrelated_unknowns_and_parent() {
+        let yaml = r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: omit-fixture}
+option_scope: leading_options
+forms:
+  - id: run
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command_literal: child-fixture, unset_environment_when: [{modifier: omit, names: [FIXTURE_CACHE]}]}
+modifiers:
+  - {id: omit, matcher: {kind: any_flag, flags: [--omit]}}
+"#;
+        let registry = caushell_profile::ProfileRegistry::from_profiles(vec![
+            caushell_profile::load_command_profile_from_str(yaml).unwrap(),
+        ])
+        .unwrap();
+        let command =
+            caushell_parse::parse_command("omit-fixture --omit", caushell_types::ShellKind::Bash)
+                .unwrap()
+                .commands
+                .remove(0);
+        let caushell_profile::ResolveInvocationResult::Resolved(r) =
+            caushell_profile::resolve_invocation(
+                &registry,
+                &command,
+                caushell_profile::InvocationRuntimeContext::new(),
+            )
+        else {
+            panic!()
+        };
+        let candidate = caushell_profile::collect_dispatch_command_candidates(&r.bound).remove(0);
+        let mut parent = caushell_profile::SessionBindings::new()
+            .with_exact_scalar("FIXTURE_CACHE", "/outside")
+            .with_exact_scalar("OTHER", "preserved");
+        parent.export("FIXTURE_CACHE");
+        parent.export("OTHER");
+        let untouched = parent.clone();
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(
+            child.environment_value("FIXTURE_CACHE"),
+            caushell_profile::EnvironmentValueRef::Absent
+        ));
+        assert!(matches!(
+            child.environment_value("OTHER"),
+            caushell_profile::EnvironmentValueRef::Present(_)
+        ));
+        assert!(matches!(
+            child.environment_value("UNKNOWN"),
+            caushell_profile::EnvironmentValueRef::Unknown
+        ));
+        assert_eq!(parent, untouched);
+    }
+
+    #[test]
+    fn projected_dispatch_environment_unknown_unset_does_not_become_absent() {
+        let parent = caushell_profile::SessionBindings::new();
+        let (mut candidate, command) = projected_dispatch_fixture();
+        candidate.clear_environment = true;
+        candidate.unset_environment = vec![projected_dispatch_env_argument(&candidate, "", true)];
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(
+            child.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Unknown
+        ));
+
+        // An explicit assignment after an unset is still a known value.
+        candidate.environment = vec![projected_dispatch_env_argument(
+            &candidate,
+            "TARGET=after-unset",
+            false,
+        )];
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(child.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Present(caushell_profile::SessionValue::ExactScalar(v)) if v == "after-unset"));
+    }
+
+    #[test]
+    fn projected_dispatch_environment_clear_keeps_explicit_known_assignments() {
+        let parent =
+            caushell_profile::SessionBindings::new().with_exact_scalar("PARENT_ONLY", "old");
+        let (mut candidate, command) = projected_dispatch_fixture();
+        candidate.clear_environment = true;
+        candidate.environment = vec![projected_dispatch_env_argument(
+            &candidate,
+            "TARGET=child",
+            false,
+        )];
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(
+            child.environment_value("PARENT_ONLY"),
+            caushell_profile::EnvironmentValueRef::Absent
+        ));
+        assert!(matches!(
+            child.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Present(_)
+        ));
+        assert!(parent.get("PARENT_ONLY").is_some());
+    }
+
+    #[test]
+    fn projected_dispatch_environment_original_words_keep_legacy_materialization() {
+        let parent =
+            caushell_profile::SessionBindings::new().with_exact_scalar("SOURCE", "original-value");
+        let (mut candidate, command) = projected_dispatch_fixture();
+        let mut argument = projected_dispatch_env_argument(&candidate, "TARGET=$SOURCE", false);
+        argument.runtime_data = false;
+        candidate.environment = vec![argument];
+        let child = super::dispatch_child_session_bindings(&parent, &candidate, &command);
+        assert!(matches!(child.environment_value("TARGET"),
+            caushell_profile::EnvironmentValueRef::Present(caushell_profile::SessionValue::ExactScalar(v)) if v == "original-value"));
     }
 
     fn first_argument_text<'a>(invocation: &'a BoundInvocation, slot_name: &str) -> &'a str {
@@ -7923,28 +8326,20 @@ mod tests {
             r#"tar cf /tmp/out.tar victim --checkpoint=1 --checkpoint-action=exec='sh -c "echo materialized"'"#,
         );
 
-        let record = ctx
-            .nested_payload_records()
-            .iter()
-            .find(|record| {
-                record.candidate.candidate.origin
-                    == caushell_profile::RecursivePayloadOrigin::Parameter {
-                        slot: caushell_profile::SlotName::new("checkpoint_action"),
-                    }
-            })
-            .expect("expected tar checkpoint-action exec nested payload");
-
-        assert_eq!(
-            record.candidate.candidate.input,
-            caushell_profile::RecursivePayloadInput::LiteralText {
-                text: r#"sh -c "echo materialized""#.to_string(),
-            }
-        );
-
+        assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
+            record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
+                && execution_record_matches_fixture(
+                    record,
+                    r#"/bin/sh -c 'sh -c "echo materialized"'"#,
+                )
+        }));
         let inner = ctx
             .nested_payload_records()
             .iter()
-            .find(|record| record.depth == 2)
+            .find(|record| {
+                matches!(&record.resolution, NestedPayloadResolution::Parsed {parsed, ..}
+                if parsed.commands.iter().any(|c| c.command_name.as_deref() == Some("echo")))
+            })
             .expect("expected inner sh -c nested payload");
 
         match &inner.resolution {

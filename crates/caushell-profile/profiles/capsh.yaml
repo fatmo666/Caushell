@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: capsh, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: bash_after_options
+    selector: {kind: has_dash_dash}
+    parameters:
+      - {name: bash_argv, semantic: {kind: plain_value}, binding: {kind: remaining_positionals_after_dash_dash}, cardinality: optional_many}
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command_literal: /bin/bash, argv: [bash_argv], stdin_from_parent: true, stdout_to_parent: true}}
+
+modifiers:
+  - {id: groups, matcher: {kind: any_flag, flags: ['--gid']}, parameters: [{name: group_id, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: user, matcher: {kind: any_flag, flags: ['--uid']}, parameters: [{name: user_id, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: capabilities, matcher: {kind: any_flag, flags: ['--caps']}, parameters: [{name: capabilities, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/capsh/
+    - https://man7.org/linux/man-pages/man1/capsh.1.html
+  caushell.profile/scope: capsh -- executes /bin/bash with all trailing arguments, so the nested shell is modeled explicitly, including its argv. Capability-setting options and namespace-changing --chroot, --chdir, and re-exec operators are not declared as ordinary shell passthrough; invocations using unsupported capsh controls remain unresolved.

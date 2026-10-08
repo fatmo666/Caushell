@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: cdist, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms: []
+modifiers: []
+subcommands:
+  roots:
+    - name: shell
+      aliases: []
+      forms:
+        - id: selected_manifest_shell
+          selector: {kind: has_modifier, modifier: shell_selection}
+          effects:
+            - {kind: dispatch_command, target: {kind: dispatch, command: selected_shell, argv: [], stdin_from_parent: true, stdout_to_parent: true}}
+      modifiers:
+        - {id: shell_selection, matcher: {kind: any_flag, flags: [-s, --shell]}, parameters: [{name: selected_shell, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+extensions:
+  caushell.profile/source_research:
+    - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/cdist (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+    - https://www.cdi.st/manual/latest/man1/cdist.html
+  caushell.profile/known_limitations:
+    - The shell selected by -s/--shell is dispatched as the native child command. Type helper commands exposed by cdist's interactive manifest shell are not projected.
+    - The configured default shell is runtime-dependent; only an explicit selected shell is modeled.

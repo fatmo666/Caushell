@@ -1,0 +1,224 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: aria2c
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+- id: download_with_hook
+  selector:
+    kind: all
+    items:
+    - kind: any
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: has_modifier
+        modifier: input_file
+    - kind: any
+      items:
+      - kind: has_modifier
+        modifier: on_error
+      - kind: has_modifier
+        modifier: on_complete
+  parameters:
+  - name: uris
+    semantic:
+      kind: endpoint
+      endpoint_kind: url
+      usage: fetch_source
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: network_endpoint
+    target:
+      kind: slot
+      name: uris
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: hook
+- id: download
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: on_error
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: on_complete
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: input_file
+  parameters:
+  - name: uris
+    semantic:
+      kind: endpoint
+      endpoint_kind: url
+      usage: fetch_source
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: network_endpoint
+    target:
+      kind: slot
+      name: uris
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: read_input_list
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: input_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: on_error
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: on_complete
+  parameters: []
+  effects: []
+modifiers:
+- id: on_error
+  matcher:
+    kind: any_flag
+    flags:
+    - "--on-download-error"
+    - "--on-download-start"
+    - "--on-download-stop"
+    - "--on-download-pause"
+    - "--on-download-complete"
+  parameters:
+  - name: hook
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: on_complete
+  matcher:
+    kind: any_flag
+    flags:
+    - "--on-bt-download-complete"
+  parameters:
+  - name: hook
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+- id: input_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-i"
+    - "--input-file"
+  parameters:
+  - name: input_list
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_list
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: output
+  matcher:
+    kind: any_flag
+    flags:
+    - "-o"
+    - "--out"
+  parameters:
+  - name: output
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: output
+- id: allow_overwrite
+  matcher:
+    kind: any_flag
+    flags:
+    - "--allow-overwrite"
+- id: gid
+  matcher:
+    kind: any_flag
+    flags:
+    - "--gid"
+  parameters:
+  - name: gid_value
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+extensions:
+  caushell.profile/source_research:
+  - https://aria2.github.io/manual/en/html/aria2c.html
+  caushell.profile/known_limitations:
+  - aria2 passes three generated callback arguments (GID, file count, file path);
+    these are not fabricated as shell argv or parsed as a command string.
+  - The hook value is an opaque payload and enters existing payload policy; callback
+    launch is asynchronous and its generated argv is not projected as a child invocation.
+  - Default download paths, redirects, session files and RPC/configuration behavior
+    remain unknown.

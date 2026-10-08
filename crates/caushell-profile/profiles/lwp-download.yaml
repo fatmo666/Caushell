@@ -1,0 +1,64 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: lwp-download, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: download_network_to_named_path
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: /dev/stdout}}}]}
+    parameters:
+      - {name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: output_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: download_network_to_unknown_path
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: server_filename}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}, {kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: download_network_to_stdout
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: /dev/stdout}}]}
+    parameters:
+      - {name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: download_network_server_filename
+    selector: {kind: all, items: [{kind: has_modifier, modifier: server_filename}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}, {kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: copy_file_uri_to_named_path
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:///[^%?#]*$'}}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: /dev/stdout}}}]}
+    parameters:
+      - name: source_uri
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: prefix, value: 'file://'}, target: {name: local_source_path, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: local_source_path}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: output_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: read_file_uri_to_stdout
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:///[^%?#]*$'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: /dev/stdout}}]}
+    parameters:
+      - name: source_uri
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: prefix, value: 'file://'}, target: {name: local_source_path, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: local_source_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: server_filename, matcher: {kind: any_flag, flags: ['-s']}}
+  - {id: ascii_mode, matcher: {kind: any_flag, flags: ['-a']}}
+extensions:
+  caushell.profile/source_research: [https://metacpan.org/pod/lwp-download, https://metacpan.org/pod/LWP::Protocol::file]
+  caushell.profile/known_limitations:
+    - Omitted-output downloads choose a filename using response metadata, including MIME-based suffixing; the destination is unknown even when the URL has a basename.
+    - -s uses server-provided filename information and therefore has an unknown static destination. Explicit /dev/stdout is modeled as a response stream rather than a local file write.
+    - Only canonical local file:/// URIs are projected to native paths; other URI authorities and escaped forms stay unresolved.

@@ -17,30 +17,27 @@ platform:
   shell_families: []
   requires_features: []
 
+opaque_on_unresolved: true
+
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+  - id: show_version
+    selector: {kind: has_modifier, modifier: version}
   - id: extract_archive
     selector:
-      kind: has_modifier
-      modifier: extract
+      kind: all
+      items: [{kind: has_modifier, modifier: extract}, {kind: has_modifier, modifier: archive_option}]
     parameters:
-      - name: archive_file
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: following_flag
-          flag: "-f"
-          operand_mode: next_arg
-        cardinality: required_one
       - name: member_filters
         semantic:
           kind: plain_value
         binding:
           kind: remaining_positionals
         cardinality: optional_many
-    effects:
+    effects: &extract_effects
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: archive_file
@@ -53,22 +50,27 @@ forms:
           rule:
             kind: archive_members
           purpose: generic_operand
+      - &decompress_dispatch
+        kind: dispatch_command
+        target:
+          kind: dispatch
+          command_string: {slot: compression_program, syntax: gnu_wordsplit}
+          argv_suffix: [-d]
+          stdin_from_tool: true
+      - &to_command_dispatch
+        kind: dispatch_command
+        target:
+          kind: dispatch
+          command_string: {slot: to_command_program, syntax: posix_shell}
+          unknown_environment_names: [TAR_VERSION, TAR_ARCHIVE, TAR_VOLUME, TAR_BLOCKING_FACTOR, TAR_FORMAT, TAR_FILETYPE, TAR_MODE, TAR_FILENAME, TAR_REALNAME, TAR_UNAME, TAR_GNAME, TAR_ATIME, TAR_MTIME, TAR_CTIME, TAR_SIZE, TAR_UID, TAR_GID, TAR_MINOR, TAR_MAJOR, TAR_LINKNAME]
+          stdin_from_tool: true
+          stdout_to_parent: true
 
   - id: create_archive
     selector:
-      kind: has_modifier
-      modifier: create
+      kind: all
+      items: [{kind: has_modifier, modifier: create}, {kind: has_modifier, modifier: archive_option}]
     parameters:
-      - name: archive_file
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: following_flag
-          flag: "-f"
-          operand_mode: next_arg
-        cardinality: required_one
       - name: input_paths
         semantic:
           kind: path
@@ -77,8 +79,9 @@ forms:
         binding:
           kind: remaining_positionals
         cardinality: required_many
-    effects:
+    effects: &create_effects
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: archive_file
@@ -86,6 +89,12 @@ forms:
         target:
           kind: slot
           name: input_paths
+      - &compress_dispatch
+        kind: dispatch_command
+        target:
+          kind: dispatch
+          command_string: {slot: compression_program, syntax: posix_shell}
+          stdin_from_tool: true
 
   - id: create_archive_old_style
     selector:
@@ -93,7 +102,7 @@ forms:
       index: 0
       matcher:
         kind: regex_pattern
-        pattern: "^[A-Za-z]*c[A-Za-z]*f[A-Za-z]*$"
+        pattern: '^[vphOPzjJS]*c[vphOPzjJS]*f[vphOPzjJS]*$'
     parameters:
       - name: old_style_options
         semantic:
@@ -108,8 +117,7 @@ forms:
           role: write
           purpose: generic_operand
         binding:
-          kind: positional_at
-          index: 1
+          kind: next_positional
         cardinality: required_one
       - name: input_paths
         semantic:
@@ -119,42 +127,93 @@ forms:
         binding:
           kind: remaining_positionals
         cardinality: required_many
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: archive_file
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
+    effects: *create_effects
+
+  - id: extract_archive_old_style
+    selector:
+      kind: has_positional_at_matching
+      index: 0
+      matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*x[vphOPzjJS]*f[vphOPzjJS]*$'}
+    parameters:
+      - {name: old_style_options, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - {name: archive_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: *extract_effects
+
+  - id: list_archive_old_style
+    selector:
+      kind: has_positional_at_matching
+      index: 0
+      matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*t[vphOPzjJS]*f[vphOPzjJS]*$'}
+    parameters:
+      - {name: old_style_options, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - {name: archive_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque}
+    effects: &list_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: archive_file}}
+      - *decompress_dispatch
 
   - id: list_archive
     selector:
-      kind: has_modifier
-      modifier: list
+      kind: all
+      items: [{kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: archive_option}]
     parameters:
-      - name: archive_file
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: following_flag
-          flag: "-f"
-          operand_mode: next_arg
-        cardinality: required_one
+      - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     stream_contract:
       stdin_mode: ignored
       stdout_mode: path_list
       stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: archive_file
+    effects: *list_effects
 
 modifiers:
+  - id: archive_switches
+    matcher:
+      kind: any_flag
+      flags: [-v, --verbose, -p, --same-permissions, --preserve-permissions, -P, --absolute-names, -h, --dereference, --hard-dereference, -O, --to-stdout, -z, --gzip, --ungzip, -j, --bzip2, -J, --xz, --zstd, --lzma, --lzip, --lzop, -Z, --compress, -S, --sparse, --numeric-owner, --no-same-owner, --no-same-permissions, -k, --keep-old-files, --skip-old-files, --keep-newer-files, -m, --touch, --no-overwrite-dir, --no-recursion, --recursion, --null, --verbatim-files-from, --no-verbatim-files-from, --ignore-failed-read, --no-unquote, --unquote]
+  - id: member_transform
+    matcher: {kind: any_flag, flags: [--transform, --xform]}
+    parameters:
+      - {name: member_transform, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: information
+    matcher: {kind: any_flag, flags: [--help, '-?']}
+  - id: version
+    matcher: {kind: any_flag, flags: [--version]}
+  - id: archive_option
+    matcher: {kind: any_flag, flags: [-f, --file]}
+    parameters:
+      - {name: archive_file, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: compression_program
+    matcher: {kind: any_flag, flags: [-I, --use-compress-program]}
+    parameters:
+      - {name: compression_program, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: to_command
+    matcher: {kind: any_flag, flags: [--to-command]}
+    parameters:
+      - {name: to_command_program, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: checkpoint_action
+    matcher: {kind: any_flag, flags: [--checkpoint-action]}
+    parameters:
+      - name: checkpoint_action
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - matcher: {kind: prefix, value: 'exec='}
+              target: {name: checkpoint_program, semantic: {kind: plain_value}}
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command_string: {slot: checkpoint_program, syntax: posix_shell}
+          unknown_environment_names: [TAR_VERSION, TAR_ARCHIVE, TAR_CHECKPOINT, TAR_BLOCKING_FACTOR, TAR_SUBCOMMAND, TAR_FORMAT]
+          stdin_from_parent: true
+          stdout_to_parent: true
+  - id: checkpoint_frequency
+    matcher: {kind: any_flag, flags: [--checkpoint]}
+    parameters:
+      - {name: checkpoint_frequency, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_one}
   - id: extract
     matcher:
       kind: any_flag
@@ -227,6 +286,13 @@ modifiers:
 
 subcommands: null
 extensions:
+  caushell.profile/sources:
+    - https://www.gnu.org/software/tar/manual/html_section/external.html
+    - https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/src/system.c/
+    - https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/lib/wordsplit.c/
   caushell.profile/known_limitations:
-    - Combined short option clusters such as -xf and -cf require shell projection support for short-option cluster splitting; use separated flags in the current profile.
     - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.
+    - Common old-style cf/cvf, xf/Pxf and tf forms are supported. Other argument-taking old-style letters still require an arity-aware projection; this is not a complete old-option parser.
+    - GNU tar 1.35 source runs compression, checkpoint exec and to-command strings through /bin/sh -c. Decompression uses GNU wordsplit with environment expansion and appends -d. The selected string modes are not interchangeable.
+    - GNU wordsplit environment expansions remain explicit analysis gaps. No ambient environment or subprocess is consulted. Tool-generated TAR_* values are opaque only in the callback environment, not the caller shell.
+    - Remote archive addressing and --rsh-command helper argv, info scripts, implicit compression selection, TAR_OPTIONS, transforms and BSD tar dialect differences remain pending; name registration is not complete semantic coverage.

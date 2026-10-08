@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: last, aliases: [lastb]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: list_records_from_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}
+        - {kind: has_modifier, modifier: file}
+        - {kind: no_positional_args}
+    parameters: []
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: information
+    selector: *information
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - {id: hostlast, matcher: {kind: any_flag, flags: ['-a', '--hostlast']}}
+  - id: file
+    matcher: {kind: any_flag, flags: ['-f', '--file']}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: limit
+    matcher: {kind: any_flag, flags: ['-n', '--limit']}
+    parameters: [{name: line_limit, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: more_records, matcher: {kind: any_flag, flags: ['-x', '--system']}}
+  - {id: ip_address, matcher: {kind: any_flag, flags: ['-i', '--ip']}}
+  - {id: wide, matcher: {kind: any_flag, flags: ['-w', '--fullnames']}}
+  - {id: fulltimes, matcher: {kind: any_flag, flags: ['-F', '--fulltimes']}}
+  - id: since
+    matcher: {kind: any_flag, flags: ['-s', '--since']}
+    parameters: [{name: since_time, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: until
+    matcher: {kind: any_flag, flags: ['-t', '--until']}
+    parameters: [{name: until_time, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: dns, matcher: {kind: any_flag, flags: ['-d', '--dns']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://man7.org/linux/man-pages/man1/last.1.html
+    - GTFOBins fixed snapshot last/file-read/0
+    - GTFOBins fixed snapshot lastb alias; explicit -f follows the same interface, but its default database differs.
+  caushell.profile/known_limitations:
+    - The source uses -f to select a wtmp-format file and -a to place the host field last. Repeated -f operands are all read paths; positional usernames and ttys are deliberately unsupported here.
+    - Output can be incomplete or corrupted for files that are not valid accounting databases; bytes are interpreted as records, not copied unchanged.
+    - Default system wtmp access, positional filters, and unresolved options are not claimed as this explicit-file form.

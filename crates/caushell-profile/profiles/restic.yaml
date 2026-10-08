@@ -1,0 +1,158 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: restic
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: backup_remote_repository
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: backup
+    - kind: has_modifier_parameter_matching
+      modifier: repository
+      parameter: repository
+      matcher:
+        kind: regex_pattern
+        pattern: "^(rest|sftp|s3|gs|azure|rclone):"
+  parameters:
+  - name: operation
+    semantic: &1
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: backup_inputs
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: backup_inputs
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: backup_local_repository
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: backup
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: repository
+        parameter: repository
+        matcher:
+          kind: regex_pattern
+          pattern: "^(rest|sftp|s3|gs|azure|rclone):"
+  parameters:
+  - name: operation
+    semantic: *1
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: backup_inputs
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: backup_inputs
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: repository
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: repository
+  matcher:
+    kind: any_flag
+    flags:
+    - "-r"
+    - "--repo"
+  parameters:
+  - name: repository
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: password_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "--password-command"
+  parameters:
+  - name: password_command
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: password_command
+extensions:
+  caushell.profile/source_research:
+  - https://restic.readthedocs.io/en/stable/manual_rest.html
+  - https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html
+  caushell.profile/known_limitations:
+  - GTFOBins password command string is retained as opaque command specification;
+    restic tokenizes it as executable plus arguments and this profile does not interpret
+    it as Bash.
+  - RESTIC_PASSWORD_COMMAND may supply the same command via inherited process environment;
+    no profile selector binds one named environment variable's value to this payload,
+    so that pathway is explicitly partial.
+  - Repository backends have distinct local/remote storage behavior. The remote selector
+    covers common URI schemes; other schemes and default repository sources are partial.
+  - Backup metadata and repository writes are derived; their paths remain unknown
+    even when source paths are known.
+  - 'Backend endpoint projection is partial: rest:http://... must strip rest: before
+    HTTP upload modeling, but the existing DSL does not project endpoint values. The
+    backend URI is retained as data and is not fabricated as an HTTP endpoint. No
+    endpoint/secret-upload coverage is claimed for this profile.'

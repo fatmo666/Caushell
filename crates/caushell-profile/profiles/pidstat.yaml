@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: pidstat, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: show_help
+    selector: {kind: any, items: [{kind: has_flag, flag: '-h'}, {kind: has_flag, flag: '--help'}]}
+  - id: execute_program
+    selector: {kind: has_modifier, modifier: execute}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}]
+  - id: monitor_process
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: execute}}, {kind: not, item: {kind: has_modifier, modifier: help}}]}
+    parameters: [{name: sampling_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+
+modifiers:
+  - {id: execute, matcher: {kind: any_flag, flags: ['-e']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: process, matcher: {kind: any_flag, flags: ['-p']}, parameters: [{name: monitored_process_ids, semantic: {kind: process_target, target_kind: pid, broad_match: false}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]}
+
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/unstable/sysstat/pidstat.1.en.html
+    - https://gtfobins.org/gtfobins/pidstat/
+  caushell.profile/known_limitations:
+    - -e begins the monitored program argv; dash-prefixed tokens after it belong to that child and are not pidstat options. pidstat's other sampling and report options remain outside this command-execution form.

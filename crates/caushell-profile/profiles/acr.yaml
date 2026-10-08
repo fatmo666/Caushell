@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: acr, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+forms:
+  - id: recovery_mode_source
+    selector: {kind: has_modifier, modifier: recovery}
+    parameters:
+      - name: recovery_file
+        semantic: {kind: plain_value}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+        structured_projection:
+          branches: []
+          fallback: {name: recovery_payload, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}
+    effects:
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: recovery_file, projection: {kind: identity}}], missing: unknown, purpose: script_source}}
+      - {kind: execute_payload, target: {kind: slot, name: recovery_payload}}
+modifiers:
+  - {id: recovery, matcher: {kind: any_flag, flags: ['-r']}}
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/testing/acr/acr.1.en.html
+    - https://gtfobins.org/gtfobins/acr/
+  caushell.profile/known_limitations:
+    - acr -r is ACR recovery mode and is associated with acr-cat processing of configure.acr source; exact dispatch and source resolution for the pinned GTFOBins recipe are not represented as a normal shell child because the DSL lacks that program-specific recovery callback.
+    - The recipe's generated file and relative path are preserved as the named source operand. Whether recovery mode accepts that file in the installed ACR version is version dependent and must not be generalized from the command name alone.

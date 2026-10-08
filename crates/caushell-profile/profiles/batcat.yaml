@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: batcat, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: plain_output
+    selector: {kind: any, items: [{kind: has_flag, flag: '-P'}, {kind: has_modifier_parameter_matching, modifier: paging_mode, parameter: paging_when, matcher: {kind: literal, value: 'never'}}]}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+  - id: display_files_with_pager
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: '-P'}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: paging_mode, parameter: paging_when, matcher: {kind: literal, value: 'never'}}}]}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}, {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+modifiers:
+  - id: paging_never_short
+    matcher: {kind: any_flag, flags: ['-P']}
+  - id: paging_mode
+    matcher: {kind: any_flag, flags: ['--paging']}
+    parameters: [{name: paging_when, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/batcat (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/testing/bat/batcat.1.en.html"]
+  caushell.profile/known_limitations: ["GTFOBins inherits less's pager escape with --paging always; pager binary/configuration, BAT_PAGER, PAGER, TTY presence and whether output fits the screen are runtime-dependent.", "Explicit --paging never and -P are modeled as ordinary input-dependent stdout with no interactive escape. Unrecognized pager overrides stay opaque."]

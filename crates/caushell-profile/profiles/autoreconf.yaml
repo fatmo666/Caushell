@@ -1,0 +1,81 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: autoreconf
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: configure_tool_callback
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: no_positional_args
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--help"
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--version"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: read_path
+    target:
+      kind: tool_convention_path
+      path: configure.ac
+      convention: autoconf.input
+      purpose: generic_operand
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources: []
+      environment:
+        name: AUTOM4TE
+      missing: unknown
+      purpose: tool_config
+  - kind: execute_config_defined_task
+    target:
+      kind: none
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/autoreconf/
+  caushell.profile/known_limitations:
+  - The pinned recipe selects AUTOM4TE through the environment and also requires configure.ac.
+    The executable is an environment reference; generated configure-tool argv and
+    repeated autoreconf calls are not known.
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+  ends_option_scope: true

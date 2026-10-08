@@ -1,0 +1,171 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity:
+  canonical_name: pdftex
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: typeset_source
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - &1
+        kind: has_positional_at_matching
+        index: 0
+        matcher:
+          kind: regex_pattern
+          pattern: "^\\\\"
+      - kind: not
+        item: &2
+          kind: has_modifier
+          modifier: shell_escape
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - &3
+    name: source
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: source
+  - kind: write_path
+    target:
+      kind: none
+- id: shell_escape_source
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - *1
+      - *2
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - *3
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: source
+  - kind: write_path
+    target:
+      kind: none
+- id: typeset_file
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: has_positional_at
+        index: 0
+      - kind: not
+        item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: source
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: source_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: source_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: source
+  - kind: write_path
+    target:
+      kind: none
+modifiers:
+- id: shell_escape
+  matcher:
+    kind: any_flag
+    flags:
+    - "-shell-escape"
+    - "--shell-escape"
+  parameters: []
+- id: no_shell_escape
+  matcher:
+    kind: any_flag
+    flags:
+    - "-no-shell-escape"
+    - "--no-shell-escape"
+  parameters: []
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-help"
+    - "--version"
+    - "-version"
+  parameters: []
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://tug.org/texlive/doc/texlive-en/texlive-en.html
+  - https://gtfobins.org/gtfobins/pdftex/
+  caushell.profile/known_limitations:
+  - Native TeX/Lua source is opaque, not Bash. CLI file inputs are read paths; inline
+    source and file-controlled I/O stay opaque. Shell escape is not projected as a
+    fixed shell child. Engine-generated output paths are unknown writes.

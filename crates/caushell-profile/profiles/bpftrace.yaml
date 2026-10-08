@@ -1,0 +1,246 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: bpftrace
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+- id: inline_bpf_program
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: eval
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: child_command
+  parameters:
+  - name: program
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-e"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: program
+- id: bpf_program_with_child_command
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: child_command
+    - kind: has_modifier
+      modifier: eval
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+    - kind: has_modifier_parameter_matching
+      modifier: child_command
+      parameter: child_command_text
+      matcher:
+        kind: regex_pattern
+        pattern: "^\\S+$"
+  parameters:
+  - name: child_command_payload
+    semantic:
+      kind: command_ref
+      dispatch: wrapper_command
+    binding:
+      kind: following_flag
+      flag: "-c"
+      operand_mode: next_arg
+    cardinality: required_one
+  - name: program
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-e"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: program
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: child_command_payload
+      argv: []
+      stdin_from_parent: true
+      stdout_to_parent: true
+- id: bpf_program_with_multitoken_child
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: child_command
+    - kind: has_modifier
+      modifier: eval
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+    - kind: not
+      item:
+        kind: has_modifier_parameter_matching
+        modifier: child_command
+        parameter: child_command_text
+        matcher:
+          kind: regex_pattern
+          pattern: "^\\S+$"
+  parameters:
+  - name: program
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-e"
+      operand_mode: next_arg
+    cardinality: required_one
+  - name: child_command_opaque
+    semantic:
+      kind: payload
+      language: opaque
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-c"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: program
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: child_command_opaque
+- id: bpf_program_file
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: program_file
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: program_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: program_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: program_file
+modifiers:
+- id: eval
+  matcher:
+    kind: any_flag
+    flags:
+    - "-e"
+  parameters:
+  - name: program_text
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: unsafe
+  matcher:
+    kind: any_flag
+    flags:
+    - "--unsafe"
+- id: child_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "-c"
+  parameters:
+  - name: child_command_text
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-h"
+    - "--version"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/bpftrace (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://github.com/bpftrace/bpftrace/blob/master/man/adoc/bpftrace.adoc
+  - https://github.com/bpftrace/bpftrace/blob/master/src/main.cpp
+  - https://github.com/bpftrace/bpftrace/blob/master/src/util/proc.cpp
+  caushell.profile/known_limitations:
+  - bpftrace source is BPF language and remains opaque; it is never parsed as Bash.
+    --unsafe gates native BPF helper behavior such as system(), whose inner command
+    and effects are not inferred.
+  - "-c/--command launches a distinct native child command with its own privileges.
+    Native code splits the command string on literal spaces (not POSIX shell quoting);
+    only the GTFOBins single-token /bin/sh operand is fully represented here."
+  - Probe attachment and BPF program execution are not simulated by profile tests.

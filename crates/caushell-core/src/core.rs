@@ -16,9 +16,9 @@ use caushell_passes::{
     ExtractVariableBindingsPass, GitDestructiveOperationGuardPass,
     ImportedPackageExecutionGuardPass, InteractiveEscapeGuardPass,
     OutsideWorkspaceMutationGuardPass, OutsideWorkspaceScriptSourcePass,
-    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProjectTopLevelCommandsPass,
-    ResolveInvocationPass, ResolvePolicyPass, SensitiveDataExfiltrationGuardPass,
-    SequenceIntegrityPass, TaintedExecutionGuardPass,
+    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProcessControlGuardPass,
+    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
+    SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
 use caushell_profile::{BuiltInRegistryError, ProfileRegistry};
 use caushell_query::{
@@ -453,8 +453,8 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_request_transform_pass(ParseCommandPass);
     runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
     runner.register_session_transform_pass(ExtractAliasBindingsPass);
-    runner.register_session_transform_pass(ExtractFunctionBindingsPass);
     runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+    runner.register_session_transform_pass(ExtractFunctionBindingsPass);
     runner.register_session_transform_pass(ComputeEffectiveCwdPass);
     runner.register_session_transform_pass(ExtractCurrentWorkingDirectoryPass);
     runner.register_session_transform_pass(ExtractPipelineFlowPass);
@@ -465,10 +465,12 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
     runner.register_session_transform_pass(ExtractRedirectProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingsPass);
-    runner.register_session_transform_pass(ExtractValueProvenancePass);
     runner.register_session_transform_pass(ExtractEndpointProvenancePass);
     runner.register_session_transform_pass(ExtractCommandSubstitutionProvenancePass);
     runner.register_session_transform_pass(ExtractProcessSubstitutionProvenancePass);
+    // Unknown-input fallback must see the explicit sources supplied by both
+    // ordinary redirections and process-substitution provenance producers.
+    runner.register_session_transform_pass(ExtractValueProvenancePass);
     runner.register_session_transform_pass(ExtractPipelineStreamProvenancePass);
     runner.register_request_analysis_pass(ResolvePolicyPass);
     runner.register_request_analysis_pass(CwdWorkspaceBoundaryPass);
@@ -477,6 +479,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(DatabaseOperationGuardPass);
+    runner.register_session_analysis_pass(ProcessControlGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
     runner.register_session_analysis_pass(caushell_passes::NetworkListenerGuardPass);
     runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);
@@ -3738,7 +3741,12 @@ policy:
         );
         let binding_node = session
             .graph()
-            .get_node(&NodeId::new("function-binding:deploy:1"))
+            .nodes()
+            .find(|node| {
+                matches!(&node.kind,
+                NodeKind::FunctionBinding {name, body_repr, version}
+                if name == "deploy" && body_repr == "bash ./scripts/build.sh;" && *version == 1)
+            })
             .expect("expected function binding graph node");
         match &binding_node.kind {
             NodeKind::FunctionBinding {
@@ -3770,6 +3778,314 @@ policy:
             response.decision_trace.execution_semantics[0].form_id,
             "script_file"
         );
+    }
+
+    #[test]
+    fn core_commits_function_removal_and_redefinition_in_one_action() {
+        let mut core = ShellQueryCore::new();
+        let session_id = SessionId::new("sess-function-redefine");
+        let first = core
+            .try_check_with_outcome(sample_request(
+                &session_id.0,
+                1,
+                "f() { exit; }; unset -f f; f() { printf LAB; }; f; target=cache/file",
+            ))
+            .expect("actual commit must not collide");
+        assert_eq!(first.response.decision, Decision::Allow);
+        let snapshot = core.session_snapshot(&session_id, 1).unwrap();
+        assert_eq!(
+            snapshot.summary.function_binding("f").unwrap().body,
+            "printf LAB;"
+        );
+        assert_eq!(
+            snapshot
+                .graph
+                .nodes
+                .iter()
+                .filter(|n| matches!(
+                    &n.kind,
+                    caushell_types::SessionGraphNodeKindSnapshot::FunctionBinding { .. }
+                ))
+                .count(),
+            2
+        );
+        let next = core
+            .try_check_with_outcome(sample_request(&session_id.0, 2, "f"))
+            .unwrap();
+        assert_eq!(next.response.decision, Decision::Allow);
+        assert!(
+            next.response
+                .decision_trace
+                .derived_invocations
+                .iter()
+                .any(|d| d.raw_text == "printf LAB")
+        );
+    }
+
+    #[test]
+    fn core_runtime_function_snapshot_and_redefinition_can_share_action_sequence() {
+        let mut core = ShellQueryCore::new();
+        let session_id = SessionId::new("sess-function-snapshot-redefine");
+        let mut request = sample_request(&session_id.0, 1, "f() { printf new; }; f");
+        request.shell_state_before = request
+            .shell_state_before
+            .clone()
+            .with_function("f", "printf old;")
+            .with_function_knowledge(caushell_types::ShellStateKnowledge::Complete);
+        let outcome = core
+            .try_check_with_outcome(request)
+            .expect("a runtime snapshot must not conflict with the explicit definition");
+        assert_eq!(outcome.response.decision, Decision::Allow);
+        assert!(
+            outcome
+                .response
+                .decision_trace
+                .derived_invocations
+                .iter()
+                .any(|d| d.raw_text == "printf new")
+        );
+        let snapshot = core.session_snapshot(&session_id, 1).unwrap();
+        assert_eq!(
+            snapshot.summary.function_binding("f").unwrap().body,
+            "printf new;"
+        );
+        assert_eq!(
+            snapshot
+                .graph
+                .nodes
+                .iter()
+                .filter(|n| matches!(
+                    &n.kind,
+                    caushell_types::SessionGraphNodeKindSnapshot::FunctionBinding { .. }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn core_identical_function_redefinitions_commit_idempotently() {
+        let mut core = ShellQueryCore::new();
+        let session_id = SessionId::new("sess-function-identical");
+        let outcome = core
+            .try_check_with_outcome(sample_request(
+                &session_id.0,
+                1,
+                "f() { printf LAB; }; f() { printf LAB; }; f",
+            ))
+            .unwrap();
+        assert_eq!(outcome.response.decision, Decision::Allow);
+        let snapshot = core.session_snapshot(&session_id, 1).unwrap();
+        assert_eq!(
+            snapshot
+                .graph
+                .nodes
+                .iter()
+                .filter(|n| matches!(
+                    &n.kind,
+                    caushell_types::SessionGraphNodeKindSnapshot::FunctionBinding { .. }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn core_state_staging_restores_identical_function_after_removal() {
+        let mut core = ShellQueryCore::new();
+        let session = SessionId::new("sess-function-identical-restored");
+        let first = core
+            .try_check_with_outcome(sample_request(
+                &session.0,
+                1,
+                "f() { printf SAME; }; unset -f f; f() { printf SAME; }; f",
+            ))
+            .unwrap();
+        assert_eq!(first.response.decision, Decision::Allow);
+        let snapshot = core.session_snapshot(&session, 1).unwrap();
+        assert_eq!(
+            snapshot.summary.function_binding("f").unwrap().body,
+            "printf SAME;"
+        );
+        assert_eq!(
+            snapshot
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| matches!(
+                    &node.kind,
+                    caushell_types::SessionGraphNodeKindSnapshot::FunctionBinding { .. }
+                ))
+                .count(),
+            1
+        );
+        let next = core
+            .try_check_with_outcome(sample_request(&session.0, 2, "f"))
+            .unwrap();
+        assert!(
+            next.response
+                .decision_trace
+                .derived_invocations
+                .iter()
+                .any(|d| d.raw_text == "printf SAME")
+        );
+    }
+
+    #[test]
+    fn core_state_staging_preserves_repeated_function_removals() {
+        let mut core = ShellQueryCore::new();
+        let session = SessionId::new("sess-function-repeated-removal");
+        let first = core
+            .try_check_with_outcome(sample_request(
+                &session.0,
+                1,
+                "f() { printf FIRST; }; unset -f f; f() { printf SECOND; }; unset -f f",
+            ))
+            .unwrap();
+        assert_eq!(first.response.decision, Decision::Allow);
+        assert!(
+            core.session_snapshot(&session, 1)
+                .unwrap()
+                .summary
+                .function_binding("f")
+                .is_none()
+        );
+        let next = core
+            .try_check_with_outcome(sample_request(&session.0, 2, "f"))
+            .unwrap();
+        assert!(next.response.decision_trace.derived_invocations.is_empty());
+    }
+
+    #[test]
+    fn core_state_staging_restores_identical_alias_after_removal() {
+        let mut core = ShellQueryCore::new();
+        let session = SessionId::new("sess-alias-identical-restored");
+        let first = core
+            .try_check_with_outcome(sample_request(
+                &session.0,
+                1,
+                "alias a='printf SAME'; unalias a; alias a='printf SAME'",
+            ))
+            .unwrap();
+        assert_eq!(first.response.decision, Decision::Allow);
+        assert_eq!(
+            core.session_snapshot(&session, 1)
+                .unwrap()
+                .summary
+                .alias_binding("a")
+                .unwrap()
+                .body,
+            "printf SAME"
+        );
+        let next = core
+            .try_check_with_outcome(sample_request(&session.0, 2, "a"))
+            .unwrap();
+        assert!(
+            next.response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|s| s.normalized_command_name == "printf")
+        );
+    }
+
+    #[test]
+    fn core_state_staging_preserves_alias_operand_order() {
+        let mut core = ShellQueryCore::new();
+        let session = SessionId::new("sess-alias-operands");
+        let first = core
+            .try_check_with_outcome(sample_request(
+                &session.0,
+                1,
+                "alias a='printf FIRST' a='printf SECOND' a='printf FIRST'",
+            ))
+            .unwrap();
+        assert_eq!(first.response.decision, Decision::Allow);
+        assert_eq!(
+            core.session_snapshot(&session, 1)
+                .unwrap()
+                .summary
+                .alias_binding("a")
+                .unwrap()
+                .body,
+            "printf FIRST"
+        );
+        let next = core
+            .try_check_with_outcome(sample_request(&session.0, 2, "a"))
+            .unwrap();
+        assert!(
+            next.response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|s| s.normalized_command_name == "printf")
+        );
+    }
+
+    #[test]
+    fn core_state_staging_does_not_restore_removed_bindings_after_exit() {
+        for (name, command, is_function) in [
+            (
+                "f",
+                "f() { printf SAME; }; unset -f f; exit; f() { printf SAME; }",
+                true,
+            ),
+            (
+                "a",
+                "alias a='printf SAME'; unalias a; exit; alias a='printf SAME'",
+                false,
+            ),
+        ] {
+            let mut core = ShellQueryCore::new();
+            let session = SessionId::new(format!("sess-state-fenced-{name}"));
+            let first = core
+                .try_check_with_outcome(sample_request(&session.0, 1, command))
+                .unwrap();
+            assert_eq!(first.response.decision, Decision::Allow);
+            let snapshot = core.session_snapshot(&session, 1).unwrap();
+            if is_function {
+                assert!(snapshot.summary.function_binding(name).is_none());
+            } else {
+                assert!(snapshot.summary.alias_binding(name).is_none());
+            }
+            let next = core
+                .try_check_with_outcome(sample_request(&session.0, 2, name))
+                .unwrap();
+            assert!(next.response.decision_trace.derived_invocations.is_empty());
+            assert!(next.response.decision_trace.execution_semantics.is_empty());
+        }
+    }
+
+    #[test]
+    fn core_function_content_versions_preserve_existing_exit_fences() {
+        let mut core = ShellQueryCore::new();
+        let session_id = SessionId::new("sess-function-fenced");
+        let outcome = core
+            .try_check_with_outcome(sample_request(
+                &session_id.0,
+                1,
+                "f() { printf first; }; f() { exit; }; exit; f() { printf unreachable; }",
+            ))
+            .unwrap();
+        assert_eq!(outcome.response.decision, Decision::Allow);
+        let snapshot = core.session_snapshot(&session_id, 1).unwrap();
+        assert_eq!(
+            snapshot.summary.function_binding("f").unwrap().body,
+            "exit;"
+        );
+        let bodies = snapshot
+            .graph
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.kind {
+                caushell_types::SessionGraphNodeKindSnapshot::FunctionBinding {
+                    body_repr, ..
+                } => Some(body_repr.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies.contains(&"printf first;") && bodies.contains(&"exit;"));
     }
 
     #[test]

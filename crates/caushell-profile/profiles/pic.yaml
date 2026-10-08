@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity: {canonical_name: pic, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+forms:
+  - id: translate_picture_files
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: unsafe}}]}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+  - id: translate_picture_stdin
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: unsafe}}]}
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: false}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}]
+  - id: unsafe_picture_stdin
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unsafe}, {kind: no_positional_args}]}
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+  - id: unsafe_picture_files
+    selector: {kind: all, items: [{kind: has_modifier, modifier: unsafe}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: input_payloads, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: remaining_positionals}, cardinality: required_many, structured_projection: {branches: [], fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: execute_payload, target: {kind: slot, name: input_payloads}}
+modifiers:
+  - {id: unsafe, matcher: {kind: any_flag, flags: ['-U']}}
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/groff/manual/groff.html
+  caushell.profile/known_limitations:
+    - The shell recipe is interactive pic language input, not three sequential Bash commands. Preserve it as pic source on stdin, for example a quoted heredoc; this profile records that opaque stdin payload and does not interpret it as shell syntax.
+    - Only the -U unsafe form is modeled as executable opaque input. The pic language and generated roff are not parsed; named input files are content reads and their ordinary translated output may reveal text.

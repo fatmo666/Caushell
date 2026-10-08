@@ -1,5 +1,5 @@
 //! Declarative option ownership, independent of any particular command.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     ArgumentScope, BindingSpec, FlagName, FlagOperandMode, Form, Modifier, OptionMatchingPolicy,
@@ -8,6 +8,11 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedOptions {
+    /// Exact decoded argv words, rather than shell-lexical flag spellings.
+    pub exact_argv: bool,
+    /// Keep partial known child semantics, but never approve uncertain ownership.
+    pub ownership_unresolved: bool,
+    pub argument_regions: Vec<crate::BoundArgumentRegion>,
     pub scope: ArgumentScope,
     /// Actual option occurrences, excluding option operands and child argv.
     pub flags: Vec<(usize, FlagName)>,
@@ -126,6 +131,9 @@ pub(crate) fn scan_leading_options(
     permuted: bool,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
+        exact_argv: false,
+        ownership_unresolved: false,
+        argument_regions: Vec::new(),
         scope: ArgumentScope::new(scope.start_index, scope.start_index),
         flags: Vec::new(),
         terminator: None,
@@ -140,6 +148,12 @@ pub(crate) fn scan_leading_options(
         }
     };
     let mut index = scope.start_index;
+    let ends_scope: BTreeSet<_> = modifiers
+        .iter()
+        .filter(|m| m.ends_option_scope)
+        .flat_map(|m| m.matcher.flag_names())
+        .map(|flag| flag.as_str())
+        .collect();
     while index < scope.end_index {
         let token = projection.args[index].text.as_str();
         if prefixes.is_terminator(token) {
@@ -187,6 +201,9 @@ pub(crate) fn scan_leading_options(
                     break;
                 };
                 token_flags.push(FlagName::new(&name));
+                if ends_scope.contains(name.as_str()) && flag_mode.is_none() {
+                    break;
+                }
                 if flag_mode.is_some() {
                     mode = *flag_mode;
                     inline = offset + ch.len_utf8() < token.len() - 1;
@@ -253,6 +270,9 @@ pub(crate) fn scan_leading_options(
                 _ => 0,
             }
         };
+        let ends = token_flags
+            .iter()
+            .any(|flag| ends_scope.contains(flag.as_str()));
         result
             .flags
             .extend(token_flags.into_iter().map(|name| (index, name)));
@@ -263,6 +283,9 @@ pub(crate) fn scan_leading_options(
         }
         index += 1 + extra;
         result.scope.end_index = index;
+        if ends {
+            return result;
+        }
     }
     result
 }

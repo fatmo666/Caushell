@@ -607,6 +607,8 @@ extensions: {}
                 stdin_mode: crate::StreamInputMode::DataRequired,
                 stdout_mode: crate::StreamOutputMode::Data,
                 stderr_mode: crate::StreamOutputMode::Opaque,
+                stdout_dependency: caushell_types::StreamDataDependency::Unknown,
+                stderr_dependency: caushell_types::StreamDataDependency::Unknown,
             })
         );
     }
@@ -674,6 +676,8 @@ extensions: {}
                 stdin_mode: crate::StreamInputMode::DataOptional,
                 stdout_mode: crate::StreamOutputMode::Data,
                 stderr_mode: crate::StreamOutputMode::Opaque,
+                stdout_dependency: caushell_types::StreamDataDependency::Unknown,
+                stderr_dependency: caushell_types::StreamDataDependency::Unknown,
             })
         );
 
@@ -700,18 +704,32 @@ extensions: {}
             load_command_profile_from_path(&profile_path).expect("expected gzip profile to load");
 
         assert_eq!(profile.primary_name(), "gzip");
-        assert_eq!(profile.forms.len(), 1);
-        assert_eq!(profile.forms[0].id.as_str(), "default_file_mode");
+        let file_form = profile
+            .forms
+            .iter()
+            .find(|form| form.id.as_str() == "default_file_mode")
+            .expect("expected gzip file mode alongside its stream forms");
         assert_eq!(
-            profile.forms[0].parameters[0].binding,
+            file_form
+                .parameters
+                .iter()
+                .find(|p| p.name.as_str() == "input_paths")
+                .unwrap()
+                .binding,
             BindingSpec::RemainingPositionals
         );
-        assert_eq!(profile.forms[0].effects[0].kind, EffectKind::ReadPath);
-        assert_eq!(profile.forms[0].effects[1].kind, EffectKind::WritePath);
+        assert_eq!(file_form.effects[0].kind, EffectKind::ReadPath);
+        assert_eq!(file_form.effects[1].kind, EffectKind::WritePath);
         assert!(matches!(
-            profile.forms[0].effects[1].target,
+            file_form.effects[1].target,
             EffectTarget::DerivedPath(_)
         ));
+        assert!(
+            profile
+                .forms
+                .iter()
+                .any(|form| form.id.as_str() == "compress_stdout_stdin")
+        );
     }
 
     #[test]
@@ -853,6 +871,8 @@ extensions: {}
                 stdin_mode: crate::StreamInputMode::DataOptional,
                 stdout_mode: crate::StreamOutputMode::Data,
                 stderr_mode: crate::StreamOutputMode::Opaque,
+                stdout_dependency: caushell_types::StreamDataDependency::Unknown,
+                stderr_dependency: caushell_types::StreamDataDependency::Unknown,
             })
         );
     }

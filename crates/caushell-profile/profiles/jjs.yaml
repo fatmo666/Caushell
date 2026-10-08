@@ -1,0 +1,112 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: jjs
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: show_help
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_tail
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: interactive_repl
+  selector:
+    kind: all
+    items:
+    - kind: all
+      items:
+      - kind: no_arguments
+      - kind: not
+        item:
+          kind: has_flag
+          flag: "--help"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  implicit_inputs:
+  - source: interactive_session
+    semantic:
+      kind: payload
+      language: opaque
+      source: interactive
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: interactive_session
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: terminal_ui
+      requires_tty: true
+      capabilities:
+      - run_command
+- id: script_files
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: script_source
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: script_source
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "-help"
+    - "-v"
+    - "-version"
+    - "-fv"
+    - "--fullversion"
+  parameters: []
+  ends_option_scope: true
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://docs.oracle.com/javase/8/docs/technotes/tools/unix/jjs.html
+  - https://gtfobins.org/gtfobins/jjs/
+  caushell.profile/known_limitations:
+  - Nashorn JavaScript is opaque. Java interop and ProcessBuilder effects are present
+    in the pinned examples, but their runtime child argv and file paths stay within
+    opaque code and are not extracted.
+option_matching: exact_names

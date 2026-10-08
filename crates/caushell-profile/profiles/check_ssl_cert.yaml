@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: check_ssl_cert, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: custom_grep_helper
+    selector: {kind: all, items: [{kind: has_modifier, modifier: grep_binary}, {kind: has_modifier, modifier: server}]}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: server}}
+      - {kind: read_path, target: {kind: slot, name: grep_helper_path}}
+      - {kind: execute_payload, target: {kind: slot, name: grep_helper}}
+  - id: check_server
+    selector: {kind: all, items: [{kind: has_modifier, modifier: server}, {kind: not, item: {kind: has_modifier, modifier: grep_binary}}]}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: server}}]
+modifiers:
+  - id: grep_binary
+    matcher: {kind: any_flag, flags: [--grep-bin]}
+    parameters:
+      - {name: grep_helper, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: grep_helper_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+  - id: server
+    matcher: {kind: any_flag, flags: [-H, --host]}
+    parameters:
+      - {name: server, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/check_ssl_cert (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+    - https://github.com/matteocorti/check_ssl_cert
+    - https://manpages.debian.org/testing/monitoring-plugins-contrib/check_ssl_cert.1.en.html
+  caushell.profile/known_limitations:
+    - --grep-bin selects an executable file used for several grep operations; the file reference is retained as an opaque executable payload and read path. check_ssl_cert supplies native, dynamically generated arguments that are intentionally not fabricated as empty or user-controlled argv, so delegated-argument coverage remains partial.
+    - The selected helper's contents, interpreter fallback for an executable text file, TLS endpoint response, and callback timing are runtime-dependent.

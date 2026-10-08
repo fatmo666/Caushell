@@ -1,0 +1,40 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: arch-nspawn, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: show_help
+    selector: {kind: any, items: [{kind: has_flag, flag: '-h'}, {kind: has_flag, flag: '--help'}]}
+  - id: run_rootfs
+    selector: {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: working_root, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: root_config_code, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}}}
+    effects:
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: working_root, projection: {kind: identity}}], missing: unknown}}
+      - kind: read_path
+        target:
+          kind: configured_path
+          sources: []
+          default_value: etc/makepkg.conf
+          relative_to: {slot: working_root}
+          purpose: script_source
+      - {kind: execute_payload, target: {kind: slot, name: root_config_code}}
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: pacman_config, matcher: {kind: any_flag, flags: ['-C']}, parameters: [{name: pacman_config, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}], effects: [{kind: read_path, target: {kind: slot, name: pacman_config}}]}
+  - {id: makepkg_config, matcher: {kind: any_flag, flags: ['-M']}, parameters: [{name: makepkg_config, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: makepkg_config_path, semantic: {kind: path, role: read, purpose: script_source}}}}], effects: [{kind: read_path, target: {kind: slot, name: makepkg_config_path}}, {kind: execute_payload, target: {kind: slot, name: makepkg_config}}]}
+  - {id: no_setarch, matcher: {kind: any_flag, flags: ['-s']}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://man.archlinux.org/man/extra/devtools/arch-nspawn.1.en
+    - https://gtfobins.org/gtfobins/arch-nspawn/
+  caushell.profile/known_limitations:
+    - The rootfs /etc/makepkg.conf is modeled as a file read and opaque executable configuration payload. Its content is runtime data and is not parsed as Bash or projected into a fabricated child command.
+    - The wrapper's full systemd-nspawn argv construction and effects of arbitrary nspawn arguments are not modeled.

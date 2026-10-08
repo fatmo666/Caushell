@@ -1,0 +1,26 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pico, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: pico_spell_helper
+    selector: {kind: has_modifier, modifier: spell_checker}
+    parameters: [{name: file_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: spell_checker_path}}, {kind: execute_payload, target: {kind: slot, name: spell_checker}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command]}}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: pico_editor
+    selector: {kind: not, item: {kind: has_modifier, modifier: spell_checker}}
+    parameters: [{name: file_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: read_path, target: {kind: slot, name: file_paths}}, {kind: write_path, target: {kind: slot, name: file_paths}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell, write_buffer_to_path]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: spell_checker
+    matcher: {kind: any_flag, flags: ['-s']}
+    parameters: [{name: spell_checker, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: spell_checker_path, semantic: {kind: path, role: read, purpose: generic_operand}}}}]
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/pico (alias nano, GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://www.nano-editor.org/dist/latest/nano.html"]
+  caushell.profile/known_limitations: ["Pico and nano differ across installations and builds; the -s argument configures an opaque spell helper invoked only by native editor input (for the source, ^T).", "Prompt key sequences and spell-program arguments are not interpreted as caller shell syntax."]

@@ -1,0 +1,50 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: R, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: all, items: [{kind: has_modifier, modifier: information}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: script_file}}]}
+  - id: inline_code
+    selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: script_file}}]}
+    parameters: [{name: args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: script_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: script_file}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters:
+      - {name: args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: stdin_script
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: script_file}}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: stdin_payload_available}]}
+    implicit_inputs: [{source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}]
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}, {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}]
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_repl
+    selector: {kind: all, items: [{kind: no_arguments}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: code}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}]
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: code
+    matcher: {kind: any_flag, flags: ['-e']}
+    parameters: [{name: code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: code}}]
+  - {id: information, matcher: {kind: any_flag, flags: ['--version', '--help', '-v', '-h'],}, ends_option_scope: true}
+  - id: script_file
+    matcher: {kind: any_flag, flags: ['-f', '--file']}
+    parameters: [{name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}]
+    effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+  - {id: argv_boundary, matcher: {kind: any_flag, flags: ['--args']}, ends_option_scope: true}
+  - {id: switches, matcher: {kind: any_flag, flags: ['--no-save', '--no-restore', '--no-environ', '--no-site-file', '--no-init-file', '--no-readline', '--vanilla', '--slave', '--quiet', '--silent', '--interactive', '--verbose', '--debugger', '-q', '-s']}}
+extensions:
+  caushell.profile/source_research: [https://stat.ethz.ch/R-manual/R-devel/library/base/html/commandArgs.html]
+  caushell.profile/known_limitations:
+    - R expressions and scripts are opaque and never parsed as Bash; no R internal effects are inferred.
+    - Only the documented -f/--file input form is recognized as a script path; positional R arguments are not treated as files.
+    - -f FILE, --file FILE and --file=FILE retain actual file identity through the existing modifier operand binding.
+    - R's mutually exclusive -e and -f modes are not normalized into a valid form when both occur; --args ends option parsing so trailing user arguments stay data.
+    - R startup files and environment-driven initialization are not modeled.

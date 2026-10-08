@@ -154,8 +154,8 @@ fn output_redirections_keep_their_independent_workspace_scope() {
 #[test]
 fn using_lsof_pid_output_to_kill_is_not_downgraded_to_a_metadata_query() {
     // This Profile must retain the child's semantics/policy, not introduce a
-    // process-control risk rule. The current default core registers no such
-    // approval guard; that independent pre-existing gap is recorded privately.
+    // process-control risk rule. The separately restored generic guard must
+    // apply equally to a direct invocation and this metadata-reader pipeline.
     let existing_kill_decision = ShellQueryCore::new().check(request("kill 123")).decision;
     let (_, r) = check("lsof -t -i :8080 | xargs kill", existing_kill_decision);
     assert!(

@@ -22,6 +22,8 @@ pub enum ResolveGapKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnresolvedExecutionPayloadSubtype {
+    /// Profile-declared executable code outside the modeled shell languages.
+    OpaqueNonShell,
     StaticInlineLiteral,
     StaticHeredocLiteral,
     DynamicInlinePayload,
@@ -301,6 +303,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::TerminalSessionOperation => RuleAction::NeedApproval,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
+        RuleId::ProcessControl => RuleAction::NeedApproval,
         RuleId::DatabaseStateMutation
         | RuleId::DatabaseAdministration
         | RuleId::DatabaseOpaqueExecution => RuleAction::NeedApproval,
@@ -351,6 +354,7 @@ fn default_unresolved_execution_payload_subtype_action(
     subtype: UnresolvedExecutionPayloadSubtype,
 ) -> RuleAction {
     match subtype {
+        UnresolvedExecutionPayloadSubtype::OpaqueNonShell => RuleAction::NeedApproval,
         UnresolvedExecutionPayloadSubtype::StaticInlineLiteral => RuleAction::Observe,
         UnresolvedExecutionPayloadSubtype::StaticHeredocLiteral => RuleAction::Observe,
         UnresolvedExecutionPayloadSubtype::DynamicInlinePayload => RuleAction::NeedApproval,

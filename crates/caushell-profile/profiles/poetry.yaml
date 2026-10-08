@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: poetry, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version, -V]}}
+subcommands:
+  roots:
+    - name: run
+      forms:
+        - {id: run_help, selector: {kind: has_modifier, modifier: information}}
+        - id: run_command
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: run_target, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: run_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects: [{kind: dispatch_command, target: {kind: dispatch, command: run_target, argv: [run_args], stdin_from_parent: true, stdout_to_parent: true}}]
+        - id: run_no_command
+          selector: {kind: no_positional_args}
+      modifiers:
+        - {id: information, matcher: {kind: any_flag, flags: [--help, -h]}}
+      children: []
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/poetry (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://python-poetry.org/docs/cli/", "https://python-poetry.org/docs/basic-usage/"]
+  caushell.profile/known_limitations:
+    - poetry run dispatches the actual command name and forwards its arguments, including a child command passed after an option terminator; Python source is analyzed only when the child is separately resolved to the Python profile.
+    - Project discovery, virtual-environment selection, plugin hooks, and project scripts' Python implementations are not inferred. No script body is treated as Bash.

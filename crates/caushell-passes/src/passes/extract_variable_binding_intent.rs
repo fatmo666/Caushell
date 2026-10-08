@@ -1,4 +1,4 @@
-use caushell_profile::{BoundValue, EffectKind, EffectTarget, ResolveInvocationArtifactResult};
+use caushell_profile::{ResolveInvocationArtifactResult, runtime_variable_writes};
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::RuntimeInputSource;
 
@@ -24,47 +24,27 @@ impl SessionTransformPass for ExtractVariableBindingIntentPass {
 fn collect_variable_binding_intent_mutations(ctx: &RunnerContext) -> Vec<PendingMutation> {
     graph_backed_execution_resolve_records(ctx)
         .into_iter()
-        .filter_map(project_variable_binding_intent_mutation)
+        .flat_map(project_variable_binding_intent_mutations)
         .collect()
 }
 
-fn project_variable_binding_intent_mutation(
+fn project_variable_binding_intent_mutations(
     record: ExecutionResolveRecordRef<'_>,
-) -> Option<PendingMutation> {
+) -> Vec<PendingMutation> {
     let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
-        return None;
+        return Vec::new();
     };
 
-    let effect = resolved
-        .bound
-        .effects
-        .iter()
-        .find(|effect| effect.kind == EffectKind::BindVariableFromRuntimeInput)?;
-
-    let EffectTarget::Slot(slot_name) = &effect.target else {
-        return None;
-    };
-
-    let variable_name = resolved
-        .bound
-        .bound_parameters
-        .iter()
-        .find(|parameter| parameter.name == *slot_name)
-        .and_then(first_argument_text)?;
-
-    Some(PendingMutation::AddVariableBindingIntent {
-        source_node_id: record.source_node_id().clone(),
-        node_id: variable_binding_intent_node_id(record.source_node_id(), &variable_name),
-        variable_name,
-        runtime_input_source: runtime_input_source(&resolved.bound),
-    })
-}
-
-fn first_argument_text(parameter: &caushell_profile::BoundParameter) -> Option<String> {
-    parameter.values.iter().find_map(|value| match value {
-        BoundValue::Argument { text, .. } => Some(text.clone()),
-        BoundValue::ImplicitInput { .. } => None,
-    })
+    runtime_variable_writes(&resolved.bound)
+        .names
+        .into_iter()
+        .map(|variable_name| PendingMutation::AddVariableBindingIntent {
+            source_node_id: record.source_node_id().clone(),
+            node_id: variable_binding_intent_node_id(record.source_node_id(), &variable_name),
+            variable_name,
+            runtime_input_source: runtime_input_source(&resolved.bound),
+        })
+        .collect()
 }
 
 fn runtime_input_source(

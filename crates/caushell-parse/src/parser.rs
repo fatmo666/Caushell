@@ -1,4 +1,4 @@
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 use crate::{
     artifact::{
@@ -63,35 +63,48 @@ pub fn parse_command(
         .set_language(&language)
         .map_err(|error| ParseError::LanguageInit(error.to_string()))?;
 
-    let tree = parser
-        .parse(raw_command, None)
-        .ok_or(ParseError::ParseCancelled)?;
+    let tree = parse_with_descriptor_ownership(&mut parser, raw_command, &[])?;
     let source = raw_command.as_bytes();
-    let root = tree.root_node();
-    let artifact = artifact_from_tree(raw_command, shell_kind, root, source);
+    let root = tree.tree.root_node();
+    let artifact = artifact_from_tree(
+        raw_command,
+        shell_kind,
+        root,
+        source,
+        &tree.descriptors,
+        &tree.here_strings,
+    );
 
     if artifact.status == ParseStatus::Partial {
         if let Some(repair) = read_write_redirection_repair(raw_command, &artifact.diagnostics) {
-            let repaired_tree = parser
-                .parse(repair.as_str(), None)
-                .ok_or(ParseError::ParseCancelled)?;
-            let repaired_artifact =
-                artifact_from_tree(raw_command, shell_kind, repaired_tree.root_node(), source);
+            let repaired_tree = parse_with_descriptor_ownership(&mut parser, repair.as_str(), &[])?;
+            let repaired_artifact = artifact_from_tree(
+                raw_command,
+                shell_kind,
+                repaired_tree.tree.root_node(),
+                source,
+                &repaired_tree.descriptors,
+                &repaired_tree.here_strings,
+            );
             if repaired_artifact.status == ParseStatus::Complete {
                 return Ok(repaired_artifact);
             }
         }
 
         if let Some(repair) = static_brace_command_repair(raw_command) {
-            let repaired_tree = parser
-                .parse(repair.source.as_str(), None)
-                .ok_or(ParseError::ParseCancelled)?;
+            let repaired_tree = parse_with_descriptor_ownership(
+                &mut parser,
+                repair.source.as_str(),
+                &repair.commands,
+            )?;
             let repaired_source = repair.source.as_bytes();
             let mut repaired_artifact = artifact_from_tree(
                 raw_command,
                 shell_kind,
-                repaired_tree.root_node(),
+                repaired_tree.tree.root_node(),
                 repaired_source,
+                &repaired_tree.descriptors,
+                &repaired_tree.here_strings,
             );
 
             if repaired_artifact.status == ParseStatus::Complete
@@ -109,6 +122,157 @@ pub fn parse_command(
     Ok(artifact)
 }
 
+struct DescriptorProjection {
+    span: SourceSpan,
+    operator_byte: usize,
+}
+
+struct DescriptorTree {
+    tree: Tree,
+    descriptors: Vec<DescriptorProjection>,
+    here_strings: Vec<SourceSpan>,
+}
+
+fn malformed_here_string_prefix(node: Node<'_>, bytes: &[u8]) -> Option<SourceSpan> {
+    (node.kind() == "ERROR"
+        && source_text(node, bytes) == "<<"
+        && bytes.get(node.end_byte()) == Some(&b'<')
+        && bytes.get(node.end_byte() + 1) != Some(&b'<')
+        && node.parent().is_some_and(|parent| {
+            matches!(parent.kind(), "file_redirect" | "redirected_statement")
+        }))
+    .then(|| span_for(node))
+}
+
+/// The grammar sometimes puts an IO number in argv (notably `0<&2`) or fails
+/// on it (`000<file`, `0<<EOF`). Mask only AST-qualified, unquoted decimal IO
+/// numbers while parsing, then restore their original descriptor facts. Spaces
+/// preserve every byte/line coordinate; no surrogate source is ever executed.
+fn parse_with_descriptor_ownership(
+    parser: &mut Parser,
+    source: &str,
+    brace_expansions: &[StaticBraceCommand],
+) -> Result<DescriptorTree, ParseError> {
+    let tree = parser
+        .parse(source, None)
+        .ok_or(ParseError::ParseCancelled)?;
+    let bytes = source.as_bytes();
+    if !bytes.iter().any(|byte| matches!(byte, b'<' | b'>')) {
+        return Ok(DescriptorTree {
+            tree,
+            descriptors: Vec::new(),
+            here_strings: Vec::new(),
+        });
+    }
+    let mut repaired_source = None;
+    let mut descriptors = Vec::new();
+    let mut here_strings = Vec::new();
+    walk(tree.root_node(), &mut |node| {
+        // The grammar can split a here-string following another redirect
+        // into ERROR("<<") plus a file redirect("<"). Mask only this
+        // AST-qualified operator prefix; restore the original carrier below.
+        if let Some(prefix) = malformed_here_string_prefix(node, bytes) {
+            repaired_source.get_or_insert_with(|| bytes.to_vec())
+                [prefix.start_byte..prefix.end_byte]
+                .fill(b' ');
+            here_strings.push(prefix);
+        }
+        let numeric_word = node.kind() == "number" && !node.has_error()
+            && node.parent().is_some_and(|parent| {
+                matches!(parent.kind(), "command" | "command_name" | "declaration_command" | "unset_command" | "file_redirect")
+                    // An existing redirect destination is not a new IO number.
+                    && !(parent.kind() == "file_redirect"
+                        && parent.child_by_field_name("destination") == Some(node)
+                        && !(0..parent.child_count()).any(|index| child_at(parent, index).is_some_and(|child| {
+                            !child.is_named() && matches!(source_text(child, bytes).as_str(), "<&-" | ">&-")
+                        })))
+            });
+        let malformed_descriptor = matches!(
+            node.kind(),
+            "file_redirect" | "heredoc_redirect" | "herestring_redirect"
+        ) && node.has_error();
+        let misplaced_descriptor = node.kind() == "file_descriptor"
+            && node.parent().is_some_and(|parent| parent.kind() == "ERROR");
+        if !numeric_word && !malformed_descriptor && !misplaced_descriptor {
+            return;
+        }
+        let start = node.start_byte();
+        // Expansion-generated words are argv data, not new shell syntax:
+        // `{cat,0}<input` passes "0" to cat; it does not redirect FD 0.
+        if brace_expansions
+            .iter()
+            .any(|expansion| expansion.brace_start <= start && start < expansion.brace_end)
+        {
+            return;
+        }
+        let mut end = start;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == start || (numeric_word && end != node.end_byte()) {
+            return;
+        }
+        let mut next = end;
+        // Bash removes unquoted line continuations before recognizing words.
+        while bytes.get(next..next + 2) == Some(b"\\\n") {
+            next += 2;
+        }
+        if !matches!(bytes.get(next), Some(b'<' | b'>')) {
+            return;
+        }
+        let repaired = repaired_source.get_or_insert_with(|| bytes.to_vec());
+        repaired[start..end].fill(b' ');
+        let mut span = span_for(node);
+        span.end_byte = end;
+        span.end_row = span.start_row;
+        span.end_column = span.start_column + end - start;
+        descriptors.push(DescriptorProjection {
+            span,
+            operator_byte: next,
+        });
+    });
+    let mut tree = match repaired_source.as_deref() {
+        Some(repaired) => parser
+            .parse(repaired, None)
+            .ok_or(ParseError::ParseCancelled)?,
+        None => tree,
+    };
+    // Removing an erroneous IO number can expose this second grammar error.
+    // One bounded, error-only retry handles it without scanning raw strings
+    // or looping until arbitrary malformed input happens to parse.
+    if tree.root_node().has_error() {
+        let mut retry = false;
+        walk(tree.root_node(), &mut |node| {
+            if let Some(prefix) = malformed_here_string_prefix(node, bytes)
+                && !here_strings
+                    .iter()
+                    .any(|known| known.start_byte == prefix.start_byte)
+            {
+                repaired_source.get_or_insert_with(|| bytes.to_vec())
+                    [prefix.start_byte..prefix.end_byte]
+                    .fill(b' ');
+                here_strings.push(prefix);
+                retry = true;
+            }
+        });
+        if retry {
+            tree = parser
+                .parse(
+                    repaired_source.as_deref().expect("repair source exists"),
+                    None,
+                )
+                .ok_or(ParseError::ParseCancelled)?;
+        }
+    }
+    descriptors.sort_unstable_by_key(|descriptor| descriptor.operator_byte);
+    descriptors.dedup_by_key(|descriptor| descriptor.operator_byte);
+    Ok(DescriptorTree {
+        tree,
+        descriptors,
+        here_strings,
+    })
+}
+
 fn read_write_redirection_repair(
     raw_command: &str,
     diagnostics: &[ParseDiagnostic],
@@ -117,12 +281,18 @@ fn read_write_redirection_repair(
     let mut repaired = false;
     for diagnostic in diagnostics {
         let index = diagnostic.span.start_byte;
-        if diagnostic.kind == DiagnosticKind::ErrorNode
-            && diagnostic.text == ">"
-            && index > 0
-            && bytes.get(index - 1) == Some(&b'<')
-            && bytes.get(index) == Some(&b'>')
-        {
+        if diagnostic.kind != DiagnosticKind::ErrorNode {
+            continue;
+        }
+        let greater_than =
+            if diagnostic.text == ">" && index > 0 && bytes.get(index - 1..=index) == Some(b"<>") {
+                Some(index)
+            } else if diagnostic.text == "<" && bytes.get(index..index + 2) == Some(b"<>") {
+                Some(index + 1)
+            } else {
+                None
+            };
+        if let Some(index) = greater_than {
             bytes[index] = b' ';
             repaired = true;
         }
@@ -135,6 +305,8 @@ fn artifact_from_tree(
     shell_kind: ShellKind,
     root: Node<'_>,
     source: &[u8],
+    descriptors: &[DescriptorProjection],
+    here_strings: &[SourceSpan],
 ) -> ParsedCommandArtifact {
     let diagnostics = collect_diagnostics(root, source);
     let status = if root.has_error() || !diagnostics.is_empty() {
@@ -143,7 +315,7 @@ fn artifact_from_tree(
         ParseStatus::Complete
     };
 
-    ParsedCommandArtifact {
+    let mut artifact = ParsedCommandArtifact {
         raw_command: raw_command.to_string(),
         shell_kind,
         status,
@@ -154,6 +326,119 @@ fn artifact_from_tree(
         function_definitions: extract_function_definitions(root, source),
         redirections: extract_redirections(root, source),
         diagnostics,
+    };
+    for redirection in &mut artifact.redirections {
+        if redirection.kind != RedirectionKind::File || redirection.operator.as_deref() != Some("<")
+        {
+            continue;
+        }
+        if let Some(prefix) = here_strings
+            .iter()
+            .find(|prefix| prefix.end_byte == redirection.span.start_byte)
+        {
+            redirection.kind = RedirectionKind::HereString;
+            redirection.operator = Some("<<<".into());
+            redirection.content = redirection.target.take();
+            redirection.span.start_byte = prefix.start_byte;
+            redirection.span.start_row = prefix.start_row;
+            redirection.span.start_column = prefix.start_column;
+            redirection.text = String::from_utf8_lossy(
+                &source[redirection.span.start_byte..redirection.span.end_byte],
+            )
+            .into_owned();
+        }
+    }
+    restore_descriptor_ownership(&mut artifact, source, descriptors);
+    artifact
+}
+
+fn restore_descriptor_ownership(
+    artifact: &mut ParsedCommandArtifact,
+    source: &[u8],
+    descriptors: &[DescriptorProjection],
+) {
+    if descriptors.is_empty() {
+        return;
+    }
+    let descriptor_at = |byte| {
+        descriptors
+            .binary_search_by_key(&byte, |d| d.operator_byte)
+            .ok()
+            .map(|i| &descriptors[i])
+    };
+    let restore_start = |span: &mut SourceSpan| {
+        if let Some(descriptor) = descriptor_at(span.start_byte) {
+            span.start_byte = descriptor.span.start_byte;
+            span.start_row = descriptor.span.start_row;
+            span.start_column = descriptor.span.start_column;
+        }
+    };
+    for command in &mut artifact.commands {
+        restore_start(&mut command.span);
+        restore_start(&mut command.top_level_span);
+        for span in [
+            &mut command.pipeline_span,
+            &mut command.shell_scope_span,
+            &mut command.subshell_span,
+            &mut command.control_flow_span,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            restore_start(span);
+        }
+        command.text =
+            String::from_utf8_lossy(&source[command.span.start_byte..command.span.end_byte])
+                .into_owned();
+    }
+    for redirection in &mut artifact.redirections {
+        if let Some(descriptor) = descriptor_at(redirection.span.start_byte) {
+            redirection.file_descriptor = Some(
+                String::from_utf8_lossy(
+                    &source[descriptor.span.start_byte..descriptor.span.end_byte],
+                )
+                .into_owned(),
+            );
+            restore_start(&mut redirection.span);
+            redirection.text = String::from_utf8_lossy(
+                &source[redirection.span.start_byte..redirection.span.end_byte],
+            )
+            .into_owned();
+        }
+        restore_start(&mut redirection.top_level_span);
+        if let Some(span) = &mut redirection.parent_command_span {
+            restore_start(span);
+        }
+    }
+    for command in &mut artifact.declaration_commands {
+        restore_start(&mut command.span);
+        restore_start(&mut command.top_level_span);
+        if let Some(span) = &mut command.shell_scope_span {
+            restore_start(span);
+        }
+        command.text =
+            String::from_utf8_lossy(&source[command.span.start_byte..command.span.end_byte])
+                .into_owned();
+    }
+    for command in &mut artifact.unset_commands {
+        restore_start(&mut command.span);
+        restore_start(&mut command.top_level_span);
+        if let Some(span) = &mut command.shell_scope_span {
+            restore_start(span);
+        }
+        command.text =
+            String::from_utf8_lossy(&source[command.span.start_byte..command.span.end_byte])
+                .into_owned();
+    }
+    for command in &mut artifact.assignment_commands {
+        restore_start(&mut command.span);
+        restore_start(&mut command.top_level_span);
+        if let Some(span) = &mut command.shell_scope_span {
+            restore_start(span);
+        }
+        command.text =
+            String::from_utf8_lossy(&source[command.span.start_byte..command.span.end_byte])
+                .into_owned();
     }
 }
 
@@ -608,6 +893,8 @@ fn extract_test_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
         pipeline_span: pipeline.map(span_for),
         terminator: statement_terminator_for(node),
         guarded: is_guarded_command(node),
+        conditional_execution: conditionally_executed_in_shell(node),
+        shell_scope_span: enclosing_shell_scope(node),
         subshell_span: nearest_ancestor_span(node, &["subshell"]),
         control_flow_span: outermost_ancestor_span(
             node,
@@ -713,6 +1000,7 @@ fn parse_declaration_command(node: Node<'_>, source: &[u8]) -> DeclarationComman
     let mut options = Vec::new();
     let mut names = Vec::new();
     let mut assignments = Vec::new();
+    let mut options_open = true;
 
     for i in 0..node.child_count() {
         let Some(child) = child_at(node, i) else {
@@ -725,15 +1013,24 @@ fn parse_declaration_command(node: Node<'_>, source: &[u8]) -> DeclarationComman
             "export" => kind = Some(DeclarationCommandKind::Export),
             "readonly" => kind = Some(DeclarationCommandKind::Readonly),
             "local" => kind = Some(DeclarationCommandKind::Local),
-            "variable_name" => names.push(source_text(child, source)),
+            "variable_name" => {
+                options_open = false;
+                names.push(source_text(child, source));
+            }
             "variable_assignment" => {
+                options_open = false;
                 if let Some(assignment) = parse_variable_assignment(child, source) {
                     assignments.push(assignment);
                 }
             }
             _ => {
                 if let Some((text, _quoted)) = extract_token_text(child, source) {
-                    options.push(text);
+                    collect_state_builtin_argument(
+                        text,
+                        &mut options_open,
+                        &mut options,
+                        &mut names,
+                    );
                 }
             }
         }
@@ -741,6 +1038,8 @@ fn parse_declaration_command(node: Node<'_>, source: &[u8]) -> DeclarationComman
 
     DeclarationCommandFact {
         unconditional_current_shell: unconditional_current_shell(node),
+        shell_scope_span: enclosing_shell_scope(node),
+        conditional_execution: conditionally_executed_in_shell(node),
         kind: kind.expect("declaration_command should have a declaration keyword"),
         options,
         names,
@@ -777,6 +1076,8 @@ fn parse_assignment_command(node: Node<'_>, source: &[u8]) -> AssignmentCommandF
 
     AssignmentCommandFact {
         unconditional_current_shell: unconditional_current_shell(node),
+        shell_scope_span: enclosing_shell_scope(node),
+        conditional_execution: conditionally_executed_in_shell(node),
         assignments,
         text: source_text(node, source),
         top_level_span: top_level_command_span(node),
@@ -816,6 +1117,8 @@ fn extract_function_definitions(root: Node<'_>, source: &[u8]) -> Vec<FunctionDe
         };
 
         definitions.push(FunctionDefinitionFact {
+            shell_scope_span: enclosing_shell_scope(node),
+            conditional_execution: conditionally_executed_in_shell(node),
             name: source_text(name_node, source),
             body_text: function_body_text(body_node, source),
             text: source_text(node, source),
@@ -846,6 +1149,7 @@ fn function_body_text(body_node: Node<'_>, source: &[u8]) -> String {
 fn parse_unset_command(node: Node<'_>, source: &[u8]) -> UnsetCommandFact {
     let mut options = Vec::new();
     let mut names = Vec::new();
+    let mut options_open = true;
 
     for i in 0..node.child_count() {
         let Some(child) = child_at(node, i) else {
@@ -854,10 +1158,18 @@ fn parse_unset_command(node: Node<'_>, source: &[u8]) -> UnsetCommandFact {
 
         match child.kind() {
             "unset" => {}
-            "variable_name" => names.push(source_text(child, source)),
+            "variable_name" => {
+                options_open = false;
+                names.push(source_text(child, source));
+            }
             _ => {
                 if let Some((text, _quoted)) = extract_token_text(child, source) {
-                    options.push(text);
+                    collect_state_builtin_argument(
+                        text,
+                        &mut options_open,
+                        &mut options,
+                        &mut names,
+                    );
                 }
             }
         }
@@ -865,11 +1177,37 @@ fn parse_unset_command(node: Node<'_>, source: &[u8]) -> UnsetCommandFact {
 
     UnsetCommandFact {
         unconditional_current_shell: unconditional_current_shell(node),
+        shell_scope_span: enclosing_shell_scope(node),
+        conditional_execution: conditionally_executed_in_shell(node),
         options,
         names,
         text: source_text(node, source),
         top_level_span: top_level_command_span(node),
         span: span_for(node),
+    }
+}
+
+// Bash builtins stop option parsing at the first operand (or `--`). Keep
+// dynamic words in the options channel as unresolved syntax, never silently
+// turn an operand after that boundary into a modifier.
+fn collect_state_builtin_argument(
+    text: String,
+    options_open: &mut bool,
+    options: &mut Vec<String>,
+    names: &mut Vec<String>,
+) {
+    if *options_open && text == "--" {
+        options.push(text);
+        *options_open = false;
+    } else if *options_open && text.starts_with('-') && text.len() > 1 {
+        options.push(text);
+    } else if text.contains('$') || text.contains('`') || text.contains('\\') {
+        // The semantic decoder treats non-option syntax as unresolved.
+        options.push(text);
+        *options_open = false;
+    } else {
+        *options_open = false;
+        names.push(text);
     }
 }
 
@@ -950,6 +1288,8 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
         pipeline_span: pipeline.map(span_for),
         terminator: statement_terminator_for(node),
         guarded: is_guarded_command(node),
+        conditional_execution: conditionally_executed_in_shell(node),
+        shell_scope_span: enclosing_shell_scope(node),
         subshell_span: nearest_ancestor_span(node, &["subshell"]),
         control_flow_span: outermost_ancestor_span(
             node,
@@ -1064,6 +1404,47 @@ fn unconditional_current_shell(node: Node<'_>) -> bool {
     !is_guarded_command(node)
         && find_ancestor_kind(node, "pipeline").is_none()
         && statement_terminator_for(node) != Some(StatementTerminator::Background)
+}
+
+fn enclosing_shell_scope(mut node: Node<'_>) -> Option<SourceSpan> {
+    loop {
+        if statement_terminator_for(node) == Some(StatementTerminator::Background) {
+            return Some(span_for(top_level_statement_node(node)?));
+        }
+        let parent = node.parent()?;
+        if parent.kind() == "subshell" {
+            return Some(span_for(parent));
+        }
+        if parent.kind() == "pipeline" {
+            return Some(span_for(node));
+        }
+        node = parent;
+    }
+}
+
+fn conditionally_executed_in_shell(mut node: Node<'_>) -> bool {
+    while let Some(parent) = node.parent() {
+        if matches!(parent.kind(), "subshell" | "pipeline")
+            || statement_terminator_for(node) == Some(StatementTerminator::Background)
+        {
+            break;
+        }
+        if matches!(
+            parent.kind(),
+            "if_statement"
+                | "elif_clause"
+                | "while_statement"
+                | "for_statement"
+                | "c_style_for_statement"
+                | "case_statement"
+                | "case_item"
+                | "list"
+        ) {
+            return true;
+        }
+        node = parent;
+    }
+    false
 }
 
 fn is_guarded_command(mut node: Node<'_>) -> bool {

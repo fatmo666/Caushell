@@ -20,6 +20,7 @@ pub struct DispatchArgument {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchCommandCandidate {
+    pub module_runtime: Option<String>,
     pub dispatch_index: usize,
     pub command: DispatchArgument,
     pub argv: Vec<DispatchArgument>,
@@ -27,14 +28,17 @@ pub struct DispatchCommandCandidate {
     pub clear_environment: bool,
     pub unknown_environment: bool,
     pub unknown_environment_from: Vec<crate::EnvironmentValueSource>,
+    pub unknown_environment_names: Vec<String>,
     pub unset_environment: Vec<DispatchArgument>,
     pub execution_cwd_unknown: bool,
     pub stdin_from_parent: bool,
+    pub stdin_from_tool: bool,
     pub stdout_to_parent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedDispatchCommand {
+    pub module_runtime: Option<String>,
     pub dispatch_index: usize,
     pub command_slot: SlotName,
 }
@@ -79,6 +83,8 @@ impl DispatchCommandCandidate {
             pipeline_span: None,
             terminator: None,
             guarded: false,
+            conditional_execution: false,
+            shell_scope_span: None,
             subshell_span: None,
             control_flow_span: None,
             top_level_span: span_covering_dispatch(self),
@@ -121,7 +127,14 @@ pub fn collect_dispatch_command_projection(
             continue;
         };
 
-        if let crate::DispatchCommandSource::WhitespaceArgv(slot) = &target.command {
+        let encoded_source = match &target.command {
+            crate::DispatchCommandSource::WhitespaceArgv(slot) => Some((slot, None)),
+            crate::DispatchCommandSource::CommandString { slot, syntax } => {
+                Some((slot, Some(*syntax)))
+            }
+            _ => None,
+        };
+        if let Some((slot, syntax)) = encoded_source {
             // Each entry has a distinct identity, including unresolved entries.
             if let Some(parameter) = parameter_for_slot(invocation, slot) {
                 for value in parameter.semantic_values() {
@@ -137,14 +150,23 @@ pub fn collect_dispatch_command_projection(
                     };
                     let Some(crate::SemanticValueResolution::Known(text)) = resolution else {
                         unresolved.push(UnresolvedDispatchCommand {
+                            module_runtime: target.module_runtime.clone(),
                             dispatch_index: index,
                             command_slot: slot.clone(),
                         });
                         continue;
                     };
-                    let mut words = text.split_whitespace();
-                    let Some(executable) = words.next() else {
+                    let projected = if let Some(syntax) = syntax {
+                        crate::dispatch_string::project_command_string(&text, syntax)
+                    } else {
+                        let mut words = text.split_whitespace();
+                        words
+                            .next()
+                            .map(|command| (command.into(), words.map(str::to_string).collect()))
+                    };
+                    let Some((executable, words)) = projected else {
                         unresolved.push(UnresolvedDispatchCommand {
+                            module_runtime: target.module_runtime.clone(),
                             dispatch_index: index,
                             command_slot: slot.clone(),
                         });
@@ -153,16 +175,34 @@ pub fn collect_dispatch_command_projection(
                     let mut next_span = maximum_bound_source_span_end(invocation)
                         .saturating_add(1)
                         .saturating_add(index);
-                    let mut command = literal_dispatch_argument(executable, &mut next_span);
+                    let source = argument_from_semantic_value(slot, value, &mut next_span);
+                    let mut command = literal_dispatch_argument(&executable, &mut next_span);
                     command.slot = slot.clone();
-                    let argv = words
+                    // Keep original provenance in the parent slot; child argv
+                    // needs distinct synthetic coordinates for span-based
+                    // shell payload ownership (-c is not its own operand).
+                    if syntax.is_some() {
+                        command.binding_source = source.binding_source.clone();
+                    }
+                    let mut argv: Vec<_> = words
+                        .iter()
                         .map(|word| {
                             let mut argument = literal_dispatch_argument(word, &mut next_span);
                             argument.slot = slot.clone();
+                            if syntax.is_some() {
+                                argument.binding_source = source.binding_source.clone();
+                            }
                             argument
                         })
                         .collect();
+                    argv.extend(
+                        target
+                            .argv_suffix
+                            .iter()
+                            .map(|word| literal_dispatch_argument(word, &mut next_span)),
+                    );
                     resolved.push(DispatchCommandCandidate {
+                        module_runtime: target.module_runtime.clone(),
                         dispatch_index: index,
                         command,
                         argv,
@@ -170,7 +210,8 @@ pub fn collect_dispatch_command_projection(
                             invocation,
                             &target.environment,
                             &mut next_span,
-                        ),
+                        )
+                        .values,
                         clear_environment: target
                             .clear_environment_when
                             .iter()
@@ -180,13 +221,11 @@ pub fn collect_dispatch_command_projection(
                             .iter()
                             .any(|m| invocation.applied_modifiers.contains(m)),
                         unknown_environment_from: target.unknown_environment_from.clone(),
-                        unset_environment: arguments_for_slots(
-                            invocation,
-                            &target.unset_environment,
-                            &mut next_span,
-                        ),
+                        unknown_environment_names: target.unknown_environment_names.clone(),
+                        unset_environment: environment_removals(invocation, target, &mut next_span),
                         execution_cwd_unknown: false,
                         stdin_from_parent: target.stdin_from_parent,
+                        stdin_from_tool: target.stdin_from_tool,
                         stdout_to_parent: target.stdout_to_parent,
                     });
                 }
@@ -210,6 +249,7 @@ pub fn collect_dispatch_command_projection(
                 };
                 let Some(command) = single_argument_for_parameter(slot, parameter) else {
                     unresolved.push(UnresolvedDispatchCommand {
+                        module_runtime: target.module_runtime.clone(),
                         dispatch_index: current_dispatch_index,
                         command_slot: slot.clone(),
                     });
@@ -217,20 +257,35 @@ pub fn collect_dispatch_command_projection(
                 };
                 command
             }
-            crate::DispatchCommandSource::WhitespaceArgv(_) => unreachable!("handled above"),
+            crate::DispatchCommandSource::WhitespaceArgv(_)
+            | crate::DispatchCommandSource::CommandString { .. } => unreachable!("handled above"),
         };
         let mut argv: Vec<_> = target
             .argv_prefix
             .iter()
             .map(|text| literal_dispatch_argument(text, &mut next_synthetic_span_byte))
             .collect();
-        argv.extend(arguments_for_slots(
-            invocation,
-            &target.argv,
-            &mut next_synthetic_span_byte,
-        ));
+        let projected_argv =
+            arguments_for_slots(invocation, &target.argv, &mut next_synthetic_span_byte);
+        // Retain the known child/effects, but do not treat unknown decoded argv
+        // (including potential options) as a completely resolved invocation.
+        if let Some(slot) = projected_argv.unresolved_slot {
+            unresolved.push(UnresolvedDispatchCommand {
+                module_runtime: target.module_runtime.clone(),
+                dispatch_index: current_dispatch_index,
+                command_slot: slot,
+            });
+        }
+        argv.extend(projected_argv.values);
+        argv.extend(
+            target
+                .argv_suffix
+                .iter()
+                .map(|text| literal_dispatch_argument(text, &mut next_synthetic_span_byte)),
+        );
 
         resolved.push(DispatchCommandCandidate {
+            module_runtime: target.module_runtime.clone(),
             dispatch_index: current_dispatch_index,
             command,
             argv,
@@ -238,7 +293,8 @@ pub fn collect_dispatch_command_projection(
                 invocation,
                 &target.environment,
                 &mut next_synthetic_span_byte,
-            ),
+            )
+            .values,
             execution_cwd_unknown: false,
             clear_environment: target
                 .clear_environment_when
@@ -249,12 +305,14 @@ pub fn collect_dispatch_command_projection(
                 .iter()
                 .any(|modifier| invocation.applied_modifiers.contains(modifier)),
             unknown_environment_from: target.unknown_environment_from.clone(),
-            unset_environment: arguments_for_slots(
+            unknown_environment_names: target.unknown_environment_names.clone(),
+            unset_environment: environment_removals(
                 invocation,
-                &target.unset_environment,
+                target,
                 &mut next_synthetic_span_byte,
             ),
             stdin_from_parent: target.stdin_from_parent,
+            stdin_from_tool: target.stdin_from_tool,
             stdout_to_parent: target.stdout_to_parent,
         });
     }
@@ -263,6 +321,25 @@ pub fn collect_dispatch_command_projection(
         resolved,
         unresolved,
     }
+}
+
+fn environment_removals(
+    invocation: &BoundInvocation,
+    target: &crate::DispatchTarget,
+    next_byte: &mut usize,
+) -> Vec<DispatchArgument> {
+    let mut removals = arguments_for_slots(invocation, &target.unset_environment, next_byte).values;
+    for unset in &target.unset_environment_when {
+        if invocation.applied_modifiers.contains(&unset.modifier) {
+            removals.extend(
+                unset
+                    .names
+                    .iter()
+                    .map(|name| literal_dispatch_argument(name, next_byte)),
+            );
+        }
+    }
+    removals
 }
 
 fn literal_dispatch_argument(text: &str, next_byte: &mut usize) -> DispatchArgument {
@@ -292,34 +369,91 @@ fn single_argument_for_parameter(
     slot: &SlotName,
     parameter: &BoundParameter,
 ) -> Option<DispatchArgument> {
-    if parameter.values.len() != 1 {
+    let mut values = parameter.semantic_values();
+    let value = values.next()?;
+    if values.next().is_some() {
         return None;
     }
+    if let crate::SemanticValueRef::Projected { value, .. } = value {
+        match &value.resolution {
+            crate::SemanticValueResolution::Known(text) if !text.is_empty() => {}
+            _ => return None,
+        }
+    }
 
-    argument_from_bound_value(slot, &parameter.values[0], &mut 1)
+    Some(argument_from_semantic_value(slot, value, &mut 1))
+}
+
+#[derive(Default)]
+struct DispatchArguments {
+    values: Vec<DispatchArgument>,
+    unresolved_slot: Option<SlotName>,
 }
 
 fn arguments_for_slots(
     invocation: &BoundInvocation,
     slots: &[SlotName],
     next_synthetic_span_byte: &mut usize,
-) -> Vec<DispatchArgument> {
-    let mut arguments = Vec::new();
+) -> DispatchArguments {
+    let mut arguments = DispatchArguments::default();
 
     for slot in slots {
         let Some(parameter) = parameter_for_slot(invocation, slot) else {
             continue;
         };
 
-        for value in &parameter.values {
-            if let Some(argument) = argument_from_bound_value(slot, value, next_synthetic_span_byte)
+        for value in parameter.semantic_values() {
+            if arguments.unresolved_slot.is_none()
+                && matches!(value, crate::SemanticValueRef::Projected {value, ..} if matches!(value.resolution, crate::SemanticValueResolution::Unknown(_)))
             {
-                arguments.push(argument);
+                arguments.unresolved_slot = Some(slot.clone());
             }
+            arguments.values.push(argument_from_semantic_value(
+                slot,
+                value,
+                next_synthetic_span_byte,
+            ));
         }
     }
 
     arguments
+}
+
+fn argument_from_semantic_value(
+    slot: &SlotName,
+    value: crate::SemanticValueRef<'_>,
+    next_synthetic_span_byte: &mut usize,
+) -> DispatchArgument {
+    let (source, projected) = match value {
+        crate::SemanticValueRef::Original(source) => (source, None),
+        crate::SemanticValueRef::Projected { source, value } => (source, Some(&value.resolution)),
+    };
+    let text_override = projected.map(|resolution| match resolution {
+        crate::SemanticValueResolution::Known(text) => text.as_str(),
+        crate::SemanticValueResolution::Unknown(_) => "",
+    });
+    let mut argument =
+        argument_from_bound_value(slot, source, next_synthetic_span_byte, text_override);
+    match projected {
+        None => {} // Legacy argv materialization/provenance remains unchanged.
+        Some(crate::SemanticValueResolution::Known(_)) => {
+            argument.runtime_data = true;
+            argument.implicit_input_source = None;
+            argument.runtime_argument_domain = None;
+        }
+        Some(crate::SemanticValueResolution::Unknown(_)) => {
+            argument.text.clear();
+            argument.runtime_data = false;
+            // The tool-decoded value is unknown; the source operand's text or
+            // path domain is not a valid substitute for the projected value.
+            argument
+                .implicit_input_source
+                .get_or_insert(caushell_types::ImplicitInputSource::DispatchOutput);
+            argument.runtime_argument_domain =
+                Some(caushell_types::RuntimeArgumentDomain::Unbounded);
+        }
+    }
+    argument
 }
 
 fn parameter_for_slot<'a>(
@@ -336,7 +470,8 @@ fn argument_from_bound_value(
     slot: &SlotName,
     value: &BoundValue,
     next_synthetic_span_byte: &mut usize,
-) -> Option<DispatchArgument> {
+    text_override: Option<&str>,
+) -> DispatchArgument {
     match value {
         BoundValue::Argument {
             text,
@@ -345,9 +480,9 @@ fn argument_from_bound_value(
             span,
             binding_source,
             materialization,
-        } => Some(DispatchArgument {
+        } => DispatchArgument {
             slot: slot.clone(),
-            text: text.clone(),
+            text: text_override.unwrap_or(text).to_string(),
             implicit_input_source: None,
             runtime_argument_domain: None,
             runtime_data: !matches!(materialization, BoundArgumentMaterialization::Literal),
@@ -355,8 +490,8 @@ fn argument_from_bound_value(
             node_kind: node_kind.clone(),
             span: span.clone(),
             binding_source: binding_source.clone(),
-        }),
-        BoundValue::ImplicitInput { source, domain } => Some(DispatchArgument {
+        },
+        BoundValue::ImplicitInput { source, domain } => DispatchArgument {
             span: {
                 let start_byte = *next_synthetic_span_byte;
                 *next_synthetic_span_byte = next_synthetic_span_byte.saturating_add(1);
@@ -370,14 +505,14 @@ fn argument_from_bound_value(
                 }
             },
             slot: slot.clone(),
-            text: String::new(),
+            text: text_override.unwrap_or_default().to_string(),
             implicit_input_source: Some(source.to_caushell_types_implicit_input_source()),
             runtime_argument_domain: domain.clone(),
             runtime_data: false,
             quoted: false,
             node_kind: "runtime_input".to_string(),
             binding_source: ArgumentBindingSource::RemainingArg,
-        }),
+        },
     }
 }
 
@@ -474,16 +609,22 @@ mod tests {
     fn dispatch_effect(command: &str, argv: &[&str], environment: &[&str]) -> Effect {
         Effect {
             kind: EffectKind::DispatchCommand,
+            path_access: None,
             target: EffectTarget::Dispatch(DispatchTarget {
+                module_runtime: None,
                 command: crate::DispatchCommandSource::Slot(SlotName::new(command)),
                 argv_prefix: Vec::new(),
                 argv: argv.iter().copied().map(SlotName::new).collect(),
+                argv_suffix: Vec::new(),
                 environment: environment.iter().copied().map(SlotName::new).collect(),
                 clear_environment_when: Vec::new(),
                 unset_environment: Vec::new(),
+                unset_environment_when: Vec::new(),
                 unknown_environment_when: Vec::new(),
                 unknown_environment_from: Vec::new(),
+                unknown_environment_names: Vec::new(),
                 stdin_from_parent: false,
+                stdin_from_tool: false,
                 stdout_to_parent: false,
             }),
             interactive_escape_surface: None,
@@ -492,6 +633,7 @@ mod tests {
             repository_operation: None,
             database_operation: None,
             terminal_session_operation: None,
+            shell_job_operation: None,
             extensions: Default::default(),
         }
     }
@@ -842,7 +984,7 @@ mod tests {
         let registry = built_in_registry();
         let invocation = bind_first_command(
             &built_in_profile("find"),
-            r#"find ./src -name '*.sh' -exec sh -c 'echo "$1"' _ {} ;"#,
+            r#"find ./src -name '*.sh' -exec sh -c 'echo "$1"' _ {} \;"#,
         );
 
         let candidates = collect_dispatch_command_candidates(&invocation);

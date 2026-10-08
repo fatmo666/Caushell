@@ -1,0 +1,17 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: red, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: red_editor
+    selector: {kind: all, items: []}
+    parameters: [{name: file_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: read_path, target: {kind: slot, name: file_paths}}, {kind: write_path, target: {kind: slot, name: file_paths}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: line_editor, requires_tty: true, capabilities: []}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/red (alias ed, GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://pubs.opengroup.org/onlinepubs/9699919799/utilities/ed.html"]
+  caushell.profile/known_limitations: ["red is the restricted ed variant; the shared source inheritance does not establish ed's unrestricted ! shell escape for red, so the native UI advertises no shell capability.", "The profile does not parse editor commands or infer paths embedded in prompt input; path and edit restrictions depend on the red implementation."]

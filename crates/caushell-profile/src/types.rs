@@ -92,6 +92,14 @@ impl FlagName {
 pub struct CommandIdentity {
     pub canonical_name: CommandName,
     pub aliases: Vec<CommandName>,
+    pub module_only: bool,
+    pub module_entrypoints: Vec<ModuleEntrypoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModuleEntrypoint {
+    pub runtime: String,
+    pub name: String,
 }
 
 impl CommandIdentity {
@@ -99,6 +107,8 @@ impl CommandIdentity {
         Self {
             canonical_name: CommandName::new(canonical_name),
             aliases: Vec::new(),
+            module_only: false,
+            module_entrypoints: Vec::new(),
         }
     }
 }
@@ -247,6 +257,8 @@ pub struct StreamContract {
     pub stdin_mode: StreamInputMode,
     pub stdout_mode: StreamOutputMode,
     pub stderr_mode: StreamOutputMode,
+    pub stdout_dependency: caushell_types::StreamDataDependency,
+    pub stderr_dependency: caushell_types::StreamDataDependency,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +292,9 @@ pub struct PathSemantic {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadLanguage {
+    /// Explicit opt-in for executable code outside the modeled shell languages.
+    /// Never parsed as Bash; its unresolved boundary defaults to approval.
+    Opaque,
     Bash,
     Sh,
     Dash,
@@ -452,6 +467,8 @@ pub enum ValueMatcher {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindingSpec {
+    ArgumentRegionCommand(String),
+    ArgumentRegionArgs(String),
     NextPositional,
     NextPositionalAfterDashDash,
     PositionalAt(usize),
@@ -582,6 +599,8 @@ pub enum ValueProjection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredProjection {
     pub separator: Option<String>,
+    /// Stop after the first matching operand (including disabled or unknown values).
+    pub first_match_only: bool,
     pub branches: Vec<StructuredProjectionBranch>,
     pub fallback: Option<StructuredProjectionTarget>,
 }
@@ -597,6 +616,15 @@ pub enum StructuredProjectionMatcher {
     Literal(String),
     /// Matched prefixes are consumed before emitting the semantic value.
     Prefix(String),
+    /// A tool-owned `keyword value` / `keyword=value` operand grammar.
+    KeywordValue {
+        keyword: String,
+        case_insensitive: bool,
+        allow_quoted_keyword: bool,
+        disabled_values: Vec<String>,
+        /// Tool substitutions are unknown, not literal shell syntax.
+        unresolved_markers: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -875,6 +903,10 @@ pub enum EffectKind {
     DispatchCommand,
     ConsumeStdin,
     BindVariableFromRuntimeInput,
+    /// Terminates the enclosing shell frame, not an arbitrary process.
+    TerminateCurrentShell,
+    /// Alters the enclosing shell's job management, without sending a signal.
+    ShellJobOperation,
     PrivilegeModifier,
     NetworkEndpoint,
     ListenNetwork,
@@ -902,23 +934,48 @@ pub enum DispatchCommandSource {
     Literal(String),
     /// Each semantic value is a separate whitespace-delimited argv, not shell source.
     WhitespaceArgv(SlotName),
+    /// The tool, not the caller shell, interprets this already-decoded string.
+    CommandString {
+        slot: SlotName,
+        syntax: DispatchStringSyntax,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStringSyntax {
+    PosixShell,
+    GnuWordsplit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchTarget {
+    /// Typed registry namespace; never executable-name fallback.
+    pub module_runtime: Option<String>,
     pub command: DispatchCommandSource,
     /// Fixed argv data, e.g. the interpreter's `-m`; never shell source.
     pub argv_prefix: Vec<String>,
     pub argv: Vec<SlotName>,
+    pub argv_suffix: Vec<String>,
     pub environment: Vec<SlotName>,
     pub clear_environment_when: Vec<ModifierId>,
     pub unset_environment: Vec<SlotName>,
+    pub unset_environment_when: Vec<ConditionalEnvironmentUnset>,
     /// A file/configuration can replace child env values but its body is opaque.
     pub unknown_environment_when: Vec<ModifierId>,
     pub unknown_environment_from: Vec<EnvironmentValueSource>,
+    /// Tool-generated values override inherited bindings, but only these names.
+    pub unknown_environment_names: Vec<String>,
     pub stdin_from_parent: bool,
+    /// Opaque tool-produced input; never borrow the caller's pipeline contents.
+    pub stdin_from_tool: bool,
     /// Opt-in child stdout contribution; dispatch alone does not imply data flow.
     pub stdout_to_parent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionalEnvironmentUnset {
+    pub modifier: ModifierId,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -998,6 +1055,8 @@ pub struct ConfiguredPathTarget {
     pub expand_user: bool,
     pub missing: ConfiguredPathMissing,
     pub default_value: Option<String>,
+    /// Applicable only after configured sources are proven absent/unset.
+    pub fallback_parent_slots: Vec<SlotName>,
     pub purpose: Option<PathPurpose>,
 }
 
@@ -1058,12 +1117,14 @@ pub struct HostRiskEffectMetadata {
 pub struct Effect {
     pub kind: EffectKind,
     pub target: EffectTarget,
+    pub path_access: Option<PathAccessKind>,
     pub interactive_escape_surface: Option<InteractiveEscapeSurface>,
     pub catastrophic: CatastrophicEffectMetadata,
     pub host_risk: HostRiskEffectMetadata,
     pub repository_operation: Option<caushell_types::RepositoryOperationKind>,
     pub database_operation: Option<caushell_types::DatabaseOperationKind>,
     pub terminal_session_operation: Option<caushell_types::TerminalSessionOperationKind>,
+    pub shell_job_operation: Option<caushell_types::ShellJobOperationKind>,
     pub extensions: ExtensionMap,
 }
 
@@ -1072,12 +1133,14 @@ impl Effect {
         Self {
             kind,
             target: EffectTarget::None,
+            path_access: None,
             interactive_escape_surface: None,
             catastrophic: CatastrophicEffectMetadata::default(),
             host_risk: HostRiskEffectMetadata::default(),
             repository_operation: None,
             database_operation: None,
             terminal_session_operation: None,
+            shell_job_operation: None,
             extensions: ExtensionMap::new(),
         }
     }
@@ -1093,10 +1156,19 @@ impl Effect {
     }
 }
 
+/// How a path is accessed, not a safety classification or a path whitelist.
+/// Omitted metadata keeps the existing filesystem namespace semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathAccessKind {
+    ContentOpen,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Modifier {
     pub id: ModifierId,
     pub matcher: ModifierMatcher,
+    pub ends_option_scope: bool,
     pub parameters: Vec<Parameter>,
     pub effects: Vec<Effect>,
     pub constraints: Vec<ModifierConstraint>,
@@ -1108,6 +1180,7 @@ impl Modifier {
         Self {
             id: ModifierId::new(id),
             matcher: ModifierMatcher::new(),
+            ends_option_scope: false,
             parameters: Vec::new(),
             effects: Vec::new(),
             constraints: Vec::new(),
@@ -1439,7 +1512,10 @@ pub struct BoundInvocation {
     pub command_name: CommandName,
     pub subcommand_path: Vec<String>,
     pub form_id: FormId,
+    /// Retained after form selection for command-independent stream projection.
+    pub stream_contract: Option<StreamContract>,
     pub bound_parameters: Vec<BoundParameter>,
+    pub argument_regions: Vec<crate::BoundArgumentRegion>,
     pub payload_projections: Vec<PayloadProjection>,
     pub bound_implicit_inputs: Vec<BoundImplicitInput>,
     pub applied_modifiers: Vec<ModifierId>,
@@ -1455,7 +1531,9 @@ impl BoundInvocation {
             command_name,
             subcommand_path: Vec::new(),
             form_id,
+            stream_contract: None,
             bound_parameters: Vec::new(),
+            argument_regions: Vec::new(),
             payload_projections: Vec::new(),
             bound_implicit_inputs: Vec::new(),
             applied_modifiers: Vec::new(),
@@ -1502,6 +1580,7 @@ pub struct CommandProfile {
     pub trust: ProfileTrustMetadata,
     pub platform: PlatformConstraints,
     pub argument_files: Vec<ArgumentFileRule>,
+    pub argument_regions: Vec<ArgumentRegion>,
     /// Declared uncertainty effects, retained when no complete form can bind.
     pub selection_failure_effects: Vec<Effect>,
     /// Opt in to operation uncertainty for failed selection or binding residuals.
@@ -1516,6 +1595,19 @@ pub struct CommandProfile {
     pub extensions: ExtensionMap,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentRegion {
+    pub id: String,
+    pub start_flags: Vec<String>,
+    pub terminators: Vec<ArgumentRegionTerminator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentRegionTerminator {
+    pub value: String,
+    pub preceding: Option<String>,
+}
+
 impl CommandProfile {
     pub fn new(name: &str) -> Self {
         Self {
@@ -1523,6 +1615,7 @@ impl CommandProfile {
             trust: ProfileTrustMetadata::default(),
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             forms: Vec::new(),
@@ -1570,6 +1663,9 @@ impl CommandProfile {
     }
 
     pub fn matches_name(&self, name: &str) -> bool {
+        if self.identity.module_only {
+            return false;
+        }
         self.identity.canonical_name.as_str() == name
             || self
                 .identity

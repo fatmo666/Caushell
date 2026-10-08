@@ -1,0 +1,144 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: dmesg
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: read_syslog_file
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_modifier
+      modifier: file
+    - kind: not
+      item: &2
+        kind: all
+        items:
+        - kind: has_modifier
+          modifier: human
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: no_pager
+  effects:
+  - kind: read_path
+    path_access: content_open
+    target:
+      kind: slot
+      name: input_file
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: read_syslog_file_with_pager
+  selector:
+    kind: all
+    items:
+    - *1
+    - *2
+  effects:
+  - kind: read_path
+    path_access: content_open
+    target:
+      kind: slot
+      name: input_file
+  - &4
+    kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: pager
+      requires_tty: true
+      capabilities:
+      - spawn_shell
+      - launch_external_editor
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: read_kernel_buffer
+  selector:
+    kind: all
+    items:
+    - &3
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: file
+    - kind: not
+      item: *2
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: independent
+- id: read_kernel_buffer_with_pager
+  selector:
+    kind: all
+    items:
+    - *3
+    - *2
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: independent
+  effects:
+  - *4
+modifiers:
+- id: file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-F"
+    - "--file"
+  parameters:
+  - name: input_file
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: raw
+  matcher:
+    kind: any_flag
+    flags:
+    - "-r"
+    - "--raw"
+- id: human
+  matcher:
+    kind: any_flag
+    flags:
+    - "-H"
+    - "--human"
+- id: no_pager
+  matcher:
+    kind: any_flag
+    flags:
+    - "-P"
+    - "--nopager"
+extensions:
+  caushell.profile/source_research:
+  - https://man7.org/linux/man-pages/man1/dmesg.1.html
+  caushell.profile/known_limitations:
+  - "-F reads a syslog-formatted file; -r only selects raw message formatting. Combined
+    short spelling -rF is expected to select the same input, subject to the CLI's
+    option grouping parser."
+  - "-H exposes the existing pager escape surface unless -P/--nopager is supplied.
+    No pager command is fabricated and no runtime pager environment is probed."

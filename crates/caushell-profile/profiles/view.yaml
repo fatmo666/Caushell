@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: view, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: vim_command
+    selector: {kind: has_flag, flag: -c}
+    parameters: [{name: vim_commands, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -c, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: vim_commands}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: vim_script_file
+    selector: {kind: has_flag, flag: -S}
+    parameters: [{name: vim_script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_flag, flag: -S, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: vim_script_path, semantic: {kind: path, role: read, purpose: script_source}}}}]
+    effects: [{kind: read_path, target: {kind: slot, name: vim_script_path}}, {kind: execute_payload, target: {kind: slot, name: vim_script}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: vim_read_only_view
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}, {kind: not, item: {kind: has_flag, flag: -S}}]}
+    parameters: [{name: file_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: read_path, target: {kind: slot, name: file_paths}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/view (alias vim, GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://vimhelp.org/starting.txt.html"]
+  caushell.profile/known_limitations: ["view is the nonrestricted Vim read-only alias; unlike rview it does not imply restricted mode, so Vim's native shell-escape surface remains possible.", "Native Vimscript and optional Lua/Python interfaces are opaque; paths embedded in command strings are not extracted."]

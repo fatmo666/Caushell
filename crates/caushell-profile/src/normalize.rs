@@ -59,11 +59,14 @@ pub enum NormalizeError {
     UnexpectedRepositoryOperation,
     InvalidDatabaseOperation(String),
     InvalidTerminalSessionOperation(String),
+    InvalidShellJobOperation(String),
     InvalidSelectionFailureEffects(String),
     InvalidExtensionKey(String),
     InvalidOptionScope(String),
+    InvalidArgumentRegion(String),
     InvalidValueProjection(String),
     InvalidConfiguredPath(String),
+    InvalidPathAccess(String),
     InvalidStructuredProjection(String),
     InvalidArgumentFileRule(String),
     InvalidPayloadProjection(String),
@@ -137,6 +140,36 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .transpose()?;
     let option_scope = normalize_option_scope(raw.option_scope);
     validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
+    let argument_regions = raw
+        .argument_regions
+        .into_iter()
+        .map(|region| {
+            Ok(crate::ArgumentRegion {
+                id: region.id,
+                start_flags: region.start_flags,
+                terminators: region
+                    .terminators
+                    .into_iter()
+                    .map(|t| crate::ArgumentRegionTerminator {
+                        value: t.value,
+                        preceding: t.preceding,
+                    })
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, NormalizeError>>()?;
+    validate_argument_regions(
+        &argument_regions,
+        &forms,
+        &modifiers,
+        option_scope,
+        option_matching,
+        subcommands.is_some(),
+        raw.opaque_on_unresolved,
+    )?;
+    if let Some(tree) = &subcommands {
+        validate_subcommand_argument_regions(&tree.roots)?;
+    }
     validate_option_prefixes(option_prefixes, &modifiers, &forms)?;
     if let Some(tree) = &subcommands {
         validate_subcommand_option_prefixes(option_prefixes, &tree.roots)?;
@@ -156,6 +189,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         trust: normalize_trust(raw.trust),
         platform: normalize_platform(raw.platform),
         argument_files,
+        argument_regions,
         selection_failure_effects,
         opaque_on_unresolved: raw.opaque_on_unresolved,
         forms,
@@ -166,6 +200,101 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn validate_argument_regions(
+    regions: &[crate::ArgumentRegion],
+    forms: &[Form],
+    modifiers: &[Modifier],
+    scope: OptionScopePolicy,
+    matching: OptionMatchingPolicy,
+    has_subcommands: bool,
+    opaque_on_unresolved: bool,
+) -> Result<(), NormalizeError> {
+    let invalid = |reason: &str| NormalizeError::InvalidArgumentRegion(reason.into());
+    if !regions.is_empty()
+        && (scope != OptionScopePolicy::AllArguments
+            || matching != OptionMatchingPolicy::ExactNames
+            || has_subcommands
+            || !opaque_on_unresolved)
+    {
+        return Err(invalid(
+            "argument_regions requires a root exact_names/all_arguments grammar without subcommands and opaque_on_unresolved: true",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut starts = BTreeSet::new();
+    let declarations = if regions.is_empty() {
+        BTreeMap::new()
+    } else {
+        crate::argument_regions::operand_declarations(modifiers, forms)
+            .map_err(NormalizeError::InvalidArgumentRegion)?
+    };
+    for region in regions {
+        if region.id.is_empty() || !ids.insert(region.id.as_str()) {
+            return Err(invalid("argument_regions must have unique nonempty ids"));
+        }
+        if region.start_flags.is_empty() || region.terminators.is_empty() {
+            return Err(invalid(
+                "argument_regions must declare openers and terminators",
+            ));
+        }
+        for flag in &region.start_flags {
+            if !flag.starts_with('-')
+                || flag.len() < 2
+                || flag == "--"
+                || flag.contains('=')
+                || flag.chars().any(char::is_whitespace)
+                || !starts.insert(flag.as_str())
+                || declarations.contains_key(flag)
+            {
+                return Err(invalid(
+                    "region openers must be distinct exact options, not ordinary option declarations",
+                ));
+            }
+        }
+        let mut delimiters = BTreeSet::new();
+        for terminator in &region.terminators {
+            if terminator.value.is_empty()
+                || !delimiters.insert(terminator.value.as_str())
+                || terminator.preceding.as_ref().is_some_and(String::is_empty)
+            {
+                return Err(invalid("region delimiters must be unique and nonempty"));
+            }
+        }
+    }
+    for parameter in forms
+        .iter()
+        .flat_map(|form| &form.parameters)
+        .chain(modifiers.iter().flat_map(|modifier| &modifier.parameters))
+    {
+        if let BindingSpec::ArgumentRegionCommand(id) | BindingSpec::ArgumentRegionArgs(id) =
+            &parameter.binding
+        {
+            if !ids.contains(id.as_str()) {
+                return Err(invalid("binding references an undeclared argument region"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_subcommand_argument_regions(nodes: &[SubcommandNode]) -> Result<(), NormalizeError> {
+    for node in nodes {
+        // Regions currently describe an entire root CLI grammar. Reject a
+        // dangling child binding rather than silently treating it as absent.
+        validate_argument_regions(
+            &[],
+            &node.forms,
+            &node.modifiers,
+            node.option_scope,
+            node.option_matching,
+            false,
+            false,
+        )?;
+        validate_subcommand_argument_regions(&node.children)?;
+    }
+    Ok(())
 }
 
 fn declared_parameter_names(
@@ -228,7 +357,9 @@ fn validate_configured_path_references(
         .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
     {
         if let EffectTarget::Dispatch(target) = &effect.target {
-            if let crate::DispatchCommandSource::WhitespaceArgv(slot) = &target.command {
+            if let crate::DispatchCommandSource::WhitespaceArgv(slot)
+            | crate::DispatchCommandSource::CommandString { slot, .. } = &target.command
+            {
                 if !names.contains(slot.as_str()) {
                     return Err(NormalizeError::InvalidStructuredProjection(format!(
                         "undeclared encoded-argv slot: {}",
@@ -248,6 +379,12 @@ fn validate_configured_path_references(
                 .clear_environment_when
                 .iter()
                 .chain(&target.unknown_environment_when)
+                .chain(
+                    target
+                        .unset_environment_when
+                        .iter()
+                        .map(|unset| &unset.modifier),
+                )
             {
                 if !modifier_names.contains(modifier.as_str()) {
                     return Err(NormalizeError::InvalidConfiguredPath(format!(
@@ -278,6 +415,7 @@ fn validate_configured_path_references(
             .sources
             .iter()
             .map(|source| &source.slot)
+            .chain(&path.fallback_parent_slots)
             .chain(path.relative_to.iter().map(|anchor| &anchor.slot))
             .chain(
                 path.relative_to
@@ -376,6 +514,11 @@ fn validate_option_scope(
     modifiers: &[Modifier],
     forms: &[Form],
 ) -> Result<(), NormalizeError> {
+    if policy == OptionScopePolicy::AllArguments && modifiers.iter().any(|m| m.ends_option_scope) {
+        return Err(NormalizeError::InvalidOptionScope(
+            "ends_option_scope requires scoped option parsing".into(),
+        ));
+    }
     if policy != OptionScopePolicy::AllArguments {
         crate::option_scope::validate_declarations(modifiers, forms, matching)
             .map_err(NormalizeError::InvalidOptionScope)?;
@@ -405,9 +548,32 @@ fn normalize_identity(raw: RawCommandIdentity) -> Result<CommandIdentity, Normal
         aliases.push(CommandName::new(alias));
     }
 
+    let mut module_entrypoints = Vec::new();
+    let mut entries = BTreeSet::new();
+    for entry in raw.module_entrypoints {
+        ensure_non_empty(&entry.runtime, "identity.module_entrypoints.runtime")?;
+        ensure_non_empty(&entry.name, "identity.module_entrypoints.name")?;
+        if !entries.insert((entry.runtime.clone(), entry.name.clone())) {
+            return Err(NormalizeError::DuplicateAlias(format!(
+                "{}:{}",
+                entry.runtime, entry.name
+            )));
+        }
+        module_entrypoints.push(crate::types::ModuleEntrypoint {
+            runtime: entry.runtime,
+            name: entry.name,
+        });
+    }
+    if raw.module_only && (module_entrypoints.is_empty() || !aliases.is_empty()) {
+        return Err(NormalizeError::InvalidProfileKind(
+            "module_only requires module entries and no executable aliases".into(),
+        ));
+    }
     Ok(CommandIdentity {
         canonical_name: CommandName::new(raw.canonical_name),
         aliases,
+        module_only: raw.module_only,
+        module_entrypoints,
     })
 }
 
@@ -623,6 +789,8 @@ fn normalize_stream_contract(raw: RawStreamContract) -> StreamContract {
         },
         stdout_mode: normalize_stream_output_mode(raw.stdout_mode),
         stderr_mode: normalize_stream_output_mode(raw.stderr_mode),
+        stdout_dependency: raw.stdout_dependency,
+        stderr_dependency: raw.stderr_dependency,
     }
 }
 
@@ -647,6 +815,7 @@ fn normalize_modifier(raw: RawModifier) -> Result<Modifier, NormalizeError> {
     Ok(Modifier {
         id: ModifierId::new(raw.id),
         matcher: normalize_modifier_matcher(raw.matcher)?,
+        ends_option_scope: raw.ends_option_scope,
         parameters: raw
             .parameters
             .into_iter()
@@ -723,10 +892,18 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
         .map(normalize_structured_projection)
         .transpose()?;
     if structured_projection.is_some()
-        && (value_projection.is_some() || semantic != SemanticType::PlainValue)
+        && (value_projection.is_some()
+            || !matches!(
+                semantic,
+                SemanticType::PlainValue
+                    | SemanticType::Payload(crate::PayloadSemantic {
+                        source: PayloadSource::ScriptFileRef,
+                        ..
+                    })
+            ))
     {
         return Err(NormalizeError::InvalidStructuredProjection(
-            "structured_projection requires an unprojected plain_value source".into(),
+            "structured_projection requires an unprojected plain_value or script_file_ref source".into(),
         ));
     }
     if value_projection.is_some()
@@ -774,7 +951,7 @@ fn normalize_structured_projection(
             let matcher = match branch.matcher {
                 crate::RawStructuredProjectionMatcher::Literal { value } => {
                     ensure_non_empty(&value, "structured_projection.matcher.literal")?;
-                    if !seen.insert((false, value.clone())) {
+                    if !seen.insert(("literal", value.clone())) {
                         return Err(NormalizeError::InvalidStructuredProjection(
                             "duplicate literal branch".into(),
                         ));
@@ -783,12 +960,59 @@ fn normalize_structured_projection(
                 }
                 crate::RawStructuredProjectionMatcher::Prefix { value } => {
                     ensure_non_empty(&value, "structured_projection.matcher.prefix")?;
-                    if !seen.insert((true, value.clone())) {
+                    if !seen.insert(("prefix", value.clone())) {
                         return Err(NormalizeError::InvalidStructuredProjection(
                             "duplicate prefix branch".into(),
                         ));
                     }
                     StructuredProjectionMatcher::Prefix(value)
+                }
+                crate::RawStructuredProjectionMatcher::KeywordValue {
+                    keyword,
+                    case_insensitive,
+                    allow_quoted_keyword,
+                    disabled_values,
+                    unresolved_markers,
+                } => {
+                    ensure_non_empty(&keyword, "structured_projection.matcher.keyword")?;
+                    if keyword.chars().any(|c| c.is_whitespace() || c == '=') {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "keyword must not contain whitespace or '='".into(),
+                        ));
+                    }
+                    for marker in &unresolved_markers {
+                        ensure_non_empty(
+                            marker,
+                            "structured_projection.matcher.unresolved_marker",
+                        )?;
+                    }
+                    for value in &disabled_values {
+                        ensure_non_empty(value, "structured_projection.matcher.disabled_value")?;
+                    }
+                    let identity = if case_insensitive {
+                        keyword.to_ascii_lowercase()
+                    } else {
+                        keyword.clone()
+                    };
+                    if !seen.insert((
+                        if case_insensitive {
+                            "keyword_insensitive"
+                        } else {
+                            "keyword_sensitive"
+                        },
+                        identity,
+                    )) {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "duplicate keyword branch".into(),
+                        ));
+                    }
+                    StructuredProjectionMatcher::KeywordValue {
+                        keyword,
+                        case_insensitive,
+                        allow_quoted_keyword,
+                        disabled_values,
+                        unresolved_markers,
+                    }
                 }
             };
             Ok(StructuredProjectionBranch {
@@ -799,6 +1023,7 @@ fn normalize_structured_projection(
         .collect::<Result<Vec<_>, NormalizeError>>()?;
     Ok(StructuredProjection {
         separator: raw.separator,
+        first_match_only: raw.first_match_only,
         branches,
         fallback: raw.fallback.map(normalize_structured_target).transpose()?,
     })
@@ -1047,6 +1272,12 @@ fn normalize_cardinality(raw: RawCardinality) -> Cardinality {
 
 fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError> {
     match raw {
+        RawBindingSpec::ArgumentRegionCommand { region } => {
+            Ok(BindingSpec::ArgumentRegionCommand(region))
+        }
+        RawBindingSpec::ArgumentRegionArgs { region } => {
+            Ok(BindingSpec::ArgumentRegionArgs(region))
+        }
         RawBindingSpec::NextPositional => Ok(BindingSpec::NextPositional),
         RawBindingSpec::NextPositionalAfterDashDash => Ok(BindingSpec::NextPositionalAfterDashDash),
         RawBindingSpec::PositionalAt { index } => Ok(BindingSpec::PositionalAt(index)),
@@ -1260,6 +1491,7 @@ fn normalize_path_purpose(raw: RawPathPurpose) -> PathPurpose {
 
 fn normalize_payload_language(raw: RawPayloadLanguage) -> PayloadLanguage {
     match raw {
+        RawPayloadLanguage::Opaque => PayloadLanguage::Opaque,
         RawPayloadLanguage::Bash => PayloadLanguage::Bash,
         RawPayloadLanguage::Sh => PayloadLanguage::Sh,
         RawPayloadLanguage::Dash => PayloadLanguage::Dash,
@@ -1374,6 +1606,15 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if raw.path_access.is_some()
+        && (!matches!(kind, EffectKind::ReadPath | EffectKind::WritePath)
+            || !matches!(target, EffectTarget::Slot(_)))
+    {
+        return Err(NormalizeError::InvalidPathAccess(
+            "content_open requires a read_path/write_path effect with an explicit slot target"
+                .into(),
+        ));
+    }
     if kind == EffectKind::SetExecutionWorkingDirectory
         && !matches!(target, EffectTarget::ConfiguredPath(_))
     {
@@ -1387,6 +1628,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         ));
     }
     if let EffectTarget::ConfiguredPath(path) = &target {
+        if !path.fallback_parent_slots.is_empty() && kind != EffectKind::WritePath {
+            return Err(NormalizeError::InvalidConfiguredPath(
+                "fallback_parent_slots requires a write_path output family".into(),
+            ));
+        }
         if !matches!(
             kind,
             EffectKind::ReadPath
@@ -1430,15 +1676,26 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         (_, None) => None,
     };
 
+    let shell_job_operation = match (kind, raw.shell_job_operation) {
+        (EffectKind::ShellJobOperation, Some(operation)) if matches!(target, EffectTarget::None) => Some(operation),
+        (EffectKind::ShellJobOperation, _) => return Err(NormalizeError::InvalidShellJobOperation(
+            "shell_job_operation requires an operation class and target none; job identities are not filesystem paths".into())),
+        (_, Some(_)) => return Err(NormalizeError::InvalidShellJobOperation(
+            "shell_job_operation metadata is exclusive to shell_job_operation effects".into())),
+        (_, None) => None,
+    };
+
     Ok(Effect {
         kind,
         target,
+        path_access: raw.path_access,
         interactive_escape_surface: surface,
         catastrophic: normalize_catastrophic_effect_metadata(raw.catastrophic)?,
         host_risk: normalize_host_risk_effect_metadata(raw.host_risk)?,
         repository_operation,
         database_operation,
         terminal_session_operation,
+        shell_job_operation,
         extensions: normalize_extensions(raw.extensions)?,
     })
 }
@@ -1572,6 +1829,8 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::DispatchCommand => EffectKind::DispatchCommand,
         RawEffectKind::ConsumeStdin => EffectKind::ConsumeStdin,
         RawEffectKind::BindVariableFromRuntimeInput => EffectKind::BindVariableFromRuntimeInput,
+        RawEffectKind::TerminateCurrentShell => EffectKind::TerminateCurrentShell,
+        RawEffectKind::ShellJobOperation => EffectKind::ShellJobOperation,
         RawEffectKind::PrivilegeModifier => EffectKind::PrivilegeModifier,
         RawEffectKind::NetworkEndpoint => EffectKind::NetworkEndpoint,
         RawEffectKind::ListenNetwork => EffectKind::ListenNetwork,
@@ -1702,11 +1961,13 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             expand_user,
             missing,
             default_value,
+            fallback_parent_slots,
             purpose,
         } => {
             if sources.is_empty()
                 && environment.is_none()
                 && default_value.is_none()
+                && fallback_parent_slots.is_empty()
                 && missing != crate::RawConfiguredPathMissing::Unknown
             {
                 return Err(NormalizeError::InvalidConfiguredPath(
@@ -1716,6 +1977,15 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             if unresolved_relative_base && relative_to.is_some() {
                 return Err(NormalizeError::InvalidConfiguredPath(
                     "unresolved_relative_base cannot be combined with relative_to".into(),
+                ));
+            }
+            if !fallback_parent_slots.is_empty()
+                && (relative_to.is_some()
+                    || unresolved_relative_base
+                    || missing == crate::RawConfiguredPathMissing::IncidentalCache)
+            {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "input-parent fallback cannot use an alternate relative base or incidental_cache".into(),
                 ));
             }
             if let Some(value) = &default_value {
@@ -1764,6 +2034,10 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 expand_environment,
                 expand_user,
                 default_value,
+                fallback_parent_slots: normalize_slot_names(
+                    fallback_parent_slots,
+                    "effects.target.fallback_parent_slots",
+                )?,
                 missing: match missing {
                     crate::RawConfiguredPathMissing::Skip => crate::ConfiguredPathMissing::Skip,
                     crate::RawConfiguredPathMissing::Unknown => {
@@ -1830,29 +2104,40 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             normalize_implicit_input_source(source),
         )),
         RawEffectTarget::Dispatch {
+            module_runtime,
             command,
             command_literal,
             command_whitespace_argv,
+            command_string,
             argv_prefix,
             argv,
+            argv_suffix,
             environment,
             clear_environment_when,
             unset_environment,
+            unset_environment_when,
             unknown_environment_when,
             unknown_environment_from,
+            unknown_environment_names,
             stdin_from_parent,
+            stdin_from_tool,
             stdout_to_parent,
         } => {
-            let command = match (command, command_literal, command_whitespace_argv) {
-                (Some(slot), None, None) => {
+            let command = match (
+                command,
+                command_literal,
+                command_whitespace_argv,
+                command_string,
+            ) {
+                (Some(slot), None, None, None) => {
                     ensure_non_empty(&slot, "effects.target.command")?;
                     crate::DispatchCommandSource::Slot(SlotName::new(slot))
                 }
-                (None, Some(command), None) => {
+                (None, Some(command), None, None) => {
                     ensure_non_empty(&command, "effects.target.command_literal")?;
                     crate::DispatchCommandSource::Literal(command)
                 }
-                (None, None, Some(slot)) => {
+                (None, None, Some(slot), None) => {
                     ensure_non_empty(&slot, "effects.target.command_whitespace_argv")?;
                     if !argv.is_empty() || !argv_prefix.is_empty() {
                         return Err(NormalizeError::InvalidStructuredProjection(
@@ -1861,16 +2146,64 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     }
                     crate::DispatchCommandSource::WhitespaceArgv(SlotName::new(slot))
                 }
+                (None, None, None, Some(source)) => {
+                    ensure_non_empty(&source.slot, "effects.target.command_string.slot")?;
+                    if !argv.is_empty() || !argv_prefix.is_empty() {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "command string cannot be combined with argv or argv_prefix".into(),
+                        ));
+                    }
+                    crate::DispatchCommandSource::CommandString {
+                        slot: SlotName::new(source.slot),
+                        syntax: match source.syntax {
+                            crate::raw::RawDispatchStringSyntax::PosixShell => {
+                                crate::DispatchStringSyntax::PosixShell
+                            }
+                            crate::raw::RawDispatchStringSyntax::GnuWordsplit => {
+                                crate::DispatchStringSyntax::GnuWordsplit
+                            }
+                        },
+                    }
+                }
                 _ => {
                     return Err(NormalizeError::InvalidConfiguredPath(
                         "dispatch requires exactly one command source".into(),
                     ));
                 }
             };
+            if stdin_from_parent && stdin_from_tool {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "dispatch stdin cannot be both inherited and tool-produced".into(),
+                ));
+            }
+            let mut seen_environment_names = BTreeSet::new();
+            let unknown_environment_names = unknown_environment_names
+                .into_iter()
+                .map(|name| {
+                    let source =
+                        normalize_environment_source(crate::raw::RawEnvironmentValueSource {
+                            name,
+                            empty_is_unset: false,
+                        })?;
+                    if !seen_environment_names.insert(source.name.clone()) {
+                        return Err(NormalizeError::InvalidConfiguredPath(
+                            "duplicate tool-generated environment variable".into(),
+                        ));
+                    }
+                    Ok(source.name)
+                })
+                .collect::<Result<Vec<_>, NormalizeError>>()?;
             Ok(EffectTarget::Dispatch(DispatchTarget {
+                module_runtime: module_runtime
+                    .map(|runtime| {
+                        ensure_non_empty(&runtime, "effects.target.module_runtime")?;
+                        Ok(runtime)
+                    })
+                    .transpose()?,
                 command,
                 argv_prefix,
                 argv: normalize_slot_names(argv, "effects.target.argv")?,
+                argv_suffix,
                 environment: normalize_slot_names(environment, "effects.target.environment")?,
                 clear_environment_when: clear_environment_when
                     .into_iter()
@@ -1883,6 +2216,43 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     unset_environment,
                     "effects.target.unset_environment",
                 )?,
+                unset_environment_when: unset_environment_when
+                    .into_iter()
+                    .map(|unset| {
+                        ensure_non_empty(
+                            &unset.modifier,
+                            "effects.target.unset_environment_when.modifier",
+                        )?;
+                        if unset.names.is_empty() {
+                            return Err(NormalizeError::InvalidConfiguredPath(
+                                "conditional environment removal requires names".into(),
+                            ));
+                        }
+                        let mut seen = BTreeSet::new();
+                        let names = unset
+                            .names
+                            .into_iter()
+                            .map(|name| {
+                                let source = normalize_environment_source(
+                                    crate::raw::RawEnvironmentValueSource {
+                                        name,
+                                        empty_is_unset: false,
+                                    },
+                                )?;
+                                if !seen.insert(source.name.clone()) {
+                                    return Err(NormalizeError::InvalidConfiguredPath(
+                                        "duplicate conditional environment variable".into(),
+                                    ));
+                                }
+                                Ok(source.name)
+                            })
+                            .collect::<Result<Vec<_>, NormalizeError>>()?;
+                        Ok(crate::ConditionalEnvironmentUnset {
+                            modifier: ModifierId::new(unset.modifier),
+                            names,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
                 unknown_environment_when: unknown_environment_when
                     .into_iter()
                     .map(|name| {
@@ -1894,7 +2264,9 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     .into_iter()
                     .map(normalize_environment_source)
                     .collect::<Result<Vec<_>, _>>()?,
+                unknown_environment_names,
                 stdin_from_parent,
+                stdin_from_tool,
                 stdout_to_parent,
             }))
         }
@@ -2147,6 +2519,7 @@ mod tests {
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2157,6 +2530,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "bash".to_string(),
                 aliases: vec!["sh-compatible".to_string()],
+                ..Default::default()
             },
             trust: RawProfileTrustMetadata {
                 tier: RawProfileTrustTier::TierA,
@@ -2203,6 +2577,8 @@ mod tests {
                     repository_operation: None,
                     database_operation: None,
                     terminal_session_operation: None,
+                    shell_job_operation: None,
+                    path_access: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2210,6 +2586,7 @@ mod tests {
             }],
             modifiers: vec![RawModifier {
                 id: "rcfile".to_string(),
+                ends_option_scope: false,
                 matcher: RawModifierMatcher::AnyFlag {
                     flags: vec!["--rcfile".to_string()],
                 },
@@ -2239,6 +2616,8 @@ mod tests {
                     repository_operation: None,
                     database_operation: None,
                     terminal_session_operation: None,
+                    shell_job_operation: None,
+                    path_access: None,
                     extensions: BTreeMap::new(),
                 }],
                 constraints: Vec::new(),
@@ -2314,6 +2693,7 @@ mod tests {
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2324,6 +2704,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "cp".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             trust: RawProfileTrustMetadata {
                 tier: RawProfileTrustTier::TierA,
@@ -2362,6 +2743,8 @@ mod tests {
                     repository_operation: None,
                     database_operation: None,
                     terminal_session_operation: None,
+                    shell_job_operation: None,
+                    path_access: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2369,6 +2752,7 @@ mod tests {
             }],
             modifiers: vec![RawModifier {
                 id: "set_security_context".to_string(),
+                ends_option_scope: false,
                 matcher: RawModifierMatcher::AnyFlag {
                     flags: vec!["--context".to_string()],
                 },
@@ -2406,6 +2790,7 @@ mod tests {
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2416,6 +2801,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "fdisk".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             trust: RawProfileTrustMetadata {
                 tier: RawProfileTrustTier::TierA,
@@ -2454,6 +2840,8 @@ mod tests {
                     repository_operation: None,
                     database_operation: None,
                     terminal_session_operation: None,
+                    shell_job_operation: None,
+                    path_access: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2461,6 +2849,7 @@ mod tests {
             }],
             modifiers: vec![RawModifier {
                 id: "compatibility".to_string(),
+                ends_option_scope: false,
                 matcher: RawModifierMatcher::AnyFlag {
                     flags: vec!["-c".to_string(), "--compatibility".to_string()],
                 },
@@ -2498,6 +2887,7 @@ mod tests {
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2508,6 +2898,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "parted".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             trust: RawProfileTrustMetadata {
                 tier: RawProfileTrustTier::TierA,
@@ -2556,6 +2947,7 @@ mod tests {
     fn normalize_command_profile_maps_metadata_mutation_semantics() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2563,6 +2955,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "chmod".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             forms: vec![RawForm {
                 id: "change_mode".to_string(),
@@ -2606,6 +2999,8 @@ mod tests {
                     repository_operation: None,
                     database_operation: None,
                     terminal_session_operation: None,
+                    shell_job_operation: None,
+                    path_access: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2630,6 +3025,7 @@ mod tests {
     fn normalize_rejects_invalid_dsl_version() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             dsl_version: "wrong".to_string(),
@@ -2637,6 +3033,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "bash".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -2652,6 +3049,7 @@ mod tests {
     fn normalize_rejects_duplicate_form_ids() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -2659,6 +3057,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "bash".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             forms: vec![
                 RawForm {
@@ -2684,6 +3083,7 @@ mod tests {
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
             argument_files: Vec::new(),
+            argument_regions: Vec::new(),
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             option_scope: Default::default(),
@@ -2694,6 +3094,7 @@ mod tests {
             identity: RawCommandIdentity {
                 canonical_name: "node".to_string(),
                 aliases: Vec::new(),
+                ..Default::default()
             },
             trust: Default::default(),
             platform: Default::default(),
@@ -2731,6 +3132,8 @@ mod tests {
                     repository_operation: None,
                     database_operation: None,
                     terminal_session_operation: None,
+                    shell_job_operation: None,
+                    path_access: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,

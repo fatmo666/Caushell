@@ -1,0 +1,38 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: dos2unix, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: convert_files_to_stdout
+    selector: {kind: all, items: [{kind: has_modifier, modifier: to_stdout}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}]}
+    parameters: [{name: input_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: convert_newfile_pair
+    selector: {kind: all, items: [{kind: has_modifier, modifier: newfile}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at, index: 2}}]}
+    parameters:
+      - {name: input_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_file}}, {kind: write_path, target: {kind: slot, name: output_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: convert_in_place
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}, {kind: not, item: {kind: has_modifier, modifier: to_stdout}}]}
+    parameters: [{name: input_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: write_path, target: {kind: slot, name: input_files}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: convert_standard_input
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: newfile}}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: force, matcher: {kind: any_flag, flags: ['-f', '--force']}}
+  - {id: to_stdout, matcher: {kind: any_flag, flags: ['-O', '--to-stdout']}, constraints: [{kind: mutually_exclusive_with, modifier: newfile}]}
+  - id: newfile
+    matcher: {kind: any_flag, flags: ['-n', '--newfile']}
+    constraints: [{kind: mutually_exclusive_with, modifier: to_stdout}]
+extensions:
+  caushell.profile/source_research: [https://dos2unix.sourceforge.io/dos2unix/man1/dos2unix.htm]
+  caushell.profile/known_limitations:
+    - In-place conversion models both read and write against each input; -n is modeled only for exactly one INFILE OUTFILE pair.

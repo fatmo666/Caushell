@@ -3,6 +3,7 @@ kind: command_profile
 
 identity:
   canonical_name: pip
+  module_entrypoints: [{runtime: python, name: pip}]
   aliases:
     - pip3
 

@@ -242,6 +242,7 @@ mod tests {
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
                     terminal_session_operations: Vec::new(),
+                    shell_job_operations: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:5".to_string(),
                     source: ExecutionUnit {
                         node_id: "command:sess-1:5".to_string(),
@@ -260,6 +261,7 @@ mod tests {
                     interactive_escape_capabilities: vec![],
                     interactive_escape_requires_tty: false,
                     mutates_current_shell: false,
+                    terminates_current_shell: false,
                     executes_remote_command: false,
                     executes_hook: false,
                     executes_imported_package_logic: false,

@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: pwsh, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: command_string
+    selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: script_file
+    selector: {kind: all, items: [{kind: has_modifier, modifier: script_file}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_shell
+    selector: {kind: all, items: [{kind: no_arguments}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}]
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: code
+    matcher: {kind: any_flag, flags: ['-Command', '-command', '-c', '-EncodedCommand', '-encodedcommand', '-ec']}
+    ends_option_scope: true
+    parameters: [{name: code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: code}}]
+  - id: script_file
+    matcher: {kind: any_flag, flags: ['-File', '-file', '-f']}
+    ends_option_scope: true
+    parameters: [{name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}]
+    effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+  - {id: information, matcher: {kind: any_flag, flags: ['-Help', '-Version']}, ends_option_scope: true}
+  - {id: switches, matcher: {kind: any_flag, flags: ['-NoLogo', '-NoExit', '-NonInteractive', '-NoProfile', '-Sta', '-Mta']}}
+  - {id: window_style, matcher: {kind: any_flag, flags: ['-WindowStyle']}, parameters: [{name: window_style_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+extensions:
+  caushell.profile/source_research: [https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh]
+  caushell.profile/known_limitations:
+    - PowerShell commands and script files are opaque and never interpreted as Bash; embedded cmdlets and native process effects are not inferred.
+    - PowerShell switch matching is case-insensitive and supports aliases such as -f; this exact-name profile recognizes only the declared spellings.
+    - EncodedCommand is an opaque encoded PowerShell execution entry; its contents are not decoded or reinterpreted as Bash.

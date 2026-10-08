@@ -5,6 +5,7 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [linux, windows], shell_families: [], requires_features: []}
 option_matching: exact_names
 option_scope: leading_options
+opaque_on_unresolved: true
 forms:
   - id: show_help
     selector: {kind: has_modifier, modifier: information}
@@ -14,6 +15,136 @@ modifiers:
     matcher: {kind: any_flag, flags: [--help, -h, --version, -v]}
 subcommands:
   roots:
+    # Linux-style one-shot collection. Neither the executable nor its argv is
+    # shell source; callbacks and existing interactive sessions are not replayed.
+    - name: profile
+      option_matching: exact_names
+      option_scope: leading_options
+      forms:
+        - id: profile_information
+          selector:
+            kind: all
+            items:
+              - {kind: has_modifier, modifier: profile_information}
+              - {kind: no_positional_args}
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - {kind: has_modifier, modifier: profile_output}
+                    - {kind: has_modifier, modifier: profile_duration}
+                    - {kind: has_modifier, modifier: profile_kill}
+                    - {kind: has_modifier, modifier: profile_capture}
+                    - {kind: has_modifier, modifier: profile_capture_end}
+                    - {kind: has_modifier, modifier: profile_environment}
+                    - {kind: has_modifier, modifier: profile_values}
+                    - {kind: has_modifier, modifier: profile_command_file}
+                    - {kind: has_modifier, modifier: profile_opaque_setup}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: profile_explicit_output
+          selector:
+            kind: all
+            items:
+              - &profile_running
+                kind: all
+                items:
+                  - {kind: has_positional_at, index: 0}
+                  - {kind: not, item: {kind: has_modifier, modifier: profile_information}}
+                  - {kind: not, item: {kind: has_modifier, modifier: profile_command_file}}
+                  - {kind: not, item: {kind: has_modifier, modifier: profile_opaque_setup}}
+              - &explicit_profile_output
+                kind: has_modifier_parameter_matching
+                modifier: profile_output
+                parameter: profile_outputs
+                matcher: {kind: regex_pattern, pattern: '^[^%]+$'}
+              - &no_profile_signal
+                kind: any
+                items:
+                  # Required-one cardinality rejects repeated/conflicting kill
+                  # options. Unknown values do not establish this exemption.
+                  - {kind: has_modifier_parameter_matching, modifier: profile_kill, parameter: profile_kill_value, matcher: {kind: literal, value: none}}
+                  - kind: all
+                    items:
+                      - {kind: not, item: {kind: has_modifier, modifier: profile_duration}}
+                      - kind: any
+                        items:
+                          - {kind: not, item: {kind: has_modifier, modifier: profile_capture}}
+                          - {kind: has_modifier_parameter_matching, modifier: profile_capture, parameter: profile_capture_value, matcher: {kind: literal, value: none}}
+                          - {kind: has_modifier_parameter_matching, modifier: profile_capture_end, parameter: profile_capture_end_value, matcher: {kind: regex_pattern, pattern: '^(none|stop|repeat(:[1-9][0-9]*)?(:(defer|sync|async))?)$'}}
+          parameters: &profile_application
+            - {name: profile_application, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: profile_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - &profile_dispatch
+              kind: dispatch_command
+              target: {kind: dispatch, command: profile_application, argv: [profile_argv], environment: [profile_environment_values], stdout_to_parent: true}
+            - &profile_report_write
+              kind: write_path
+              target: {kind: derived_path, source: {kind: slot, name: profile_outputs}, rule: {kind: sibling_files}, purpose: generic_operand}
+        - id: profile_default_output
+          selector: {kind: all, items: [*profile_running, {kind: not, item: {kind: has_modifier, modifier: profile_output}}, *no_profile_signal]}
+          parameters: *profile_application
+          effects:
+            - *profile_dispatch
+            # Native report# is a prefix, not an actual file. Establish its
+            # tool convention only as a basis for the bounded sibling set.
+            - &profile_default_base {kind: target_path, target: {kind: tool_convention_path, path: 'report#', convention: nsys_profile_default_base}}
+            - &profile_default_write {kind: write_path, target: {kind: derived_path, source: {kind: tool_convention_root, convention: nsys_profile_default_base}, rule: {kind: sibling_files}, purpose: generic_operand}}
+        - id: profile_explicit_output_may_signal
+          selector: {kind: all, items: [*profile_running, *explicit_profile_output, {kind: not, item: *no_profile_signal}]}
+          parameters: *profile_application
+          effects: [*profile_dispatch, *profile_report_write, &profile_signal {kind: control_process, target: {kind: none}}]
+        - id: profile_default_output_may_signal
+          selector: {kind: all, items: [*profile_running, {kind: not, item: {kind: has_modifier, modifier: profile_output}}, {kind: not, item: *no_profile_signal}]}
+          parameters: *profile_application
+          effects: [*profile_dispatch, *profile_default_base, *profile_default_write, *profile_signal]
+      modifiers:
+        - id: profile_information
+          matcher: {kind: any_flag, flags: [--help, -h]}
+          parameters: [{name: profile_help_tag, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_next_arg}, cardinality: optional_one}]
+        - id: profile_output
+          matcher: {kind: any_flag, flags: [--output, -o]}
+          # One configured report prefix. Repeated options and native % macros
+          # remain opaque rather than proving a scope from one harmless value.
+          parameters: [{name: profile_outputs, semantic: {kind: plain_value}, binding: &profile_operand {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+        - id: profile_duration
+          matcher: {kind: any_flag, flags: [--duration, -d]}
+          parameters: [{name: profile_duration_value, semantic: {kind: plain_value}, binding: *profile_operand, cardinality: required_one}]
+        - id: profile_kill
+          matcher: {kind: any_flag, flags: [--kill]}
+          parameters: [{name: profile_kill_value, semantic: {kind: plain_value}, binding: *profile_operand, cardinality: required_one}]
+        - id: profile_capture
+          matcher: {kind: any_flag, flags: [--capture-range, -c]}
+          parameters: [{name: profile_capture_value, semantic: {kind: plain_value}, binding: *profile_operand, cardinality: required_one}]
+        - id: profile_capture_end
+          matcher: {kind: any_flag, flags: [--capture-range-end]}
+          parameters: [{name: profile_capture_end_value, semantic: {kind: plain_value}, binding: *profile_operand, cardinality: required_one}]
+        - id: profile_environment
+          matcher: {kind: any_flag, flags: [--env-var, -e]}
+          parameters:
+            - name: profile_environment_operand
+              semantic: {kind: plain_value}
+              binding: *profile_operand
+              cardinality: required_many
+              structured_projection:
+                separator: ','
+                branches: []
+                # Dispatch's existing environment projector validates these
+                # assignment words; the CSV decoder does not rewrite source argv.
+                fallback: {name: profile_environment_values, semantic: {kind: plain_value}}
+        - id: profile_values
+          matcher:
+            kind: any_flag
+            flags: [--trace, -t, --sample, -s, --backtrace, -b, --cpuctxsw, --cuda-event-trace, --cuda-flush-interval, --cuda-graph-trace, --cuda-memory-usage, --cuda-trace-all-apis, --cuda-trace-scope, --cuda-um-cpu-page-faults, --cuda-um-gpu-page-faults, --cudabacktrace, --delay, -y, --export, --force-overwrite, -f, --discard-environment, --stop-on-exit, -x, --wait, --nvtx-capture, -p, --nvtx-domain-exclude, --nvtx-domain-include, --osrt-backtrace-depth, --osrt-backtrace-stack-size, --osrt-backtrace-threshold, --osrt-threshold, --osrt-file-access, --python-backtrace, --python-sampling, --python-sampling-frequency, --show-source-info, --show-output, -w, --stats, --trace-fork-before-exec, --sampling-frequency, --samples-per-backtrace, --resolve-symbols, --mpi-impl, --process-scope, --event-sampling-interval, --event-sampling-multiplex-interval, --hotkey-capture]
+          parameters: [{name: profile_values, semantic: {kind: plain_value}, binding: *profile_operand, cardinality: required_many}]
+        - id: profile_command_file
+          matcher: {kind: any_flag, flags: [--command-file]}
+          parameters: [{name: profile_command_files, semantic: {kind: path, role: config, purpose: tool_config}, binding: *profile_operand, value_projection: {kind: identity}, cardinality: required_many}]
+          effects: [{kind: read_path, target: {kind: slot, name: profile_command_files}}]
+        - id: profile_opaque_setup
+          matcher: {kind: any_flag, flags: [--after-collection-start, --after-report-ready, --enable, --session-new, --run-as, --start-later, -Y, --duration-frames, --auto-report-name, --inherit-environment, -n]}
+          parameters: [{name: profile_opaque_values, semantic: {kind: plain_value}, binding: *profile_operand, cardinality: required_many}]
+      default_behavior: reject_unknown
     - name: stats
       option_matching: exact_names
       forms: &analysis_forms
@@ -215,9 +346,13 @@ subcommands:
       default_behavior: reject_unknown
 extensions:
   caushell.profile/sources:
+    - https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-profile-command-switch-options
+    - https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-command-switches
     - https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options
     - https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-analyze-command-switch-options
   caushell.profile/known_limitations:
-    - This scope covers stats/analyze mixed output operands; profile/start/launch/stop callbacks and persistent collection sessions are not modeled.
+    - One-shot profile dispatch retains original argv, explicit child environment and report/export sibling-file sets. Duration and capture-range shutdown keep potential ControlProcess; only proven kill=none or no modeled shutdown trigger removes it.
+    - This is Linux-style collection CLI modeling, not a full native parser, ordered option replay or collector validity check. Repeated singleton control/output options, percent substitutions, auto-generated names, command files, callbacks, plugins, changed environment inheritance and interactive launch/start/stop/shutdown/finalize remain opaque approval.
+    - Profiling without a supplied application, runtime-unknown targets and unsupported options are unresolved, never guessed to be harmless system-wide collection. Actual process groups and collector/session state are not probed.
     - Reports are bounded sibling-file sets, not fabricated concrete filenames. Runtime input types and output targets remain unresolved.
     - Custom report code, report/format arguments and search-path environment can have opaque effects; they must not acquire a read-only exemption.

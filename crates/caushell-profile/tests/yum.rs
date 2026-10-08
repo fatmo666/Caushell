@@ -54,9 +54,13 @@ fn native_yum_registers_without_dnf_aliases() {
         assert_eq!(p.option_scope, OptionScopePolicy::AllArguments);
         assert!(p.opaque_on_unresolved);
     }
-    for name in ["dnf", "dnf5"] {
-        assert!(registry.lookup(name).profile.is_none());
+    // DNF now has its own native profile; it must never resolve as a Yum alias.
+    for name in ["dnf", "/usr/bin/dnf"] {
+        let p = registry.lookup(name).profile.unwrap();
+        assert_eq!(p.primary_name(), "dnf");
+        assert_ne!(p.primary_name(), "yum");
     }
+    assert!(registry.lookup("dnf5").profile.is_none());
 }
 
 #[test]

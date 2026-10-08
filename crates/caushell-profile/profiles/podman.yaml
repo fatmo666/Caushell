@@ -1,0 +1,131 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: podman
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: privileged_container_execution
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: run
+    - kind: has_modifier
+      modifier: privileged
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: run_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: container_image
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: container_argv
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: container_argv
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: privileged
+  matcher:
+    kind: any_flag
+    flags:
+    - "--privileged"
+- id: remove_after_exit
+  matcher:
+    kind: any_flag
+    flags:
+    - "--rm"
+- id: interactive
+  matcher:
+    kind: any_flag
+    flags:
+    - "-i"
+    - "--interactive"
+- id: tty
+  matcher:
+    kind: any_flag
+    flags:
+    - "-t"
+    - "--tty"
+- id: volume
+  matcher:
+    kind: any_flag
+    flags:
+    - "--volume"
+    - "-v"
+  parameters:
+  - name: host_volume_specification
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_many
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/podman (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://docs.podman.io/en/v4.4/markdown/podman-run.1.html
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - This requires an actual image to be available (e.g., `alpine`) downloading it
+    if not present.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

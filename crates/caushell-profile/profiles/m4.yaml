@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity: {canonical_name: m4, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+forms:
+  - id: process_macro_files
+    selector: {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: macro_files, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}], structured_projection: {branches: [], fallback: {name: macro_paths, semantic: {kind: path, role: read, purpose: script_source}}}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: macro_paths}}
+      - {kind: execute_payload, target: {kind: slot, name: macro_files}}
+  - id: process_macro_stdin
+    selector: {kind: no_positional_args}
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/m4/manual/m4.html
+  caushell.profile/known_limitations:
+    - GNU m4 syscmd and esyscmd macros invoke a shell by default, including through recursively expanded macro input. The payload stays opaque and requires the existing unresolved-payload boundary; it is never parsed as Bash or treated as a standalone command string.
+    - Macro includes, dynamic path selection, filesystem effects inside macros, and subprocess details are not derived from macro text. A literal '-' file operand is not modeled as stdin.

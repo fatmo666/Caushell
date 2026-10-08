@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pipx, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version]}}
+subcommands:
+  roots:
+    - name: run
+      forms:
+        - {id: run_help, selector: {kind: has_modifier, modifier: help}}
+        - id: run_local_path
+          selector: {kind: all, items: [{kind: has_modifier, modifier: path}, {kind: has_positional_at, index: 0}]}
+          parameters:
+            - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+            - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+        - id: run_package_spec
+          selector: {kind: all, items: [{kind: has_modifier, modifier: spec}, {kind: has_positional_at, index: 0}]}
+          parameters: [{name: app_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          effects: [{kind: import_package, target: {kind: slot, name: package_spec}}, {kind: execute_imported_package_logic, target: {kind: slot, name: package_spec}}]
+        - id: run_ambiguous_app
+          selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: path}}, {kind: not, item: {kind: has_modifier, modifier: spec}}]}
+          parameters: [{name: app, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}, binding: {kind: next_positional}, cardinality: required_one}, {name: app_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          effects: [{kind: execute_payload, target: {kind: slot, name: app}}]
+      modifiers:
+        - {id: help, matcher: {kind: any_flag, flags: [--help, -h]}}
+        - {id: path, matcher: {kind: any_flag, flags: [--path]}}
+        - id: spec
+          matcher: {kind: any_flag, flags: [--spec]}
+          parameters: [{name: package_spec, semantic: {kind: package_locator, manager: pip, locator_kinds: [registry_ref, local_path, direct_url, vcs_url, unknown_dynamic]}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+      children: []
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/pipx (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://pipx.pypa.io/latest/how-to/run-scripts.html", "https://pipx.pypa.io/stable/reference/examples.html", "https://pipx.pypa.io/stable/reference/cli.html"]
+  caushell.profile/known_limitations:
+    - GTFOBins uses a bare path with pipx run; current pipx documents bare names as ambiguous and documents --path as an explicit local-path selector, which this profile models without guessing from a filename extension.
+    - A bare pipx run app name is an opaque native executable boundary because pipx resolves a package or an existing local file at runtime. The profile does not infer whether the input is a package or file, a filesystem read, registry access, or any body effects without explicit --spec or --path.

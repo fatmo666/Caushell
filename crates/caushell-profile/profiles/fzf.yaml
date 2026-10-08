@@ -1,0 +1,41 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: fzf, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+
+forms:
+  - id: opaque_bind_actions
+    selector: {kind: has_modifier, modifier: bind}
+  - id: listen_tcp
+    selector: {kind: all, items: [{kind: has_modifier, modifier: listen}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: listen, parameter: listener_value, matcher: {kind: regex_pattern, pattern: '[^0-9]'}}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects:
+      - {kind: network_endpoint, target: {kind: none}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+  - id: listen_socket
+    selector: {kind: all, items: [{kind: has_modifier, modifier: listen}, {kind: has_modifier_parameter_matching, modifier: listen, parameter: listener_value, matcher: {kind: regex_pattern, pattern: '[.]sock$'}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects:
+      - {kind: write_path, target: {kind: configured_path, sources: [{slot: listener_value, projection: {kind: identity}}], missing: unknown}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+  - id: filter_input
+    selector: {kind: has_modifier, modifier: filter}
+    parameters: []
+
+modifiers:
+  - {id: bind, matcher: {kind: any_flag, flags: ['--bind']}, parameters: [{name: action_bindings, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}], effects: [{kind: execute_payload, target: {kind: slot, name: action_bindings}}]}
+  - {id: listen, matcher: {kind: any_flag, flags: ['--listen']}, parameters: [{name: listener_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}]}
+  - {id: filter, matcher: {kind: any_flag, flags: ['--filter', '-f']}, parameters: [{name: filter_query, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/junegunn/fzf/blob/master/man/man1/fzf.1
+    - https://github.com/junegunn/fzf/blob/master/src/options.go
+    - https://gtfobins.org/gtfobins/fzf/
+  caushell.profile/known_limitations:
+    - --bind values are the tool's own event/action language and are preserved as opaque executable payloads. No partial event-action parser is claimed; this also leaves non-executable bindings opaque.
+    - HTTP request action bodies are an opaque interactive-session input, never fabricated as Bash. TCP has an unknown network endpoint because this DSL cannot express a constant listener host without a real bound host operand; it is not a fully resolved listener fact. Unix .sock output is a local socket path, not TCP. Explicit HOST:PORT and action grammar remain partial.

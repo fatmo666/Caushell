@@ -44,10 +44,15 @@ impl RequestAnalysisPass for ResolvePolicyPass {
                     } => Some((
                         RuleId::SelectionError,
                         policy.action_for_resolve_gap(*gap_kind),
-                        format!(
-                            "command {} matched a profile but invocation selection failed: {}",
-                            normalized_command_name, error
-                        ),
+                        match error {
+                            caushell_profile::BindError::UncertainFunctionBinding { .. } => {
+                                error.to_string()
+                            }
+                            _ => format!(
+                                "command {} matched a profile but invocation selection failed: {}",
+                                normalized_command_name, error
+                            ),
+                        },
                     )),
                     ResolveInvocationArtifactResult::Resolved(resolved)
                         if resolved.bound.operation_semantics_unresolved =>
@@ -330,10 +335,14 @@ fn unresolved_execution_payload_evidence(
                             | caushell_types::NestedPayloadOriginEvidence::FormImplicitInput
                     ) =>
             {
-                !resolved_execution_payloads.contains(&(
-                    unresolved.context.root_command_index,
-                    nested_payload_origin_key(&unresolved.context.origin),
-                ))
+                // A parsed shell record sharing an origin cannot resolve a
+                // separately declared opaque executable-language boundary.
+                unresolved.unresolved_execution_payload_subtype
+                    == Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell)
+                    || !resolved_execution_payloads.contains(&(
+                        unresolved.context.root_command_index,
+                        nested_payload_origin_key(&unresolved.context.origin),
+                    ))
             }
             _ => false,
         })
@@ -839,6 +848,29 @@ mod tests {
         );
 
         assert!(ctx.decision_proposals.is_empty());
+    }
+
+    #[test]
+    fn parsed_shell_with_same_origin_does_not_hide_an_opaque_language_boundary() {
+        let context = sample_nested_payload_context("payload");
+        let mut opaque_context = context.clone();
+        opaque_context.language = caushell_types::NestedPayloadLanguageEvidence::Opaque;
+        let ctx = run_pass(
+            PolicyConfig::default(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                Evidence::nested_payload_parsed(context, ShellKind::Bash, 1),
+                Evidence::nested_payload_unresolved(
+                    opaque_context,
+                    NestedPayloadUnresolvedReasonEvidence::UnsupportedLanguage,
+                    Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell),
+                ),
+            ],
+            "opaque-fixture ...",
+        );
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
     }
 
     #[test]

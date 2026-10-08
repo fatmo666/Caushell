@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use caushell_types::{
-    RuntimeInputCapture, RuntimeInputSource, RuntimeProducedValueKind, SessionSummary,
-    SessionVariableValue, ShellStateKnowledge, ShellStateSnapshot, ShellValueSnapshot,
+    RuntimeInputCapture, RuntimeInputSource, RuntimeProducedValueKind, SessionFunctionBinding,
+    SessionSummary, SessionVariableValue, ShellStateKnowledge, ShellStateSnapshot,
+    ShellValueSnapshot,
 };
 
 use crate::{
@@ -88,6 +89,14 @@ pub struct BindingValueRef<'a> {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionBindings {
+    functions: BTreeMap<String, SessionFunctionBinding>,
+    // Variable existence is not child-environment presence: an unexported
+    // variable still prevents plain unset from falling back to a function.
+    variable_presence: BTreeMap<String, VariablePresence>,
+    variables_complete: bool,
+    /// Statically encountered indirect/array destinations are outside the
+    /// scalar assignment contract. This is analysis metadata, not runtime data.
+    unresolved_runtime_variable_targets: std::collections::BTreeSet<String>,
     session_variables: BTreeMap<String, SessionValue>,
     inherited_environment: BTreeMap<String, SessionValue>,
     positional_parameters: Vec<SessionValue>,
@@ -98,6 +107,13 @@ pub struct SessionBindings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariablePresence {
+    Present,
+    Absent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvironmentValueRef<'a> {
     Present(&'a SessionValue),
     Absent,
@@ -105,12 +121,89 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn variable_presence(&self, name: &str) -> VariablePresence {
+        if let Some(presence) = self.variable_presence.get(name) {
+            return *presence;
+        }
+        match self.get(name) {
+            Some(binding)
+                if matches!(
+                    binding.value,
+                    SessionValue::ExactScalar(_) | SessionValue::RuntimeProduced { .. }
+                ) =>
+            {
+                VariablePresence::Present
+            }
+            Some(_) => VariablePresence::Unknown,
+            None if self.variables_complete => VariablePresence::Absent,
+            None => VariablePresence::Unknown,
+        }
+    }
+
+    pub fn mark_variable_presence_unknown(&mut self, name: &str) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Unknown);
+    }
+
+    pub fn mark_variable_present(&mut self, name: &str) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Present);
+    }
+
+    pub fn forget_variable_presence(&mut self) {
+        self.variables_complete = false;
+        let names = self
+            .variable_presence
+            .keys()
+            .cloned()
+            .chain(self.variable_names().map(str::to_string))
+            .collect::<std::collections::BTreeSet<_>>();
+        for name in names {
+            self.mark_variable_presence_unknown(&name);
+        }
+    }
+
+    pub fn function_binding(&self, name: &str) -> Option<&SessionFunctionBinding> {
+        self.functions.get(name)
+    }
+
+    pub fn function_names(&self) -> impl Iterator<Item = &str> {
+        self.functions.keys().map(String::as_str)
+    }
+
+    pub fn upsert_function_binding(&mut self, binding: SessionFunctionBinding) {
+        self.functions.insert(binding.name.clone(), binding);
+    }
+
+    pub fn unset_function(&mut self, name: &str) {
+        self.functions.remove(name);
+    }
+
+    pub fn replace_function_bindings(
+        &mut self,
+        bindings: impl IntoIterator<Item = SessionFunctionBinding>,
+    ) {
+        self.functions = bindings.into_iter().map(|b| (b.name.clone(), b)).collect();
+    }
+    pub fn mark_unresolved_runtime_variable_target(&mut self, name: &str) {
+        self.unresolved_runtime_variable_targets.insert(name.into());
+    }
+    pub fn runtime_variable_target_is_unresolved(&self, name: &str) -> bool {
+        self.unresolved_runtime_variable_targets.contains(name)
+    }
+    pub fn variable_names(&self) -> impl Iterator<Item = &str> {
+        self.session_variables
+            .keys()
+            .chain(self.inherited_environment.keys())
+            .map(String::as_str)
+    }
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn from_session_summary(summary: &SessionSummary) -> Self {
         let mut bindings = Self::new();
+        bindings.replace_function_bindings(summary.function_bindings().cloned());
 
         for binding in summary.variable_bindings() {
             bindings.session_variables.insert(
@@ -148,12 +241,30 @@ impl SessionBindings {
             }
         };
 
+        bindings.variables_complete =
+            shell_state.observability.variables == ShellStateKnowledge::Complete;
+        if shell_state.observability.functions != ShellStateKnowledge::Complete {
+            bindings.replace_function_bindings(summary.function_bindings().cloned());
+        } else {
+            bindings.functions.clear();
+        }
+        for function in &shell_state.functions {
+            bindings.upsert_function_binding(SessionFunctionBinding::new(
+                &function.name,
+                &function.body,
+                caushell_types::CommandSequenceNo::new(0),
+            ));
+        }
+
         if shell_state.observability.variables != ShellStateKnowledge::Unknown {
             bindings.child_environment.clear();
             bindings.child_environment_complete = true;
         }
 
         for variable in &shell_state.variables {
+            bindings
+                .variable_presence
+                .insert(variable.name.clone(), VariablePresence::Present);
             if let Some(value) = shell_value_to_session_value(&variable.value) {
                 bindings.child_environment.insert(
                     variable.name.clone(),
@@ -211,6 +322,8 @@ impl SessionBindings {
     }
 
     pub fn insert_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Present);
         let value = value.into();
         self.update_exported_value(name, SessionValue::exact_scalar(value.clone()));
         self.session_variables
@@ -223,6 +336,8 @@ impl SessionBindings {
         value: impl Into<String>,
         kind: RuntimeProducedValueKind,
     ) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Present);
         let value = value.into();
         self.update_exported_value(name, SessionValue::runtime_produced(value.clone(), kind));
         self.session_variables.insert(
@@ -232,6 +347,7 @@ impl SessionBindings {
     }
 
     pub fn insert_opaque_dynamic(&mut self, name: &str, repr: impl Into<String>) {
+        self.mark_variable_presence_unknown(name);
         let repr = repr.into();
         self.update_exported_value(name, SessionValue::opaque_dynamic(repr.clone()));
         self.session_variables
@@ -254,6 +370,7 @@ impl SessionBindings {
         source: RuntimeInputSource,
         capture: RuntimeInputCapture,
     ) {
+        self.mark_variable_presence_unknown(name);
         self.update_exported_value(name, SessionValue::runtime_input(source, capture.clone()));
         self.session_variables.insert(
             name.to_string(),
@@ -267,6 +384,8 @@ impl SessionBindings {
     }
 
     pub fn insert_inherited_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Present);
         let value = value.into();
         self.child_environment
             .insert(name.into(), Some(SessionValue::exact_scalar(value.clone())));
@@ -302,6 +421,8 @@ impl SessionBindings {
     }
 
     pub fn remove(&mut self, name: &str) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Absent);
         self.session_variables.remove(name);
         self.inherited_environment.remove(name);
         self.child_environment.insert(name.into(), None);
@@ -336,6 +457,9 @@ impl SessionBindings {
     /// Enter a child process after a wrapper resets (or obscures) its env.
     /// Its old shell locals must not survive as facts for a nested shell.
     pub fn reset_child_environment(&mut self, complete: bool) {
+        self.functions.clear();
+        self.variable_presence.clear();
+        self.variables_complete = complete;
         self.session_variables.clear();
         self.inherited_environment.clear();
         self.child_environment.clear();
@@ -347,6 +471,8 @@ impl SessionBindings {
     }
 
     pub fn set_child_environment_value(&mut self, name: &str, value: SessionValue) {
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Present);
         self.session_variables.remove(name);
         self.inherited_environment
             .insert(name.into(), value.clone());
@@ -354,6 +480,12 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        // Function export is deliberately not modeled. Ordinary shell
+        // functions must not leak into a new interpreter's namespace.
+        self.functions.clear();
+        self.variable_presence.clear();
+        self.variables_complete = self.child_environment_complete;
+        self.unresolved_runtime_variable_targets.clear();
         // Keep the origin of exported session values: converting all of them
         // into anonymous inherited values would sever their Graph provenance.
         self.session_variables.retain(|name, value| {

@@ -1,0 +1,35 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: jshell, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: startup_script
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters:
+      - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: remaining_positionals}, cardinality: required_many, structured_projection: {branches: [{matcher: {kind: literal, value: DEFAULT}, target: {name: predefined_default, semantic: {kind: plain_value}}}, {matcher: {kind: literal, value: JAVASE}, target: {name: predefined_javase, semantic: {kind: plain_value}}}, {matcher: {kind: literal, value: PRINTING}, target: {name: predefined_printing, semantic: {kind: plain_value}}}, {matcher: {kind: literal, value: TOOLING}, target: {name: predefined_tooling, semantic: {kind: plain_value}}}, {matcher: {kind: literal, value: "-"}, target: {name: stdin_script, semantic: {kind: plain_value}}}], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+    effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_repl
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects:
+      - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, "-?", --help-extra, -X, --version]}}
+  - {id: feedback_control, matcher: {kind: any_flag, flags: [-v, -q, -s, --show-version, --no-startup]}}
+  - {id: feedback_mode, matcher: {kind: any_flag, flags: [--feedback]}, parameters: [{name: feedback_mode, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/jshell (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://docs.oracle.com/en/java/javase/21/docs/specs/man/jshell.html"]
+  caushell.profile/known_limitations:
+    - "A command-line load file is modeled as an opaque Java/JShell script path; later /open, /save and snippets are native JShell input and are not caller-shell commands or argv."
+    - "The prompt is represented as opaque Java execution. The /open and /save files, Runtime.exec targets and other Java effects are not projected as paths or commands."
+    - "The blind command-execution source example is retained as source evidence only; the selected interactive surface records command-spawning capability without guessing the requested command."
+    - "Every command-line load file is executable input, not trailing program argv. Predefined script names and the stdin marker are not filesystem paths. -v and --show-version continue into execution; only documented exit controls are information. Explicit --startup and other JVM/engine options remain unresolved."

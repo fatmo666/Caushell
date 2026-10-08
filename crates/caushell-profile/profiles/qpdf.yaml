@@ -1,0 +1,43 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: qpdf, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: add_attachment_to_new_pdf
+    selector: {kind: all, items: [{kind: has_modifier, modifier: empty_document}, {kind: has_modifier, modifier: add_attachment}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: attachment_path}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: add_attachment_to_stdout
+    selector: {kind: all, items: [{kind: has_modifier, modifier: empty_document}, {kind: has_modifier, modifier: add_attachment}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}
+    parameters: [{name: stdout_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: show_pdf_attachment
+    selector: {kind: has_modifier, modifier: show_attachment}
+    parameters: [{name: pdf_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: pdf_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - {id: empty_document, matcher: {kind: any_flag, flags: ['--empty']}}
+  - id: add_attachment
+    matcher: {kind: any_flag, flags: ['--add-attachment']}
+    parameters: [{name: attachment_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: attachment_path}}]
+  - id: attachment_key
+    matcher: {kind: any_flag, flags: ['--key']}
+    parameters: [{name: attachment_key, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: show_attachment
+    matcher: {kind: any_flag, flags: ['--show-attachment']}
+    parameters: [{name: attachment_key, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: transform_data, target: {kind: none}}]
+subcommands: null
+extensions:
+  caushell.profile/source_research: [https://github.com/qpdf/qpdf/blob/main/manual/cli.rst, GTFOBins fixed snapshot qpdf/file-read/0]
+  caushell.profile/known_limitations:
+    - --add-attachment reads a host file and writes the resulting PDF to the positional output path after --. The attachment key is metadata, not a path.
+    - --show-attachment reads a PDF host file and emits a named embedded member to stdout; that member is not an independent host path.
+    - Attached equals syntax is modeled for --key=value and --show-attachment=value. Option abbreviations, implicit stdin, password sources, and other qpdf operation modes remain unresolved.

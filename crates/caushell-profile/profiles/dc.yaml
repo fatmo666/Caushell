@@ -1,0 +1,230 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: dc
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: information
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: code
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: program_file
+- id: evaluate_dc_program
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: code
+    - &4
+      kind: no_positional_args
+    - &1
+      kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters: &2
+  - &3
+    name: program_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: evaluate_program_file
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: program_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: code
+    - *1
+  parameters: *2
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: script_file
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: code
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: program_file
+    - *1
+  parameters:
+  - name: script_program
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: script_reads
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  - *3
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: script_reads
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: script_program
+  stream_contract:
+    stdin_mode: data_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: interactive_shell
+  selector:
+    kind: all
+    items:
+    - *4
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: code
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: program_file
+    - *1
+  implicit_inputs:
+  - source: interactive_session
+    semantic:
+      kind: payload
+      language: opaque
+      source: interactive
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: interactive_session
+  stream_contract:
+    stdin_mode: payload_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/dc/
+  - https://www.gnu.org/software/bc/manual/dc-1.05/html_mono/dc.html
+  caushell.profile/known_limitations:
+  - The dc language is opaque; embedded ! command text is not parsed or treated as
+    a file path.
+  - Only declared native entry grammar is supported. Foreign program content, runtime
+    startup/config files and argument-dependent inner effects stay opaque. Unknown
+    CLI options use the existing unresolved-operation boundary; no suffix-based file
+    type guess. Mixed metadata/code and complex repeated native operations are not
+    claimed as normal metadata-only calls.
+modifiers:
+- id: code
+  matcher:
+    kind: any_flag
+    flags:
+    - "-e"
+    - "--expression"
+  parameters:
+  - name: program
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: program
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "--help"
+    - "-V"
+    - "--version"
+  parameters: []
+  effects: []
+- id: program_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+    - "--file"
+  parameters:
+  - name: file_program
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: file_reads
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: file_reads
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: file_program

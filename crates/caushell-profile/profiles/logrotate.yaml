@@ -1,0 +1,218 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: logrotate
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+- id: run_mailer_from_config
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: mailer
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: log_file
+  parameters:
+  - name: config
+    semantic: &1
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: config_payload
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: mailer_command
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: config_payload
+- id: read_config
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: mailer
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: log_file
+  parameters:
+  - name: config
+    semantic: *1
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: config_payload
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: config_payload
+- id: write_log
+  selector:
+    kind: has_modifier
+    modifier: log_file
+  parameters:
+  - name: config
+    semantic: *1
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: config_payload
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: config
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: slot
+      name: log_file
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: config_payload
+modifiers:
+- id: mailer
+  matcher:
+    kind: any_flag
+    flags:
+    - "-m"
+    - "--mail"
+  parameters:
+  - name: mailer_command
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: mailer_command
+- id: log_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-l"
+    - "--log"
+  parameters:
+  - name: log_file
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: log_file
+- id: force
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+    - "--force"
+extensions:
+  caushell.profile/source_research:
+  - https://www.man7.org/linux/man-pages/man8/logrotate.8.html
+  caushell.profile/known_limitations:
+  - Configuration files are real reads and opaque executable configuration because
+    prerotate/postrotate/firstaction/lastaction may run scripts. Explicit mailer entry
+    is opaque; generated mail argv is not fabricated.
+  - Implicit state, status-file, rotated logs and config-derived writes have unknown
+    targets and are not treated as reads only.
+  - The GTFO mail directive and permission prerequisites are not validated or executed.

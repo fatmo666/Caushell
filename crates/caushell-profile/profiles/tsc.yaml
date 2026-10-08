@@ -1,0 +1,48 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: tsc, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: compile_explicit_sources
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: out_file}}, {kind: not, item: {kind: has_modifier, modifier: no_emit}}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+  - id: compile_explicit_sources_to_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: out_file}, {kind: not, item: {kind: has_modifier, modifier: no_emit}}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: source_paths}}
+      - {kind: write_path, target: {kind: configured_path, sources: [{slot: output_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}}
+  - id: check_explicit_sources_without_emit
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: no_emit}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(true|false)$'}}}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - {id: no_emit, matcher: {kind: any_flag, flags: ['--noEmit', '--noemit']}}
+  - id: out_file
+    matcher: {kind: any_flag, flags: ['--outFile']}
+    parameters:
+      - {name: output_path, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+extensions:
+  caushell.profile/source_research:
+    - https://www.typescriptlang.org/docs/handbook/compiler-options.html
+  caushell.profile/known_limitations:
+    - Explicit TypeScript sources are content reads and diagnostics on stdout or stderr may expose source fragments. Default compilation emits files whose names and transitive outputs are unresolved, so an unknown write is retained. --outFile supplies the concrete bundle output; --noEmit suppresses writes. Separate true/false boolean overrides are unresolved rather than silently treated as source files or no-emit guarantees.
+    - Project/config discovery when no source operands are given, imports/reference expansion, output paths selected by configuration, error-dependent emission, and other compiler options are not inferred. No TypeScript expression or config interpreter is added.

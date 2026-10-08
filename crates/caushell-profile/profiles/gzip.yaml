@@ -17,38 +17,265 @@ platform:
   shell_families: []
   requires_features: []
 
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+# GNU gzip 1.12 native controls and GNU gzip 1.14 documentation. File names
+# are CLI operands, not extension-based classifications of their purpose.
 forms:
+  - id: information
+    selector: &information
+      kind: any
+      items:
+        - {kind: has_modifier, modifier: help}
+        - {kind: has_modifier, modifier: version}
+        - {kind: has_modifier, modifier: license}
+    parameters:
+      - {name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: &opaque_streams {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
+  - id: inspect_files
+    selector:
+      kind: all
+      items:
+        - &running {kind: not, item: *information}
+        - &inspection {kind: any, items: [{kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: test}]}
+        - kind: not
+          item: &test_only {kind: all, items: [{kind: has_modifier, modifier: test}, {kind: not, item: {kind: has_modifier, modifier: list}}]}
+        - &no_stdin
+          kind: not
+          item: &stdin
+            kind: any
+            items:
+              - {kind: no_positional_args}
+              - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters: &inputs
+      # Bind the stdin marker as data before binding files. Excluding it from
+      # a path slot alone leaves it unconsumed under strict argv accounting.
+      - name: stdin_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
+        cardinality: optional_many
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    effects: [&read {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}]
+    # Listing contains input-derived header/size metadata, unlike test-only.
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: inspect_stdin
+    selector: {kind: all, items: [*running, *inspection, *stdin, {kind: not, item: *test_only}]}
+    parameters: *inputs
+    effects: [*read]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: test_files
+    selector: {kind: all, items: [*running, *test_only, *no_stdin]}
+    parameters: *inputs
+    effects: [*read]
+    stream_contract: *opaque_streams
+  - id: test_stdin
+    selector: {kind: all, items: [*running, *test_only, *stdin]}
+    parameters: *inputs
+    effects: [*read]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
+  - id: compress_stdout_files
+    selector:
+      kind: all
+      items:
+        - &stdout_operation
+          kind: all
+          items:
+            - *running
+            - {kind: not, item: *inspection}
+            - kind: any
+              items:
+                - &stdout {kind: has_modifier, modifier: stdout}
+                - kind: not
+                  item: &files {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}
+        - &compress {kind: not, item: &decompress {kind: has_modifier, modifier: decompress}}
+        - *no_stdin
+    parameters: *inputs
+    effects: &compress_effects
+      - *read
+      - &compress_transform {kind: transform_data, target: {kind: none}, extensions: {transform.kind: compress}}
+    stream_contract: &file_stdout {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: compress_stdout_stdin
+    selector: {kind: all, items: [*stdout_operation, *compress, *stdin]}
+    parameters: *inputs
+    effects: *compress_effects
+    stream_contract: &stdin_stdout {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decompress_stdout_files
+    selector: {kind: all, items: [*stdout_operation, *decompress, *no_stdin]}
+    parameters: *inputs
+    effects: &decompress_effects
+      - *read
+      - &decompress_transform {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decompress}}
+    stream_contract: *file_stdout
+  - id: decompress_stdout_stdin
+    selector: {kind: all, items: [*stdout_operation, *decompress, *stdin]}
+    parameters: *inputs
+    effects: *decompress_effects
+    stream_contract: *stdin_stdout
+
   - id: default_file_mode
     selector:
-      kind: has_positional_at
-      index: 0
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: write_path
-        target:
-          kind: derived_path
-          source:
-            kind: slot
-            name: input_paths
-          rule:
-            kind: append_suffix
-            suffix: ".gz"
-          purpose: generic_operand
+      kind: all
+      items:
+        - &file_operation {kind: all, items: [*running, {kind: not, item: *inspection}, {kind: not, item: *stdout}, *files]}
+        - *compress
+        - &simple_compression
+          kind: all
+          items:
+            - &not_recursive {kind: not, item: {kind: has_modifier, modifier: recursive}}
+            - &default_suffix
+              kind: all
+              items:
+                - kind: not
+                  item:
+                    kind: any
+                    items:
+                      - {kind: has_flag_at_least, flag: '-S', count: 2}
+                      - {kind: has_flag_at_least, flag: '--suffix', count: 2}
+                      - {kind: all, items: [{kind: has_flag, flag: '-S'}, {kind: has_flag, flag: '--suffix'}]}
+                - kind: any
+                  items:
+                    - {kind: not, item: {kind: has_modifier, modifier: suffix}}
+                    - {kind: has_modifier_parameter_matching, modifier: suffix, parameter: suffix, matcher: {kind: literal, value: '.gz'}}
+        - &not_keep {kind: not, item: &keep {kind: has_modifier, modifier: keep}}
+        - *no_stdin
+    parameters: *inputs
+    effects: &compress_file_effects
+      - *read
+      - &compressed_write
+        kind: write_path
+        # Creates/replaces a sibling and may unlink the original. Not a
+        # content-open exemption for /dev/stdout, /dev/null or a linked entry.
+        target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: append_suffix, suffix: '.gz'}, purpose: generic_operand}
+      - &delete_input {kind: delete_path, target: {kind: slot, name: input_paths}}
+      - *compress_transform
+    stream_contract: *opaque_streams
+  - id: compress_files_with_stdin
+    selector: {kind: all, items: [*file_operation, *compress, *simple_compression, *not_keep, *stdin]}
+    parameters: *inputs
+    effects: *compress_file_effects
+    stream_contract: *stdin_stdout
+  - id: compress_files_keep
+    selector: {kind: all, items: [*file_operation, *compress, *simple_compression, *keep, *no_stdin]}
+    parameters: *inputs
+    effects: [*read, *compressed_write, *compress_transform]
+    stream_contract: *opaque_streams
+  - id: compress_files_keep_with_stdin
+    selector: {kind: all, items: [*file_operation, *compress, *simple_compression, *keep, *stdin]}
+    parameters: *inputs
+    effects: [*read, *compressed_write, *compress_transform]
+    stream_contract: *stdin_stdout
 
-modifiers: []
+  - id: decompress_files
+    selector:
+      kind: all
+      items:
+        - *file_operation
+        - *decompress
+        - &simple_decompression
+          kind: all
+          items: [*not_recursive, *default_suffix, {kind: not, item: {kind: has_modifier, modifier: name}}]
+        - *not_keep
+        - *no_stdin
+    parameters: *inputs
+    effects: &decompress_file_effects
+      - *read
+      - &decompressed_write
+        kind: write_path
+        # The declared exact .gz form has a known output. Other suffixes remain
+        # DerivedUnresolved, never a guessed output and never fake .gz.gz.
+        target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: strip_suffix, suffix: '.gz'}, purpose: generic_operand}
+      - *delete_input
+      - *decompress_transform
+    stream_contract: *opaque_streams
+  - id: decompress_files_with_stdin
+    selector: {kind: all, items: [*file_operation, *decompress, *simple_decompression, *not_keep, *stdin]}
+    parameters: *inputs
+    effects: *decompress_file_effects
+    stream_contract: *stdin_stdout
+  - id: decompress_files_keep
+    selector: {kind: all, items: [*file_operation, *decompress, *simple_decompression, *keep, *no_stdin]}
+    parameters: *inputs
+    effects: [*read, *decompressed_write, *decompress_transform]
+    stream_contract: *opaque_streams
+  - id: decompress_files_keep_with_stdin
+    selector: {kind: all, items: [*file_operation, *decompress, *simple_decompression, *keep, *stdin]}
+    parameters: *inputs
+    effects: [*read, *decompressed_write, *decompress_transform]
+    stream_contract: *stdin_stdout
+
+  - id: unresolved_file_outputs
+    selector:
+      kind: all
+      items:
+        - &unknown_output
+          kind: all
+          items:
+            - *file_operation
+            - kind: not
+              item: {kind: any, items: [{kind: all, items: [*compress, *simple_compression]}, {kind: all, items: [*decompress, *simple_decompression]}]}
+        - *not_keep
+        - *no_stdin
+    parameters: *inputs
+    effects: &unresolved_file_effects
+      - *read
+      # Recursive traversal, configured suffixes and header-restored names have
+      # real but unresolved output targets. Preserve that uncertainty explicitly.
+      - &unknown_write {kind: write_path, target: {kind: none}}
+      - &unknown_delete {kind: delete_path, target: {kind: none}}
+    stream_contract: *opaque_streams
+  - id: unresolved_file_outputs_with_stdin
+    selector: {kind: all, items: [*unknown_output, *not_keep, *stdin]}
+    parameters: *inputs
+    effects: *unresolved_file_effects
+    stream_contract: *stdin_stdout
+  - id: unresolved_file_outputs_keep
+    selector: {kind: all, items: [*unknown_output, *keep, *no_stdin]}
+    parameters: *inputs
+    effects: [*read, *unknown_write]
+    stream_contract: *opaque_streams
+  - id: unresolved_file_outputs_keep_with_stdin
+    selector: {kind: all, items: [*unknown_output, *keep, *stdin]}
+    parameters: *inputs
+    effects: [*read, *unknown_write]
+    stream_contract: *stdin_stdout
+
+modifiers:
+  - {id: stdout, matcher: {kind: any_flag, flags: [-c, --stdout, --to-stdout]}}
+  - {id: decompress, matcher: {kind: any_flag, flags: [-d, --decompress, --uncompress]}}
+  - {id: keep, matcher: {kind: any_flag, flags: [-k, --keep]}}
+  - {id: list, matcher: {kind: any_flag, flags: [-l, --list]}}
+  - {id: test, matcher: {kind: any_flag, flags: [-t, --test]}}
+  - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}
+  - {id: version, matcher: {kind: any_flag, flags: [-V, --version]}}
+  - {id: license, matcher: {kind: any_flag, flags: [-L, --license]}}
+  - {id: force, matcher: {kind: any_flag, flags: [-f, --force]}}
+  - {id: recursive, matcher: {kind: any_flag, flags: [-r, --recursive]}}
+  - {id: name, matcher: {kind: any_flag, flags: [-N, --name]}}
+  - {id: no_name, matcher: {kind: any_flag, flags: [-n, --no-name]}}
+  - {id: compression_level, matcher: {kind: any_flag, flags: ['-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9', --fast, --best]}}
+  - {id: diagnostics, matcher: {kind: any_flag, flags: [-q, --quiet, -v, --verbose]}}
+  - {id: tuning, matcher: {kind: any_flag, flags: [--rsyncable, --synchronous]}}
+  - id: suffix
+    matcher: {kind: any_flag, flags: [-S, --suffix]}
+    parameters:
+      - {name: suffix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
 subcommands: null
 extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/gzip/manual/html_node/Invoking-gzip.html
+    - GTFOBins gzip/file-read/0 at acd524623f9c406acedd2754ebd9c2431f3675ad
+  caushell.profile/scope: GNU gzip stdin/stdout compression and decompression, mixed explicit stdin and file operands, test/list queries, default .gz file replacement and keep mode, with declared unknown output boundaries.
   caushell.profile/known_limitations:
-    - Success-conditioned deletion of the original input file is not modeled in this slice.
+    - File writes and input deletions describe possible successful effects, not evidence that gzip actually ran or succeeded. No filesystem, content, SUID or capability probes are performed.
+    - Exact .gz stripping is supported. Other native decode suffixes (.z, .Z, -gz, -z, _z, .tgz, .taz and case variants), implicit missing-file suffix lookup and filesystem name truncation are not reconstructed as known output paths.
+    - Recursive file mutations, non-default configured suffixes and --name header-based output names retain unknown mutation targets and use the existing approval guard. Recursive read-only/stdout forms preserve the supplied read root without enumerating members.
+    - Repeated suffix options and both --name and --no-name are conservatively represented rather than reimplementing last-option precedence. Unknown options or unresolved mode selection use opaque_on_unresolved.
+    - GNU 1.12+ GZIP defaults affect tuning only; earlier GNU releases, BusyBox and BSD-specific extensions are not certified by this profile. gunzip and zcat remain separately registered profiles, not aliases silently redirected to this one.

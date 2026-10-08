@@ -1,0 +1,95 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: dosbox
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+forms:
+- id: execute_dos_commands
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: dos_commands
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: startup_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: information
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: dos_commands
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers:
+- id: dos_commands
+  matcher:
+    kind: any_flag
+    flags:
+    - "-c"
+  parameters:
+  - name: commands
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: commands
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-version"
+    - "--version"
+    - "-h"
+    - "--help"
+  parameters: []
+  effects: []
+extensions:
+  caushell.profile/source_research:
+  - https://gtfobins.org/gtfobins/dosbox/
+  - https://www.dosbox.com/wiki/Usage
+  - https://www.dosbox.com/wiki/MOUNT
+  caushell.profile/known_limitations:
+  - DOS commands and mounted drive paths remain opaque; DOS 8.3 names and host-path
+    mapping are not inferred.
+option_matching: exact_names

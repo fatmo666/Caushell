@@ -1,0 +1,35 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: openvt, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: virtual_terminal_child
+    selector:
+      kind: all
+      items:
+        - {kind: has_dash_dash}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional_after_dashdash}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_positionals_after_dash_dash}, cardinality: optional_many}
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: false, stdout_to_parent: false}}
+modifiers:
+  - {id: console, matcher: {kind: any_flag, flags: ['-c', '--console']}, parameters: [{name: vt_number, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: force, matcher: {kind: any_flag, flags: ['-f', '--force']}}
+  - {id: execute, matcher: {kind: any_flag, flags: ['-e', '--exec']}}
+  - {id: switch, matcher: {kind: any_flag, flags: ['-s', '--switch']}}
+  - {id: wait, matcher: {kind: any_flag, flags: ['-w', '--wait']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/openvt/
+    - https://man7.org/linux/man-pages/man1/openvt.1.html
+  caushell.profile/scope: The nested command's stdin, stdout, and stderr attach to the newly allocated virtual terminal, not the invoking shell's streams. A missing command defaults to SHELL and remains unresolved; VT allocation and switching are not represented as parent stream effects.

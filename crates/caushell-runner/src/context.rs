@@ -257,7 +257,10 @@ pub struct RunnerContext {
     request: CheckRequest,
     policy: PolicyConfig,
     pending_mutations: Vec<PendingMutation>,
-    pending_mutation_index: HashSet<PendingMutation>,
+    // Coextensive with pending_mutations. None identifies an unpositioned
+    // observation/final-state fact; Some identifies a shell-state occurrence.
+    pending_mutation_sources: Vec<Option<usize>>,
+    pending_mutation_index: HashSet<(PendingMutation, Option<usize>)>,
     parsed_command: Option<ParsedCommandArtifact>,
     parsed_command_scopes: Vec<ParsedCommandScope>,
     unresolved_dispatch_records: Vec<UnresolvedDispatchRecord>,
@@ -266,6 +269,10 @@ pub struct RunnerContext {
     effective_cwds: BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: BTreeMap<NodeId, EffectiveCwd>,
     request_exit_cwd: Option<EffectiveCwd>,
+    // Resolver-owned, intra-request state artifact; never a Harness input.
+    runtime_variable_final_mutations: Vec<PendingMutation>,
+    runtime_function_mutations: Option<Vec<(PendingMutation, usize)>>,
+    shell_state_fences: Vec<(usize, usize)>,
     pub executed_passes: Vec<String>,
     pub findings: Vec<Finding>,
     pub evidence: Vec<Evidence>,
@@ -283,6 +290,7 @@ impl RunnerContext {
             request,
             policy,
             pending_mutations: Vec::new(),
+            pending_mutation_sources: Vec::new(),
             pending_mutation_index: HashSet::new(),
             parsed_command: None,
             parsed_command_scopes: Vec::new(),
@@ -292,6 +300,9 @@ impl RunnerContext {
             effective_cwds: BTreeMap::new(),
             execution_cwd_overrides: BTreeMap::new(),
             request_exit_cwd: None,
+            runtime_variable_final_mutations: Vec::new(),
+            runtime_function_mutations: None,
+            shell_state_fences: Vec::new(),
             executed_passes: Vec::new(),
             findings: Vec::new(),
             evidence: Vec::new(),
@@ -325,6 +336,81 @@ impl RunnerContext {
         self.effective_cwds.clear();
         self.execution_cwd_overrides.clear();
         self.request_exit_cwd = None;
+        self.runtime_variable_final_mutations.clear();
+        self.runtime_function_mutations = None;
+        self.shell_state_fences.clear();
+        // Staged entries remain, as before, but old artifact coordinates must
+        // not be applied to a replacement artifact's state fences.
+        self.pending_mutation_sources.fill(None);
+        self.rebuild_pending_mutation_index();
+    }
+
+    pub fn set_runtime_variable_final_mutations(&mut self, mutations: Vec<PendingMutation>) {
+        self.runtime_variable_final_mutations = mutations;
+    }
+
+    pub fn runtime_variable_final_mutations(&self) -> &[PendingMutation] {
+        &self.runtime_variable_final_mutations
+    }
+
+    pub fn set_runtime_function_mutations(&mut self, mutations: Vec<(PendingMutation, usize)>) {
+        self.runtime_function_mutations = Some(mutations);
+    }
+
+    pub fn runtime_function_mutations(&self) -> Option<&[(PendingMutation, usize)]> {
+        self.runtime_function_mutations.as_deref()
+    }
+
+    /// State propagation only; this never removes graph/audit command nodes.
+    pub fn shell_state_at_is_reachable(&self, start: usize) -> bool {
+        !self
+            .shell_state_fences
+            .iter()
+            .any(|(from, to)| start >= *from && start < *to)
+    }
+
+    pub fn has_shell_state_fences(&self) -> bool {
+        !self.shell_state_fences.is_empty()
+    }
+
+    pub fn root_shell_terminates(&self) -> bool {
+        self.shell_state_fences
+            .iter()
+            .any(|(_, end)| *end == usize::MAX)
+    }
+
+    pub fn set_shell_state_fences(&mut self, fences: Vec<(usize, usize)>) {
+        self.shell_state_fences = fences;
+        if self.shell_state_fences.is_empty() {
+            return;
+        }
+        let fences = &self.shell_state_fences;
+        let keep_source = |source: &Option<usize>| {
+            source.is_none_or(|p| !fences.iter().any(|(from, to)| p >= *from && p < *to))
+        };
+        debug_assert_eq!(
+            self.pending_mutations.len(),
+            self.pending_mutation_sources.len()
+        );
+        let mut sources = self.pending_mutation_sources.iter();
+        self.pending_mutations.retain(|_| {
+            keep_source(
+                sources
+                    .next()
+                    .expect("each staged mutation has a source entry"),
+            )
+        });
+        self.pending_mutation_sources.retain(keep_source);
+        self.rebuild_pending_mutation_index();
+    }
+
+    /// Preserve staging order across distinct source occurrences. Repeated
+    /// extraction of the same mutation at the same source remains idempotent.
+    pub fn stage_shell_state_mutation(&mut self, mutation: PendingMutation, start: usize) {
+        if !self.shell_state_at_is_reachable(start) {
+            return;
+        }
+        self.stage_mutation_with_source(mutation, Some(start));
     }
 
     pub fn parsed_command_scopes(&self) -> &[ParsedCommandScope] {
@@ -422,9 +508,31 @@ impl RunnerContext {
     }
 
     pub fn stage_mutation(&mut self, mutation: PendingMutation) {
-        if self.pending_mutation_index.insert(mutation.clone()) {
+        self.stage_mutation_with_source(mutation, None);
+    }
+
+    fn stage_mutation_with_source(&mut self, mutation: PendingMutation, source: Option<usize>) {
+        if self
+            .pending_mutation_index
+            .insert((mutation.clone(), source))
+        {
             self.pending_mutations.push(mutation);
+            self.pending_mutation_sources.push(source);
         }
+    }
+
+    fn rebuild_pending_mutation_index(&mut self) {
+        debug_assert_eq!(
+            self.pending_mutations.len(),
+            self.pending_mutation_sources.len()
+        );
+        self.pending_mutation_index.clear();
+        self.pending_mutation_index.extend(
+            self.pending_mutations
+                .iter()
+                .cloned()
+                .zip(self.pending_mutation_sources.iter().copied()),
+        );
     }
 
     pub fn add_finding(&mut self, rule_id: RuleId, finding: impl Into<String>) {
@@ -521,6 +629,172 @@ mod tests {
         assert_eq!(ctx.request().session_id.0, "sess-1");
         assert_eq!(ctx.request().sequence_no, CommandSequenceNo::new(1));
         assert_eq!(ctx.request().command, "pwd");
+    }
+
+    #[test]
+    fn state_fences_keep_pre_exit_duplicates_and_do_not_filter_audit_nodes() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let mutation = PendingMutation::UpsertAliasBinding {
+            binding: caushell_types::SessionAliasBinding::new(
+                "a",
+                "printf LAB",
+                ctx.request().sequence_no,
+            ),
+        };
+        ctx.stage_shell_state_mutation(mutation.clone(), 5);
+        ctx.stage_shell_state_mutation(mutation.clone(), 50);
+        let late = PendingMutation::UnsetAlias {
+            name: "a".into(),
+            observed_at: ctx.request().sequence_no,
+        };
+        ctx.stage_shell_state_mutation(late.clone(), 60);
+        ctx.set_shell_state_fences(vec![(20, usize::MAX)]);
+        assert!(ctx.pending_mutations().contains(&mutation));
+        assert!(!ctx.pending_mutations().contains(&late));
+        assert!(ctx.root_shell_terminates());
+        assert!(!ctx.shell_state_at_is_reachable(60));
+    }
+
+    fn staged_function(body: &str) -> PendingMutation {
+        PendingMutation::UpsertFunctionBinding {
+            binding: caushell_types::SessionFunctionBinding::new(
+                "f",
+                body,
+                CommandSequenceNo::new(1),
+            ),
+        }
+    }
+
+    fn staged_audit_fact() -> PendingMutation {
+        PendingMutation::AddPathFact {
+            source_node_id: NodeId::new("command:sess-1:1"),
+            node_id: NodeId::new("path-audit"),
+            resolution: PathResolution::Concrete {
+                path: "/tmp/project".into(),
+            },
+            role: ResolvedPathRole::Read,
+            purpose: Some(ResolvedPathPurpose::GenericOperand),
+            slot_name: "path".into(),
+            normalized_command_name: None,
+            relation: EdgeKind::Reads,
+        }
+    }
+
+    #[test]
+    fn shell_state_occurrences_preserve_order_but_deduplicate_the_same_source() {
+        let seq = CommandSequenceNo::new(1);
+        for (upsert, unset) in [
+            (
+                staged_function("printf SAME;"),
+                PendingMutation::UnsetFunction {
+                    name: "f".into(),
+                    observed_at: seq,
+                },
+            ),
+            (
+                PendingMutation::UpsertAliasBinding {
+                    binding: caushell_types::SessionAliasBinding::new("a", "printf SAME", seq),
+                },
+                PendingMutation::UnsetAlias {
+                    name: "a".into(),
+                    observed_at: seq,
+                },
+            ),
+        ] {
+            let mut ctx = RunnerContext::new(sample_request());
+            ctx.stage_shell_state_mutation(upsert.clone(), 5);
+            ctx.stage_shell_state_mutation(unset.clone(), 10);
+            ctx.stage_shell_state_mutation(upsert.clone(), 15);
+            ctx.stage_shell_state_mutation(upsert.clone(), 15);
+            assert_eq!(ctx.pending_mutations(), &[upsert.clone(), unset, upsert]);
+        }
+    }
+
+    #[test]
+    fn shell_state_occurrences_keep_distinct_mutations_at_one_source() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let first = staged_function("printf FIRST;");
+        let second = staged_function("printf SECOND;");
+        ctx.stage_shell_state_mutation(first.clone(), 5);
+        ctx.stage_shell_state_mutation(second.clone(), 5);
+        assert_eq!(ctx.pending_mutations(), &[first, second]);
+    }
+
+    #[test]
+    fn shell_state_occurrences_are_fenced_individually_without_losing_audit_facts() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let upsert = staged_function("printf SAME;");
+        let unset = PendingMutation::UnsetFunction {
+            name: "f".into(),
+            observed_at: CommandSequenceNo::new(1),
+        };
+        let audit = staged_audit_fact();
+        ctx.stage_shell_state_mutation(upsert.clone(), 5);
+        ctx.stage_mutation(audit.clone());
+        ctx.stage_shell_state_mutation(unset.clone(), 10);
+        ctx.stage_shell_state_mutation(upsert.clone(), 50);
+        ctx.set_shell_state_fences(vec![(20, usize::MAX)]);
+        assert_eq!(ctx.pending_mutations(), &[upsert, audit, unset]);
+        let mut summary = caushell_types::SessionSummary::new();
+        for mutation in ctx.pending_mutations() {
+            mutation.apply_summary(&mut summary);
+        }
+        assert!(summary.function_binding("f").is_none());
+    }
+
+    #[test]
+    fn shell_state_occurrences_obey_finite_fence_boundaries() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let mutation = staged_function("printf SAME;");
+        for start in [19, 20, 39, 40] {
+            ctx.stage_shell_state_mutation(mutation.clone(), start);
+        }
+        ctx.set_shell_state_fences(vec![(20, 40)]);
+        assert_eq!(
+            ctx.pending_mutations(),
+            &[mutation.clone(), mutation.clone()]
+        );
+        ctx.stage_shell_state_mutation(mutation.clone(), 20);
+        ctx.stage_shell_state_mutation(mutation.clone(), 40);
+        ctx.stage_shell_state_mutation(mutation.clone(), 50);
+        assert_eq!(
+            ctx.pending_mutations(),
+            &[mutation.clone(), mutation.clone(), mutation]
+        );
+    }
+
+    #[test]
+    fn shell_state_occurrences_rebuild_deduplication_after_fence_changes() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let audit = staged_audit_fact();
+        let mutation = staged_function("printf SAME;");
+        ctx.stage_mutation(audit.clone());
+        ctx.stage_shell_state_mutation(mutation.clone(), 5);
+        ctx.stage_shell_state_mutation(mutation.clone(), 50);
+        ctx.set_shell_state_fences(vec![(20, usize::MAX)]);
+        ctx.set_shell_state_fences(Vec::new());
+        ctx.stage_shell_state_mutation(mutation.clone(), 50);
+        ctx.stage_shell_state_mutation(mutation.clone(), 5);
+        ctx.stage_mutation(audit.clone());
+        assert_eq!(
+            ctx.pending_mutations(),
+            &[audit, mutation.clone(), mutation]
+        );
+    }
+
+    #[test]
+    fn shell_state_occurrences_drop_stale_positions_when_parsed_artifact_changes() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let mutation = staged_function("printf SAME;");
+        ctx.stage_shell_state_mutation(mutation.clone(), 5);
+        ctx.set_parsed_command(parse_command("pwd", ShellKind::Bash).unwrap());
+        // Existing staged entries stay, but their old coordinates cannot fence
+        // a new artifact. Its fresh occurrence must have independent identity.
+        ctx.stage_shell_state_mutation(mutation.clone(), 50);
+        ctx.set_shell_state_fences(vec![(20, usize::MAX)]);
+        assert_eq!(ctx.pending_mutations(), &[mutation.clone()]);
+        ctx.stage_mutation(mutation.clone());
+        assert_eq!(ctx.pending_mutations(), &[mutation]);
     }
 
     #[test]

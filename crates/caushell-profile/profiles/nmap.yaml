@@ -1,0 +1,334 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: nmap
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: all_arguments
+opaque_on_unresolved: true
+forms:
+- id: execute_opaque_nse_script
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: nse_script
+    - &1
+      kind: has_modifier_parameter_matching
+      modifier: nse_script
+      parameter: nse_scripts
+      matcher:
+        kind: regex_pattern
+        pattern: "^(\\./|\\.\\./|/)"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: legacy_interactive
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters: &2
+  - name: legacy_output
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: args_with_prefix
+      prefix: "-o"
+      before_dash_dash: true
+    cardinality: optional_many
+  - name: scan_targets
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - &3
+    kind: write_path
+    target:
+      kind: slot
+      name: legacy_output
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: nse_scripts
+        projection:
+          kind: identity
+      missing: skip
+      purpose: script_source
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: output_file
+        projection:
+          kind: identity
+      missing: skip
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: scan
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: legacy_interactive
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: output_option
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters: *2
+  effects: &5
+  - *3
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: scan_to_file
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: legacy_interactive
+    - kind: has_modifier
+      modifier: output_option
+    - kind: not
+      item: &4
+        kind: has_modifier_parameter_matching
+        modifier: output_option
+        parameter: output_file
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters: *2
+  effects:
+  - *3
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: output_file
+        projection:
+          kind: identity
+      missing: skip
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: scan_to_stdout
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: legacy_interactive
+    - *4
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters: *2
+  effects: *5
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: open_legacy_interactive_console
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: legacy_interactive
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  implicit_inputs:
+  - source: interactive_session
+    semantic:
+      kind: payload
+      language: opaque
+      source: interactive
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: interactive_session
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: information
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: nse_script
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: input_list
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: output_option
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: legacy_interactive
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers:
+- id: input_list
+  matcher:
+    kind: any_flag
+    flags:
+    - "-iL"
+  parameters:
+  - name: host_list
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: host_list
+- id: output_option
+  matcher:
+    kind: any_flag
+    flags:
+    - "-oG"
+    - "-oN"
+    - "-oX"
+    - "-oS"
+  parameters:
+  - name: output_file
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects: []
+- id: nse_script
+  matcher:
+    kind: any_flag
+    flags:
+    - "--script"
+  parameters:
+  - name: nse_scripts
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+    structured_projection:
+      branches: []
+      fallback:
+        name: nse_entry
+        semantic:
+          kind: payload
+          language: opaque
+          source: dynamic_reference
+          recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: nse_entry
+- id: legacy_interactive
+  matcher:
+    kind: any_flag
+    flags:
+    - "--interactive"
+  parameters: []
+  effects: []
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "--help"
+    - "-V"
+    - "--version"
+  parameters: []
+  effects: []
+extensions:
+  caushell.profile/source_research:
+  - https://nmap.org/book/man-output.html
+  - https://nmap.org/book/man.html
+  - 'GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/nmap file-read,
+    file-write, inherit and shell'
+  caushell.profile/known_limitations:
+  - "-iL reads a host/network specification list; errors may disclose contents but
+    entries are not reinterpreted as commands."
+  - NSE scripts are opaque Lua references and never parsed as Bash. Script expressions
+    and installed-name resolution are not projected as precise local paths.
+  - 'The pinned -oG=/path source form uses Nmap short-option compatibility parsing:
+    the observed local output is the relative filename G=/path under the working directory,
+    not /path. The documented modern form is -oG filename; the exact legacy source
+    spelling is preserved in research.'
+  - "--interactive with its ! shell escape is limited to the source-declared Nmap
+    2.02 through 5.21 range; current Nmap does not provide this console and interactive
+    keystrokes remain opaque."
+  - Separated -oG/-oN/-oX/-oS filenames use actual format switches; tight -o... falls
+    through declared native compatibility suffix and keeps its first format letter.
+    NSE installed-name/expression resolution is an opaque dynamic code entry, not
+    a guessed workspace file. Other scan flags and -oA multi-file output are outside
+    the declared scope.
+option_matching: exact_names
+selection_failure_effects: []

@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ksh, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: ksh_script_file
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^/'}}]}
+    parameters: [{name: script_file, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: positional_at, index: 0}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_file_path, semantic: {kind: path, role: read, purpose: script_source}}}}]
+    effects: [{kind: read_path, target: {kind: slot, name: script_file_path}}, {kind: execute_payload, target: {kind: slot, name: script_file}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: ksh_command_string
+    selector: {kind: has_flag, flag: -c}
+    parameters: [{name: shell_command, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -c, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: shell_command}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: ksh_native_shell
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^/'}}}]}
+    parameters: []
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: privileged_mode, matcher: {kind: any_flag, flags: [-p]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ksh (alias bash, GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://www.kornshell.com/doc/ ksh manual"]
+  caushell.profile/known_limitations: ["The source aliases ksh to bash, but ksh's interactive syntax and startup behavior are not treated as Bash by this profile. Explicit -c and absolute-path script invocations remain opaque.", "The inherited Bash history-variable fragments have no ksh invocation and no portable ksh semantics are claimed."]

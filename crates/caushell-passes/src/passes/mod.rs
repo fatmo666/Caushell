@@ -15,7 +15,11 @@ mod extract_imported_package_provenance;
 mod extract_path_facts;
 mod extract_pipeline_flow;
 mod extract_pipeline_stream_provenance;
+pub(crate) use extract_pipeline_stream_provenance::inherited_pipeline_artifact;
 mod extract_process_substitution_provenance;
+pub(crate) use extract_process_substitution_provenance::{
+    inherited_process_substitution_artifact, redirection_process_substitution_artifact,
+};
 mod extract_redirect_provenance;
 mod extract_value_provenance;
 mod extract_variable_binding_intent;
@@ -27,6 +31,7 @@ mod outside_workspace_mutation_guard;
 mod outside_workspace_script_source;
 mod outside_workspace_startup_config;
 mod parse_command;
+mod process_control_guard;
 mod project_top_level_commands;
 mod resolve_invocation;
 mod resolve_policy;
@@ -63,6 +68,7 @@ pub use outside_workspace_mutation_guard::OutsideWorkspaceMutationGuardPass;
 pub use outside_workspace_script_source::OutsideWorkspaceScriptSourcePass;
 pub use outside_workspace_startup_config::OutsideWorkspaceStartupConfigPass;
 pub use parse_command::ParseCommandPass;
+pub use process_control_guard::ProcessControlGuardPass;
 pub use project_top_level_commands::ProjectTopLevelCommandsPass;
 pub use resolve_invocation::ResolveInvocationPass;
 pub use resolve_policy::ResolvePolicyPass;

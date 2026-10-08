@@ -1,0 +1,17 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: rtorrent, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: rtorrent_session
+    selector: {kind: all, items: []}
+    parameters: []
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: load_config, target: {kind: configured_path, sources: [], default_value: '~/.rtorrent.rc', expand_user: true, purpose: tool_config}}, {kind: read_path, target: {kind: configured_path, sources: [], default_value: '~/.rtorrent.rc', expand_user: true, purpose: tool_config}}, {kind: execute_config_defined_task, target: {kind: none}}, {kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/rtorrent (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://github.com/rakshasa/rtorrent/wiki/CONFIG-Template"]
+  caushell.profile/known_limitations: ["The source first writes ~/.rtorrent.rc using a separate shell command, then starts rtorrent; only the rtorrent invocation is profiled, not the shell setup statement.", "The rc file's execute directive is modeled as a config-defined task, but directive contents and spawned argv remain opaque; runtime privileges are not inferred."]

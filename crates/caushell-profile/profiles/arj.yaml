@@ -1,0 +1,349 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: arj
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: add_archive_files
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: a
+    - kind: has_positional_at
+      index: 1
+    - kind: not
+      item: &1
+        kind: has_positional_at_matching
+        index: 1
+        matcher:
+          kind: regex_pattern
+          pattern: "(^|/)[^/]*\\.[^/]+$"
+  parameters:
+  - name: operation
+    semantic: &2
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive_base
+    semantic: &4
+      kind: path
+      role: target
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: &3
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: derived_path
+      source:
+        kind: slot
+        name: archive_base
+      rule:
+        kind: append_suffix
+        suffix: ".arj"
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: add_archive_files_with_extension
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: a
+    - kind: has_positional_at
+      index: 1
+    - *1
+  parameters:
+  - name: operation
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive_path
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: input_paths
+    semantic: *3
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: input_paths
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: archive_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: print_archive_file
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: p
+    - kind: has_positional_at
+      index: 1
+    - kind: not
+      item: *1
+  parameters:
+  - name: operation
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive_base
+    semantic: *4
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: member_patterns
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: derived_path
+      source:
+        kind: slot
+        name: archive_base
+      rule:
+        kind: append_suffix
+        suffix: ".arj"
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: print_archive_file_with_extension
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: p
+    - kind: has_positional_at
+      index: 1
+    - *1
+  parameters:
+  - name: operation
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive_path
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: member_patterns
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: archive_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: extract_archive_files
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: e
+    - kind: has_positional_at
+      index: 1
+    - kind: not
+      item: *1
+  parameters:
+  - name: operation
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive_base
+    semantic: *4
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: destination
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: optional_one
+  - name: member_patterns
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: derived_path
+      source:
+        kind: slot
+        name: archive_base
+      rule:
+        kind: append_suffix
+        suffix: ".arj"
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: destination
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: extract_archive_with_extension
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: e
+    - kind: has_positional_at
+      index: 1
+    - *1
+  parameters:
+  - name: operation
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: archive_path
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: destination
+    semantic: *2
+    binding:
+      kind: next_positional
+    cardinality: optional_one
+  - name: member_patterns
+    semantic: *2
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: archive_path
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: destination
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers: []
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - https://manpages.debian.org/bookworm/arj/arj.1.en.html
+  - 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/arj
+    file-read and file-write'
+  caushell.profile/known_limitations:
+  - ARJ adds .arj only when the archive basename has no extension; this is documented
+    filename grammar, not filesystem suffix classification. Extraction members remain
+    unknown write targets, including archive traversal. Explicit extraction bases
+    are retained; member filters are data. Unmodeled option shapes require approval.

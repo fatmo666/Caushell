@@ -1,0 +1,101 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: zic
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: legacy_year_type_callback
+  selector:
+    kind: has_modifier
+    modifier: year_type_command
+  parameters:
+  - name: zone_files
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: zone_files
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: year_type_command
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: year_type_command
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+modifiers:
+- id: year_type_command
+  matcher:
+    kind: any_flag
+    flags:
+    - "-y"
+  parameters:
+  - name: year_type_command
+    semantic:
+      kind: payload
+      language: opaque
+      source: dynamic_reference
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: output_directory
+  matcher:
+    kind: any_flag
+    flags:
+    - "-d"
+  parameters:
+  - name: output_directory
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+extensions:
+  caushell.profile/source_research:
+  - https://man.openbsd.org/OpenBSD-6.5/zic.8
+  - https://man7.org/linux/man-pages/man8/zic.8.html
+  - https://gtfobins.org/gtfobins/zic/
+  caushell.profile/known_limitations:
+  - The -y callback is documented by older/legacy zic manuals and is absent from current
+    Linux man-pages; do not infer support for an installed version.
+  - zic invokes the callback with rule-derived year and type operands. These depend
+    on the actual zone source; the profile records the callback command only and fabricates
+    no year or argv values.
+  - Output TZif paths depend on zone names and -d; only explicit -d is recorded and
+    per-zone output expansion is not modeled.
+  - 'Runtime-generated callback argv is unknown: retain the actual executable reference
+    as opaque payload, never fabricate a child with empty argv.'

@@ -1,0 +1,345 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: virsh
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: create_domain_from_xml
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: create
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: domain_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: domain_xml_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: domain_xml_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: domain_xml_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: domain_xml_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: domain_xml_payload
+- id: create_volume_from_xml
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: vol-create
+    - kind: has_modifier
+      modifier: volume_xml_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: volume_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: volume_xml_path
+    semantic:
+      kind: path
+      role: read
+      purpose: tool_config
+    binding:
+      kind: following_flag
+      flag: "--file"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: volume_xml_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: volume_xml_path
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+- id: upload_local_file_to_volume
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: vol-upload
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: upload_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: volume_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: local_data_path
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: last_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: local_data_path
+- id: download_volume_to_local_file
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: vol-download
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: download_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: volume_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: local_output_path
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: last_positional
+    cardinality: required_one
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: local_output_path
+- id: pool_target_mutation
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: pool-create-as
+    - kind: has_modifier
+      modifier: pool_target
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: pool_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: pool_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: pool_type
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: pool_target_path
+    semantic:
+      kind: path
+      role: write
+      purpose: generic_operand
+    binding:
+      kind: following_flag
+      flag: "--target"
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: write_path
+    target:
+      kind: slot
+      name: pool_target_path
+- id: destroy_runtime_object
+  selector:
+    kind: any
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: destroy
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: pool-destroy
+  parameters:
+  - name: runtime_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: runtime_object_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects: []
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: volume_xml_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "--file"
+- id: pool_target
+  matcher:
+    kind: any_flag
+    flags:
+    - "--target"
+- id: pool
+  matcher:
+    kind: any_flag
+    flags:
+    - "--pool"
+  parameters:
+  - name: pool_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_flag
+      flag: "--pool"
+      operand_mode: next_arg
+    cardinality: optional_one
+- id: connection
+  matcher:
+    kind: any_flag
+    flags:
+    - "-c"
+  parameters:
+  - name: connection_uri
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_flag
+      flag: "-c"
+      operand_mode: next_arg
+    cardinality: optional_one
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/virsh (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://libvirt.org/formatdomain.html
+  - https://libvirt.org/hooks.html
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - This requires the user to be in the `libvirt` group. If the target directory doesn't
+    exist, `pool-create-as` must be run with the `--build` option. The destination
+    file ownership and permissions can be set in the XML.
+  - This requires the user to be in the `libvirt` group.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Domain XML is loaded as native configuration; its driver/emulator and host-script
+    choices are a native libvirt execution boundary, not a synthesized shell child.
+    Volume XML defines data/storage, not executable payload.
+  - Libvirt domain/pool lifecycle mutations and volume upload target semantics are
+    native runtime-object changes; the shared DSL has no generic runtime-object mutation
+    effect. They remain explicit partial coverage rather than process signals or fabricated
+    host files.

@@ -5,7 +5,8 @@ use caushell_runner::{
 use caushell_types::DerivedInvocationOrigin;
 
 use crate::support::{
-    collect_pipeline_groups, pipeline_segment_node_id, top_level_node_id_for_command,
+    EffectiveStdinSource, collect_pipeline_groups, effective_stdin_source,
+    pipeline_segment_node_id, top_level_node_id_for_command,
 };
 
 pub struct ExtractPipelineFlowPass;
@@ -68,6 +69,9 @@ fn collect_top_level_pipeline_flow_mutations(
         for pair in group.commands.windows(2) {
             let from = &pair[0];
             let to = &pair[1];
+            if effective_stdin_source(parsed, to.command_index) != EffectiveStdinSource::Inherited {
+                continue;
+            }
 
             mutations.push(PendingMutation::AddExecutionUnitFlow {
                 from_node_id: pipeline_segment_node_id(
@@ -95,6 +99,11 @@ fn collect_scoped_pipeline_flow_mutations(scopes: &[ParsedCommandScope]) -> Vec<
             for pair in group.commands.windows(2) {
                 let from = &pair[0];
                 let to = &pair[1];
+                if effective_stdin_source(&scope.parsed, to.command_index)
+                    != EffectiveStdinSource::Inherited
+                {
+                    continue;
+                }
                 let (Some(from_node_id), Some(to_node_id)) = (
                     scope.command_node_id(from.command_index),
                     scope.command_node_id(to.command_index),

@@ -1,0 +1,165 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: rpm
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: query_installed_packages
+  selector:
+    kind: has_flag
+    flag: "-q"
+  parameters:
+  - name: arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: install_local_package
+  selector:
+    kind: has_flag
+    flag: "-i"
+  parameters:
+  - name: package_files
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: import_package
+    target:
+      kind: slot
+      name: package_files
+  - kind: execute_imported_package_logic
+    target:
+      kind: slot
+      name: package_files
+  - kind: read_path
+    target:
+      kind: slot
+      name: package_files
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: evaluate_rpm_macro
+  selector:
+    kind: has_modifier
+    modifier: eval_macro
+  parameters: []
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: pipe_output_to_shell
+  selector:
+    kind: has_modifier
+    modifier: pipe
+  parameters: []
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+modifiers:
+- id: query
+  matcher:
+    kind: any_flag
+    flags:
+    - "-q"
+- id: eval_macro
+  matcher:
+    kind: any_flag
+    flags:
+    - "--eval"
+  parameters:
+  - name: macro_expressions
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: macro_expressions
+- id: pipe
+  matcher:
+    kind: any_flag
+    flags:
+    - "--pipe"
+  parameters:
+  - name: pipe_command
+    semantic:
+      kind: payload
+      language: bash
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: pipe_command
+- id: verbose
+  matcher:
+    kind: any_flag
+    flags:
+    - "-v"
+- id: hash
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+- id: native_operation_options
+  matcher:
+    kind: any_flag
+    flags:
+    - "-i"
+    - "-q"
+    - "-a"
+extensions:
+  caushell.profile/source_research: GTFOBins rpm command includes install scriptlet,
+    --eval RPM macro execution, and --pipe shell execution.
+  caushell.profile/known_limitations:
+  - RPM --eval data is opaque RPM macro language. It is never parsed as Bash; macro
+    expansions and embedded Lua are not interpreted.
+  - rpm --pipe is documented by RPM source as /bin/sh -c. The shell command is recursively
+    analyzed.
+  - Package install executes imported package scriptlets. Its filesystem writes are
+    package-specific and are not fabricated as writes to the root directory; macro
+    configuration and scriptlet contents are not statically enumerated.
+  - Package writes retain a genuine unknown target; installation root is not fabricated
+    as a concrete file being written.
+  - Installation mutates files selected by package contents and native package configuration.
+    The static target remains genuinely unknown, never fabricated as a root-directory
+    file write.

@@ -1,0 +1,128 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: apache2
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: executable_configuration_config_f
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: config_f
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: configuration_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-f"
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: configuration_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: configuration_payload
+- id: executable_configuration_inline_C
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: inline_C
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: configuration_directive
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "-C"
+      operand_mode: next_arg
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: configuration_directive
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "-v"
+    - "-V"
+- id: config_f
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+- id: inline_C
+  matcher:
+    kind: any_flag
+    flags:
+    - "-C"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/apache2 (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://httpd.apache.org/docs/2.4/en/programs/httpd.html
+  - https://httpd.apache.org/docs/2.4/mod/core.html
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - The first line may be leaked as an error message.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.

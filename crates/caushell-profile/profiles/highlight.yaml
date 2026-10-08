@@ -1,0 +1,38 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: highlight, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: highlight_failsafe_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}
+        - {kind: has_modifier, modifier: no_document}
+        - {kind: has_modifier, modifier: failsafe}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: exclude_literal, value: '-'}]}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - {id: no_document, matcher: {kind: any_flag, flags: ['--no-doc']}}
+  - {id: failsafe, matcher: {kind: any_flag, flags: ['--failsafe']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-v', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://gitlab.com/saalen/highlight/-/blob/master/man/highlight.1
+    - https://gtfobins.org/gtfobins/highlight/
+  caushell.profile/known_limitations:
+    - 'Only the fixed --no-doc --failsafe single-file invocation is modeled. Config-file, output, syntax/language, and plug-in options are not accepted by this form because highlight options and plug-ins can load executable Lua or other configuration snippets; those invocations remain unresolved.'
+    - File-dependent rendered output and diagnostics are modeled as input-dependent streams. Stdin, multiple files, default configuration lookup, and exact rendering are not modeled.

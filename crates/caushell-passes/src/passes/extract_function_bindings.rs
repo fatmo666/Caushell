@@ -1,5 +1,4 @@
-use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
-use caushell_types::{CommandSequenceNo, SessionFunctionBinding};
+use caushell_runner::{RunnerContext, SessionTransformPass, SessionView};
 
 pub struct ExtractFunctionBindingsPass;
 
@@ -8,48 +7,26 @@ impl SessionTransformPass for ExtractFunctionBindingsPass {
         "extract_function_bindings"
     }
 
-    fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
+    fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
+        if let Some(mutations) = ctx.runtime_function_mutations() {
+            for (mutation, start) in mutations.to_vec() {
+                ctx.stage_shell_state_mutation(mutation, start);
+            }
+            return;
+        }
         let observed_at = ctx.request().sequence_no;
         let Some(parsed) = ctx.parsed_command() else {
             return;
         };
 
-        for mutation in collect_function_mutations(parsed, observed_at) {
-            ctx.stage_mutation(mutation);
+        let bindings = crate::support::request_variable_bindings(session.summary(), ctx.request());
+        for (mutation, start) in
+            crate::support::static_variable_overlay(bindings, parsed, observed_at)
+                .function_mutations
+        {
+            ctx.stage_shell_state_mutation(mutation, start);
         }
     }
-}
-
-fn collect_function_mutations(
-    parsed: &caushell_parse::ParsedCommandArtifact,
-    observed_at: CommandSequenceNo,
-) -> Vec<PendingMutation> {
-    let mut mutations = Vec::new();
-
-    for definition in &parsed.function_definitions {
-        mutations.push(PendingMutation::UpsertFunctionBinding {
-            binding: SessionFunctionBinding::new(
-                definition.name.clone(),
-                definition.body_text.clone(),
-                observed_at,
-            ),
-        });
-    }
-
-    for unset in &parsed.unset_commands {
-        if !unset.options.iter().any(|option| option == "-f") {
-            continue;
-        }
-
-        for name in &unset.names {
-            mutations.push(PendingMutation::UnsetFunction {
-                name: name.clone(),
-                observed_at,
-            });
-        }
-    }
-
-    mutations
 }
 
 #[cfg(test)]

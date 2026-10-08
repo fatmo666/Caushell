@@ -1,0 +1,52 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: debugfs, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: filesystem_debugger
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -V}}, {kind: not, item: {kind: has_modifier, modifier: request}}, {kind: not, item: {kind: has_modifier, modifier: command_file}}]}
+    parameters: [{name: filesystem_device, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_one}]
+    effects:
+      - {kind: target_path, target: {kind: slot, name: filesystem_device}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: version
+    selector: {kind: has_flag, flag: -V}
+    parameters: []
+    effects: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: direct_native_request
+    selector: {kind: has_modifier, modifier: request}
+    parameters: [{name: filesystem_device, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: request_payload}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: native_command_file
+    selector: {kind: has_modifier, modifier: command_file}
+    parameters: [{name: filesystem_device, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_one}]
+    effects:
+      - {kind: read_path, target: {kind: slot, name: command_file_path}}
+      - {kind: execute_payload, target: {kind: slot, name: command_file_payload}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: version
+    matcher: {kind: any_flag, flags: [-V]}
+    parameters: []
+  - id: request
+    matcher: {kind: any_flag, flags: [-R]}
+    parameters: [{name: request_payload, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: command_file
+    matcher: {kind: any_flag, flags: [-f]}
+    parameters:
+      - name: command_file_payload
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: optional_one
+        structured_projection:
+          branches: []
+          fallback: {name: command_file_path, semantic: {kind: path, role: read, purpose: script_source}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/debugfs (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://man7.org/linux/man-pages/man8/debugfs.8.html"]
+  caushell.profile/known_limitations: ["The source enters the interactive debugfs prompt and sends the native !/bin/sh request. Prompt requests are not argv and remain opaque.", "-R requests and -f command files are retained as opaque native debugfs payloads, not Bash; the command file is read and the device is modeled only as a target path.", "Read-only versus -w mode and the filesystem mutations available through debugfs are not modeled. The underlying filesystem may be changed by native requests when writable."]

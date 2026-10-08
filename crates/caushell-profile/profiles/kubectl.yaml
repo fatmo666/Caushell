@@ -1,0 +1,216 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: kubectl
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: executable_configuration_config_kubeconfig
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: config_kubeconfig
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: configuration_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_flag
+      flag: "--kubeconfig"
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: configuration_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+  - name: request_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: configuration_payload
+- id: executable_configuration_config_kubeconfig_attached
+  selector:
+    kind: all
+    items:
+    - kind: has_argument_at_matching
+      index: 2
+      matcher:
+        kind: regex_pattern
+        pattern: "^--kubeconfig="
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: configuration_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: args_with_prefix
+      prefix: "--kubeconfig="
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: configuration_path
+        semantic:
+          kind: path
+          role: read
+          purpose: tool_config
+  - name: request_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: configuration_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: configuration_payload
+- id: proxy_listener
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: proxy
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: bind_host
+    semantic:
+      kind: plain_value
+    binding:
+      kind: args_with_prefix
+      prefix: "--address="
+    cardinality: optional_one
+  - name: listen_port
+    semantic:
+      kind: plain_value
+    binding:
+      kind: args_with_prefix
+      prefix: "--port="
+    cardinality: optional_one
+  - name: web_root
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: args_with_prefix
+      prefix: "--www="
+    cardinality: optional_one
+  - name: web_prefix
+    semantic:
+      kind: plain_value
+    binding:
+      kind: args_with_prefix
+      prefix: "--www-prefix="
+    cardinality: optional_one
+  effects:
+  - kind: listen_network
+    target:
+      kind: network_listener
+      host:
+        slot: bind_host
+        default_value: 127.0.0.1
+      port:
+        slot: listen_port
+        default_value: '8001'
+  - kind: read_path
+    target:
+      kind: slot
+      name: web_root
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-h"
+- id: config_kubeconfig
+  matcher:
+    kind: any_flag
+    flags:
+    - "--kubeconfig"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/kubectl (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://kubernetes.io/docs/reference/config-api/kubeconfig.v1/
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - The shell is spawn multiple times.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.

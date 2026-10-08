@@ -1,0 +1,73 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: aptitude
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: changelog_pager
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: changelog
+    - kind: has_positional_at
+      index: 1
+  parameters:
+  - name: arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: open_interactive_escape_surface
+    surface:
+      kind: pager
+      requires_tty: true
+      capabilities:
+      - spawn_shell
+      - run_command
+      - launch_external_editor
+    target:
+      kind: none
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+- id: list_packages
+  selector:
+    kind: has_positional_at_matching
+    index: 0
+    matcher:
+      kind: regex_pattern
+      pattern: "^(search|show|versions|why|why-not)$"
+  parameters:
+  - name: arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: data
+extensions:
+  caushell.profile/source_research: GTFOBins aptitude entry inherits the less pager
+    escape via aptitude changelog.
+  caushell.profile/known_limitations:
+  - Only changelog pager execution and read-only package query forms are modeled.
+    Other aptitude actions require review.
+modifiers: []

@@ -1,0 +1,49 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: tic, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: translate_to_termcap
+    selector: {kind: all, items: [{kind: has_modifier, modifier: termcap}, {kind: not, item: {kind: has_modifier, modifier: check}}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+      - {name: output_directory_value, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-o', operand_mode: next_arg}, cardinality: optional_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: translate_to_terminfo
+    selector: {kind: all, items: [{kind: has_modifier, modifier: terminfo}, {kind: not, item: {kind: has_modifier, modifier: check}}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+      - {name: output_directory_value, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-o', operand_mode: next_arg}, cardinality: optional_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: validate_only
+    selector: {kind: all, items: [{kind: has_modifier, modifier: check}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+  - id: compile_database_entries
+    selector: {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: termcap}, {kind: has_modifier, modifier: terminfo}, {kind: has_modifier, modifier: check}]}}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+      - {name: database_directory, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_flag, flag: '-o', operand_mode: next_arg}, cardinality: optional_one}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: source_paths}}, {kind: write_path, target: {kind: slot, name: database_directory}}, {kind: write_path, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+modifiers:
+  - {id: termcap, matcher: {kind: any_flag, flags: ['-C']}}
+  - {id: terminfo, matcher: {kind: any_flag, flags: ['-I', '-L']}}
+  - {id: check, matcher: {kind: any_flag, flags: ['-c']}}
+  - {id: output_directory, matcher: {kind: any_flag, flags: ['-o']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research: [https://man7.org/linux/man-pages/man1/tic.1m.html, GTFOBins fixed snapshot tic/file-read/0]
+  caushell.profile/known_limitations:
+    - -C translates source to termcap output; -I and -L translate to terminfo source output. These modes do not compile database entries.
+    - -c validates only and produces no compiled database writes.
+    - Default compilation writes entries to a database location selected by TERMINFO, TERMINFO_DIRS, build-time defaults, and terminal names parsed from file contents. The concrete target remains unknown; -o provides only the database root.
+    - -e may use a filename as its terminal-name list when the value contains a slash; that content-derived read is unresolved.

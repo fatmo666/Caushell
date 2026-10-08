@@ -1,0 +1,166 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: rustup
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  - windows
+  shell_families: []
+  requires_features: []
+forms:
+- id: run_toolchain_command
+  selector:
+    kind: has_positional_at_matching
+    index: 0
+    matcher:
+      kind: literal
+      value: run
+  parameters:
+  - name: rustup_subcommand
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: toolchain
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: child_command
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback: {name: toolchain_program, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}
+  - name: child_argv
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: dispatch_command
+    target:
+      kind: dispatch
+      command: child_command
+      argv:
+      - child_argv
+      stdin_from_parent: true
+      stdout_to_parent: true
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: toolchain_program
+- id: link_local_toolchain
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: toolchain
+    - kind: has_positional_at_matching
+      index: 1
+      matcher:
+        kind: literal
+        value: link
+    - kind: has_positional_at
+      index: 3
+  parameters:
+  - name: rustup_subcommand
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: link_action
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: toolchain_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: sysroot
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: sysroot
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+- id: toolchain_management
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: toolchain
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 1
+        matcher:
+          kind: literal
+          value: link
+    - kind: not
+      item: {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: list}}
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+- id: show_help
+  selector:
+    kind: has_flag
+    flag: "--help"
+- id: list_local_toolchains
+  selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: toolchain}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: list}}]}
+  parameters:
+    - {name: action_words, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+modifiers: [{id: help, matcher: {kind: any_flag, flags: ['--help']}}]
+extensions:
+  caushell.profile/source_research:
+  - https://rust-lang.github.io/rustup/concepts/toolchains.html
+  - https://rust-lang.github.io/rustup/concepts/
+  - https://gtfobins.org/gtfobins/rustup/
+  caushell.profile/known_limitations:
+  - rustup run preserves the selected toolchain name and requested child argv, but
+    the concrete executable path is selected from that toolchain's runtime sysroot
+    and rustup configuration. Dispatching a command with the same basename does not
+    prove which file runs.
+  - toolchain link reads the supplied sysroot; rustup's configuration and toolchain
+    registration writes occur under a runtime-selected rustup home and are not projected
+    as a concrete path.

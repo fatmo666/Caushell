@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: sshfs, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: sshfs_custom_helper
+    selector: {kind: has_modifier_parameter_matching, modifier: ssh_command, parameter: ssh_command_option, matcher: {kind: regex_pattern, pattern: '^ssh_command=/[^ ]+$'}}
+    parameters: [{name: remote_mount, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: next_positional}, cardinality: required_one}, {name: local_mountpoint, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects:
+      - {kind: read_path, target: {kind: slot, name: ssh_command_path}}
+      - {kind: execute_payload, target: {kind: slot, name: ssh_command_path}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_mount}}
+      - {kind: write_path, target: {kind: slot, name: local_mountpoint}}
+  - id: sshfs_custom_helper_opaque
+    selector: {kind: all, items: [{kind: has_modifier_parameter_matching, modifier: ssh_command, parameter: ssh_command_option, matcher: {kind: regex_pattern, pattern: '^ssh_command='}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: ssh_command, parameter: ssh_command_option, matcher: {kind: regex_pattern, pattern: '^ssh_command=/[^ ]+$'}}}]}
+    parameters: [{name: remote_mount, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: next_positional}, cardinality: required_one}, {name: local_mountpoint, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: ssh_command_path}}, {kind: network_endpoint, target: {kind: slot, name: remote_mount}}, {kind: write_path, target: {kind: slot, name: local_mountpoint}}]
+  - id: sshfs_mount
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier_parameter_matching, modifier: ssh_command, parameter: ssh_command_option, matcher: {kind: regex_pattern, pattern: '^ssh_command='}}}]}
+    parameters: [{name: remote_mount, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: next_positional}, cardinality: required_one}, {name: local_mountpoint, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: remote_mount}}, {kind: write_path, target: {kind: slot, name: local_mountpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: ssh_command
+    matcher: {kind: any_flag, flags: ['-o']}
+    parameters:
+      - name: ssh_command_option
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: optional_many
+        structured_projection:
+          separator: ','
+          branches: [{matcher: {kind: keyword_value, keyword: ssh_command}, target: {name: ssh_command_path, semantic: {kind: path, role: read, purpose: script_source}}}]
+          fallback: {name: ssh_command_option_value, semantic: {kind: plain_value}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/sshfs (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://github.com/libfuse/sshfs/blob/master/README.md", "https://github.com/libfuse/sshfs/blob/master/sshfs.c#L3030-L3036"]
+  caushell.profile/known_limitations: ["Only ssh_command= values select the opaque helper boundary. An absolute helper path is read and executed as an opaque executable path; SSHFS builds additional host, port, subsystem and SFTP-server argv, so no complete child argv is fabricated. Other ssh_command strings remain an unresolved opaque executable path and may require approval. Non-ssh_command -o values remain plain and do not select execution.", "Remote files become visible through a mount; source-specific cp operations are separate shell commands and are not included in this profile. Mount behavior, authentication, and remote file transfer remain runtime-dependent."]

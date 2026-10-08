@@ -763,45 +763,18 @@ fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<Trac
 
     match current {
         TraceNodeKey::ExecutionUnit(node_id) => {
-            for edge in graph.outgoing_edges(node_id) {
-                if edge.kind == EdgeKind::Consumes && is_provenance_artifact(graph, &edge.to) {
-                    neighbors.insert(TraceNodeKey::Artifact(edge.to.clone()));
-                }
-            }
-
-            for edge in graph.incoming_edges(node_id) {
-                if matches!(edge.kind, EdgeKind::FlowsTo | EdgeKind::Dispatches)
-                    && is_execution_unit(graph, &edge.from)
-                {
-                    neighbors.insert(TraceNodeKey::ExecutionUnit(edge.from.clone()));
-                }
+            for artifact in caushell_query::DataDependencyQuery::input_artifacts(graph, node_id) {
+                neighbors.insert(TraceNodeKey::Artifact(artifact));
             }
         }
         TraceNodeKey::Artifact(node_id) => {
-            for edge in graph.incoming_edges(node_id) {
-                if edge.kind == EdgeKind::Produces && is_execution_unit(graph, &edge.from) {
-                    neighbors.insert(TraceNodeKey::ExecutionUnit(edge.from.clone()));
-                }
+            for producer in caushell_query::DataDependencyQuery::input_producers(graph, node_id) {
+                neighbors.insert(TraceNodeKey::ExecutionUnit(producer));
             }
         }
     }
 
     neighbors.into_iter().collect()
-}
-
-fn is_execution_unit(graph: &dyn GraphRead, node_id: &NodeId) -> bool {
-    graph.get_node(node_id).is_some_and(|node| {
-        matches!(
-            node.kind,
-            NodeKind::CommandInvocation { .. } | NodeKind::DerivedInvocation { .. }
-        )
-    })
-}
-
-fn is_provenance_artifact(graph: &dyn GraphRead, node_id: &NodeId) -> bool {
-    graph
-        .get_node(node_id)
-        .is_some_and(|node| matches!(node.kind, NodeKind::ProvenanceArtifact { .. }))
 }
 
 fn path_content_artifact_path(graph: &dyn GraphRead, node_id: &NodeId) -> Option<String> {

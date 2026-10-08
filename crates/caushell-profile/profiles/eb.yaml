@@ -1,0 +1,22 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: eb, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: logs_with_pager
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: logs}}
+    parameters: [{name: log_options, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, --version]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/eb (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/using-features.logging.html", "https://docs.aws.amazon.com/elasticbeanstalk/latest/dg/eb3-platform.html"]
+  caushell.profile/known_limitations:
+    - The GTFOBins method relies on the EB CLI log display's inherited pager. The profile records a possible native pager surface; it does not invent a pager executable or shell command.
+    - Logs are retrieved from a configured Elastic Beanstalk environment. Environment selection, remote network access, cloud credentials, and log content are not inferred.

@@ -1,0 +1,124 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: hg
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: executable_alias
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_modifier_parameter_matching
+      modifier: config_alias
+      parameter: configuration_override
+      matcher:
+        kind: regex_pattern
+        pattern: ^alias\.[^=]+=["']?!
+    - kind: not
+      item: &2
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: alias_invocation_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: shell_alias_definition
+- id: non_executable_configuration_query
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: config_alias
+    - kind: not
+      item: *1
+    - kind: not
+      item: *2
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: "^(status|log|summary|id)$"
+  parameters:
+  - name: native_query_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects: []
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-h"
+- id: config_alias
+  matcher:
+    kind: any_flag
+    flags:
+    - "--config"
+  parameters:
+  - name: configuration_override
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+    structured_projection:
+      branches:
+      - matcher:
+          kind: prefix
+          value: alias.
+        target:
+          name: shell_alias_definition
+          semantic:
+            kind: payload
+            language: opaque
+            source: dynamic_reference
+            recursive: true
+      fallback:
+        name: ordinary_configuration
+        semantic:
+          kind: plain_value
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/hg (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

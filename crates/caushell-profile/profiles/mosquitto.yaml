@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: mosquitto, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: start_broker_from_config
+    selector: {kind: has_modifier, modifier: config_file}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: config_path}}
+      - {kind: network_endpoint, target: {kind: none}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: inputs}
+modifiers:
+  - id: config_file
+    matcher: {kind: any_flag, flags: ['-c', '--config-file']}
+    parameters: [{name: config_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: daemon, matcher: {kind: any_flag, flags: ['-d', '--daemon']}}
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q', '--quiet']}}
+  - {id: verbose, matcher: {kind: any_flag, flags: ['-v', '--verbose']}}
+  - id: port
+    matcher: {kind: any_flag, flags: ['-p', '--port']}
+    parameters: [{name: port_number, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+extensions:
+  caushell.profile/source_research:
+    - https://gtfobins.org/gtfobins/mosquitto/
+    - https://mosquitto.org/man/mosquitto-8.html
+    - https://mosquitto.org/man/mosquitto-conf-5.html
+  caushell.profile/known_limitations:
+    - -c starts the broker with the supplied configuration; it is not a read-only config inspection mode.
+    - Configuration content can select listeners, logging destinations, persistence paths, and plugins. Unknown endpoints and config-selected writes are conservatively represented without inventing a port or path.
+    - Plugin behavior, included files, TLS/password files, and exact logging diagnostics remain unresolved.

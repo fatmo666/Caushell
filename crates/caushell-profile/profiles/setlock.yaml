@@ -1,0 +1,57 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity:
+  canonical_name: setlock
+  aliases: []
+
+trust:
+  tier: tier_a
+  source: built_in
+
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: []
+  requires_features: []
+
+forms:
+  - id: lock_and_dispatch
+    selector: {kind: has_positional_at, index: 1}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - name: lock_path
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: child_command
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: child_argv
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - kind: write_path
+        target: {kind: slot, name: lock_path}
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: child_command
+          argv: [child_argv]
+          stdin_from_parent: true
+          stdout_to_parent: true
+
+modifiers:
+  - id: acquisition_mode
+    matcher: {kind: any_flag, flags: ['-n', '-N', '-x', '-X']}
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://cr.yp.to/daemontools/setlock.html
+    - https://manpages.debian.org/bookworm/daemontools/setlock.8.en.html
+    - https://gtfobins.org/gtfobins/setlock/
+  caushell.profile/scope: The lock file is opened for writing and created if absent, including a literal file named '-'. The child is executed as argv, not as shell text. Child options and data remain owned by the child. Unknown parent options or incomplete invocations retain unresolved operation semantics. Lock success and file existence are not probed dynamically.

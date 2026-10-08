@@ -1,0 +1,48 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: short_clusters
+opaque_on_unresolved: true
+identity: {canonical_name: ruby, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: all, items: [{kind: has_modifier, modifier: information}, {kind: not, item: {kind: has_modifier, modifier: code}}]}
+  - id: inline_code
+    selector: {kind: has_modifier, modifier: code}
+    parameters: [{name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: script_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters:
+      - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: stdin_script
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: stdin_payload_available}]}
+    implicit_inputs: [{source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}]
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}, {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}]
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_repl
+    selector: {kind: all, items: [{kind: no_arguments}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}]
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: code
+    matcher: {kind: any_flag, flags: ['-e']}
+    parameters: [{name: code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: code}}]
+  - id: module_import
+    matcher: {kind: any_flag, flags: ['-r']}
+    parameters: [{name: module_name, semantic: {kind: in_process_code_load, load_kind: module_name}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: load_in_process_code, target: {kind: slot, name: module_name}}]
+  - {id: information, matcher: {kind: any_flag, flags: ['-v', '--version', '--help', '-h']}}
+  - {id: switches, matcher: {kind: any_flag, flags: ['-w', '-W', '-d', '-s', '-T', '-U', '-E', '-K', '-I', '-S']}}
+extensions:
+  caushell.profile/source_research: [https://ruby-doc.org/3.4/ruby/options_md.html]
+  caushell.profile/known_limitations:
+    - Ruby code and script bodies are opaque and never parsed as Bash; no internal effects are inferred.
+    - -r loads a Ruby library name; it is not a filesystem path. Ruby -run remains opaque and is not interpreted as a shell or HTTP implementation.

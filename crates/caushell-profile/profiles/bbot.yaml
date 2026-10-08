@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: bbot, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: custom_yara_rules
+    selector: {kind: has_modifier, modifier: custom_yara_rules}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: custom_rules_file}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - id: custom_yara_rules
+    matcher: {kind: any_flag, flags: ['-cy', '--custom-yara-rules']}
+    parameters: [{name: custom_rules_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: debug, matcher: {kind: any_flag, flags: ['-d', '--debug']}}
+  - id: config
+    matcher: {kind: any_flag, flags: ['-c', '--config']}
+    parameters: [{name: config_overrides, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - {id: yes, matcher: {kind: any_flag, flags: ['-y', '--yes']}}
+extensions:
+  caushell.profile/source_research:
+    - https://gtfobins.org/gtfobins/bbot/
+    - https://github.com/blacklanternsecurity/bbot/blob/stable/bbot/scanner/preset/args.py
+    - https://github.com/blacklanternsecurity/bbot/blob/stable/docs/scanning/advanced.md
+  caushell.profile/known_limitations:
+    - The compact -cy spelling is the single --custom-yara-rules option. Its operand is a YARA rules file; -c config overrides and -y confirmation are separate options.
+    - The YARA rules file is parsed as rules and can influence scan results. This profile records the file source and debug output flow, but does not claim to model BBOT's modules, targets, network traffic, or output files.
+    - The source command supplies no explicit target; whether the installed BBOT version accepts or starts a scan without one remains runtime/version dependent.

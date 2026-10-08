@@ -59,6 +59,7 @@ forms:
       stderr_mode: opaque
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: output_paths

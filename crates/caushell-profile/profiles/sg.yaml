@@ -1,0 +1,54 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+opaque_on_unresolved: true
+
+identity: {canonical_name: sg, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: shell_command_string
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: command}
+    parameters:
+      - {name: target_group, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: command_string, semantic: {kind: payload, language: sh, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: '-c', operand_mode: next_arg}, cardinality: required_one}
+    effects:
+      - {kind: privilege_modifier, target: {kind: none}}
+      - {kind: execute_payload, target: {kind: slot, name: command_string}}
+  - id: shell_command_string_without_c
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_modifier, modifier: command}}
+    parameters:
+      - {name: target_group, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: command_string, semantic: {kind: payload, language: sh, source: inline_string, recursive: true}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: privilege_modifier, target: {kind: none}}
+      - {kind: execute_payload, target: {kind: slot, name: command_string}}
+  - id: interactive_group_shell
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+    parameters:
+      - {name: target_group, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: privilege_modifier, target: {kind: none}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+modifiers:
+  - {id: command, matcher: {kind: any_flag, flags: ['-c']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/sg/
+    - https://man7.org/linux/man-pages/man1/sg.1.html
+    - https://raw.githubusercontent.com/shadow-maint/shadow/master/src/newgrp.c
+  caushell.profile/scope: Without a command sg starts an interactive subshell. With a command it executes one shell command string; source accepts both `sg group command` and `sg group -c command`, modeled as recursively parsed sh payload. Extra operands and group membership/password checks remain unresolved.

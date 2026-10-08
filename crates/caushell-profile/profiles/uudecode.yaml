@@ -1,0 +1,112 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: uudecode, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: decode_file_header_output
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: not, item: {kind: has_modifier, modifier: output}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - name: encoded_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: encoded_paths}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+      - {kind: write_path, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: decode_stdin_header_output
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: not, item: {kind: has_modifier, modifier: output}}, {kind: no_positional_args}]}
+    effects:
+      - {kind: consume_stdin, target: {kind: none}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+      - {kind: write_path, target: {kind: none}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: decode_file_to_output
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_modifier, modifier: output}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+        - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: regex_pattern, pattern: '^(?:-|/dev/stdout)$'}}}
+    parameters:
+      - {name: encoded_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: encoded_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+      - {kind: write_path, target: {kind: slot, name: output_path}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: decode_file_to_stdout
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: regex_pattern, pattern: '^(?:-|/dev/stdout)$'}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: encoded_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: encoded_path}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_stdin_to_output
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_modifier, modifier: output}
+        - {kind: no_positional_args}
+        - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: regex_pattern, pattern: '^(?:-|/dev/stdout)$'}}}
+    effects:
+      - {kind: consume_stdin, target: {kind: none}}
+      - {kind: write_path, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: decode_stdin_to_stdout
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: regex_pattern, pattern: '^(?:-|/dev/stdout)$'}}
+        - {kind: no_positional_args}
+    effects:
+      - {kind: consume_stdin, target: {kind: none}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+modifiers:
+  - id: output
+    matcher: {kind: any_flag, flags: ['-o', '--output-file']}
+    parameters: [{name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: ignore_chmod, matcher: {kind: any_flag, flags: ['-c', '--ignore-chmod']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-v', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/sharutils/manual/sharutils.html
+    - GTFOBins fixed snapshot uuencode/file-read/0 (necessary decode helper)
+  caushell.profile/known_limitations:
+    - Without -o, the encoded header selects the output filename. This is represented as an unknown write_path effect; the profile never assumes the decoded data goes to stdout.
+    - With explicit -o, that argument is a real local output target; '-' and /dev/stdout are modeled as stdout, while ordinary paths are checked by workspace mutation guards.
+    - The uuencoded header/body parser, file mode, multiple-input behavior, and malformed records are opaque. Multiple input files plus -o remain unsupported.

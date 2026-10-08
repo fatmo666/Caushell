@@ -8,6 +8,10 @@ impl SessionTransformPass for ExtractCurrentWorkingDirectoryPass {
     }
 
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
+        // A terminated root frame has no proven returning cwd. Keep audit cwd facts.
+        if ctx.root_shell_terminates() {
+            return;
+        }
         let Some(path) = ctx.known_request_exit_cwd() else {
             return;
         };

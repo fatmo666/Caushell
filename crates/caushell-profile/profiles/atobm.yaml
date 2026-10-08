@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: atobm, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: help}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: convert_bitmap_file
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: help}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: exclude_literal, value: '-'}]}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - id: chars
+    matcher: {kind: any_flag, flags: ['-chars']}
+    parameters: [{name: output_chars, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: name
+    matcher: {kind: any_flag, flags: ['-name']}
+    parameters: [{name: variable_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: x_hotspot
+    matcher: {kind: any_flag, flags: ['-xhot']}
+    parameters: [{name: x_hotspot, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: y_hotspot
+    matcher: {kind: any_flag, flags: ['-yhot']}
+    parameters: [{name: y_hotspot, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-help']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/bookworm/x11-apps/bitmap.1.en.html
+    - https://gtfobins.org/gtfobins/atobm/
+  caushell.profile/scope: Models the converter's bitmap output as input-dependent stdout and the source-described first-line-derived diagnostic content as input-dependent stderr. -chars, -name, -xhot and -yhot are complete option names with values, not file paths; abbreviations, standard X Toolkit options beyond -help, stdin, extra operands, and exact transformations remain unresolved.

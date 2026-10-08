@@ -1,0 +1,21 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity: {canonical_name: task, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+subcommands:
+  roots:
+    - name: execute
+      option_scope: leading_options
+      forms:
+        - id: execute_command
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects: [{kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}]
+extensions:
+  caushell.profile/source_research: [https://taskwarrior.org/docs/commands/execute/]
+  caushell.profile/known_limitations: [Only the documented execute subcommand is modeled as an argv child process; task configuration hooks and other operations are outside this form.]

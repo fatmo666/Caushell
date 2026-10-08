@@ -1,0 +1,99 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ar, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+# GNU ar expands @files before ordinary option parsing. Unknown argv could
+# become a response-file token. Do not treat such calls as proven read-only.
+argument_files:
+  - {prefix: '@', possible_effects: [read_path, write_path]}
+selection_failure_effects:
+  - {kind: write_path, target: {kind: none}}
+
+forms:
+  - id: information
+    selector:
+      kind: all
+      items:
+        - &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+        - &known_shape
+          kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+              - {kind: has_modifier_parameter_matching, modifier: target_format, parameter: target_format, matcher: {kind: regex_pattern, pattern: '^@'}}
+        # GNU ar's legacy keyletter frontend does not implement an ordinary
+        # unconditional help exit when extra argv are present.
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(--help|-h|--version|-V)$'}}
+        - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^[\s\S]*$'}}}
+    stream_contract: &quiet {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
+  - id: insert_members
+    selector:
+      kind: all
+      items:
+        - &running {kind: all, items: [{kind: not, item: *information}, *known_shape]}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[rq][cDsSUufP]*$'}}
+    parameters:
+      - &operation {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - &archive {name: archive_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects:
+      - &archive_read {kind: read_path, path_access: content_open, target: {kind: slot, name: archive_path}}
+      - &archive_write {kind: write_path, target: {kind: slot, name: archive_path}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+    stream_contract: *quiet
+
+  - id: print_members
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^pv*$'}}]}
+    parameters: &members
+      - *operation
+      - *archive
+      - {name: member_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [*archive_read]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: list_members
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^t[vO]*$'}}]}
+    parameters: *members
+    effects: [*archive_read]
+    stream_contract: {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: edit_member_table
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: d}}]}
+    parameters: *members
+    # Deleting an archive member modifies the archive, not the source file.
+    effects: [*archive_read, *archive_write]
+    stream_contract: *quiet
+
+  - id: build_symbol_index
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: s}}]}
+    parameters: [*operation, *archive]
+    effects: [*archive_read, *archive_write]
+    stream_contract: *quiet
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['--help', '-h']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['--version', '-V']}}
+  - id: target_format
+    matcher: {kind: any_flag, flags: ['--target']}
+    parameters:
+      - {name: target_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://sourceware.org/binutils/docs/binutils/ar.html
+    - https://sourceware.org/binutils/docs/binutils/ar-cmdline.html
+    - GTFOBins fixed snapshot ar/file-read/0
+  caushell.profile/known_limitations:
+    - The source-demonstrated non-dash r/p keyletter forms and declared common variants are modeled; leading-dash operations, relative placement, extraction, MRI stdin scripts, explicit plugins and other unsupported forms require approval rather than being treated as harmless.
+    - Member names used for p/t/d select archive members and are not disk paths. Inserted files are real read paths. Removing members or building the symbol table writes the archive but does not delete source files.
+    - Archive mutations are namespace/file updates, not pure content-open writes or stdout. Actual archive bytes/member layout are not expanded. Existing archive data and added file provenance are conservatively retained.
+    - Response-file content and non-materialized argv keep unknown possible file mutations using the existing argument_files declaration; no file probing or response-file interpreter is added.
+    - Static response-file tokens are excluded from known forms so their unknown expansion cannot inherit quiet stdout or ignored-stdin guarantees; dynamic argv also cannot establish negative stream guarantees.
+    - Only standalone help/version options establish an information-only form. Additional argv are not silently discarded by assuming a conventional GNU help exit.

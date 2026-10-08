@@ -1,0 +1,31 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: setarch, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: set_personality_and_execute
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}
+
+modifiers:
+  - {id: addr_limit_3gb, matcher: {kind: any_flag, flags: ['-3']}}
+
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/testing/util-linux/setarch.8.en.html
+    - GTFOBins fixed snapshot setarch/shell/0
+  caushell.profile/scope: Models the source-demonstrated -3 personality flag and child dispatch. The current DSL has no dedicated process-personality effect, so the changed execution personality is documented but not represented as a control_process signal. Other architecture names, personality flags, optional default shell, list/show forms, and kernel support remain unresolved.

@@ -1,0 +1,89 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: pdb
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+- id: debug_python_script
+  selector:
+    kind: has_positional_at
+    index: 0
+  parameters:
+  - name: script
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: next_positional
+    cardinality: required_one
+    structured_projection:
+      branches: []
+      fallback:
+        name: script_path
+        semantic:
+          kind: path
+          role: read
+          purpose: script_source
+  - name: script_args
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: script_path
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: script
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: terminal_ui
+      requires_tty: true
+      capabilities:
+      - spawn_shell
+      - run_command
+  stream_contract:
+    stdin_mode: payload_optional
+    stdout_mode: opaque
+    stderr_mode: opaque
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+    - "-h"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/pdb (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://docs.python.org/3/library/pdb.html
+  caushell.profile/known_limitations:
+  - The script operand is Python source loaded from a real path; its contents and
+    Pdb command input remain opaque and are not parsed as Bash.
+  - The GTFOBins recipe continues at the debugger prompt with cont after script startup.
+    Prompt commands are separate native Pdb input, not shell argv.

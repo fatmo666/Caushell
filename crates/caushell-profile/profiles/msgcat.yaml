@@ -1,0 +1,40 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: msgcat, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: concatenate_properties
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_modifier, modifier: properties_input}, {kind: not, item: {kind: has_modifier, modifier: output_file}}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: concatenate_properties_to_file
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_modifier, modifier: properties_input}, {kind: has_modifier, modifier: output_file}, {kind: has_modifier_parameter_matching, modifier: output_file, parameter: output_path, matcher: {kind: regex_pattern, pattern: '^.+$'}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output_file, parameter: output_path, matcher: {kind: literal, value: '-'}}}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}, {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+  - id: concatenate_properties_output_stdout
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_modifier, modifier: properties_input}, {kind: has_modifier_parameter_matching, modifier: output_file, parameter: output_path, matcher: {kind: literal, value: '-'}}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters: [{name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - {id: properties_input, matcher: {kind: any_flag, flags: ['-P', '--properties-input']}}
+  - id: output_file
+    matcher: {kind: any_flag, flags: ['-o', '--output-file']}
+    parameters: [{name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/gettext/manual/html_node/msgcat-Invocation.html
+    - https://gtfobins.org/gtfobins/msgcat/
+  caushell.profile/scope: Distinguishes default stdout, -o FILE content-open output, and -o - stdout. Models one or more Java .properties input paths and content-dependent output/diagnostics; stdin marker '-', file lists, directory search, and additional gettext behavior remain unresolved.

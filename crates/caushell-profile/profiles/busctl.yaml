@@ -1,0 +1,148 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: busctl
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: unixexec_address
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_modifier_parameter_matching
+      modifier: address
+      parameter: address_value
+      matcher:
+        kind: regex_pattern
+        pattern: "^unixexec:"
+    - kind: not
+      item: &2
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: native_dbus_operation_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: address_executable
+- id: pager_escape_surface
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: show_machine
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: pager
+      requires_tty: true
+      capabilities:
+      - spawn_shell
+      - run_command
+- id: ordinary_address_query
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: address
+    - kind: not
+      item: *1
+    - kind: not
+      item: *2
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: regex_pattern
+        pattern: "^(list|status|tree|get-property)$"
+  parameters:
+  - name: native_query_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects: []
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: address
+  matcher:
+    kind: any_flag
+    flags:
+    - "--address"
+  parameters:
+  - name: address_value
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+    structured_projection:
+      branches:
+      - matcher:
+          kind: prefix
+          value: 'unixexec:'
+        target:
+          name: address_executable
+          semantic:
+            kind: payload
+            language: opaque
+            source: dynamic_reference
+            recursive: true
+      fallback:
+        name: ordinary_address
+        semantic:
+          kind: plain_value
+- id: show_machine
+  matcher:
+    kind: any_flag
+    flags:
+    - "--show-machine"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/busctl (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://github.com/systemd/systemd/blob/main/man/busctl.xml
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.

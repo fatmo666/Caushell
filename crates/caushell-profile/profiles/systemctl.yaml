@@ -1,0 +1,229 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: systemctl
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: default_list_pager
+  selector:
+    kind: all
+    items:
+    - kind: no_positional_args
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: no_pager
+  effects:
+  - kind: open_interactive_escape_surface
+    target:
+      kind: none
+    surface:
+      kind: pager
+      requires_tty: true
+      capabilities:
+      - run_command
+      - spawn_shell
+- id: default_list_no_pager
+  selector:
+    kind: all
+    items:
+    - kind: no_positional_args
+    - kind: has_modifier
+      modifier: no_pager
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+- id: link_executable_service_unit
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: link
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: unit_file_path
+    semantic:
+      kind: path
+      role: read
+      purpose: tool_config
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: unit_file_path
+  - kind: load_config
+    target:
+      kind: slot
+      name: unit_file_path
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+- id: daemon_reload_unit_files
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: daemon-reload
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  effects:
+  - kind: load_config
+    target:
+      kind: none
+- id: enable_start_unit
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: enable
+    - kind: has_modifier
+      modifier: now
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: unit_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: execute_hook
+    target:
+      kind: none
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+- id: edit_unit_via_editor
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: edit
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: unit_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: execute_hook
+    target:
+      kind: none
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: no_pager
+  matcher:
+    kind: any_flag
+    flags:
+    - "--no-pager"
+- id: now
+  matcher:
+    kind: any_flag
+    flags:
+    - "--now"
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/systemctl (GTFOBins
+    acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - It might happen that the service is not started with `--now`, in such cases it
+    might be necessary to manually start it.
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

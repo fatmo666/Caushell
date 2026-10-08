@@ -1,0 +1,122 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: ctr
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  shell_families: []
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+- id: information
+  selector:
+    kind: has_modifier
+    modifier: information
+  parameters:
+  - name: ignored_help_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+- id: container_run_with_host_bind
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: run
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: run_operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: container_image
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: container_name
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  - name: container_argv
+    semantic:
+      kind: payload
+      language: opaque
+      source: inline_string
+      recursive: true
+    binding:
+      kind: remaining_args
+    cardinality: optional_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: container_argv
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+modifiers:
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "--help"
+- id: remove_after_exit
+  matcher:
+    kind: any_flag
+    flags:
+    - "--rm"
+- id: tty
+  matcher:
+    kind: any_flag
+    flags:
+    - "-t"
+    - "--tty"
+- id: mount
+  matcher:
+    kind: any_flag
+    flags:
+    - "--mount"
+  parameters:
+  - name: mount_specification
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: optional_many
+subcommands:
+extensions:
+  caushell.profile/source_research:
+  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ctr (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/run/run.go
+  caushell.profile/known_limitations:
+  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
+    opaque.
+  - 'An image must be already present, for example:  ``` ctr images pull docker.io/library/alpine:latest
+    ```'
+  - Inner configuration payloads and generated native child argv not explicitly represented
+    by a form remain partial.
+  - Known GTFOBins mechanism remains partially opaque until its native boundary has
+    a dedicated form.

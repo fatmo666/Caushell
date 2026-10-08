@@ -7,6 +7,1370 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "autoconf",
+        content: include_str!("../profiles/autoconf.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "autoheader",
+        content: include_str!("../profiles/autoheader.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "autoreconf",
+        content: include_str!("../profiles/autoreconf.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bundle",
+        content: include_str!("../profiles/bundle.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bundler",
+        content: include_str!("../profiles/bundler.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cabal",
+        content: include_str!("../profiles/cabal.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cobc",
+        content: include_str!("../profiles/cobc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "composer",
+        content: include_str!("../profiles/composer.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "easy_install",
+        content: include_str!("../profiles/easy_install.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "exiftool",
+        content: include_str!("../profiles/exiftool.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gem",
+        content: include_str!("../profiles/gem.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "go",
+        content: include_str!("../profiles/go.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "java",
+        content: include_str!("../profiles/java.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "jjs",
+        content: include_str!("../profiles/jjs.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "jrunscript",
+        content: include_str!("../profiles/jrunscript.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "latex",
+        content: include_str!("../profiles/latex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "latexmk",
+        content: include_str!("../profiles/latexmk.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lualatex",
+        content: include_str!("../profiles/lualatex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "luatex",
+        content: include_str!("../profiles/luatex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msfconsole",
+        content: include_str!("../profiles/msfconsole.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pdflatex",
+        content: include_str!("../profiles/pdflatex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pdftex",
+        content: include_str!("../profiles/pdftex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "puppet",
+        content: include_str!("../profiles/puppet.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rake",
+        content: include_str!("../profiles/rake.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rustc",
+        content: include_str!("../profiles/rustc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rustdoc",
+        content: include_str!("../profiles/rustdoc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tex",
+        content: include_str!("../profiles/tex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "vagrant",
+        content: include_str!("../profiles/vagrant.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xelatex",
+        content: include_str!("../profiles/xelatex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xetex",
+        content: include_str!("../profiles/xetex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "codex",
+        content: include_str!("../profiles/codex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "opencode",
+        content: include_str!("../profiles/opencode.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ffmpeg",
+        content: include_str!("../profiles/ffmpeg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "apache2",
+        content: include_str!("../profiles/apache2.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "apache2ctl",
+        content: include_str!("../profiles/apache2ctl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "aws",
+        content: include_str!("../profiles/aws.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "busctl",
+        content: include_str!("../profiles/busctl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ctr",
+        content: include_str!("../profiles/ctr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dmsetup",
+        content: include_str!("../profiles/dmsetup.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dstat",
+        content: include_str!("../profiles/dstat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "easyrsa",
+        content: include_str!("../profiles/easyrsa.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "fail2ban-client",
+        content: include_str!("../profiles/fail2ban-client.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "hg",
+        content: include_str!("../profiles/hg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ip",
+        content: include_str!("../profiles/ip.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "kubectl",
+        content: include_str!("../profiles/kubectl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "loginctl",
+        content: include_str!("../profiles/loginctl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lxd",
+        content: include_str!("../profiles/lxd.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mosh-server",
+        content: include_str!("../profiles/mosh-server.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "needrestart",
+        content: include_str!("../profiles/needrestart.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nginx",
+        content: include_str!("../profiles/nginx.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "opkg",
+        content: include_str!("../profiles/opkg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "passwd",
+        content: include_str!("../profiles/passwd.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "plymouth",
+        content: include_str!("../profiles/plymouth.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "podman",
+        content: include_str!("../profiles/podman.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "procmail",
+        content: include_str!("../profiles/procmail.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rsyslogd",
+        content: include_str!("../profiles/rsyslogd.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "service",
+        content: include_str!("../profiles/service.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "snap",
+        content: include_str!("../profiles/snap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "systemctl",
+        content: include_str!("../profiles/systemctl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "systemd-resolve",
+        content: include_str!("../profiles/systemd-resolve.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tailscale",
+        content: include_str!("../profiles/tailscale.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "timedatectl",
+        content: include_str!("../profiles/timedatectl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "unsquashfs",
+        content: include_str!("../profiles/unsquashfs.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "virsh",
+        content: include_str!("../profiles/virsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "wg-quick",
+        content: include_str!("../profiles/wg-quick.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "crash",
+        content: include_str!("../profiles/crash.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "emacs",
+        content: include_str!("../profiles/emacs.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ex",
+        content: include_str!("../profiles/ex.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ftp",
+        content: include_str!("../profiles/ftp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gdb",
+        content: include_str!("../profiles/gdb.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gimp",
+        content: include_str!("../profiles/gimp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ksh",
+        content: include_str!("../profiles/ksh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lftp",
+        content: include_str!("../profiles/lftp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ncftp",
+        content: include_str!("../profiles/ncftp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nvim",
+        content: include_str!("../profiles/nvim.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pico",
+        content: include_str!("../profiles/pico.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "posh",
+        content: include_str!("../profiles/posh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "psftp",
+        content: include_str!("../profiles/psftp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rc",
+        content: include_str!("../profiles/rc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "red",
+        content: include_str!("../profiles/red.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rlogin",
+        content: include_str!("../profiles/rlogin.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rtorrent",
+        content: include_str!("../profiles/rtorrent.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "run-mailcap",
+        content: include_str!("../profiles/run-mailcap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rview",
+        content: include_str!("../profiles/rview.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rvim",
+        content: include_str!("../profiles/rvim.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sash",
+        content: include_str!("../profiles/sash.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sftp",
+        content: include_str!("../profiles/sftp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "smbclient",
+        content: include_str!("../profiles/smbclient.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "socat",
+        content: include_str!("../profiles/socat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sshfs",
+        content: include_str!("../profiles/sshfs.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "view",
+        content: include_str!("../profiles/view.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "vigr",
+        content: include_str!("../profiles/vigr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "vimdiff",
+        content: include_str!("../profiles/vimdiff.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "vipw",
+        content: include_str!("../profiles/vipw.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "wireshark",
+        content: include_str!("../profiles/wireshark.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "yash",
+        content: include_str!("../profiles/yash.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "irb",
+        content: include_str!("../profiles/irb.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pry",
+        content: include_str!("../profiles/pry.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "byebug",
+        content: include_str!("../profiles/byebug.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cpan",
+        content: include_str!("../profiles/cpan.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ghc",
+        content: include_str!("../profiles/ghc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ghci",
+        content: include_str!("../profiles/ghci.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "slsh",
+        content: include_str!("../profiles/slsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "octave",
+        content: include_str!("../profiles/octave.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "jshell",
+        content: include_str!("../profiles/jshell.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dotnet",
+        content: include_str!("../profiles/dotnet.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ansible-test",
+        content: include_str!("../profiles/ansible-test.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cdist",
+        content: include_str!("../profiles/cdist.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_ssl_cert",
+        content: include_str!("../profiles/check_ssl_cert.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dhclient",
+        content: include_str!("../profiles/dhclient.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dnsmasq",
+        content: include_str!("../profiles/dnsmasq.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pdb",
+        content: include_str!("../profiles/pdb.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "hping3",
+        content: include_str!("../profiles/hping3.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "yt-dlp",
+        content: include_str!("../profiles/yt-dlp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "certbot",
+        content: include_str!("../profiles/certbot.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bpftrace",
+        content: include_str!("../profiles/bpftrace.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ansible-playbook",
+        content: include_str!("../profiles/ansible-playbook.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bee",
+        content: include_str!("../profiles/bee.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sqlmap",
+        content: include_str!("../profiles/sqlmap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gcloud",
+        content: include_str!("../profiles/gcloud.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "eb",
+        content: include_str!("../profiles/eb.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "poetry",
+        content: include_str!("../profiles/poetry.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pipx",
+        content: include_str!("../profiles/pipx.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "knife",
+        content: include_str!("../profiles/knife.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "volatility",
+        content: include_str!("../profiles/volatility.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "forge",
+        content: include_str!("../profiles/forge.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "apport-cli",
+        content: include_str!("../profiles/apport-cli.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "asterisk",
+        content: include_str!("../profiles/asterisk.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bconsole",
+        content: include_str!("../profiles/bconsole.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "debugfs",
+        content: include_str!("../profiles/debugfs.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ginsh",
+        content: include_str!("../profiles/ginsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "iftop",
+        content: include_str!("../profiles/iftop.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "jtag",
+        content: include_str!("../profiles/jtag.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "minicom",
+        content: include_str!("../profiles/minicom.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "scanmem",
+        content: include_str!("../profiles/scanmem.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tdbtool",
+        content: include_str!("../profiles/tdbtool.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "apt",
+        content: include_str!("../profiles/apt.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "aptitude",
+        content: include_str!("../profiles/aptitude.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dpkg",
+        content: include_str!("../profiles/dpkg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dnf",
+        content: include_str!("../profiles/dnf.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zypper",
+        content: include_str!("../profiles/zypper.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rpm",
+        content: include_str!("../profiles/rpm.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rpmdb",
+        content: include_str!("../profiles/rpmdb.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rpmquery",
+        content: include_str!("../profiles/rpmquery.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rpmverify",
+        content: include_str!("../profiles/rpmverify.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pkg",
+        content: include_str!("../profiles/pkg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lua",
+        content: include_str!("../profiles/lua.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ruby",
+        content: include_str!("../profiles/ruby.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "php",
+        content: include_str!("../profiles/php.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "guile",
+        content: include_str!("../profiles/guile.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tclsh",
+        content: include_str!("../profiles/tclsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "wish",
+        content: include_str!("../profiles/wish.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "clisp",
+        content: include_str!("../profiles/clisp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "R",
+        content: include_str!("../profiles/R.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "julia",
+        content: include_str!("../profiles/julia.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pwsh",
+        content: include_str!("../profiles/pwsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "batcat",
+        content: include_str!("../profiles/batcat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pg",
+        content: include_str!("../profiles/pg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "joe",
+        content: include_str!("../profiles/joe.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ispell",
+        content: include_str!("../profiles/ispell.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ncdu",
+        content: include_str!("../profiles/ncdu.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ranger",
+        content: include_str!("../profiles/ranger.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zathura",
+        content: include_str!("../profiles/zathura.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "journalctl",
+        content: include_str!("../profiles/journalctl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "fastfetch",
+        content: include_str!("../profiles/fastfetch.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "neofetch",
+        content: include_str!("../profiles/neofetch.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lp",
+        content: include_str!("../profiles/lp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cancel",
+        content: include_str!("../profiles/cancel.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "telnet",
+        content: include_str!("../profiles/telnet.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tftp",
+        content: include_str!("../profiles/tftp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "socket",
+        content: include_str!("../profiles/socket.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ltrace",
+        content: include_str!("../profiles/ltrace.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tshark",
+        content: include_str!("../profiles/tshark.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nmap",
+        content: include_str!("../profiles/nmap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tmate",
+        content: include_str!("../profiles/tmate.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "openvpn",
+        content: include_str!("../profiles/openvpn.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dc",
+        content: include_str!("../profiles/dc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gnuplot",
+        content: include_str!("../profiles/gnuplot.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "elvish",
+        content: include_str!("../profiles/elvish.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dosbox",
+        content: include_str!("../profiles/dosbox.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "csvtool",
+        content: include_str!("../profiles/csvtool.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "facter",
+        content: include_str!("../profiles/facter.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "expect",
+        content: include_str!("../profiles/expect.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "csh",
+        content: include_str!("../profiles/csh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tcsh",
+        content: include_str!("../profiles/tcsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "fish",
+        content: include_str!("../profiles/fish.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "aria2c",
+        content: include_str!("../profiles/aria2c.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tcpdump",
+        content: include_str!("../profiles/tcpdump.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "restic",
+        content: include_str!("../profiles/restic.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "borg",
+        content: include_str!("../profiles/borg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "logrotate",
+        content: include_str!("../profiles/logrotate.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dmidecode",
+        content: include_str!("../profiles/dmidecode.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ldconfig",
+        content: include_str!("../profiles/ldconfig.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "update-alternatives",
+        content: include_str!("../profiles/update-alternatives.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "varnishncsa",
+        content: include_str!("../profiles/varnishncsa.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "hashcat",
+        content: include_str!("../profiles/hashcat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "arj",
+        content: include_str!("../profiles/arj.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "links",
+        content: include_str!("../profiles/links.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "w3m",
+        content: include_str!("../profiles/w3m.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xmore",
+        content: include_str!("../profiles/xmore.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xpad",
+        content: include_str!("../profiles/xpad.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "yelp",
+        content: include_str!("../profiles/yelp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "alpine",
+        content: include_str!("../profiles/alpine.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mutt",
+        content: include_str!("../profiles/mutt.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "urlget",
+        content: include_str!("../profiles/urlget.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pandoc",
+        content: include_str!("../profiles/pandoc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "acr",
+        content: include_str!("../profiles/acr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "agetty",
+        content: include_str!("../profiles/agetty.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "task",
+        content: include_str!("../profiles/task.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tasksh",
+        content: include_str!("../profiles/tasksh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xdotool",
+        content: include_str!("../profiles/xdotool.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "at",
+        content: include_str!("../profiles/at.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zic",
+        content: include_str!("../profiles/zic.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "runscript",
+        content: include_str!("../profiles/runscript.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gtester",
+        content: include_str!("../profiles/gtester.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zip",
+        content: include_str!("../profiles/zip.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "arch-nspawn",
+        content: include_str!("../profiles/arch-nspawn.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "genie",
+        content: include_str!("../profiles/genie.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rustup",
+        content: include_str!("../profiles/rustup.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "fzf",
+        content: include_str!("../profiles/fzf.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "scrot",
+        content: include_str!("../profiles/scrot.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pidstat",
+        content: include_str!("../profiles/pidstat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sshuttle",
+        content: include_str!("../profiles/sshuttle.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xdg-user-dir",
+        content: include_str!("../profiles/xdg-user-dir.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cowsay",
+        content: include_str!("../profiles/cowsay.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "arp",
+        content: include_str!("../profiles/arp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bridge",
+        content: include_str!("../profiles/bridge.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nft",
+        content: include_str!("../profiles/nft.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "iptables-save",
+        content: include_str!("../profiles/iptables-save.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "clamscan",
+        content: include_str!("../profiles/clamscan.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dmesg",
+        content: include_str!("../profiles/dmesg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "gcore",
+        content: include_str!("../profiles/gcore.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sysctl",
+        content: include_str!("../profiles/sysctl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ssh-copy-id",
+        content: include_str!("../profiles/ssh-copy-id.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "whois",
+        content: include_str!("../profiles/whois.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "troff",
+        content: include_str!("../profiles/troff.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nroff",
+        content: include_str!("../profiles/nroff.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pic",
+        content: include_str!("../profiles/pic.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "m4",
+        content: include_str!("../profiles/m4.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msgfilter",
+        content: include_str!("../profiles/msgfilter.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dvips",
+        content: include_str!("../profiles/dvips.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "enscript",
+        content: include_str!("../profiles/enscript.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zgrep",
+        content: include_str!("../profiles/zgrep.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "rustfmt",
+        content: include_str!("../profiles/rustfmt.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tsc",
+        content: include_str!("../profiles/tsc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ntpdate",
+        content: include_str!("../profiles/ntpdate.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_cups",
+        content: include_str!("../profiles/check_cups.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_memory",
+        content: include_str!("../profiles/check_memory.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_raid",
+        content: include_str!("../profiles/check_raid.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bbot",
+        content: include_str!("../profiles/bbot.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mosquitto",
+        content: include_str!("../profiles/mosquitto.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ksshell",
+        content: include_str!("../profiles/ksshell.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "terraform",
+        content: include_str!("../profiles/terraform.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xmodmap",
+        content: include_str!("../profiles/xmodmap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "7z",
+        content: include_str!("../profiles/7z.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zsoelim",
+        content: include_str!("../profiles/zsoelim.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mtr",
+        content: include_str!("../profiles/mtr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nasm",
+        content: include_str!("../profiles/nasm.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tic",
+        content: include_str!("../profiles/tic.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pax",
+        content: include_str!("../profiles/pax.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "genisoimage",
+        content: include_str!("../profiles/genisoimage.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "aspell",
+        content: include_str!("../profiles/aspell.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "qpdf",
+        content: include_str!("../profiles/qpdf.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mawk",
+        content: include_str!("../profiles/mawk.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "run-parts",
+        content: include_str!("../profiles/run-parts.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "start-stop-daemon",
+        content: include_str!("../profiles/start-stop-daemon.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ld.so",
+        content: include_str!("../profiles/ld.so.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_by_ssh",
+        content: include_str!("../profiles/check_by_ssh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "perlbug",
+        content: include_str!("../profiles/perlbug.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bashbug",
+        content: include_str!("../profiles/bashbug.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ssh-agent",
+        content: include_str!("../profiles/ssh-agent.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "distcc",
+        content: include_str!("../profiles/distcc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pkexec",
+        content: include_str!("../profiles/pkexec.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pexec",
+        content: include_str!("../profiles/pexec.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "grc",
+        content: include_str!("../profiles/grc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "capsh",
+        content: include_str!("../profiles/capsh.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "chroot",
+        content: include_str!("../profiles/chroot.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "openvt",
+        content: include_str!("../profiles/openvt.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ksu",
+        content: include_str!("../profiles/ksu.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "sg",
+        content: include_str!("../profiles/sg.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dos2unix",
+        content: include_str!("../profiles/dos2unix.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ssh-keyscan",
+        content: include_str!("../profiles/ssh-keyscan.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ab",
+        content: include_str!("../profiles/ab.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lwp-request",
+        content: include_str!("../profiles/lwp-request.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "lwp-download",
+        content: include_str!("../profiles/lwp-download.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_log",
+        content: include_str!("../profiles/check_log.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "check_statusfile",
+        content: include_str!("../profiles/check_statusfile.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "as",
+        content: include_str!("../profiles/as.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "efax",
+        content: include_str!("../profiles/efax.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "fping",
+        content: include_str!("../profiles/fping.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msgattrib",
+        content: include_str!("../profiles/msgattrib.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msgcat",
+        content: include_str!("../profiles/msgcat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msgconv",
+        content: include_str!("../profiles/msgconv.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msgmerge",
+        content: include_str!("../profiles/msgmerge.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "msguniq",
+        content: include_str!("../profiles/msguniq.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "readelf",
+        content: include_str!("../profiles/readelf.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "highlight",
+        content: include_str!("../profiles/highlight.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "espeak",
+        content: include_str!("../profiles/espeak.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "atobm",
+        content: include_str!("../profiles/atobm.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "redcarpet",
+        content: include_str!("../profiles/redcarpet.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xz",
+        content: include_str!("../profiles/xz.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "chattr",
+        content: include_str!("../profiles/chattr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "setcap",
+        content: include_str!("../profiles/setcap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "setfacl",
+        content: include_str!("../profiles/setfacl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "wall",
+        content: include_str!("../profiles/wall.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dialog",
+        content: include_str!("../profiles/dialog.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "whiptail",
+        content: include_str!("../profiles/whiptail.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "eqn",
+        content: include_str!("../profiles/eqn.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tbl",
+        content: include_str!("../profiles/tbl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "soelim",
+        content: include_str!("../profiles/soelim.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "uudecode",
+        content: include_str!("../profiles/uudecode.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "look",
+        content: include_str!("../profiles/look.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ul",
+        content: include_str!("../profiles/ul.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "uuencode",
+        content: include_str!("../profiles/uuencode.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ascii85",
+        content: include_str!("../profiles/ascii85.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "base58",
+        content: include_str!("../profiles/base58.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "basez",
+        content: include_str!("../profiles/basez.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ascii-xfr",
+        content: include_str!("../profiles/ascii-xfr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "last",
+        content: include_str!("../profiles/last.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "nm",
+        content: include_str!("../profiles/nm.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cupsfilter",
+        content: include_str!("../profiles/cupsfilter.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "aa-exec",
+        content: include_str!("../profiles/aa-exec.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "aoss",
+        content: include_str!("../profiles/aoss.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "choom",
+        content: include_str!("../profiles/choom.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cpulimit",
+        content: include_str!("../profiles/cpulimit.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "multitime",
+        content: include_str!("../profiles/multitime.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "setarch",
+        content: include_str!("../profiles/setarch.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "softlimit",
+        content: include_str!("../profiles/softlimit.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "torify",
+        content: include_str!("../profiles/torify.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "torsocks",
+        content: include_str!("../profiles/torsocks.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "logsave",
+        content: include_str!("../profiles/logsave.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ar",
+        content: include_str!("../profiles/ar.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "basenc",
+        content: include_str!("../profiles/basenc.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "setlock",
+        content: include_str!("../profiles/setlock.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "disown",
+        content: include_str!("../profiles/disown.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "exit",
+        content: include_str!("../profiles/exit.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "wait",
+        content: include_str!("../profiles/wait.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "py_compile",
+        content: include_str!("../profiles/py_compile.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "compileall",
+        content: include_str!("../profiles/compileall.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "json.tool",
+        content: include_str!("../profiles/json.tool.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "http.server",
+        content: include_str!("../profiles/http.server.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "mysql",
         content: include_str!("../profiles/mysql.yaml"),
     },

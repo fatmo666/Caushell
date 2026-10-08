@@ -1,0 +1,19 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: zathura, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: view_documents
+    selector: {kind: all, items: []}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: generic, requires_tty: false, capabilities: [spawn_shell, run_command]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/zathura (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/trixie/zathura/zathura.1.en.html"]
+  caushell.profile/known_limitations: ["The source recipe requires a running X server and uses GUI command entry; current escape surface kinds cannot express an X11 requirement.", "The `:!` keystrokes and embedded shell command remain source evidence, not shell-parsed input. The shell is reported by the source to open in the terminal."]

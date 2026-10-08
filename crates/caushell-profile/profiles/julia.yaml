@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: julia, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: inline_code
+    selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: script_file
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters:
+      - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+      - {name: args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: stdin_script
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: stdin_payload_available}]}
+    implicit_inputs: [{source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}]
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}, {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}]
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_repl
+    selector: {kind: all, items: [{kind: no_arguments}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}]
+    stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: code
+    matcher: {kind: any_flag, flags: ['-e', '--eval']}
+    ends_option_scope: true
+    parameters: [{name: code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: code}}]
+  - {id: information, matcher: {kind: any_flag, flags: ['--version', '--help', '-v', '-h'],}, ends_option_scope: true}
+  - {id: switches, matcher: {kind: any_flag, flags: ['--startup-file', '--history-file', '--color', '--banner', '--threads', '--project', '--depwarn', '--check-bounds', '--inline', '--compile', '--sysimage', '--cpu-target']}, parameters: [{name: switch_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]}
+extensions:
+  caushell.profile/source_research: [https://docs.julialang.org/en/v1/manual/command-line-interface/]
+  caushell.profile/known_limitations:
+    - Julia source remains opaque; unquoted foreign path syntax from upstream remains preserved as source data and is not corrected or parsed.

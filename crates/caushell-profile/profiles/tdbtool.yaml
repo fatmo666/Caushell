@@ -1,0 +1,20 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: tdbtool, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: database_tool
+    selector: {kind: all, items: []}
+    parameters: []
+    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: no_lock
+    matcher: {kind: any_flag, flags: [-l]}
+    parameters: []
+subcommands: null
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/tdbtool (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://manpages.debian.org/testing/tdb-tools/tdbtool.8.en.html"]
+  caushell.profile/known_limitations: ["The source uses tdbtool's native ! /bin/sh prompt command. Database paths and file mutations are not included in that source interaction.", "tdbtool also accepts a TDB file and native commands on argv, with operations such as store and delete; these forms and their effects are outside this escape-only profile."]

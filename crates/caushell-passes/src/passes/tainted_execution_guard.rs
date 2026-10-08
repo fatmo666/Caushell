@@ -119,6 +119,7 @@ impl SearchBudget {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum TraceNodeKey {
     ExecutionUnit(NodeId),
+    DispatchContext(NodeId),
     Artifact(NodeId),
 }
 
@@ -452,9 +453,14 @@ fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<Trac
     let mut neighbors = BTreeSet::new();
 
     match current {
-        TraceNodeKey::ExecutionUnit(node_id) => {
+        TraceNodeKey::ExecutionUnit(node_id) | TraceNodeKey::DispatchContext(node_id) => {
             for edge in graph.outgoing_edges(node_id) {
                 if edge.kind != EdgeKind::Consumes {
+                    continue;
+                }
+                if matches!(current, TraceNodeKey::DispatchContext(_))
+                    && caushell_query::DataDependencyQuery::is_dispatch_return_input(graph, edge)
+                {
                     continue;
                 }
 
@@ -466,9 +472,19 @@ fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<Trac
             let mut projected_expands = false;
             for edge in graph.incoming_edges(node_id) {
                 match edge.kind {
-                    EdgeKind::FlowsTo | EdgeKind::Dispatches => {
+                    EdgeKind::FlowsTo => {
+                        if !caushell_query::DataDependencyQuery::control_edge_carries_inputs(
+                            graph, edge,
+                        ) {
+                            continue;
+                        }
                         if execution_unit_info(graph, &edge.from).is_some() {
                             neighbors.insert(TraceNodeKey::ExecutionUnit(edge.from.clone()));
+                        }
+                    }
+                    EdgeKind::Dispatches => {
+                        if execution_unit_info(graph, &edge.from).is_some() {
+                            neighbors.insert(TraceNodeKey::DispatchContext(edge.from.clone()));
                         }
                     }
                     EdgeKind::ExpandsTo => {
@@ -497,6 +513,9 @@ fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<Trac
         TraceNodeKey::Artifact(node_id) => {
             for edge in graph.incoming_edges(node_id) {
                 if edge.kind != EdgeKind::Produces {
+                    continue;
+                }
+                if !caushell_query::DataDependencyQuery::carries_inputs(edge) {
                     continue;
                 }
 
@@ -620,6 +639,7 @@ fn taint_source_artifact(
         | ProvenanceArtifact::CommandSubstitutionOutput { .. }
         | ProvenanceArtifact::ProcessSubstitutionChannel { .. }
         | ProvenanceArtifact::PipelineStream { .. }
+        | ProvenanceArtifact::DescriptorStream { .. }
         | ProvenanceArtifact::TransformOutput { .. } => None,
     }
 }

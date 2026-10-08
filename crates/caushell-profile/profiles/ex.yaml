@@ -1,0 +1,22 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ex, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: ex_command_string
+    selector: {kind: has_flag, flag: -c}
+    parameters: [{name: ex_commands, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -c, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: ex_commands}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: ex_prompt
+    selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}]}
+    parameters: []
+    implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+    effects: [{kind: open_interactive_escape_surface, target: {kind: implicit_input, source: interactive_session}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command]}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers: []
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ex (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://pubs.opengroup.org/onlinepubs/9699919799/utilities/ex.html"]
+  caushell.profile/known_limitations: ["-c values use Ex command syntax; they are opaque and never interpreted as Bash.", "The upstream executable ex inherits ed capability, but its command parser is Ex-specific and retained as an opaque line-editor surface."]

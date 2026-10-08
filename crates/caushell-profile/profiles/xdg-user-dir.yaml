@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: xdg-user-dir, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: show_help
+    selector: {kind: any, items: [{kind: has_flag, flag: '-h'}, {kind: has_flag, flag: '--help'}]}
+  - id: eval_argument
+    selector: {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: location_name, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: execute_payload, target: {kind: slot, name: location_name}}]
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/trixie/xdg-user-dirs/xdg-user-dir.1.en.html
+    - https://gtfobins.org/gtfobins/xdg-user-dir/
+  caushell.profile/known_limitations:
+    - The argument is preserved as an opaque input to the implementation's runtime eval construction. It is not treated as a standalone Bash program, and the generated shell string and variable substitutions are not reconstructed by this profile.
+    - The GTFOBins example is version-bounded to xdg-user-dirs before 0.20. This profile preserves the entry behavior without inferring an installed version.

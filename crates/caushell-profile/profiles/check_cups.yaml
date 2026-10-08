@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: check_cups, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+forms:
+  - id: extra_options_file
+    selector: {kind: has_modifier_parameter_matching, modifier: extra_opts, parameter: extra_opts_value, matcher: {kind: regex_pattern, pattern: '^@'}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: options_file}}
+      - {kind: network_endpoint, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - id: extra_opts
+    matcher: {kind: any_flag, flags: ['--extra-opts']}
+    parameters:
+      - name: extra_opts_value
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: prefix, value: '@'}, target: {name: options_file, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help', '-V', '--version']}}
+extensions:
+  caushell.profile/source_research:
+    - https://gtfobins.org/gtfobins/check_cups/
+    - https://nagios-plugins.org/doc/extra-opts.html
+    - https://sources.debian.org/src/nagios-plugins-contrib/45.20231212~bpo12%2B1/check_cups/check_cups
+  caushell.profile/known_limitations:
+    - Extra-Opts parses an INI section and prepends its entries as command options; the explicit @file is a configuration path, not a shell program or plain copy operation.
+    - The first malformed option line can be echoed in diagnostics. Config-selected CUPS URL/server behavior is unknown, so the network endpoint is intentionally unspecified.
+    - Other options, default plugin configuration files, and config-driven effects beyond the explicit file and endpoint are unresolved.

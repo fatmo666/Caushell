@@ -1,0 +1,60 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: lwp-request, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+forms:
+  - id: read_file_uri
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:///[^%?#]*$'}}, {kind: not, item: {kind: has_modifier, modifier: no_content}}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: method}}, {kind: has_modifier_parameter_matching, modifier: method, parameter: method, matcher: {kind: regex_pattern, pattern: '(?i)^(GET|HEAD)$'}}]}]}
+    parameters:
+      - name: file_uri
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: prefix, value: 'file://'}, target: {name: local_file_path, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: local_file_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: read_file_uri_without_content
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^file:///[^%?#]*$'}}, {kind: has_modifier, modifier: no_content}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: method}}, {kind: has_modifier_parameter_matching, modifier: method, parameter: method, matcher: {kind: regex_pattern, pattern: '(?i)^(GET|HEAD)$'}}]}]}
+    parameters:
+      - name: file_uri
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: prefix, value: 'file://'}, target: {name: local_file_path, semantic: {kind: path, role: read, purpose: generic_operand}}}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: local_file_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: request_network_url
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: not, item: {kind: has_modifier, modifier: no_content}}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: method}}, {kind: has_modifier_parameter_matching, modifier: method, parameter: method, matcher: {kind: regex_pattern, pattern: '(?i)^(GET|HEAD)$'}}]}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: generic_endpoint}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: upload_stdin_to_network_url
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: not, item: {kind: has_modifier, modifier: no_content}}, {kind: has_modifier_parameter_matching, modifier: method, parameter: method, matcher: {kind: regex_pattern, pattern: '(?i)^(POST|PUT|PATCH)$'}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+  - id: request_network_url_without_content
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: has_modifier, modifier: no_content}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: method}}, {kind: has_modifier_parameter_matching, modifier: method, parameter: method, matcher: {kind: regex_pattern, pattern: '(?i)^(GET|HEAD)$'}}]}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: generic_endpoint}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: upload_stdin_to_network_url_without_content
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?i)^https?://'}}, {kind: has_modifier, modifier: no_content}, {kind: has_modifier_parameter_matching, modifier: method, parameter: method, matcher: {kind: regex_pattern, pattern: '(?i)^(POST|PUT|PATCH)$'}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: network_endpoint, target: {kind: slot, name: endpoint}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+modifiers:
+  - {id: method, matcher: {kind: any_flag, flags: ['-m']}, parameters: [{name: method, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: headers, matcher: {kind: any_flag, flags: ['-H']}, parameters: [{name: headers, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]}
+  - {id: no_content, matcher: {kind: any_flag, flags: ['-d']}}
+  - {id: response_headers, matcher: {kind: any_flag, flags: ['-e', '-E']}}
+  - {id: request_content_type, matcher: {kind: any_flag, flags: ['-c']}, parameters: [{name: content_type, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+extensions:
+  caushell.profile/source_research: [https://metacpan.org/pod/lwp-request, https://metacpan.org/pod/LWP::Protocol::file]
+  caushell.profile/known_limitations:
+    - Only canonical local file:/// URIs are projected to a native path; other URI authorities and escaped path variants remain unresolved or opaque.
+    - Only HTTP(S), GET/HEAD local reads, and POST/PUT/PATCH HTTP uploads are modeled; all other URI schemes and method/scheme combinations remain unresolved.

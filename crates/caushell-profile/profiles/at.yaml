@@ -1,0 +1,193 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: at
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - linux
+  shell_families: []
+  requires_features: []
+forms:
+- id: submit_job
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: job_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: list_jobs
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: remove_jobs
+  parameters:
+  - name: execution_time
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  implicit_inputs:
+  - source: stdin_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: stdin
+      recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: implicit_input
+      source: stdin_payload
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+- id: submit_file_job
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: job_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: list_jobs
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: remove_jobs
+  parameters:
+  - name: execution_time
+    semantic: &1
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: job_payload
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: job_payload
+        projection:
+          kind: identity
+      missing: unknown
+      purpose: generic_operand
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+- id: list_jobs
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: list_jobs
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: job_file
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: remove_jobs
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+- id: remove_jobs
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: remove_jobs
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: list_jobs
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: job_file
+  parameters:
+  - name: job_numbers
+    semantic: *1
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      missing: unknown
+      purpose: generic_operand
+extensions:
+  caushell.profile/source_research:
+  - https://man7.org/linux/man-pages/man1/at.1.html
+  - https://man7.org/linux/man-pages/man5/at.allow.5.html
+  caushell.profile/known_limitations:
+  - The command text is submitted as a delayed job and normally executed later by
+    /bin/sh; analysis represents the scheduled opaque payload and does not imply immediate
+    execution. Runtime scheduling time and job permissions are environment dependent.
+modifiers:
+- id: job_file
+  matcher:
+    kind: any_flag
+    flags:
+    - "-f"
+  parameters:
+  - name: job_payload
+    semantic:
+      kind: payload
+      language: opaque
+      source: script_file_ref
+      recursive: true
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+- id: list_jobs
+  matcher:
+    kind: any_flag
+    flags:
+    - "-l"
+- id: remove_jobs
+  matcher:
+    kind: any_flag
+    flags:
+    - "-r"
+    - "-d"

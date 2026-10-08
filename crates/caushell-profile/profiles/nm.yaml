@@ -1,0 +1,60 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: nm, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+argument_files:
+  - {prefix: '@', possible_effects: [read_path]}
+forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: list_symbols
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - name: object_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: object_paths}}]
+    # nm can expose malformed object bytes in its diagnostics, as in the source recipe.
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - {id: demangle, matcher: {kind: any_flag, flags: ['-C', '--demangle']}}
+  - {id: debug_symbols, matcher: {kind: any_flag, flags: ['-a', '--debug-syms']}}
+  - {id: extern_only, matcher: {kind: any_flag, flags: ['-g', '--extern-only']}}
+  - {id: dynamic, matcher: {kind: any_flag, flags: ['-D', '--dynamic']}}
+  - {id: print_file_name, matcher: {kind: any_flag, flags: ['-A', '-o', '--print-file-name']}}
+  - {id: numeric_sort, matcher: {kind: any_flag, flags: ['-n', '-v', '--numeric-sort']}}
+  - {id: no_sort, matcher: {kind: any_flag, flags: ['-p', '--no-sort']}}
+  - {id: reverse_sort, matcher: {kind: any_flag, flags: ['-r', '--reverse-sort']}}
+  - {id: size_sort, matcher: {kind: any_flag, flags: ['--size-sort']}}
+  - {id: undefined_only, matcher: {kind: any_flag, flags: ['-u', '--undefined-only']}}
+  - id: radix
+    matcher: {kind: any_flag, flags: ['-t', '--radix']}
+    parameters: [{name: radix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: portability, matcher: {kind: any_flag, flags: ['-P', '--portability']}}
+  - {id: defined_only, matcher: {kind: any_flag, flags: ['--defined-only']}}
+  - {id: line_numbers, matcher: {kind: any_flag, flags: ['-l', '--line-numbers']}}
+  - {id: no_demangle, matcher: {kind: any_flag, flags: ['--no-demangle']}}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
+subcommands: null
+extensions:
+  caushell.profile/source_research:
+    - https://sourceware.org/binutils/docs/binutils/nm.html
+    - GTFOBins fixed snapshot nm/file-read/0
+  caushell.profile/known_limitations:
+    - -C/--demangle is an option and never an input path. The path parameters are object/archive operands only.
+    - GNU nm with no object operands defaults to a.out; stdin, literal '-', @response files, plugins, and unknown target/plugin options are not claimed by this file-read form.
+    - Symbol output is interpreted metadata, not a byte copy; malformed or unsupported object formats may produce partial output/errors.

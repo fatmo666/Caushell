@@ -1,0 +1,63 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity:
+  canonical_name: http.server
+  module_only: true
+  module_entrypoints: [{runtime: python, name: http.server}]
+trust: {tier: tier_a, source: built_in}
+# CPython v3.14.0 Lib/http/server.py; no request/process tracing.
+forms:
+  - id: help
+    selector: {kind: has_modifier, modifier: help}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+  - id: serve
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: help}}, {kind: not, item: {kind: has_modifier, modifier: cgi}}]}
+    parameters:
+      - {name: port, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - kind: listen_network
+        target:
+          kind: network_listener
+          host: {slot: bind, default_value: '0.0.0.0'}
+          port: {slot: port, default_value: '8000'}
+      - kind: read_path
+        target:
+          kind: configured_path
+          sources: [{slot: directory, projection: {kind: identity}}]
+          default_value: '.'
+          purpose: generic_operand
+      - kind: read_path
+        target: {kind: configured_path, sources: [{slot: cert, projection: {kind: identity}}], missing: skip}
+      - kind: read_path
+        target: {kind: configured_path, sources: [{slot: key, projection: {kind: identity}}], missing: skip}
+      - kind: read_path
+        target: {kind: configured_path, sources: [{slot: password_file, projection: {kind: identity}}], missing: skip}
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}, ends_option_scope: true}
+  - {id: cgi, matcher: {kind: any_flag, flags: ['--cgi']}}
+  - id: bind
+    matcher: {kind: any_flag, flags: ['-b', '--bind']}
+    parameters: [{name: bind, semantic: &plain {kind: plain_value}, binding: &value {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]
+  - id: directory
+    matcher: {kind: any_flag, flags: ['-d', '--directory']}
+    parameters: [{name: directory, semantic: *plain, binding: *value, cardinality: optional_many}]
+  - id: protocol
+    matcher: {kind: any_flag, flags: ['-p', '--protocol']}
+    parameters: [{name: protocol, semantic: *plain, binding: *value, cardinality: optional_many}]
+  - id: cert
+    matcher: {kind: any_flag, flags: ['--tls-cert']}
+    parameters: [{name: cert, semantic: *plain, binding: *value, cardinality: optional_many}]
+  - id: key
+    matcher: {kind: any_flag, flags: ['--tls-key']}
+    parameters: [{name: key, semantic: *plain, binding: *value, cardinality: optional_many}]
+  - id: password_file
+    matcher: {kind: any_flag, flags: ['--tls-password-file']}
+    parameters: [{name: password_file, semantic: *plain, binding: *value, cardinality: optional_many}]
+extensions:
+  caushell.profile/known_limitations:
+    - CGI execution is opaque and requires approval.
+    - TLS options were introduced in CPython 3.14; no runtime version probe is performed.
+    - Directory serving is modeled at launch only; symlinks and subsequent requests/filesystem changes are not tracked.

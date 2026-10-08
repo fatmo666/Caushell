@@ -328,3 +328,372 @@ fn sqlite_read_sources_and_wrapper_stdin_reach_graph_consumers() {
         );
     });
 }
+
+#[test]
+fn ordinary_collection_runs_the_same_child_guards_as_direct_commands() {
+    for (command, expected) in [
+        ("nsys profile echo ok", Decision::Allow),
+        (
+            "nsys profile -t cuda,nvtx -s none -o reports/run echo ok",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile -o reports/run rm -f result.txt",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile -o reports/run rm -f /opt/example",
+            Decision::NeedApproval,
+        ),
+        (
+            "env nsys profile -o reports/run mkdir -p /opt/example",
+            Decision::NeedApproval,
+        ),
+        (
+            "nsys profile -o reports/run env rm -f /opt/example",
+            Decision::NeedApproval,
+        ),
+        (
+            "nsys profile -o reports/run bash -c 'rm -f /opt/example'",
+            Decision::NeedApproval,
+        ),
+        (
+            "nsys profile --duration=10 --kill=none rm -rf /",
+            Decision::Deny,
+        ),
+        (
+            "nsys profile -- echo --output=/opt/not-profiler --duration=10",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile echo --after-report-ready=callback --help",
+            Decision::Allow,
+        ),
+    ] {
+        check(command, expected);
+    }
+}
+
+#[test]
+fn collection_reports_are_bounded_families_with_real_cwd() {
+    for (command, directory, expected) in [
+        ("nsys profile echo ok", "/tmp/project", Decision::Allow),
+        (
+            "nsys profile -o reports/run --export=sqlite,jsonlines echo ok",
+            "/tmp/project/reports",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile -o '/opt/report one' echo ok",
+            "/opt",
+            Decision::NeedApproval,
+        ),
+        (
+            "nsys profile -o /tmp/project/.. echo ok",
+            "/tmp/project",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile -o /tmp/project/ echo ok",
+            "/tmp/project",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile --duration=10 --kill=none -o /opt/report echo ok",
+            "/opt",
+            Decision::NeedApproval,
+        ),
+    ] {
+        check(command, expected);
+        inspect(command, |graph| {
+            assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Write, normalized_command_name, resolution: PathResolution::BoundedPathSet {roots, may_escape: false}, ..} if normalized_command_name.as_deref() == Some("nsys") && roots == &[directory.to_string()])), "{command}");
+            assert!(!graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Write, normalized_command_name, resolution, ..} if normalized_command_name.as_deref() == Some("nsys") && resolution.concrete_path().is_some())), "{command}");
+        });
+    }
+    check("cd /opt && nsys profile echo ok", Decision::NeedApproval);
+}
+
+#[test]
+fn modeled_termination_triggers_the_restored_process_rule() {
+    for command in [
+        "nsys profile --duration=10 echo ok",
+        "nsys profile -c nvtx echo ok",
+        "nsys profile -c cudaProfilerApi --capture-range-end=repeat-shutdown:3 echo ok",
+        "nsys profile -d 10 --capture-range=nvtx --capture-range-end=stop echo ok",
+        "nsys profile -d 10 --kill=\"$SIGNAL\" echo ok",
+        "nsys profile -c nvtx --capture-range-end=\"$END\" echo ok",
+    ] {
+        let r = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            r.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            r.decision_trace
+        );
+        assert!(
+            r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::ProcessControl),
+            "{command}"
+        );
+        assert!(
+            r.decision_trace
+                .execution_semantics
+                .iter()
+                .any(|s| s.normalized_command_name == "nsys"
+                    && s.controls_process
+                    && s.process_control_target_kind == Some(ProcessControlTargetKind::Unknown)
+                    && s.process_control_action.is_none()),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn explicit_no_kill_keeps_reports_and_child_control_independent() {
+    for command in [
+        "nsys profile --duration=10 --kill=none echo ok",
+        "nsys profile --kill none -c nvtx echo ok",
+        "nsys profile -c none echo ok",
+        "nsys profile -c nvtx --capture-range-end=repeat:2:async echo ok",
+        "nsys profile -c nvtx --capture-range-end=stop echo ok",
+    ] {
+        let r = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            r.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            r.decision_trace
+        );
+        assert!(
+            !r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::ProcessControl),
+            "{command}"
+        );
+    }
+    let command = "nsys profile --duration=10 --kill=none kill 123";
+    let r = ShellQueryCore::new().check(request(command));
+    assert_eq!(r.decision, Decision::NeedApproval);
+    assert!(
+        r.decision_trace
+            .execution_semantics
+            .iter()
+            .any(|s| s.normalized_command_name == "kill" && s.controls_process)
+    );
+    assert!(
+        r.decision_trace
+            .execution_semantics
+            .iter()
+            .any(|s| s.normalized_command_name == "nsys" && !s.controls_process)
+    );
+    check(
+        "nsys profile --duration=10 --kill=none -o /opt/report echo ok",
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
+fn process_configuration_cannot_override_filesystem_or_hard_denies() {
+    for (action, expected) in [
+        (RuleAction::Observe, Decision::Allow),
+        (RuleAction::NeedApproval, Decision::NeedApproval),
+        (RuleAction::Deny, Decision::Deny),
+    ] {
+        let mut policy = PolicyConfig::default();
+        policy
+            .rule_policy
+            .rules
+            .insert(RuleId::ProcessControl, RulePolicyEntry::new(action));
+        let r = ShellQueryCore::with_policy(policy.clone())
+            .check(request("nsys profile -d 10 echo ok"));
+        assert_eq!(r.decision, expected);
+        assert!(
+            r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::ProcessControl)
+        );
+        if action == RuleAction::Observe {
+            assert_eq!(
+                ShellQueryCore::with_policy(policy.clone())
+                    .check(request("nsys profile -d 10 -o /opt/report echo ok"))
+                    .decision,
+                Decision::NeedApproval
+            );
+            assert_eq!(
+                ShellQueryCore::with_policy(policy)
+                    .check(request("nsys profile -d 10 rm -rf /"))
+                    .decision,
+                Decision::Deny
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_opaque_modes_and_templates_require_approval() {
+    for command in [
+        "nsys profile --command-file settings.conf echo ok",
+        "nsys profile --after-collection-start 'rm -f /opt/example' echo ok",
+        "nsys profile --after-report-ready 'rm -rf /' echo ok",
+        "nsys profile --session-new external echo ok",
+        "nsys profile --enable custom echo ok",
+        "nsys profile --run-as alice echo ok",
+        "nsys profile --auto-report-name=true echo ok",
+        "nsys profile --inherit-environment=false echo ok",
+        "nsys profile --future-option echo ok",
+        "nsys profile -d 10",
+        "nsys profile -o '%q{OUT}/report' echo ok",
+        "nsys profile -o 'reports/%p' echo ok",
+        "nsys profile -o '' echo ok",
+        "nsys profile -o \"$OUTPUT\" echo ok",
+        "nsys profile -o report -o '%q{OUT}/report' echo ok",
+        "nsys profile -d 10 --kill=none --kill=sigterm echo ok",
+        "nsys profile -d 10 --kill=sigterm --kill=none echo ok",
+        "nsys launch echo ok",
+        "nsys start --session existing",
+        "nsys stop --session existing",
+        "nsys shutdown --kill=none --session existing",
+        "nsys finalize",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+}
+
+#[test]
+fn explicit_child_environment_changes_only_the_child_analysis() {
+    for (command, expected) in [
+        (
+            "nsys profile -e 'TARGET=/opt/example,MODE=lab' bash -c 'rm -f \"$TARGET\"'",
+            Decision::NeedApproval,
+        ),
+        (
+            "nsys profile --env-var=TARGET=result.txt bash -c 'rm -f \"$TARGET\"'",
+            Decision::Allow,
+        ),
+        (
+            "nsys profile -e 'TARGET=/opt/example,EMPTY=' env bash -c 'rm -f \"$TARGET\"'",
+            Decision::NeedApproval,
+        ),
+        (
+            "nsys profile -e \"$ENV\" bash -c 'rm -f \"$TARGET\"'",
+            Decision::NeedApproval,
+        ),
+    ] {
+        check(command, expected);
+    }
+    // Require the decoded value, not a spurious approval caused by treating the
+    // entire CSV operand as the value of TARGET.
+    inspect(
+        "nsys profile -e 'TARGET=/opt/example,MODE=lab' bash -c 'rm -f \"$TARGET\"'",
+        |graph| {
+            assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Target, resolution, normalized_command_name, ..} if normalized_command_name.as_deref() == Some("rm") && resolution.concrete_path() == Some("/opt/example"))));
+        },
+    );
+}
+
+#[test]
+fn unknown_projected_environment_cannot_preserve_a_false_safe_inherited_value() {
+    let mut req = request("nsys profile -e \"$ENV\" bash -c 'rm -f \"$TARGET\"'");
+    req.shell_state_before
+        .variables
+        .push(ShellVariableSnapshot::new(
+            "TARGET",
+            ShellValueSnapshot::exact_scalar("result.txt"),
+            true,
+        ));
+    let r = ShellQueryCore::new().check(req);
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.decision_trace);
+}
+
+#[test]
+fn decoded_environment_data_is_not_expanded_a_second_time_or_leaked_to_parent() {
+    let mut req = request(
+        "nsys profile -e 'TARGET=$OUT,MODE=lab' bash -c 'rm -f \"$TARGET\"'; rm -f \"$TARGET\"",
+    );
+    req.shell_state_before.observability.variables = ShellStateKnowledge::Complete;
+    req.shell_state_before.variables.extend([
+        ShellVariableSnapshot::new(
+            "OUT",
+            ShellValueSnapshot::exact_scalar("/opt/example"),
+            true,
+        ),
+        ShellVariableSnapshot::new(
+            "TARGET",
+            ShellValueSnapshot::exact_scalar("parent.txt"),
+            true,
+        ),
+    ]);
+    let mut core = ShellQueryCore::new();
+    let r = core.check(req);
+    assert_eq!(r.decision, Decision::Allow, "{:?}", r.decision_trace);
+    let graph = core.session_graph(&SessionId::new("nsys-test")).unwrap();
+    for path in ["/tmp/project/$OUT", "/tmp/project/parent.txt"] {
+        assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Target, resolution, normalized_command_name, ..} if normalized_command_name.as_deref() == Some("rm") && resolution.concrete_path() == Some(path))), "missing {path}");
+    }
+}
+
+#[test]
+fn collection_dispatch_and_stdout_origin_are_preserved_in_graph() {
+    let command = "nsys profile -o reports/run cat input.txt";
+    let core = check(command, Decision::Allow);
+    let graph = core.session_graph(&SessionId::new("nsys-test")).unwrap();
+    assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Read, resolution, normalized_command_name, ..} if normalized_command_name.as_deref() == Some("cat") && resolution.concrete_path() == Some("/tmp/project/input.txt"))));
+    let artifact = graph.nodes().find(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact {artifact: ProvenanceArtifact::MaterializedValue {source_kind, ..}} if source_kind == "dispatch_stdout")).unwrap();
+    assert!(
+        graph
+            .edges()
+            .iter()
+            .any(|e| e.to == artifact.id && e.kind == EdgeKind::Produces)
+    );
+    assert!(
+        graph
+            .edges()
+            .iter()
+            .any(|e| e.to == artifact.id && e.kind == EdgeKind::Consumes)
+    );
+}
+
+#[test]
+fn pure_profile_help_does_not_exempt_mixed_or_outer_effects() {
+    for command in ["nsys profile --help", "nsys profile -h trace"] {
+        let core = check(command, Decision::Allow);
+        let graph = core.session_graph(&SessionId::new("nsys-test")).unwrap();
+        assert!(!graph.nodes().any(|n| matches!(
+            &n.kind,
+            NodeKind::PathFact {
+                role: ResolvedPathRole::Write,
+                ..
+            }
+        )));
+    }
+    check(
+        "nsys profile --help --after-report-ready 'rm -rf /'",
+        Decision::NeedApproval,
+    );
+    check(
+        "nsys profile --help > /opt/help.txt",
+        Decision::NeedApproval,
+    );
+    check("nsys profile --help \"$(rm -rf /)\"", Decision::Deny);
+}
+
+#[test]
+fn known_shell_output_macro_is_not_reclassified_as_a_literal_path() {
+    let mut req = request("nsys profile -o \"$OUT\" echo ok");
+    req.shell_state_before.observability.variables = ShellStateKnowledge::Complete;
+    req.shell_state_before
+        .variables
+        .push(ShellVariableSnapshot::new(
+            "OUT",
+            ShellValueSnapshot::exact_scalar("%q{DEST}/report"),
+            true,
+        ));
+    assert_eq!(
+        ShellQueryCore::new().check(req).decision,
+        Decision::NeedApproval
+    );
+}

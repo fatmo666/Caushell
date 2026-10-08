@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: setcap, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+  - id: assign_file_capabilities
+    selector: {kind: all, items: [{kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at, index: 2}}, {kind: not, item: {kind: has_modifier, modifier: remove}}, {kind: not, item: {kind: has_modifier, modifier: verify}}]}
+    parameters:
+      - {name: capability_spec, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: executable_path, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - kind: metadata_mutation
+        target: {kind: slot, name: executable_path}
+        extensions: {metadata_mutation.raw_operand_slot: capability_spec}
+  - id: remove_file_capabilities
+    selector: {kind: all, items: [{kind: has_modifier, modifier: remove}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: executable_paths, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: executable_paths}}]
+  - id: verify_capabilities
+    selector: {kind: all, items: [{kind: has_modifier, modifier: verify}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at, index: 2}}]}
+    parameters:
+      - {name: capability_spec, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+      - {name: executable_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: read_path, target: {kind: slot, name: executable_path}}]
+modifiers:
+  - {id: verify, matcher: {kind: any_flag, flags: ['-v']}}
+  - {id: remove, matcher: {kind: any_flag, flags: ['-r']}}
+  - id: rootuid
+    matcher: {kind: any_flag, flags: ['-n']}
+    parameters: [{name: namespace_rootuid, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+subcommands: null
+extensions:
+  caushell.profile/source: https://man7.org/linux/man-pages/man8/setcap.8.html

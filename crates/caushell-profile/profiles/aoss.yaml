@@ -1,0 +1,26 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: aoss, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+
+forms:
+  - id: execute_oss_command
+    selector: {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true, unknown_environment_names: [LD_PRELOAD]}
+
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/testing/alsa-oss/aoss.1.en.html
+    - GTFOBins fixed snapshot aoss/shell/0
+  caushell.profile/scope: Models the documented OSS command wrapper and argv dispatch, with LD_PRELOAD unknown on the child because aoss sets it for the compatibility library. Audio devices, configuration, and actual compatibility behavior are not resolved; a command is required.

@@ -12,8 +12,10 @@ use caushell_types::{CommandSequenceNo, ProvenanceProduceKind, SessionId};
 use crate::{
     path::resolve_path_operand,
     support::{
-        apply_visible_variable_bindings_before_span, is_file_write_redirection_operator,
-        redirection_parent_command_index, redirection_targets_stdin_payload,
+        EffectiveStdinSource, RebasedBindingReplay, VariableBindingReplay,
+        apply_visible_variable_bindings_before_span, effective_stdin_source,
+        is_file_write_redirection_operator, redirection_parent_command_index,
+        redirection_targets_stdin_payload,
     },
 };
 
@@ -44,7 +46,7 @@ pub(crate) fn static_stdout_payloads_for_command(
     session: QuerySession<'_>,
     command: &CommandFact,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
 ) -> Vec<String> {
@@ -66,8 +68,8 @@ pub(crate) fn static_stdout_payloads_for_scoped_command(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    _bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -75,6 +77,17 @@ pub(crate) fn static_stdout_payloads_for_scoped_command(
     let Some(command) = parsed.commands.get(command_index) else {
         return Vec::new();
     };
+
+    let current = RebasedBindingReplay {
+        parent: scope_base_bindings,
+        bindings: scope_base_bindings.apply_before(
+            scope_base_bindings.base().clone(),
+            parsed,
+            command.span.start_byte,
+            sequence_no,
+        ),
+    };
+    let bindings: &dyn VariableBindingReplay = &current;
 
     match command.command_name.as_deref() {
         Some("cat") => cat_scoped_stdout_payloads(
@@ -117,8 +130,8 @@ fn base64_decode_scoped_stdout_payloads(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -284,12 +297,19 @@ pub(crate) fn static_stdin_payloads_for_scoped_command(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
 ) -> Vec<String> {
+    let source = effective_stdin_source(parsed, command_index);
+    if matches!(
+        source,
+        EffectiveStdinSource::UnknownDescriptor(_) | EffectiveStdinSource::Closed
+    ) {
+        return Vec::new();
+    }
     let mut payloads = stdin_payloads_for_command(
         session,
         parsed,
@@ -326,6 +346,9 @@ pub(crate) fn static_stdin_payloads_for_scoped_command(
         remaining_depth,
     ));
 
+    if source != EffectiveStdinSource::Inherited {
+        return payloads;
+    }
     if let Some(upstream_index) = pipeline_upstream_by_consumer(parsed)
         .get(&command_index)
         .copied()
@@ -333,8 +356,8 @@ pub(crate) fn static_stdin_payloads_for_scoped_command(
         let Some(upstream_command) = parsed.commands.get(upstream_index) else {
             return payloads;
         };
-        let upstream_bindings = apply_visible_variable_bindings_before_span(
-            scope_base_bindings.clone(),
+        let upstream_bindings = scope_base_bindings.apply_before(
+            scope_base_bindings.base().clone(),
             parsed,
             upstream_command.span.start_byte,
             sequence_no,
@@ -365,8 +388,8 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     cwd_reliable: bool,
     home: Option<&str>,
@@ -377,20 +400,20 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
     };
     let cwd_reliable = cwd_reliable && !scope_has_prior_directory_transition(parsed, command_index);
 
-    let effective_redirection = parsed
-        .redirections
-        .iter()
-        .filter(|redirection| {
-            redirection_parent_command_index(parsed, redirection) == Some(command_index)
-                && redirection_targets_stdin_payload(redirection)
-        })
-        .last();
-
-    if let Some(redirection) = effective_redirection {
-        if redirection.operator.as_deref() == Some("<&") {
-            // Descriptor duplication or closure is not a file-content source.
-            return StaticInputEvidence::unknown();
-        }
+    let source = effective_stdin_source(parsed, command_index);
+    if source == EffectiveStdinSource::Closed {
+        // A closed descriptor cannot supply executable bytes. This does not
+        // assert that an attempted read succeeds or returns EOF at runtime.
+        return StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: true,
+        };
+    }
+    if matches!(source, EffectiveStdinSource::UnknownDescriptor(_)) {
+        return StaticInputEvidence::unknown();
+    }
+    if let EffectiveStdinSource::Redirect(index) = source {
+        let redirection = &parsed.redirections[index];
         return match redirection.kind {
             RedirectionKind::HereDoc | RedirectionKind::HereString => {
                 match static_inline_stdin_payload(
@@ -505,8 +528,8 @@ fn scoped_stdout_evidence(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     cwd_reliable: bool,
     home: Option<&str>,
@@ -637,14 +660,27 @@ fn scoped_stdout_evidence(
                 known_fragments: Vec::new(),
                 complete: true,
             };
+            let script_scope = RebasedBindingReplay {
+                parent: bindings,
+                bindings: script_bindings,
+            };
             for child_index in 0..child_parsed.commands.len() {
+                let current = RebasedBindingReplay {
+                    parent: &script_scope,
+                    bindings: script_scope.apply_before(
+                        script_scope.base().clone(),
+                        &child_parsed,
+                        child_parsed.commands[child_index].span.start_byte,
+                        sequence_no,
+                    ),
+                };
                 let child = scoped_stdout_evidence(
                     session,
                     &child_parsed,
                     child_index,
                     sequence_no,
-                    &script_bindings,
-                    &script_bindings,
+                    &current,
+                    &script_scope,
                     cwd,
                     cwd_reliable,
                     home,
@@ -664,8 +700,8 @@ fn cat_scoped_stdout_evidence(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     cwd_reliable: bool,
     home: Option<&str>,
@@ -756,7 +792,7 @@ fn process_substitution_evidence(
     text: &str,
     shell_kind: caushell_types::ShellKind,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     cwd_reliable: bool,
     home: Option<&str>,
@@ -782,12 +818,21 @@ fn process_substitution_evidence(
         complete: true,
     };
     for index in 0..inner_parsed.commands.len() {
+        let current = RebasedBindingReplay {
+            parent: bindings,
+            bindings: bindings.apply_before(
+                bindings.base().clone(),
+                &inner_parsed,
+                inner_parsed.commands[index].span.start_byte,
+                sequence_no,
+            ),
+        };
         let part = scoped_stdout_evidence(
             session,
             &inner_parsed,
             index,
             sequence_no,
-            bindings,
+            &current,
             bindings,
             cwd,
             cwd_reliable,
@@ -802,7 +847,7 @@ fn process_substitution_evidence(
 
 fn token_has_unresolved_expansion(
     token: &caushell_parse::CommandToken,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> bool {
     if matches!(token.node_kind.as_str(), "raw_string" | "ansi_c_string") {
         return false;
@@ -826,7 +871,7 @@ fn is_linear_static_output_sequence(parsed: &ParsedCommandArtifact) -> bool {
 
 fn static_shell_payload_and_bindings(
     command: &CommandFact,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> Option<(String, SessionBindings)> {
     if !matches!(command.command_name.as_deref(), Some("bash" | "sh")) {
         return None;
@@ -865,7 +910,7 @@ fn static_shell_payload_and_bindings(
     // For `sh -c SCRIPT ARG0 ARG1 ...`, ARG0 becomes $0, and SCRIPT's $1
     // starts with ARG1. Do not splice argv into the script text: even metachar-
     // acters in a static argument remain data when the shell expands "$1".
-    let mut script_bindings = bindings.clone();
+    let mut script_bindings = bindings.base().clone();
     script_bindings.replace_positional_parameters_with_exact_scalars(
         decoded.iter().skip(script_index + 2).cloned(),
     );
@@ -874,8 +919,16 @@ fn static_shell_payload_and_bindings(
 
 pub(crate) fn static_literal_stdout_payloads_for_command(
     command: &CommandFact,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> Vec<String> {
+    // Runtime bytes are not the literal spelling of an unresolved expansion.
+    if command
+        .tokens
+        .iter()
+        .any(|token| token_has_unresolved_expansion(token, bindings))
+    {
+        return Vec::new();
+    }
     match command.command_name.as_deref() {
         Some("printf") => printf_literal_payloads(command, bindings),
         Some("echo") => echo_literal_payload(command, bindings)
@@ -897,7 +950,10 @@ fn scope_has_prior_directory_transition(
     })
 }
 
-pub(crate) fn materialize_static_token_text(text: &str, bindings: &SessionBindings) -> String {
+pub(crate) fn materialize_static_token_text(
+    text: &str,
+    bindings: &dyn VariableBindingReplay,
+) -> String {
     materialize_token_text(text, bindings)
 }
 
@@ -907,7 +963,7 @@ pub(crate) fn materialize_static_token_command_substitutions(
     session: QuerySession<'_>,
     shell_kind: caushell_types::ShellKind,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -945,7 +1001,7 @@ fn materialize_static_command_substitutions_for_text(
     session: QuerySession<'_>,
     shell_kind: caushell_types::ShellKind,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -969,7 +1025,7 @@ fn static_command_substitution_output(
     session: QuerySession<'_>,
     shell_kind: caushell_types::ShellKind,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1002,7 +1058,7 @@ fn static_command_substitution_output(
 
 pub(crate) fn static_shell_payload_from_command(
     command: &CommandFact,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> Option<String> {
     match command.command_name.as_deref() {
         Some("bash") | Some("sh") => {}
@@ -1065,7 +1121,7 @@ fn shell_scoped_stdout_payloads(
     session: QuerySession<'_>,
     command: &CommandFact,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1113,8 +1169,8 @@ fn cat_scoped_stdout_payloads(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1223,7 +1279,7 @@ pub(crate) fn known_literal_path_content_before_scoped_command(
     before_command_index: usize,
     path: &str,
     sequence_no: CommandSequenceNo,
-    scope_base_bindings: &SessionBindings,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
 ) -> Option<String> {
@@ -1246,7 +1302,7 @@ fn known_literal_path_content_before_scoped_command_with_depth(
     before_command_index: usize,
     path: &str,
     sequence_no: CommandSequenceNo,
-    scope_base_bindings: &SessionBindings,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     depth: usize,
@@ -1261,8 +1317,8 @@ fn known_literal_path_content_before_scoped_command_with_depth(
             break;
         }
 
-        let bindings = apply_visible_variable_bindings_before_span(
-            scope_base_bindings.clone(),
+        let bindings = scope_base_bindings.apply_before(
+            scope_base_bindings.base().clone(),
             parsed,
             command.span.start_byte,
             sequence_no,
@@ -1524,7 +1580,7 @@ pub(crate) fn static_stdout_payloads_for_process_substitution_text(
     text: &str,
     shell_kind: caushell_types::ShellKind,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1577,7 +1633,7 @@ fn literal_content_written_by_command(
     cwd: &str,
     home: Option<&str>,
     depth: usize,
-    base_bindings: &SessionBindings,
+    base_bindings: &dyn VariableBindingReplay,
 ) -> Option<String> {
     if let Some(content) =
         literal_heredoc_write_from_raw(raw_text, target_path, cwd, home, base_bindings)
@@ -1588,8 +1644,8 @@ fn literal_content_written_by_command(
     let parsed = caushell_parse::parse_command(raw_text, shell_kind).ok()?;
 
     for (command_index, command) in parsed.commands.iter().enumerate() {
-        let bindings = apply_visible_variable_bindings_before_span(
-            base_bindings.clone(),
+        let bindings = base_bindings.apply_before(
+            base_bindings.base().clone(),
             &parsed,
             command.span.start_byte,
             write_sequence,
@@ -1619,8 +1675,8 @@ fn literal_content_written_by_scoped_command(
     command_index: usize,
     target_path: &str,
     write_sequence: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     depth: usize,
@@ -1674,7 +1730,7 @@ fn literal_heredoc_write_from_raw(
     target_path: &str,
     cwd: &str,
     home: Option<&str>,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> Option<String> {
     let (first_line, body) = raw_text.split_once('\n')?;
     if !first_line.trim_start().starts_with("cat ") {
@@ -1729,7 +1785,7 @@ fn command_writes_path(
     target_path: &str,
     cwd: &str,
     home: Option<&str>,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> bool {
     parsed.redirections.iter().any(|redirection| {
         redirection_parent_command_index(parsed, redirection) == Some(command_index)
@@ -1752,23 +1808,28 @@ fn command_writes_path(
     })
 }
 
+fn effective_stdin_redirection(
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+) -> Option<&caushell_parse::RedirectionFact> {
+    match effective_stdin_source(parsed, command_index) {
+        EffectiveStdinSource::Redirect(index) => parsed.redirections.get(index),
+        _ => None,
+    }
+}
+
 fn stdin_payloads_for_command(
     session: QuerySession<'_>,
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
 ) -> Vec<String> {
-    parsed
-        .redirections
-        .iter()
-        .filter(|redirection| {
-            redirection_parent_command_index(parsed, redirection) == Some(command_index)
-                && redirection_targets_stdin_payload(redirection)
-        })
+    effective_stdin_redirection(parsed, command_index)
+        .into_iter()
         .filter_map(|redirection| {
             static_inline_stdin_payload(
                 session,
@@ -1789,7 +1850,7 @@ fn static_inline_stdin_payload(
     shell_kind: caushell_types::ShellKind,
     redirection: &caushell_parse::RedirectionFact,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1834,7 +1895,7 @@ fn materialize_unquoted_heredoc_content(
     shell_kind: caushell_types::ShellKind,
     text: &str,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1867,7 +1928,7 @@ fn materialize_unquoted_heredoc_line(
     shell_kind: caushell_types::ShellKind,
     line: &str,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1891,7 +1952,7 @@ fn materialize_unquoted_herestring_content(
     shell_kind: caushell_types::ShellKind,
     text: &str,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
@@ -1962,19 +2023,16 @@ fn file_stdin_payloads_for_command(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
 ) -> Vec<String> {
-    parsed
-        .redirections
-        .iter()
+    effective_stdin_redirection(parsed, command_index)
+        .into_iter()
         .filter(|redirection| {
-            redirection_parent_command_index(parsed, redirection) == Some(command_index)
-                && redirection.kind == RedirectionKind::File
-                && redirection.operator.as_deref() == Some("<")
-                && redirection_targets_stdin_payload(redirection)
+            redirection.kind == RedirectionKind::File
+                && matches!(redirection.operator.as_deref(), Some("<" | "<>"))
         })
         .filter_map(|redirection| {
             let target = redirection.target.as_ref()?;
@@ -2012,21 +2070,18 @@ fn process_substitution_stdin_payloads_for_command(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     sequence_no: CommandSequenceNo,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
 ) -> Vec<String> {
-    parsed
-        .redirections
-        .iter()
+    effective_stdin_redirection(parsed, command_index)
+        .into_iter()
         .filter(|redirection| {
-            redirection_parent_command_index(parsed, redirection) == Some(command_index)
-                && redirection_targets_stdin_payload(redirection)
-                && redirection
-                    .target
-                    .as_ref()
-                    .is_some_and(|target| target.node_kind == "process_substitution")
+            redirection
+                .target
+                .as_ref()
+                .is_some_and(|target| target.node_kind == "process_substitution")
         })
         .flat_map(|redirection| {
             redirection.target.as_ref().into_iter().flat_map(|target| {
@@ -2065,8 +2120,8 @@ fn cat_literal_payload_or_source_content(
     parsed: &ParsedCommandArtifact,
     command_index: usize,
     write_sequence: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     depth: usize,
@@ -2074,13 +2129,8 @@ fn cat_literal_payload_or_source_content(
     let command = parsed.commands.get(command_index)?;
     let args = arg_tokens(command);
     if args.is_empty() {
-        let payloads: Vec<String> = parsed
-            .redirections
-            .iter()
-            .filter(|redirection| {
-                redirection_parent_command_index(parsed, redirection) == Some(command_index)
-                    && redirection_targets_stdin_payload(redirection)
-            })
+        let payloads: Vec<String> = effective_stdin_redirection(parsed, command_index)
+            .into_iter()
             .filter_map(|redirection| {
                 redirection
                     .content
@@ -2132,8 +2182,8 @@ fn copy_or_move_source_content(
     command_index: usize,
     target_path: &str,
     write_sequence: CommandSequenceNo,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
     cwd: &str,
     home: Option<&str>,
     depth: usize,
@@ -2194,7 +2244,7 @@ fn resolve_materialized_path_operand(
     node_kind: &str,
     cwd: &str,
     home: Option<&str>,
-    bindings: &SessionBindings,
+    bindings: &dyn VariableBindingReplay,
 ) -> Option<String> {
     let materialized = materialize_token_text(text, bindings);
     let node_kind = if materialized != text {
@@ -2213,7 +2263,10 @@ fn arg_tokens(command: &CommandFact) -> Vec<&caushell_parse::CommandToken> {
         .collect()
 }
 
-fn printf_literal_payloads(command: &CommandFact, bindings: &SessionBindings) -> Vec<String> {
+fn printf_literal_payloads(
+    command: &CommandFact,
+    bindings: &dyn VariableBindingReplay,
+) -> Vec<String> {
     let args: Vec<String> = command
         .tokens
         .iter()
@@ -2229,7 +2282,10 @@ fn printf_literal_payloads(command: &CommandFact, bindings: &SessionBindings) ->
         .collect()
 }
 
-fn echo_literal_payload(command: &CommandFact, bindings: &SessionBindings) -> Option<String> {
+fn echo_literal_payload(
+    command: &CommandFact,
+    bindings: &dyn VariableBindingReplay,
+) -> Option<String> {
     let mut decode_escapes = false;
     let mut segments = Vec::new();
 
@@ -2417,7 +2473,7 @@ fn flush_static_printf_literal(
     decoded.stopped
 }
 
-fn materialize_token_text(text: &str, bindings: &SessionBindings) -> String {
+fn materialize_token_text(text: &str, bindings: &dyn VariableBindingReplay) -> String {
     if let Some(value) = exact_scalar_shell_parameter_reference_value(text, bindings) {
         return value;
     }
@@ -2850,7 +2906,7 @@ mod tests {
     fn stdin_evidence_for_with_bindings(
         raw_command: &str,
         target_index: usize,
-        bindings: &SessionBindings,
+        bindings: &dyn VariableBindingReplay,
     ) -> StaticInputEvidence {
         stdin_evidence_for_with_bindings_and_cwd_reliability(
             raw_command,
@@ -2876,7 +2932,7 @@ mod tests {
     fn stdin_evidence_for_with_bindings_and_cwd_reliability(
         raw_command: &str,
         target_index: usize,
-        bindings: &SessionBindings,
+        bindings: &dyn VariableBindingReplay,
         cwd_reliable: bool,
     ) -> StaticInputEvidence {
         let parsed = caushell_parse::parse_command(raw_command, caushell_types::ShellKind::Bash)
@@ -2889,8 +2945,8 @@ mod tests {
             &parsed,
             target_index,
             CommandSequenceNo::new(0),
-            &bindings,
-            &bindings,
+            bindings,
+            bindings,
             "/",
             cwd_reliable,
             None,

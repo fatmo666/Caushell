@@ -15,7 +15,7 @@ pub use passes::{
     ExtractVariableBindingsPass, GitDestructiveOperationGuardPass,
     ImportedPackageExecutionGuardPass, InteractiveEscapeGuardPass,
     OutsideWorkspaceMutationGuardPass, OutsideWorkspaceScriptSourcePass,
-    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProjectTopLevelCommandsPass,
-    ResolveInvocationPass, ResolvePolicyPass, SensitiveDataExfiltrationGuardPass,
-    SequenceIntegrityPass, TaintedExecutionGuardPass,
+    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProcessControlGuardPass,
+    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
+    SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };

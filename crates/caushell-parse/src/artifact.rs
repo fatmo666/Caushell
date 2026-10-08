@@ -65,6 +65,10 @@ pub struct CommandFact {
     pub pipeline_span: Option<SourceSpan>,
     pub terminator: Option<StatementTerminator>,
     pub guarded: bool,
+    /// Conditional within this shell frame; isolation alone is not conditional.
+    pub conditional_execution: bool,
+    /// Nearest subshell, pipeline branch or asynchronous frame, if any.
+    pub shell_scope_span: Option<SourceSpan>,
     pub subshell_span: Option<SourceSpan>,
     pub control_flow_span: Option<SourceSpan>,
     pub top_level_span: SourceSpan,
@@ -121,6 +125,8 @@ pub struct VariableAssignmentFact {
 pub struct DeclarationCommandFact {
     /// False for conditional, isolated, pipeline or background execution.
     pub unconditional_current_shell: bool,
+    pub shell_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
     pub kind: DeclarationCommandKind,
     pub options: Vec<String>,
     pub names: Vec<String>,
@@ -133,6 +139,8 @@ pub struct DeclarationCommandFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignmentCommandFact {
     pub unconditional_current_shell: bool,
+    pub shell_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
     pub assignments: Vec<VariableAssignmentFact>,
     pub text: String,
     pub top_level_span: SourceSpan,
@@ -142,6 +150,8 @@ pub struct AssignmentCommandFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsetCommandFact {
     pub unconditional_current_shell: bool,
+    pub shell_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
     pub options: Vec<String>,
     pub names: Vec<String>,
     pub text: String,
@@ -151,6 +161,8 @@ pub struct UnsetCommandFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionDefinitionFact {
+    pub shell_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
     pub name: String,
     pub body_text: String,
     pub text: String,

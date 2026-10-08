@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: dotnet, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h, "-?", --version, --info, --list-runtimes, --list-sdks]}}
+subcommands:
+  roots:
+    - name: fsi
+      forms:
+        - id: fsi_information
+          selector: {kind: has_modifier, modifier: fsi_information}
+        - id: fsi_interactive
+          selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: fsi_information}}]}
+          implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}]
+          effects:
+            - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+          stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
+        - id: fsi_script
+          selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: fsi_information}}]}
+          parameters:
+            - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
+            - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
+          stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+      modifiers:
+        - {id: fsi_information, matcher: {kind: any_flag, flags: [--help, -h, --version]}}
+        - {id: fsi_control, matcher: {kind: any_flag, flags: [--exec, --quiet, --readline, --nologo]}}
+      children: []
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/dotnet (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://learn.microsoft.com/en-us/dotnet/fsharp/tools/fsharp-interactive/", "https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet"]
+  caushell.profile/known_limitations:
+    - F# prompt and script bodies remain opaque F#, never Bash; Process.Start and native inner file/network effects are not inferred.
+    - The real fsi subcommand owns its own options. Script argv after the first script or -- remains data; the fsi token and script path are not forwarded a second time.
+    - Other dotnet subcommands and application launch forms remain unresolved operations, not silent successful information queries.

@@ -16,9 +16,9 @@ use caushell_types::{
 };
 
 use crate::support::{
-    ExecutionResolveRecordRef, graph_backed_execution_resolve_records, pipeline_has_upstream,
-    redirection_parent_command_index, redirection_targets_stdin_payload,
-    top_level_node_id_for_command, top_level_node_id_for_span,
+    EffectiveStdinSource, ExecutionResolveRecordRef, effective_stdin_source,
+    graph_backed_execution_resolve_records, pipeline_has_upstream, top_level_node_id_for_command,
+    top_level_node_id_for_span,
 };
 
 pub struct ExtractValueProvenancePass;
@@ -30,8 +30,7 @@ impl SessionTransformPass for ExtractValueProvenancePass {
 
     fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
         let records = graph_backed_execution_resolve_records(ctx);
-        let explicit_stdin_payload_sources = explicit_stdin_payload_sources(ctx, &records);
-        let pipeline_stdin_payload_sources = pipeline_stdin_payload_sources(ctx, &records);
+        let explicit_stdin_payload_sources = explicit_stdin_payload_sources(ctx);
         let mut mutations = collect_variable_binding_provenance_mutations(ctx);
         mutations.extend(collect_variable_expansion_provenance_mutations(
             session.summary(),
@@ -42,7 +41,6 @@ impl SessionTransformPass for ExtractValueProvenancePass {
             &records,
             ctx.request().sequence_no,
             &explicit_stdin_payload_sources,
-            &pipeline_stdin_payload_sources,
         ));
 
         for mutation in mutations {
@@ -373,7 +371,6 @@ fn collect_runtime_input_provenance_mutations(
     records: &[ExecutionResolveRecordRef<'_>],
     sequence_no: CommandSequenceNo,
     explicit_stdin_payload_sources: &std::collections::BTreeSet<NodeId>,
-    pipeline_stdin_payload_sources: &std::collections::BTreeSet<NodeId>,
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
 
@@ -402,11 +399,34 @@ fn collect_runtime_input_provenance_mutations(
                 continue;
             };
 
-            if runtime_input_source == RuntimeInputSource::StdinPayload
-                && (explicit_stdin_payload_sources.contains(record.source_node_id())
-                    || pipeline_stdin_payload_sources.contains(record.source_node_id()))
-            {
-                continue;
+            let mut capture = RuntimeInputCapture::NotCaptured;
+            if runtime_input_source == RuntimeInputSource::StdinPayload {
+                if resolved.proven_stream_contract().is_some_and(|contract| {
+                    contract.stdin_mode == caushell_profile::StreamInputMode::Ignored
+                }) {
+                    continue;
+                }
+                match effective_stdin_source(record.parsed_scope(), record.command_index()) {
+                    EffectiveStdinSource::Closed => continue,
+                    EffectiveStdinSource::Redirect(index) => {
+                        if explicit_stdin_payload_sources.contains(record.source_node_id()) {
+                            continue;
+                        }
+                        capture = RuntimeInputCapture::Descriptor {
+                            descriptor: record.parsed_scope().redirections[index].text.clone(),
+                        };
+                    }
+                    EffectiveStdinSource::UnknownDescriptor(index) => {
+                        capture = RuntimeInputCapture::Descriptor {
+                            descriptor: record.parsed_scope().redirections[index].text.clone(),
+                        };
+                    }
+                    EffectiveStdinSource::Inherited => {
+                        if pipeline_has_upstream(record.parsed_scope(), record.command_index()) {
+                            continue;
+                        }
+                    }
+                }
             }
 
             mutations.push(PendingMutation::AddProvenanceArtifact {
@@ -417,7 +437,7 @@ fn collect_runtime_input_provenance_mutations(
                 ),
                 artifact: ProvenanceArtifact::RuntimeInput {
                     source: runtime_input_source,
-                    capture: RuntimeInputCapture::NotCaptured,
+                    capture,
                     version: sequence_no.0,
                 },
                 relation: EdgeKind::Consumes,
@@ -434,36 +454,23 @@ fn collect_runtime_input_provenance_mutations(
     mutations
 }
 
-fn explicit_stdin_payload_sources(
-    _ctx: &RunnerContext,
-    records: &[ExecutionResolveRecordRef<'_>],
-) -> std::collections::BTreeSet<NodeId> {
-    records
+fn explicit_stdin_payload_sources(ctx: &RunnerContext) -> std::collections::BTreeSet<NodeId> {
+    // The producer must actually have supplied a source node. Syntax alone
+    // must never suppress the unknown-input fallback (e.g. a dynamic path).
+    ctx.pending_mutations()
         .iter()
-        .filter_map(|record| {
-            let parsed_scope = record.parsed_scope();
-            parsed_scope
-                .redirections
-                .iter()
-                .any(|redirection| {
-                    redirection_parent_command_index(parsed_scope, redirection)
-                        == Some(record.command_index())
-                        && redirection_targets_stdin_payload(redirection)
-                })
-                .then_some(record.source_node_id().clone())
-        })
-        .collect()
-}
-
-fn pipeline_stdin_payload_sources(
-    _ctx: &RunnerContext,
-    records: &[ExecutionResolveRecordRef<'_>],
-) -> std::collections::BTreeSet<NodeId> {
-    records
-        .iter()
-        .filter_map(|record| {
-            pipeline_has_upstream(record.parsed_scope(), record.command_index())
-                .then(|| record.source_node_id().clone())
+        .filter_map(|mutation| match mutation {
+            PendingMutation::AddProvenanceArtifact {
+                source_node_id,
+                relation: EdgeKind::Consumes,
+                semantics:
+                    ProvenanceEdgeSemantics::Consume {
+                        consume_kind: ProvenanceConsumeKind::StdinExplicit,
+                        ..
+                    },
+                ..
+            } => Some(source_node_id.clone()),
+            _ => None,
         })
         .collect()
 }
@@ -775,6 +782,8 @@ mod tests {
             runner.register_session_transform_pass(ExtractPipelineFlowPass);
         }
         runner.register_session_transform_pass(ExtractVariableBindingsPass);
+        runner.register_session_transform_pass(crate::ExtractRedirectProvenancePass);
+        runner.register_session_transform_pass(crate::ExtractProcessSubstitutionProvenancePass);
         runner.register_session_transform_pass(ExtractValueProvenancePass);
 
         let graph = SessionGraph::new();
@@ -1067,6 +1076,60 @@ mod tests {
                     },
                 })
         );
+    }
+
+    #[test]
+    fn unknown_stdin_redirects_have_real_runtime_source_nodes() {
+        let summary = SessionSummary::new();
+        for command in ["bash 0<&2", "bash <\"$input\"", "printf SAFE | bash 0<&2"] {
+            let ctx = run_pass(&summary, 5, command);
+            assert!(
+                ctx.pending_mutations().iter().any(|mutation| matches!(
+                    mutation,
+                    PendingMutation::AddProvenanceArtifact {
+                        artifact: ProvenanceArtifact::RuntimeInput {
+                            source: caushell_types::RuntimeInputSource::StdinPayload,
+                            capture: caushell_types::RuntimeInputCapture::Descriptor { .. },
+                            ..
+                        },
+                        relation: EdgeKind::Consumes,
+                        semantics: ProvenanceEdgeSemantics::Consume {
+                            consume_kind: ProvenanceConsumeKind::RuntimeInput,
+                            ..
+                        },
+                        ..
+                    }
+                )),
+                "{command}: {:?}",
+                ctx.pending_mutations()
+            );
+        }
+    }
+
+    #[test]
+    fn closed_and_explicitly_modeled_stdin_do_not_gain_unknown_source_nodes() {
+        let summary = SessionSummary::new();
+        for command in [
+            "bash -s 0<&-",
+            "bash 3<<<'printf SAFE' 0<&3",
+            "bash 3< <(printf SAFE) 0<&3",
+        ] {
+            let ctx = run_pass(&summary, 5, command);
+            assert!(
+                !ctx.pending_mutations().iter().any(|mutation| matches!(
+                    mutation,
+                    PendingMutation::AddProvenanceArtifact {
+                        artifact: ProvenanceArtifact::RuntimeInput {
+                            source: caushell_types::RuntimeInputSource::StdinPayload,
+                            ..
+                        },
+                        ..
+                    }
+                )),
+                "{command}: {:?}",
+                ctx.pending_mutations()
+            );
+        }
     }
 
     #[test]

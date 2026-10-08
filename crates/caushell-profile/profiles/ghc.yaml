@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: ghc, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: evaluate_expression
+    selector: {kind: all, items: [{kind: has_modifier, modifier: expression}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: expression, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_flag, flag: -e, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: expression}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: expression
+    matcher: {kind: any_flag, flags: [-e]}
+    parameters: [{name: raw_expression, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -?, --version, -V]}}
+extensions:
+  caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ghc (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://downloads.haskell.org/ghc/latest/docs/users_guide/modes.html"]
+  caushell.profile/known_limitations:
+    - "The source uses ghc -e with a Haskell expression that calls System.Process.callCommand; the expression is opaque Haskell and is never parsed as Bash."
+    - "Expression evaluation is represented as payload execution. The command string passed to Haskell APIs, compiler imports, and any filesystem or network effects are not inferred."
+    - "This profile does not alias ghc to ghci; ghc -e is the documented expression-evaluation mode."

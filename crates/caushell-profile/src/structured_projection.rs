@@ -71,18 +71,29 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
             }
             continue;
         }
-        for value in &source.values {
-            match project_value(&ValueProjection::Identity, value) {
+        'operands: for value in &source.values {
+            let matched = match project_value(&ValueProjection::Identity, value) {
                 Some(SemanticValueResolution::Known(text)) => {
                     if let Some(separator) = &grammar.separator {
                         for item in text.split(separator.as_str()) {
-                            project_item(invocation, grammar, value, item, &mut generated);
+                            let matched =
+                                project_item(invocation, grammar, value, item, &mut generated);
+                            if matched && grammar.first_match_only {
+                                break 'operands;
+                            }
                         }
+                        false
                     } else {
-                        project_item(invocation, grammar, value, &text, &mut generated);
+                        project_item(invocation, grammar, value, &text, &mut generated)
                     }
                 }
-                _ => emit_unknown(grammar, value, &mut generated),
+                _ => {
+                    emit_unknown(grammar, value, &mut generated);
+                    true
+                }
+            };
+            if matched && grammar.first_match_only {
+                break;
             }
         }
         for target in grammar
@@ -105,27 +116,61 @@ fn project_item(
     source: &BoundValue,
     item: &str,
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
-) {
+) -> bool {
     if item.is_empty() {
         emit_unknown(grammar, source, generated);
-        return;
+        return true;
     }
     let mut selected = grammar.fallback.as_ref();
     let mut selected_text = item;
+    let mut selected_unknown = false;
+    let mut matched_item = grammar.fallback.is_some();
     for branch in &grammar.branches {
         let matched = match &branch.matcher {
             StructuredProjectionMatcher::Literal(literal) => (item == literal).then_some(item),
             StructuredProjectionMatcher::Prefix(prefix) => item.strip_prefix(prefix),
+            StructuredProjectionMatcher::KeywordValue {
+                keyword,
+                case_insensitive,
+                allow_quoted_keyword,
+                disabled_values,
+                unresolved_markers,
+            } => {
+                let Some(text) =
+                    keyword_value(item, keyword, *case_insensitive, *allow_quoted_keyword)
+                else {
+                    continue;
+                };
+                if disabled_values.iter().any(|value| {
+                    if *case_insensitive {
+                        text.eq_ignore_ascii_case(value)
+                    } else {
+                        text == value
+                    }
+                }) {
+                    // Disabled is still the first value selected by the tool.
+                    return true;
+                }
+                selected_unknown = unresolved_markers
+                    .iter()
+                    .any(|marker| text.contains(marker));
+                Some(text)
+            }
         };
         if let Some(text) = matched {
             selected = branch.target.as_ref();
             selected_text = text;
+            matched_item = true;
             break;
         }
     }
     let Some(target) = selected else {
-        return;
+        return matched_item;
     };
+    if selected_unknown {
+        emit(target, source, unknown(), generated);
+        return true;
+    }
     if target.sources.is_empty() {
         let resolution = if selected_text.is_empty() {
             SemanticValueResolution::Unknown(ProjectionUnknownReason::EmptyValue)
@@ -133,7 +178,7 @@ fn project_item(
             SemanticValueResolution::Known(selected_text.to_string())
         };
         emit(target, source, resolution, generated);
-        return;
+        return true;
     }
     // Never replace an explicit unknown source with a later default.
     if let Some(parameter) = target
@@ -160,6 +205,49 @@ fn project_item(
     } else {
         emit(target, source, unknown(), generated);
     }
+    true
+}
+
+/// Consume only the tool's keyword separator, never quotes or shell syntax in its value.
+fn keyword_value<'a>(
+    item: &'a str,
+    keyword: &str,
+    insensitive: bool,
+    quoted: bool,
+) -> Option<&'a str> {
+    let whitespace = |c| matches!(c, ' ' | '\t' | '\r' | '\n');
+    let item = item.trim_start_matches(whitespace);
+    let equal = |left: &str, right: &str| {
+        if insensitive {
+            left.eq_ignore_ascii_case(right)
+        } else {
+            left == right
+        }
+    };
+    if quoted {
+        // Tool configuration token quoting, NOT shell quoting. A quoted segment
+        // terminates the keyword; the command remainder is kept byte-for-byte.
+        let delimiter = item.find(|c| whitespace(c) || c == '=' || c == '"');
+        if let Some(start) = delimiter.filter(|&i| item.as_bytes()[i] == b'"') {
+            let tail = &item[start + 1..];
+            let end = tail.find('"')?;
+            if !equal(item.get(..start)?, keyword.get(..start)?)
+                || !equal(&tail[..end], keyword.get(start..)?)
+            {
+                return None;
+            }
+            return Some(tail[end + 1..].trim_start_matches(|c| whitespace(c) || c == '='));
+        }
+    }
+    let head = item.get(..keyword.len())?;
+    if !equal(head, keyword) {
+        return None;
+    }
+    let rest = &item[keyword.len()..];
+    if !rest.is_empty() && !rest.starts_with(|c| whitespace(c) || c == '=') {
+        return None;
+    }
+    Some(rest.trim_start_matches(|c| whitespace(c) || c == '='))
 }
 
 fn unknown() -> SemanticValueResolution {

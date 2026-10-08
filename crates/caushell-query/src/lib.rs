@@ -1,7 +1,9 @@
 mod alias;
 mod command;
+mod data_dependency;
 mod derived;
 mod execution;
+mod io_target;
 mod nested;
 mod path;
 mod provenance;
@@ -12,6 +14,7 @@ mod variable;
 
 pub use alias::{AliasHistoryQuery, AliasHistoryRef, AliasHistoryResult};
 pub use command::{CommandInvocationRef, SessionCommandHistoryQuery, SessionCommandHistoryResult};
+pub use data_dependency::DataDependencyQuery;
 pub use derived::{
     DerivedInvocationHistoryQuery, DerivedInvocationHistoryResult, DerivedInvocationRef,
 };
@@ -21,6 +24,7 @@ pub use execution::{
     ExecutionUnitHistoryQuery, ExecutionUnitHistoryResult, ExecutionUnitOrderKey,
     ExecutionUnitOrigin, ExecutionUnitRef, execution_unit_order_key, execution_unit_precedes,
 };
+pub use io_target::{IoTarget, IoTargetQuery};
 pub use nested::{NestedPayloadHistoryQuery, NestedPayloadHistoryResult, NestedPayloadRef};
 pub use path::{
     PathFactRef, PathFactsQuery, PathFactsResult, PathUsageHistoryQuery, PathUsageHistoryResult,

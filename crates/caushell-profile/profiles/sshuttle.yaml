@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: sshuttle, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+
+forms:
+  - id: show_help
+    selector: {kind: has_flag, flag: '--help'}
+  - id: proxy_with_ssh_command
+    selector: {kind: all, items: [{kind: has_modifier, modifier: remote}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - {name: routes, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command_string: {slot: ssh_command, syntax: gnu_wordsplit}}
+  - id: custom_ssh_command
+    selector: {kind: all, items: [{kind: has_modifier, modifier: ssh_command}, {kind: not, item: {kind: has_modifier, modifier: remote}}]}
+    parameters: []
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command_string: {slot: ssh_command, syntax: gnu_wordsplit}}
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+  - {id: remote, matcher: {kind: any_flag, flags: ['-r', '--remote']}, parameters: [{name: remote_target, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}], effects: [{kind: network_endpoint, target: {kind: slot, name: remote_target}}]}
+  - {id: ssh_command, matcher: {kind: any_flag, flags: ['-e', '--ssh-cmd']}, parameters: [{name: ssh_command, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+
+extensions:
+  caushell.profile/source_research:
+    - https://sshuttle.readthedocs.io/en/latest/manpage.html
+    - https://github.com/sshuttle/sshuttle/blob/master/docs/usage.rst
+    - https://gtfobins.org/gtfobins/sshuttle/
+  caushell.profile/known_limitations:
+    - The --ssh-cmd value is split into argv words using the existing GNU word-splitting contract as a constrained approximation of Python shlex.split; quoting and escaping accepted by Python but rejected by this splitter remain unresolved. It is not parsed as a local POSIX shell script. The nested command's own -c payload is handled by its own profile when resolved.
+    - Firewall backends, route setup, remote Python transfer, and runtime proxy sockets are not statically enumerated.

@@ -1,0 +1,32 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+
+identity: {canonical_name: grc, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+
+forms:
+  - id: pty_child
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: pty}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}
+
+modifiers:
+  - {id: pty, matcher: {kind: any_flag, flags: ['--pty']}}
+  - {id: color, matcher: {kind: any_flag, flags: ['--colour', '--color']}, parameters: [{name: color_mode, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://gtfobins.org/gtfobins/grc/
+    - https://raw.githubusercontent.com/garabik/grc/master/grc
+  caushell.profile/scope: In the source's colored --pty branch, child stdout is consumed by grcat and grcat writes to the wrapper's stdout. In the common piped/stdout-not-a-tty case, auto color is disabled and grc directly execs the child with inherited stdin/stdout. The profile conservatively records possible parent stdin and stdout contribution; active colored PTY input is not actually forwarded by the source, so stdin is an over-approximation for that branch.

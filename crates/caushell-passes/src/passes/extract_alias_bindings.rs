@@ -16,8 +16,8 @@ impl SessionTransformPass for ExtractAliasBindingsPass {
             return;
         };
 
-        for mutation in collect_alias_mutations(&parsed.commands, observed_at) {
-            ctx.stage_mutation(mutation);
+        for (mutation, start) in collect_alias_mutations(&parsed.commands, observed_at) {
+            ctx.stage_shell_state_mutation(mutation, start);
         }
     }
 }
@@ -25,18 +25,28 @@ impl SessionTransformPass for ExtractAliasBindingsPass {
 fn collect_alias_mutations(
     commands: &[caushell_parse::CommandFact],
     observed_at: CommandSequenceNo,
-) -> Vec<PendingMutation> {
+) -> Vec<(PendingMutation, usize)> {
     let mut mutations = Vec::new();
 
     for command in commands {
         for assignment in alias_assignments(command) {
-            mutations.push(PendingMutation::UpsertAliasBinding {
-                binding: SessionAliasBinding::new(assignment.name, assignment.body, observed_at),
-            });
+            mutations.push((
+                PendingMutation::UpsertAliasBinding {
+                    binding: SessionAliasBinding::new(
+                        assignment.name,
+                        assignment.body,
+                        observed_at,
+                    ),
+                },
+                assignment.source_start,
+            ));
         }
 
         for name in unalias_names(command) {
-            mutations.push(PendingMutation::UnsetAlias { name, observed_at });
+            mutations.push((
+                PendingMutation::UnsetAlias { name, observed_at },
+                command.span.start_byte,
+            ));
         }
     }
 
@@ -123,6 +133,20 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn extract_alias_bindings_preserves_ordered_operand_occurrences() {
+        let ctx = run_pass(
+            3,
+            "alias a='printf FIRST' a='printf SECOND' a='printf FIRST'",
+        );
+        let expected = ["printf FIRST", "printf SECOND", "printf FIRST"].map(|body| {
+            PendingMutation::UpsertAliasBinding {
+                binding: SessionAliasBinding::new("a", body, CommandSequenceNo::new(3)),
+            }
+        });
+        assert_eq!(ctx.pending_mutations(), &expected);
     }
 
     #[test]

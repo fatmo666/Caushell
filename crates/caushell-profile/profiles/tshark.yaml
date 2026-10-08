@@ -1,0 +1,264 @@
+---
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  canonical_name: tshark
+  aliases: []
+trust:
+  tier: tier_a
+  source: built_in
+platform:
+  os_families:
+  - posix
+  - linux
+  - macos
+  shell_families: []
+  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+forms:
+- id: load_opaque_lua_script
+  selector:
+    kind: all
+    items:
+    - &1
+      kind: has_modifier_parameter_matching
+      modifier: extension_option
+      parameter: extension_option_value
+      matcher:
+        kind: regex_pattern
+        pattern: "^lua_script:"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: write_capture
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: read_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: extension_option_value
+        projection:
+          kind: key_value
+          separator: ":"
+          key: lua_script
+      missing: skip
+      purpose: script_source
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  parameters:
+  - name: filters
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+- id: read_capture_file
+  selector:
+    kind: all
+    items:
+    - kind: not
+      item: *1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: write_capture
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  parameters:
+  - name: filters
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+- id: capture_to_file
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: write_capture
+    - kind: not
+      item: &2
+        kind: has_modifier_parameter_matching
+        modifier: write_capture
+        parameter: capture_output
+        matcher:
+          kind: literal
+          value: "-"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  effects:
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources:
+      - slot: capture_output
+        projection:
+          kind: identity
+      missing: skip
+      purpose: generic_operand
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+  parameters:
+  - name: filters
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+- id: capture_to_stdout
+  selector:
+    kind: all
+    items:
+    - *2
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: data
+    stderr_mode: opaque
+    stdout_dependency: inputs
+  parameters:
+  - name: filters
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+- id: information
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: information
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: extension_option
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: read_capture
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: write_capture
+  stream_contract:
+    stdin_mode: ignored
+    stdout_mode: opaque
+    stderr_mode: opaque
+  parameters:
+  - name: filters
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+modifiers:
+- id: extension_option
+  matcher:
+    kind: any_flag
+    flags:
+    - "-X"
+  parameters:
+  - name: extension_option_value
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_many
+    structured_projection:
+      branches:
+      - matcher:
+          kind: prefix
+          value: 'lua_script:'
+        target:
+          name: lua_entry
+          semantic:
+            kind: payload
+            language: opaque
+            source: dynamic_reference
+            recursive: true
+  effects:
+  - kind: execute_payload
+    target:
+      kind: slot
+      name: lua_entry
+- id: read_capture
+  matcher:
+    kind: any_flag
+    flags:
+    - "-r"
+  parameters:
+  - name: capture
+    semantic:
+      kind: path
+      role: read
+      purpose: generic_operand
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: capture
+- id: write_capture
+  matcher:
+    kind: any_flag
+    flags:
+    - "-w"
+  parameters:
+  - name: capture_output
+    semantic:
+      kind: plain_value
+    binding:
+      kind: following_matched_flag
+      operand_mode: next_arg
+    cardinality: required_one
+  effects: []
+- id: information
+  matcher:
+    kind: any_flag
+    flags:
+    - "-h"
+    - "--help"
+    - "-v"
+    - "--version"
+  parameters: []
+  effects: []
+extensions:
+  caushell.profile/source_research:
+  - https://www.wireshark.org/docs/man-pages/tshark.html
+  - https://wiki.wireshark.org/Lua
+  - 'GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/tshark inherit from
+    lua'
+  caushell.profile/known_limitations:
+  - "-X lua_script:PATH is explicitly executable Lua. Prefix projection declares the
+    opaque native code entry; key/value configured path projection retains the exact
+    file read. Other -X data is not code. -r reads captures, non-dash -w writes captures,
+    -w - emits data to stdout. Live capture interfaces, auto-loaded plugins, ring
+    output naming and other undeclared operations are not fully modeled."
