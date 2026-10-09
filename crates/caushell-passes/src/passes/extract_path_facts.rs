@@ -109,8 +109,10 @@ fn collect_resolved_path_mutations(
                 _ => None,
             };
             if kind.is_some_and(|kind| {
-                bound_invocation(record.result())
-                    .is_some_and(|bound| slot_uses_content_open(bound, &path.slot_name, kind))
+                path.semantic_slot.as_ref().is_some_and(|slot| {
+                    bound_invocation(record.result())
+                        .is_some_and(|bound| slot_uses_content_open(bound, slot.as_str(), kind))
+                })
             }) {
                 // Distinct possible shell cwd targets retain separate facts.
                 if path
@@ -1076,6 +1078,103 @@ mod tests {
     fn registry_from_yaml(yaml: &str) -> ProfileRegistry {
         let profile = load_command_profile_from_str(yaml).expect("expected profile to load");
         ProfileRegistry::from_profiles(vec![profile]).expect("expected registry to build")
+    }
+
+    fn effect_identity_profile(effect: &str) -> ProfileRegistry {
+        registry_from_yaml(&format!(
+            "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {{canonical_name: arbitrary_io_tool}}\nforms:\n  - id: selected\n    parameters:\n      - name: target\n        semantic: {{kind: path, role: target}}\n        binding: {{kind: positional_at, index: 0}}\n        cardinality: required_one\n    effects:\n{effect}"
+        ))
+    }
+
+    #[test]
+    fn effect_path_identity_preserves_explicit_descriptor_read_semantics() {
+        let registry = effect_identity_profile(
+            "      - {kind: read_path, path_access: content_open, target: {kind: slot, name: target}}\n",
+        );
+        let ctx = run_pass_with_registry("arbitrary_io_tool /dev/stdin", None, registry);
+        // The base namespace fact keeps its original identity and role.
+        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddPathFact { slot_name, role: ResolvedPathRole::Target, resolution, .. }
+            if slot_name == "target" && resolution.concrete_path() == Some("/dev/stdin"))));
+        // The added read role uses the effect's original semantic slot to
+        // resolve the FD, but retains its distinct Graph identity.
+        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddProvenanceArtifact { relation: EdgeKind::Consumes,
+                artifact: ProvenanceArtifact::DescriptorStream { descriptor, .. },
+                semantics: ProvenanceEdgeSemantics::Consume { slot_name: Some(slot), .. }, .. }
+            if descriptor == "0" && slot == "target_effect_0")));
+        assert!(!ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddPathFact { role: ResolvedPathRole::Read, resolution, .. }
+            if resolution.concrete_path() == Some("/dev/stdin"))));
+    }
+
+    #[test]
+    fn effect_path_identity_keeps_backing_paths_and_effect_graph_names() {
+        for (effect, command, role, path) in [
+            (
+                "read_path",
+                "arbitrary_io_tool /dev/fd/3 3<./input",
+                ResolvedPathRole::Read,
+                "/tmp/project/input",
+            ),
+            (
+                "write_path",
+                "arbitrary_io_tool /dev/stdout >./output",
+                ResolvedPathRole::Write,
+                "/tmp/project/output",
+            ),
+        ] {
+            let registry = effect_identity_profile(&format!(
+                "      - {{kind: {effect}, path_access: content_open, target: {{kind: slot, name: target}}}}\n"
+            ));
+            let ctx = run_pass_with_registry(command, None, registry);
+            assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+                PendingMutation::AddPathFact { node_id, slot_name, role: actual, resolution, .. }
+                if *actual == role && slot_name == "target_effect_0"
+                    && node_id.0.contains(":target_effect_0:") && resolution.concrete_path() == Some(path))), "{command}: {ctx:#?}");
+        }
+    }
+
+    #[test]
+    fn effect_path_identity_never_converts_namespace_effects_to_content_opens() {
+        for effects in [
+            "      - {kind: read_path, target: {kind: slot, name: target}}\n",
+            "      - {kind: read_path, path_access: content_open, target: {kind: slot, name: target}}\n      - {kind: read_path, target: {kind: slot, name: target}}\n",
+        ] {
+            let ctx = run_pass_with_registry(
+                "arbitrary_io_tool /dev/stdin",
+                None,
+                effect_identity_profile(effects),
+            );
+            assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+                PendingMutation::AddPathFact { slot_name, role: ResolvedPathRole::Read, resolution, .. }
+                if slot_name == "target_effect_0" && resolution.concrete_path() == Some("/dev/stdin"))));
+            assert!(!ctx.pending_mutations().iter().any(|m| matches!(
+                m,
+                PendingMutation::AddProvenanceArtifact {
+                    artifact: ProvenanceArtifact::DescriptorStream { .. },
+                    ..
+                }
+            )));
+        }
+    }
+
+    #[test]
+    fn effect_path_identity_does_not_transfer_source_access_to_computed_paths() {
+        let registry = effect_identity_profile(
+            "      - {kind: read_path, path_access: content_open, target: {kind: slot, name: target}}\n      - kind: write_path\n        target:\n          kind: derived_path\n          source: {kind: slot, name: target}\n          rule: {kind: strip_suffix, suffix: '.archive'}\n",
+        );
+        let ctx = run_pass_with_registry("arbitrary_io_tool /dev/stdin.archive", None, registry);
+        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddPathFact { role: ResolvedPathRole::Write, resolution, .. }
+            if resolution.concrete_path() == Some("/dev/stdin"))));
+        assert!(!ctx.pending_mutations().iter().any(|m| matches!(
+            m,
+            PendingMutation::AddProvenanceArtifact {
+                artifact: ProvenanceArtifact::DescriptorStream { .. },
+                ..
+            }
+        )));
     }
 
     fn run_pass(command: &str, home: Option<&str>) -> RunnerContext {

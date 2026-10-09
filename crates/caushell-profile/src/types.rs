@@ -238,6 +238,9 @@ impl SelectorExpr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamInputMode {
     Ignored,
+    /// Opt-in data input determined by the invocation's bound ConsumeStdin effects.
+    /// This is resolved only after the complete-shape guarantee is established.
+    DeclaredEffects,
     DataOptional,
     DataRequired,
     PayloadOptional,

@@ -293,6 +293,7 @@ impl Default for RawSelectorExpr {
 #[serde(rename_all = "snake_case")]
 pub enum RawStreamInputMode {
     Ignored,
+    DeclaredEffects,
     DataOptional,
     DataRequired,
     PayloadOptional,

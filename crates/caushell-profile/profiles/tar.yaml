@@ -17,17 +17,24 @@ platform:
   shell_families: []
   requires_features: []
 
+option_scope: permuted_options
 opaque_on_unresolved: true
 
 forms:
   - id: show_help
     selector: {kind: has_modifier, modifier: information}
+    parameters: &information_args
+      - {name: ignored_information_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: &info_stream {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: show_version
     selector: {kind: has_modifier, modifier: version}
+    parameters: *information_args
+    stream_contract: *info_stream
   - id: extract_archive
+    remaining_selector: &running {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: version}]}}
     selector:
       kind: all
-      items: [{kind: has_modifier, modifier: extract}, {kind: has_modifier, modifier: archive_option}]
+      items: [{kind: has_modifier, modifier: extract}, {kind: has_modifier, modifier: archive_option}, &disk_output {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: to_stdout}, {kind: has_modifier, modifier: to_command}]}}, {kind: not, item: &stdin_archive {kind: has_modifier_parameter_matching, modifier: archive_option, parameter: archive_operand, matcher: {kind: literal, value: '-'}}}]
     parameters:
       - name: member_filters
         semantic:
@@ -41,6 +48,7 @@ forms:
         target:
           kind: slot
           name: archive_file
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: old_archive_file}}
       - kind: write_path
         target:
           kind: derived_path
@@ -50,6 +58,7 @@ forms:
           rule:
             kind: archive_members
           purpose: generic_operand
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: old_archive_file}, rule: {kind: archive_members}, purpose: generic_operand}}
       - &decompress_dispatch
         kind: dispatch_command
         target:
@@ -65,11 +74,13 @@ forms:
           unknown_environment_names: [TAR_VERSION, TAR_ARCHIVE, TAR_VOLUME, TAR_BLOCKING_FACTOR, TAR_FORMAT, TAR_FILETYPE, TAR_MODE, TAR_FILENAME, TAR_REALNAME, TAR_UNAME, TAR_GNAME, TAR_ATIME, TAR_MTIME, TAR_CTIME, TAR_SIZE, TAR_UID, TAR_GID, TAR_MINOR, TAR_MAJOR, TAR_LINKNAME]
           stdin_from_tool: true
           stdout_to_parent: true
+    stream_contract: &opaque_stream {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque}
 
   - id: create_archive
+    remaining_selector: *running
     selector:
       kind: all
-      items: [{kind: has_modifier, modifier: create}, {kind: has_modifier, modifier: archive_option}]
+      items: [{kind: has_modifier, modifier: create}, {kind: has_modifier, modifier: archive_option}, {kind: any, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: files_from}]}]
     parameters:
       - name: input_paths
         semantic:
@@ -78,13 +89,14 @@ forms:
           purpose: generic_operand
         binding:
           kind: remaining_positionals
-        cardinality: required_many
+        cardinality: optional_many
     effects: &create_effects
       - kind: write_path
         path_access: content_open
         target:
           kind: slot
           name: archive_file
+      - &write_old_archive {kind: write_path, path_access: content_open, target: {kind: slot, name: old_archive_file}}
       - kind: read_path
         target:
           kind: slot
@@ -95,82 +107,292 @@ forms:
           kind: dispatch
           command_string: {slot: compression_program, syntax: posix_shell}
           stdin_from_tool: true
+    stream_contract: &archive_output {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
   - id: create_archive_old_style
+    remaining_selector: *running
     selector:
-      kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: regex_pattern
-        pattern: '^[vphOPzjJS]*c[vphOPzjJS]*f[vphOPzjJS]*$'
+      kind: all
+      items:
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*c[vphOPzjJS]*f[vphOPzjJS]*$'}}
+        - {kind: any, items: [{kind: has_positional_at, index: 2}, {kind: has_modifier, modifier: files_from}]}
     parameters:
-      - name: old_style_options
+      - &old_options
+        name: old_style_options
         semantic:
           kind: plain_value
         binding:
           kind: positional_at
           index: 0
         cardinality: required_one
-      - name: archive_file
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+      - &old_archive
+        name: old_archive_operand
+        semantic: {kind: plain_value}
         binding:
           kind: next_positional
         cardinality: required_one
-      - name: input_paths
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: old_archive_stream, semantic: {kind: plain_value}}}
+          fallback: {name: old_archive_file, semantic: {kind: path, role: write, purpose: generic_operand}}
+      - &input_paths
+        name: input_paths
         semantic:
           kind: path
           role: read
           purpose: generic_operand
         binding:
           kind: remaining_positionals
-        cardinality: required_many
+        cardinality: optional_many
     effects: *create_effects
+    stream_contract: *archive_output
 
   - id: extract_archive_old_style
+    remaining_selector: *running
     selector:
-      kind: has_positional_at_matching
-      index: 0
-      matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*x[vphOPzjJS]*f[vphOPzjJS]*$'}
+      kind: all
+      items:
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphPzjJS]*x[vphPzjJS]*f[vphPzjJS]*$'}}
+        - *disk_output
+        - {kind: not, item: {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}}
     parameters:
-      - {name: old_style_options, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
-      - {name: archive_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - *old_options
+      - &old_archive_read
+        name: old_archive_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: old_archive_stream, semantic: {kind: plain_value}}}
+          fallback: {name: old_archive_file, semantic: {kind: path, role: read, purpose: generic_operand}}
       - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     effects: *extract_effects
+    stream_contract: *opaque_stream
+
+  - id: extract_archive_stdin
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: extract}, *stdin_archive, *disk_output]}
+    parameters: &stdin_members [{name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: &extract_stdin_effects
+      - {kind: consume_stdin, target: {kind: slot, name: archive_stream}}
+      - &old_archive_stdin {kind: consume_stdin, target: {kind: slot, name: old_archive_stream}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - *decompress_dispatch
+    stream_contract: *opaque_stream
+
+  - id: extract_archive_stdin_old_style
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphPzjJS]*x[vphPzjJS]*f[vphPzjJS]*$'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}, *disk_output]}
+    parameters: [*old_options, *old_archive_read, {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: *extract_stdin_effects
+    stream_contract: *opaque_stream
 
   - id: list_archive_old_style
+    remaining_selector: *running
     selector:
-      kind: has_positional_at_matching
+      kind: has_argument_at_matching
       index: 0
       matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*t[vphOPzjJS]*f[vphOPzjJS]*$'}
     parameters:
-      - {name: old_style_options, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
-      - {name: archive_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - *old_options
+      - *old_archive_read
       - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
-    stream_contract: {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque}
+    stream_contract: &list_stream {stdin_mode: declared_effects, stdout_mode: path_list, stderr_mode: opaque, stdout_dependency: inputs}
     effects: &list_effects
-      - {kind: read_path, path_access: content_open, target: {kind: slot, name: archive_file}}
+      - &read_archive {kind: read_path, path_access: content_open, target: {kind: slot, name: archive_file}}
+      - &read_old_archive {kind: read_path, path_access: content_open, target: {kind: slot, name: old_archive_file}}
+      - &archive_stdin {kind: consume_stdin, target: {kind: slot, name: archive_stream}}
+      - *old_archive_stdin
       - *decompress_dispatch
 
   - id: list_archive
+    remaining_selector: *running
     selector:
       kind: all
       items: [{kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: archive_option}]
     parameters:
       - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: path_list
-      stderr_mode: opaque
+    stream_contract: *list_stream
     effects: *list_effects
+
+  - id: append_or_update_archive
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: any, items: [{kind: has_modifier, modifier: append}, {kind: has_modifier, modifier: update}]}, {kind: has_modifier, modifier: archive_option}]}
+    parameters: [*input_paths]
+    effects: &update_effects
+      - *read_archive
+      - *read_old_archive
+      - &write_archive {kind: write_path, path_access: content_open, target: {kind: slot, name: archive_file}}
+      - *write_old_archive
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - *archive_stdin
+      - *old_archive_stdin
+      - *compress_dispatch
+    stream_contract: *archive_output
+
+  - id: append_or_update_archive_old_style
+    remaining_selector: *running
+    selector: {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*[ru][vphOPzjJS]*f[vphOPzjJS]*$'}}
+    parameters: [*old_options, *old_archive, *input_paths]
+    effects: *update_effects
+    stream_contract: *archive_output
+
+  - id: concatenate_archives
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: concatenate}, {kind: has_modifier, modifier: archive_option}]}
+    parameters: [*input_paths]
+    effects: *update_effects
+    stream_contract: *archive_output
+
+  - id: concatenate_archives_old_style
+    remaining_selector: *running
+    selector: {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*A[vphOPzjJS]*f[vphOPzjJS]*$'}}
+    parameters: [*old_options, *old_archive, *input_paths]
+    effects: *update_effects
+    stream_contract: *archive_output
+
+  - id: delete_archive_members
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: delete_members}, {kind: has_modifier, modifier: archive_option}]}
+    parameters: &member_parameters [{name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    # Member deletion rewrites the archive; it does not unlink host operands.
+    effects: [*read_archive, *write_archive, *archive_stdin]
+    stream_contract: *opaque_stream
+
+  - id: compare_archive
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: compare}, {kind: has_modifier, modifier: archive_option}]}
+    parameters: *member_parameters
+    effects: &compare_effects [*read_archive, *read_old_archive, *archive_stdin, *old_archive_stdin, *decompress_dispatch, {kind: read_path, target: {kind: none}}]
+    stream_contract: *opaque_stream
+
+  - id: compare_archive_old_style
+    remaining_selector: *running
+    selector: {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*d[vphOPzjJS]*f[vphOPzjJS]*$'}}
+    parameters: [*old_options, *old_archive_read, {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: *compare_effects
+    stream_contract: *opaque_stream
+
+  - id: extract_to_stream_or_command
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: extract}, {kind: has_modifier, modifier: archive_option}, {kind: not, item: *disk_output}]}
+    parameters: *member_parameters
+    effects: &stream_extract_effects [*read_archive, *read_old_archive, *archive_stdin, *old_archive_stdin, *decompress_dispatch, *to_command_dispatch, {kind: transform_data, target: {kind: none}}]
+    stream_contract: &data_stream {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: extract_to_stream_or_command_old_style
+    remaining_selector: *running
+    selector:
+      kind: all
+      items:
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*x[vphOPzjJS]*f[vphOPzjJS]*$'}}
+        - {kind: any, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJSxf]*O[vphOPzjJSxf]*$'}}, {kind: not, item: *disk_output}]}
+    parameters: [*old_options, *old_archive_read, {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: *stream_extract_effects
+    stream_contract: *data_stream
+
+  # No -f is not proof of stdio. TAPE and the compiled default are unknown.
+  - id: create_default_archive
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: create}, {kind: not, item: {kind: has_modifier, modifier: archive_option}}, {kind: any, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: files_from}]}]}
+    parameters: [*input_paths]
+    effects: &default_create_effects
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - *compress_dispatch
+    stream_contract: *archive_output
+
+  - id: create_default_archive_old_style
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*c[vphOPzjJS]*$'}}, {kind: any, items: [{kind: has_positional_at, index: 1}, {kind: has_modifier, modifier: files_from}]}]}
+    parameters: [*old_options, *input_paths]
+    effects: *default_create_effects
+    stream_contract: *archive_output
+
+  - id: read_default_archive
+    remaining_selector: *running
+    selector:
+      kind: all
+      items:
+        - {kind: any, items: [{kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: compare}, {kind: all, items: [{kind: has_modifier, modifier: extract}, {kind: not, item: *disk_output}]}]}
+        - {kind: not, item: {kind: has_modifier, modifier: archive_option}}
+    parameters: *member_parameters
+    effects: &default_read_effects [{kind: read_path, target: {kind: configured_path, sources: [], missing: unknown}}, *decompress_dispatch, *to_command_dispatch]
+    # The unknown configured/default archive may use stdin. No negative proof.
+    stream_contract: &default_data_stream {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: read_default_archive_old_style
+    remaining_selector: *running
+    selector: {kind: any, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([vphPzjJS]*[td][vphPzjJS]*|[vphPzjJS]*x[vphPzjJS]*O[vphPzjJS]*|[vphPzjJS]*O[vphPzjJS]*x[vphPzjJS]*)$'}}, {kind: all, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphPzjJS]*x[vphPzjJS]*$'}}, {kind: not, item: *disk_output}]}]}
+    parameters: [*old_options, {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: *default_read_effects
+    stream_contract: *default_data_stream
+
+  - id: extract_default_archive
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: extract}, {kind: not, item: {kind: has_modifier, modifier: archive_option}}, *disk_output]}
+    parameters: *member_parameters
+    effects: &default_extract_effects
+      - {kind: read_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - *decompress_dispatch
+
+  - id: extract_default_archive_old_style
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphPzjJS]*x[vphPzjJS]*$'}}, *disk_output]}
+    parameters: [*old_options, {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: *default_extract_effects
 
 modifiers:
   - id: archive_switches
     matcher:
       kind: any_flag
-      flags: [-v, --verbose, -p, --same-permissions, --preserve-permissions, -P, --absolute-names, -h, --dereference, --hard-dereference, -O, --to-stdout, -z, --gzip, --ungzip, -j, --bzip2, -J, --xz, --zstd, --lzma, --lzip, --lzop, -Z, --compress, -S, --sparse, --numeric-owner, --no-same-owner, --no-same-permissions, -k, --keep-old-files, --skip-old-files, --keep-newer-files, -m, --touch, --no-overwrite-dir, --no-recursion, --recursion, --null, --verbatim-files-from, --no-verbatim-files-from, --ignore-failed-read, --no-unquote, --unquote]
+      flags: [-v, --verbose, -p, --same-permissions, --preserve-permissions, -P, --absolute-names, -h, --dereference, --hard-dereference, -z, --gzip, --ungzip, -j, --bzip2, -J, --xz, --zstd, --lzma, --lzip, --lzop, -Z, --compress, -S, --sparse, --numeric-owner, --no-same-owner, --no-same-permissions, -k, --keep-old-files, --skip-old-files, --keep-newer-files, -m, --touch, --no-overwrite-dir, --no-recursion, --recursion, --null, --no-null, --verbatim-files-from, --no-verbatim-files-from, --ignore-failed-read, --no-unquote, --unquote, --one-file-system, --wildcards, --no-wildcards, --wildcards-match-slash, --no-wildcards-match-slash, --anchored, --no-anchored, --ignore-case, --no-ignore-case, --exclude-caches, --exclude-caches-under, --exclude-caches-all, --exclude-vcs, --exclude-vcs-ignores, --exclude-backups]
+  - {id: to_stdout, matcher: {kind: any_flag, flags: [-O, --to-stdout]}}
+  - {id: append, matcher: {kind: any_flag, flags: [-r, --append]}}
+  - {id: update, matcher: {kind: any_flag, flags: [-u, --update]}}
+  - {id: concatenate, matcher: {kind: any_flag, flags: [-A, --concatenate, --catenate]}}
+  - {id: delete_members, matcher: {kind: any_flag, flags: [--delete]}}
+  - {id: compare, matcher: {kind: any_flag, flags: [-d, --diff, --compare]}}
+  - id: files_from
+    matcher: {kind: any_flag, flags: [-T, --files-from]}
+    parameters:
+      - name: name_list_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: stdin_names, semantic: {kind: plain_value}}}
+          fallback: {name: name_list_files, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: name_list_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_names}}
+      # Contents and nested lists remain opaque. They are file-selection
+      # directives in GNU names.c, not shell or unrestricted command options.
+      - {kind: read_path, target: {kind: none}}
+  - id: exclusion_patterns
+    matcher: {kind: any_flag, flags: [--exclude, --exclude-tag, --exclude-tag-under, --exclude-tag-all, --exclude-ignore, --exclude-ignore-recursive]}
+    parameters: [{name: exclusion_pattern, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: exclusion_file
+    matcher: {kind: any_flag, flags: [-X, --exclude-from]}
+    parameters: [{name: exclusion_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: exclusion_files}}]
+  - id: archive_metadata
+    matcher: {kind: any_flag, flags: [--mtime, --owner, --group, --mode, --strip-components, -N, --newer, --after-date, --newer-mtime, --format, --sort]}
+    parameters: [{name: archive_metadata, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: remove_sources
+    matcher: {kind: any_flag, flags: [--remove-files]}
+    effects: [{kind: delete_path, target: {kind: slot, name: input_paths}, catastrophic: {semantic_class: delete_path}}]
+  - id: remove_list_sources
+    matcher: {kind: any_flag, flags: [--remove-files]}
+    constraints: [{kind: requires_modifier, modifier: files_from}]
+    effects: [{kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown}}]
+  - id: remove_rebased_sources
+    matcher: {kind: any_flag, flags: [--remove-files]}
+    constraints: [{kind: requires_modifier, modifier: directory}]
+    effects: [{kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown}}]
   - id: member_transform
     matcher: {kind: any_flag, flags: [--transform, --xform]}
     parameters:
@@ -182,7 +404,14 @@ modifiers:
   - id: archive_option
     matcher: {kind: any_flag, flags: [-f, --file]}
     parameters:
-      - {name: archive_file, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+      - name: archive_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: archive_stream, semantic: {kind: plain_value}}}
+          fallback: {name: archive_file, semantic: {kind: path, role: target, purpose: generic_operand}}
   - id: compression_program
     matcher: {kind: any_flag, flags: [-I, --use-compress-program]}
     parameters:
@@ -287,12 +516,20 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/sources:
+    - https://www.gnu.org/software/tar/manual/html_section/Styles.html
+    - https://www.gnu.org/software/tar/manual/html_section/Advanced-tar.html
+    - https://www.gnu.org/software/tar/manual/html_node/files.html
+    - https://www.gnu.org/software/tar/manual/html_section/Two-Frequent-Options.html
+    - https://git.savannah.gnu.org/cgit/tar.git/plain/src/names.c
     - https://www.gnu.org/software/tar/manual/html_section/external.html
     - https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/src/system.c/
     - https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/lib/wordsplit.c/
   caushell.profile/known_limitations:
     - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.
-    - Common old-style cf/cvf, xf/Pxf and tf forms are supported. Other argument-taking old-style letters still require an arity-aware projection; this is not a complete old-option parser.
+    - Common old-style create, extract, list, append, update, concatenate and compare words containing only declared flag-only letters and one trailing archive operand are supported. The old word must be the actual first argv item. Other argument-taking old-style letters still require an arity-aware projection; this is not a complete old-option parser.
+    - The existing permuted option scanner owns modern short/long operands, including options after filenames and clusters after prior option operands. No tar-name branch is added to the binder. Archive metadata options do not mutate the ownership or mode of host input files.
+    - A literal archive dash or file-list dash is a stream marker, not a file named dash. Missing -f leaves TAPE and the compiled default unknown; a create-default invocation retains an unknown write rather than assuming stdout. Archive extraction keeps unknown member writes unless output is explicitly sent to stdout or a modeled callback.
+    - GNU names.c allows only file-selection directives in non-verbatim filename lists, not checkpoint or compression callbacks. Unknown list names, nested lists and directory changes remain unknown reads; list bytes are not executed, inspected or fabricated as literal paths. --remove-files with a list or directory rebasing retains unknown possible deletion targets. Ordered -C rebasing, list parsing modes and list contents are not statically expanded.
     - GNU tar 1.35 source runs compression, checkpoint exec and to-command strings through /bin/sh -c. Decompression uses GNU wordsplit with environment expansion and appends -d. The selected string modes are not interchangeable.
     - GNU wordsplit environment expansions remain explicit analysis gaps. No ambient environment or subprocess is consulted. Tool-generated TAR_* values are opaque only in the callback environment, not the caller shell.
     - Remote archive addressing and --rsh-command helper argv, info scripts, implicit compression selection, TAR_OPTIONS, transforms and BSD tar dialect differences remain pending; name registration is not complete semantic coverage.

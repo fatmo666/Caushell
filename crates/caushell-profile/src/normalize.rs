@@ -920,6 +920,7 @@ fn normalize_stream_contract(raw: RawStreamContract) -> StreamContract {
     StreamContract {
         stdin_mode: match raw.stdin_mode {
             RawStreamInputMode::Ignored => StreamInputMode::Ignored,
+            RawStreamInputMode::DeclaredEffects => StreamInputMode::DeclaredEffects,
             RawStreamInputMode::DataOptional => StreamInputMode::DataOptional,
             RawStreamInputMode::DataRequired => StreamInputMode::DataRequired,
             RawStreamInputMode::PayloadOptional => StreamInputMode::PayloadOptional,

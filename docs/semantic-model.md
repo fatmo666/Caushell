@@ -859,7 +859,86 @@ Sources: [GNU tar external commands](https://www.gnu.org/software/tar/manual/htm
 [GNU tar 1.35 execution source](https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/src/system.c/),
 [GNU wordsplit source](https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/lib/wordsplit.c/).
 
+### Tar archive operations and operand ownership
+
+The tar Profile uses the shared permuted-option ownership scanner. Modern
+short-option clusters after prior option operands, `--name=value`, filename
+lists, exclusion lists, and declared metadata/filter operands use the existing
+bindings and projections; metadata such as `--owner` does not imply changing
+the host input file's ownership. Common old-style option words must be the
+actual first argv item. Their supported grammar has flag-only letters and one
+archive operand; other argument-taking old-style combinations remain unresolved.
+
+Append/update and concatenation read input files and read/write the destination
+archive. `--delete` rewrites the archive, not the host path named by a member
+filter; comparison reads rather than writes. Archive/file-list `-` operands are
+stdio markers, never filesystem targets. Extraction with `-O/--to-stdout` or a
+modeled `--to-command` callback does not declare member-file writes; callbacks
+and shell redirections remain independently checked. Ordinary extraction keeps
+unresolved member writes. Omitted `-f` retains the unknown `TAPE`/compiled
+archive default, including an unknown write for creation, rather than assuming
+stdout. Help/version ignore remaining data operands and suppress operational
+effects, but unmodeled option syntax still uses the existing resolve policy.
+
+`-T/--files-from` declares a list-file read or stdin consumption and unknown
+selected reads. GNU's list parser accepts file-selection directives, not
+arbitrary checkpoint/compression callbacks. List contents, nested lists,
+position-sensitive null/verbatim modes and ordered `-C` member rebasing are not
+expanded or probed. `-C` is not an execution-cwd change and does not rebase the
+archive filename. `--remove-files` retains explicit source deletions and, with
+lists or directory rebasing, unknown possible deletion targets. Existing
+outside-workspace/unknown mutation checks apply without a new risk Pass,
+foundation command-name branch, dynamic observation or Harness field.
+
+Sources: [GNU tar option styles](https://www.gnu.org/software/tar/manual/html_section/Styles.html),
+[archive operations](https://www.gnu.org/software/tar/manual/html_section/Advanced-tar.html),
+[filename lists](https://www.gnu.org/software/tar/manual/html_node/files.html),
+[archive and directory options](https://www.gnu.org/software/tar/manual/html_section/Two-Frequent-Options.html),
+[file-list parser](https://git.savannah.gnu.org/cgit/tar.git/plain/src/names.c).
+
 ## Delimited child argv ownership
+
+### Effect-selected stdin contracts
+
+A form can opt into `stream_contract.stdin_mode: declared_effects`. After
+binding a complete invocation, the shared proven-stream query resolves this
+mode to `data_optional` if a `consume_stdin` effect was emitted, or `ignored`
+otherwise. Slot-target effects only count when their targets were actually
+bound. The original declaration remains available in the bound artifact;
+stdout/stderr modes and dependencies are not rewritten.
+
+```yaml
+stream_contract:
+  stdin_mode: declared_effects
+  stdout_mode: data
+  stderr_mode: opaque
+  stdout_dependency: inputs
+effects:
+  - kind: consume_stdin
+    target: {kind: slot, name: stdin_inputs}
+```
+
+Unresolved operation semantics, residual arguments or unknown argument
+materialization yield no proven contract, not an `ignored` guarantee. All
+legacy input modes and undeclared contracts retain their previous meaning.
+Pipeline, redirection and value provenance share this query; explicit path
+reads and descriptor opens remain independent of implicit stdin consumption.
+A stdin-forwarding record contract cannot be proven when effective stdin is
+ignored. There is no command-name branch, new risk Pass or runtime observation.
+
+Internal path candidates retain the original bound semantic slot separately
+from their Graph identity. An effect adding a read/write role uses this slot
+for the existing `content_open` lookup, including explicit descriptor aliases;
+its distinct effect-suffixed Graph name is unchanged. Computed/configured
+paths do not inherit their source slot's access declaration, and namespace
+effects on the same slot keep the existing conservative access check.
+
+Tar opts into effect-selected input for explicit archive/member forms: an
+explicit archive file or creation input does not consume an unrelated pipe,
+whereas archive `-` and `--files-from=-` preserve its provenance. Omitted
+archive defaults remain conservative because their configured source is
+unknown; read-default forms retain `data_optional` rather than making an
+absence-of-effect claim.
 
 ### Positive stdout record contracts
 

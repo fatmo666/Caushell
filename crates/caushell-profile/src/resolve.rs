@@ -50,14 +50,35 @@ impl ResolvedInvocationArtifact {
         {
             return None;
         }
-        self.bound.stream_contract
+        let mut contract = self.bound.stream_contract?;
+        if contract.stdin_mode == crate::StreamInputMode::DeclaredEffects {
+            // The binder emits conditional effects only for bound targets.
+            // Legacy modes bypass this scan, and incomplete shapes above can
+            // never turn an absent effect into a negative dependency proof.
+            contract.stdin_mode = if self
+                .bound
+                .effects
+                .iter()
+                .any(|effect| effect.kind == crate::EffectKind::ConsumeStdin)
+            {
+                crate::StreamInputMode::DataOptional
+            } else {
+                crate::StreamInputMode::Ignored
+            };
+        }
+        Some(contract)
     }
 
     pub fn proven_stdout_records(&self) -> Option<&crate::StdoutRecordContract> {
         // The same completeness gate as negative stream guarantees: an
         // unmodeled control word must never manufacture a positive path proof.
-        self.proven_stream_contract()?;
+        let streams = self.proven_stream_contract()?;
         let contract = self.bound.stdout_records.as_ref()?;
+        if matches!(contract.projection, crate::StdoutRecordProjection::Stdin)
+            && streams.stdin_mode == crate::StreamInputMode::Ignored
+        {
+            return None;
+        }
         let applied = &self.bound.applied_modifiers;
         (contract
             .required_modifiers
