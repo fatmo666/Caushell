@@ -30,6 +30,10 @@ pub struct ResolvedInvocationArtifact {
 }
 
 impl ResolvedInvocationArtifact {
+    pub fn proven_stdout_scalar(&self) -> Option<crate::StdoutScalarShape> {
+        self.proven_stream_contract()?;
+        self.bound.stdout_scalar
+    }
     /// Negative stream guarantees require a fully resolved invocation shape.
     /// A dynamic operand could become '-' or a mode-changing option at runtime.
     pub fn proven_stream_contract(&self) -> Option<crate::StreamContract> {
@@ -205,6 +209,55 @@ pub fn resolve_invocation_in_namespace<'a>(
     bindings: &SessionBindings,
     module_runtime: Option<&str>,
 ) -> ResolveInvocationResult<'a> {
+    resolve_invocation_in_namespace_with_proofs(
+        registry,
+        command,
+        context,
+        bindings,
+        module_runtime,
+        &[],
+    )
+}
+
+/// Analysis-produced proofs, never Harness-supplied values. Source spans keep
+/// the proof attached to its original word across argument materialization.
+pub fn resolve_invocation_artifact_with_stdout_proofs(
+    registry: &ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+) -> ResolveInvocationArtifactResult {
+    resolve_invocation_in_namespace_with_proofs(registry, command, context, bindings, None, proofs)
+        .into_artifact()
+}
+
+pub fn resolve_invocation_in_namespace_with_stdout_proofs<'a>(
+    registry: &'a ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+    module_runtime: Option<&str>,
+    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+) -> ResolveInvocationResult<'a> {
+    resolve_invocation_in_namespace_with_proofs(
+        registry,
+        command,
+        context,
+        bindings,
+        module_runtime,
+        proofs,
+    )
+}
+
+fn resolve_invocation_in_namespace_with_proofs<'a>(
+    registry: &'a ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+    module_runtime: Option<&str>,
+    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+) -> ResolveInvocationResult<'a> {
     let recovered_command = recover_ifs_field_split_command(command, bindings);
     let command = recovered_command.as_ref().unwrap_or(command);
     let materialized_command = materialize_command_word(command, bindings);
@@ -249,7 +302,15 @@ pub fn resolve_invocation_in_namespace<'a>(
         };
     };
 
-    let projection = project_invocation(command, context);
+    let mut projection = project_invocation(command, context);
+    if !proofs.is_empty() {
+        for arg in &mut projection.args {
+            arg.substitution_shape = proofs
+                .iter()
+                .find(|(span, _)| *span == arg.span)
+                .map(|(_, shape)| *shape);
+        }
+    }
     let mut materialized_projection = materialize_projected_invocation(&projection, bindings);
     materialized_projection
         .invocation

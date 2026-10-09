@@ -71,6 +71,7 @@ pub enum NormalizeError {
     InvalidArgumentFileRule(String),
     InvalidPayloadProjection(String),
     InvalidStdoutRecords(String),
+    InvalidStdoutScalar(String),
     InvalidVariableTarget(String),
 }
 
@@ -132,6 +133,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     }
     let modifiers = normalize_modifiers(raw.modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
+    validate_stdout_scalars(&forms)?;
     let option_matching = normalize_option_matching(raw.option_matching);
     let option_prefixes = match raw.option_prefixes {
         RawOptionPrefixPolicy::DashOnly => OptionPrefixPolicy::DashOnly,
@@ -702,8 +704,24 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .stdout_records
             .map(normalize_stdout_records)
             .transpose()?,
+        stdout_scalar: raw.stdout_scalar,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn validate_stdout_scalars(forms: &[Form]) -> Result<(), NormalizeError> {
+    for form in forms {
+        if form.stdout_scalar.is_some()
+            && !form
+                .stream_contract
+                .is_some_and(|s| s.stdout_mode == StreamOutputMode::PathList)
+        {
+            return Err(NormalizeError::InvalidStdoutScalar(
+                "absolute_path requires a path_list stdout contract".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn normalize_stdout_records(
@@ -2530,6 +2548,7 @@ fn normalize_subcommand_node(
     let forms = normalize_forms(raw.forms)?;
     let modifiers = normalize_modifiers(raw.modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
+    validate_stdout_scalars(&forms)?;
     let option_scope = normalize_option_scope(raw.option_scope);
     let option_matching = raw
         .option_matching
@@ -2741,6 +2760,7 @@ mod tests {
                 }],
                 stream_contract: None,
                 stdout_records: None,
+                stdout_scalar: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -2909,6 +2929,7 @@ mod tests {
                 }],
                 stream_contract: None,
                 stdout_records: None,
+                stdout_scalar: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -3008,6 +3029,7 @@ mod tests {
                 }],
                 stream_contract: None,
                 stdout_records: None,
+                stdout_scalar: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -3093,6 +3115,7 @@ mod tests {
                 effects: Vec::new(),
                 stream_contract: None,
                 stdout_records: None,
+                stdout_scalar: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: Vec::new(),
@@ -3171,6 +3194,7 @@ mod tests {
                 }],
                 stream_contract: None,
                 stdout_records: None,
+                stdout_scalar: None,
                 extensions: BTreeMap::new(),
             }],
             ..Default::default()
@@ -3308,6 +3332,7 @@ mod tests {
                 }],
                 stream_contract: None,
                 stdout_records: None,
+                stdout_scalar: None,
                 extensions: BTreeMap::new(),
             }],
             modifiers: Vec::new(),

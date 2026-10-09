@@ -89,6 +89,7 @@ impl SessionTransformPass for ResolveInvocationPass {
                 session.summary(),
                 &binding_request,
                 &parsed,
+                ctx.policy().semantic_expansion.max_nested_parse_depth,
             );
         let function_derived_records = collect_top_level_function_command_resolve_records(
             &self.registry,
@@ -462,6 +463,10 @@ struct TopLevelDispatchDerivedCommand {
     bindings: SessionBindings,
     command: caushell_parse::CommandFact,
     stdin_available: bool,
+    stdout_proofs: Vec<(
+        caushell_parse::SourceSpan,
+        caushell_profile::StdoutScalarShape,
+    )>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -498,6 +503,7 @@ fn collect_top_level_command_resolve_records(
     summary: &caushell_types::SessionSummary,
     request: &CheckRequest,
     parsed: &caushell_parse::ParsedCommandArtifact,
+    max_nested_parse_depth: u8,
 ) -> (
     Vec<ResolvedCommandSeed>,
     Vec<TopLevelAliasDerivedCommand>,
@@ -557,11 +563,19 @@ fn collect_top_level_command_resolve_records(
         records.push(ResolvedCommandSeed::new(
             source_node_id,
             ParsedCommandRef::new(command_index, command.span.clone()),
-            resolve_invocation_artifact_with_bindings(
+            caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
                 registry,
                 &resolved_command,
                 runtime_context_for_top_level_command(parsed, command_index, &resolved_command),
                 &variable_overlay,
+                &crate::support::substitution_shapes(
+                    registry,
+                    &resolved_command,
+                    request.shell_kind,
+                    &variable_overlay,
+                    &alias_overlay,
+                    max_nested_parse_depth,
+                ),
             ),
         ));
 
@@ -877,6 +891,7 @@ fn collect_top_level_dispatch_derived_commands(
             let child_bindings =
                 dispatch_child_session_bindings(&parent_bindings, &candidate, &command);
             commands.push(TopLevelDispatchDerivedCommand {
+                stdout_proofs: forwarded_substitution_shapes(resolved, &command),
                 module_runtime: candidate.module_runtime.clone(),
                 stdin_available: candidate.stdin_from_parent
                     || candidate.stdin_from_tool
@@ -917,6 +932,49 @@ fn materialized_dispatch_child_command_fact(
 ) -> caushell_parse::CommandFact {
     let _ = parent;
     candidate.to_command_fact()
+}
+
+/// Dispatch forwards argv, not shell source. Transfer a proof only when the
+/// original span and lexical metadata identify an unchanged parent field.
+/// Synthetic/tool-decoded/replaced arguments never acquire this proof.
+fn forwarded_substitution_shapes(
+    parent: &caushell_profile::ResolvedInvocationArtifact,
+    child: &caushell_parse::CommandFact,
+) -> Vec<(
+    caushell_parse::SourceSpan,
+    caushell_profile::StdoutScalarShape,
+)> {
+    if !parent
+        .materialized_projection
+        .invocation
+        .args
+        .iter()
+        .any(|arg| arg.substitution_shape.is_some())
+    {
+        return Vec::new();
+    }
+    child
+        .tokens
+        .iter()
+        .filter_map(|token| {
+            let original = parent
+                .materialized_projection
+                .invocation
+                .args
+                .iter()
+                .find(|arg| {
+                    arg.span == token.span
+                        && arg.text == token.text
+                        && arg.quoted == token.quoted
+                        && arg.node_kind == token.node_kind
+                        && !arg.runtime_data
+                        && !token.runtime_data
+                        && arg.implicit_input_source.is_none()
+                        && token.implicit_input_source.is_none()
+                })?;
+            Some((token.span.clone(), original.substitution_shape?))
+        })
+        .collect()
 }
 
 fn parsed_dispatch_scope(
@@ -1394,7 +1452,7 @@ fn collect_top_level_dispatch_command_resolve_records(
                     command.dispatch_index,
                 ),
                 ParsedCommandRef::new(command.dispatch_index, command.command.span.clone()),
-                caushell_profile::resolve_invocation_in_namespace(
+                caushell_profile::resolve_invocation_in_namespace_with_stdout_proofs(
                     registry,
                     &command.command,
                     InvocationRuntimeContext {
@@ -1403,6 +1461,7 @@ fn collect_top_level_dispatch_command_resolve_records(
                     },
                     &command.bindings,
                     command.module_runtime.as_deref(),
+                    &command.stdout_proofs,
                 )
                 .into_artifact(),
             )
@@ -1753,8 +1812,27 @@ fn collect_execution_unit_resolve_records(
         parsed_request,
     ));
 
+    // Conservatively retain every alias definition in the enclosing request.
+    // Conditional aliases cannot acquire an executable's stdout guarantee.
+    let mut substitution_aliases = alias_bindings(session.summary(), request);
+    for command in &parsed_request.commands {
+        for assignment in crate::support::alias_assignments(command) {
+            substitution_aliases.insert(
+                assignment.name.clone(),
+                SessionAliasBinding::new(assignment.name, assignment.body, request.sequence_no),
+            );
+        }
+    }
+
     let mut visited = std::collections::BTreeSet::new();
     while let Some(mut entry) = frontier.pop() {
+        refresh_substitution_shape_proofs(
+            registry,
+            request,
+            &mut entry,
+            &substitution_aliases,
+            max_nested_parse_depth,
+        );
         let visit_key = (
             entry.source_node_id.clone(),
             entry.origin_index,
@@ -1888,6 +1966,86 @@ fn collect_execution_unit_resolve_records(
     }
 
     (records, expansion_limit_evidence)
+}
+
+fn refresh_substitution_shape_proofs(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    entry: &mut ExpandedFrontierEntry,
+    inherited_aliases: &BTreeMap<String, SessionAliasBinding>,
+    max_depth: u8,
+) {
+    // Top-level records already use their ordered alias overlay. All other
+    // execution origins share this query, including shell/dispatch payloads.
+    // A dispatcher receives already-expanded argv. Its output-shape proofs
+    // come only from unchanged parent fields, in expanded_dispatch_children;
+    // never reevaluate substitutions in the child's environment/namespace.
+    if entry.depth == 0
+        || entry.depth >= max_depth
+        || entry.origin_kind == ExecutionUnitOriginKind::Dispatch
+    {
+        return;
+    }
+    let Some(command) = entry
+        .parsed_scope
+        .commands
+        .get(entry.command_ref.command_index)
+    else {
+        return;
+    };
+    if !command
+        .tokens
+        .iter()
+        .any(|t| t.quoted && !t.command_substitutions.is_empty())
+    {
+        return;
+    }
+    let name = match &entry.result {
+        ResolveInvocationArtifactResult::Resolved(r) => &r.normalized_command_name,
+        ResolveInvocationArtifactResult::SelectionError {
+            normalized_command_name,
+            ..
+        } => normalized_command_name,
+        _ => return,
+    };
+    // A module namespace is not a bare executable namespace. Do not rebind a
+    // module result through the executable registry to attach an argv proof.
+    let Some(command_name) = command.command_name.as_deref() else {
+        return;
+    };
+    if registry.lookup(command_name).normalized_command_name != *name {
+        return;
+    }
+    let mut aliases = inherited_aliases.clone();
+    for scoped_command in &entry.parsed_scope.commands {
+        for assignment in crate::support::alias_assignments(scoped_command) {
+            aliases.insert(
+                assignment.name.clone(),
+                SessionAliasBinding::new(assignment.name, assignment.body, request.sequence_no),
+            );
+        }
+    }
+    let proofs = crate::support::substitution_shapes(
+        registry,
+        command,
+        entry.shell_kind,
+        &entry.bindings,
+        &aliases,
+        max_depth - entry.depth,
+    );
+    if !proofs.is_empty() {
+        entry.result = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
+            registry,
+            command,
+            runtime_context_for_parsed_command(
+                &entry.parsed_scope,
+                entry.command_ref.command_index,
+                command,
+            ),
+            &entry.bindings,
+            &proofs,
+        );
+    }
 }
 
 fn nested_payload_history_anchor_node_id(
@@ -2124,7 +2282,7 @@ fn expanded_dispatch_children(
         let stdin_available = child.stdin_from_parent
             || child.stdin_from_tool
             || resolved.projection.stdin_payload_available;
-        let resolved_child = caushell_profile::resolve_invocation_in_namespace(
+        let resolved_child = caushell_profile::resolve_invocation_in_namespace_with_stdout_proofs(
             registry,
             &command,
             InvocationRuntimeContext {
@@ -2133,6 +2291,7 @@ fn expanded_dispatch_children(
             },
             &child_bindings,
             child.module_runtime.as_deref(),
+            &forwarded_substitution_shapes(resolved, &command),
         )
         .into_artifact();
         let source_node_id = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {

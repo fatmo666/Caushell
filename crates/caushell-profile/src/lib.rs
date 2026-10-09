@@ -98,13 +98,15 @@ pub use registry::{ProfileRegistry, RegistryError, RegistryLookupResult};
 pub use resolve::{
     ResolveInvocationArtifactResult, ResolveInvocationResult, ResolvedInvocation,
     ResolvedInvocationArtifact, resolve_invocation, resolve_invocation_artifact,
-    resolve_invocation_artifact_with_bindings, resolve_invocation_artifact_with_summary,
-    resolve_invocation_in_namespace, resolve_invocation_with_bindings,
+    resolve_invocation_artifact_with_bindings, resolve_invocation_artifact_with_stdout_proofs,
+    resolve_invocation_artifact_with_summary, resolve_invocation_in_namespace,
+    resolve_invocation_in_namespace_with_stdout_proofs, resolve_invocation_with_bindings,
     resolve_invocation_with_summary,
 };
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
 pub use types::ArgumentControlVocabulary;
 pub use types::PathAccessKind;
+pub use types::StdoutScalarShape;
 pub use types::{
     ArgumentBindingSource, ArgumentFileRule, ArgumentRegion, ArgumentRegionTerminator, BindingSpec,
     BoundArgumentMaterialization, BoundImplicitInput, BoundInvocation, BoundParameter, BoundValue,

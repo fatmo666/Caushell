@@ -273,6 +273,15 @@ pub struct StdoutRecordContract {
     pub excluded_modifiers: Vec<ModifierId>,
 }
 
+/// Complete stdout shape, after command substitution removes trailing LF.
+/// Failure may produce no stdout. This is not a concrete value, path root,
+/// filesystem fact, or guarantee that unquoted shell splitting is safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StdoutScalarShape {
+    AbsolutePath,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StdoutRecordProjection {
     Paths {
@@ -812,6 +821,7 @@ pub struct Form {
     pub effects: Vec<Effect>,
     pub stream_contract: Option<StreamContract>,
     pub stdout_records: Option<StdoutRecordContract>,
+    pub stdout_scalar: Option<StdoutScalarShape>,
     pub extensions: ExtensionMap,
 }
 
@@ -827,6 +837,7 @@ impl Form {
             effects: Vec::new(),
             stream_contract: None,
             stdout_records: None,
+            stdout_scalar: None,
             extensions: ExtensionMap::new(),
         }
     }
@@ -1548,6 +1559,7 @@ pub struct BoundInvocation {
     /// Retained after form selection for command-independent stream projection.
     pub stream_contract: Option<StreamContract>,
     pub stdout_records: Option<StdoutRecordContract>,
+    pub stdout_scalar: Option<StdoutScalarShape>,
     pub bound_parameters: Vec<BoundParameter>,
     pub argument_regions: Vec<crate::BoundArgumentRegion>,
     pub payload_projections: Vec<PayloadProjection>,
@@ -1567,6 +1579,7 @@ impl BoundInvocation {
             form_id,
             stream_contract: None,
             stdout_records: None,
+            stdout_scalar: None,
             bound_parameters: Vec::new(),
             argument_regions: Vec::new(),
             payload_projections: Vec::new(),

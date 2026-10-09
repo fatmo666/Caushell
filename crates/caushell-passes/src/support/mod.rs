@@ -24,6 +24,8 @@ pub(crate) use shell_state_options::{
 };
 mod shell_io_scope;
 mod static_payload;
+mod substitution_shape;
+pub(crate) use substitution_shape::substitution_shapes;
 mod stream_records;
 mod stream_semantics;
 pub(crate) use shell_io_scope::{collect_shell_io_scope_mutations, projected_shell_scope_parents};

@@ -463,6 +463,7 @@ pub fn bind_invocation(
     .with_subcommand_path(selection.subcommand_path.clone());
     bound.stream_contract = selection.form.stream_contract;
     bound.stdout_records = selection.form.stdout_records.clone();
+    bound.stdout_scalar = selection.form.stdout_scalar;
     bound.argument_regions = selection
         .option_scope
         .as_ref()

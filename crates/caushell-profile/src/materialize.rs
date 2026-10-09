@@ -1133,6 +1133,7 @@ pub fn materialize_projected_invocation(
                 text: materialized.text,
                 implicit_input_source: arg.implicit_input_source,
                 runtime_argument_domain: arg.runtime_argument_domain.clone(),
+                substitution_shape: arg.substitution_shape,
                 // A resolved field is argv data, not shell source to decode
                 // again. Its binding origin stays in arg_resolutions below.
                 runtime_data: arg.runtime_data

@@ -39,6 +39,9 @@ pub struct ProjectedArg {
     pub implicit_input_source: Option<caushell_types::ImplicitInputSource>,
     pub runtime_argument_domain: Option<caushell_types::RuntimeArgumentDomain>,
     pub runtime_data: bool,
+    /// A proven output shape for a whole quoted scalar substitution. Original
+    /// source bytes and dynamic path resolution remain unchanged.
+    pub substitution_shape: Option<crate::StdoutScalarShape>,
     pub kind: ProjectedArgKind,
     pub quoted: bool,
     pub node_kind: String,
@@ -145,6 +148,7 @@ pub fn project_invocation(
             implicit_input_source: token.implicit_input_source,
             runtime_argument_domain: token.runtime_argument_domain.clone(),
             runtime_data: token.runtime_data,
+            substitution_shape: None,
             kind: project_arg_kind(&token.kind),
             quoted: token.quoted,
             node_kind: token.node_kind.clone(),

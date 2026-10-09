@@ -17,17 +17,35 @@ platform:
   shell_families: []
   requires_features: []
 
+option_matching: exact_names
+opaque_on_unresolved: true
+option_scope: all_arguments
+
 forms:
+  - id: informational
+    selector:
+      kind: any
+      items:
+        - {kind: has_flag, flag: "--help"}
+        - {kind: has_flag, flag: "--version"}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
   - id: print_working_directory
     selector:
-      kind: all
-      items: []
+      kind: not
+      item:
+        kind: any
+        items:
+          - {kind: has_flag, flag: "--help"}
+          - {kind: has_flag, flag: "--version"}
+    stdout_scalar: absolute_path
     stream_contract:
       stdin_mode: ignored
       stdout_mode: path_list
       stderr_mode: opaque
 
 modifiers:
+  - id: informational
+    matcher: {kind: any_flag, flags: ["--help", "--version"]}
   - id: logical
     matcher:
       kind: any_flag
@@ -47,4 +65,5 @@ extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
   caushell.profile/known_limitations:
-    - The current working directory is emitted as process context, not an argv path parameter.
+    - Output is an absolute pathname or empty on failure, never a proven concrete cwd. Logical and physical modes can differ through symlinks.
+    - The scalar contract does not bypass unquoted IFS splitting or pathname generation.

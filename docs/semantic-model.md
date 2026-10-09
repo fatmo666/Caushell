@@ -980,6 +980,31 @@ can contain whitespace/newlines and become different argv. The existing path
 extractor and mutation guards consume the resulting `PathSet`; no new risk
 Pass, dynamic probing or blanket xargs allow rule is added.
 
+### Positive stdout scalar shapes
+
+A selected form can opt into `stdout_scalar: absolute_path`, with a compatible
+`path_list` stdout stream contract. This promises the complete captured stdout,
+after command substitution strips trailing LF, is an absolute pathname or
+empty on failure. It does not promise a specific cwd, a workspace-contained
+path, captured bytes, or a single field after unquoted expansion.
+
+The shared resolver attaches this shape to the original argv word only for a
+whole double-quoted substitution whose body is one fully resolved, unshadowed
+producer. Literal slash-prefixed suffixes retain the proof; suffixes that could
+become options on empty output do not. Unknown options, aliases/functions,
+compound or conditional bodies, pipes, redirections, multiple substitutions,
+mixed quoting, and unquoted IFS/glob expansion stop this proof. Expansion depth
+limits still apply. Output bytes are never reconstructed as shell source.
+
+The argv ownership query can therefore exclude an injected control word in
+`find "$(pwd)" -type f`, while path extraction still sees an unknown target.
+`find "$(pwd)" -delete` and other unknown mutations retain approval. Child
+commands and their effects remain in the existing execution Graph. The same
+query applies in nested shell and dispatcher execution scopes, without a new
+risk Pass or an executable-name exception. `pwd -L`, `pwd -P`, and external
+`pwd` share only an absolute-output shape; their logical/physical cwd values
+are not equated. Help/version forms do not declare this shape.
+
 Root Profiles can opt into exact, delimited argument regions:
 
 ```yaml

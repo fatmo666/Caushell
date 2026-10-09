@@ -28,6 +28,7 @@ pub struct ArgumentStructure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SpellingPart {
+    EmptyOrAbsolutePath,
     Literal(char),
     Any,
     One,
@@ -114,6 +115,9 @@ impl ArgumentStructure {
     /// unmodeled short-option grammars. Three bounded automaton states; no
     /// enumeration of filenames, option combinations, or shell values.
     pub(crate) fn may_be_short_cluster(&self, letters: &str) -> bool {
+        if self.spelling.as_deref() == Some(&[SpellingPart::EmptyOrAbsolutePath]) {
+            return false;
+        }
         if self.fields == ArgumentFieldCount::Unknown || letters.is_empty() {
             return true;
         }
@@ -149,6 +153,7 @@ impl ArgumentStructure {
                 SpellingPart::Any | SpellingPart::One => true,
                 SpellingPart::Class(body) => class_may_match(body, c),
                 SpellingPart::CharacterRun(chars) => chars.contains(c),
+                SpellingPart::EmptyOrAbsolutePath => true,
             };
             let dash = matches('-');
             let flag = letters.chars().any(matches);
@@ -172,6 +177,9 @@ impl ArgumentStructure {
 // not regex compilation or pathname enumeration. Unsupported/large proofs
 // return "possible". ASCII case folding covers Bash's nocaseglob option.
 fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case: bool) -> bool {
+    if parts == [SpellingPart::EmptyOrAbsolutePath] {
+        return value.is_empty() || value.starts_with('/');
+    }
     if parts.len() > 256 || value.len() > 256 {
         return true;
     }
@@ -209,6 +217,7 @@ fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case
                             SpellingPart::One => true,
                             SpellingPart::Class(body) => class_may_match(body, chars[index]),
                             SpellingPart::Any | SpellingPart::CharacterRun(_) => unreachable!(),
+                            SpellingPart::EmptyOrAbsolutePath => true,
                         };
                     if reachable[index]
                         && let SpellingPart::Class(body) = part
@@ -390,6 +399,16 @@ fn opaque_glob(arg: &ProjectedArg, prefix: String) -> ArgumentStructure {
 /// Query existing lexical metadata without parsing another AST, running a
 /// command, or looking up files. Unsupported constructs return Unknown.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
+    if arg.substitution_shape == Some(crate::StdoutScalarShape::AbsolutePath) {
+        return ArgumentStructure {
+            fields: ArgumentFieldCount::ExactlyOne,
+            static_prefix: String::new(),
+            static_suffix: String::new(),
+            exact: false,
+            spelling: Some(vec![SpellingPart::EmptyOrAbsolutePath]),
+            pathname_generation: false,
+        };
+    }
     if arg.runtime_data || matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string") {
         return exact_word(arg.text.clone());
     }

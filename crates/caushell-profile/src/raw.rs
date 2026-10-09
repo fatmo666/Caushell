@@ -175,6 +175,7 @@ pub struct RawForm {
     pub effects: Vec<RawEffect>,
     pub stream_contract: Option<RawStreamContract>,
     pub stdout_records: Option<RawStdoutRecordContract>,
+    pub stdout_scalar: Option<crate::StdoutScalarShape>,
     pub extensions: BTreeMap<String, JsonValue>,
 }
 
