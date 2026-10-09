@@ -11353,7 +11353,12 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::WritePath,
+                        EffectKind::DeletePath,
+                        EffectKind::TransformData,
+                    ]
                 );
                 assert!(matches!(
                     resolved.bound.effects[1].target,
@@ -11363,6 +11368,10 @@ mod tests {
                         rule: caushell_types::DerivedPathRule::StripSuffix { ref suffix },
                         purpose: Some(crate::PathPurpose::GenericOperand),
                     }) if slot.as_str() == "input_paths" && suffix == ".gz"
+                ));
+                assert!(matches!(
+                    resolved.bound.effects[2].target,
+                    crate::EffectTarget::Slot(ref slot) if slot.as_str() == "input_paths"
                 ));
             }
             other => panic!("unexpected resolve result: {other:?}"),

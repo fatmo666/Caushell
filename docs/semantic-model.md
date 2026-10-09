@@ -1166,6 +1166,36 @@ child's launch code. Unresolved calls do not certify parent output independence.
 Functions declared inside nested shell bodies are still a separate resolver
 expansion gap, not covered merely by fixing an I/O edge.
 
+## Derived targets from bounded runtime path inputs
+
+Declared `derived_path` effects consume semantic path values, including implicit
+`find`/`xargs` inputs with an existing `RuntimeArgumentDomain::PathSet` proof.
+They do not require a concrete runtime filename. The producer's raw root spelling
+is retained for this calculation, then interpreted in the consumer's effective
+cwd. Unknown input domains, empty roots and `may_escape` are never upgraded into
+safe concrete filenames or nonescaping sets.
+
+A set includes its root, not just descendants. Appending a component suffix to
+`sub` can produce the sibling `sub.gz`; `./` plus `.gz` instead remains under the
+cwd. Append rules therefore use the raw root spelling and widen to a parent when
+needed. Strip/replace rules and sibling-file families conservatively widen to a
+parent: a basename such as `...gz` can become `..`. Suffixes containing directory
+separators and child rules containing parent traversal retain unresolved targets.
+Exact argv suffix transformations also precede path normalization, and already
+materialized filename bytes are not interpreted as shell source again.
+
+The existing Graph and mutation guard consume these path facts; neither gets a
+compression-command allowlist or a new risk pass. Relative runtime roots still
+depend on the effective cwd, and followed-symlink/unknown-origin domains retain
+approval. A bounded proof is not evidence that an input exists or a tool succeeds.
+
+GNU `gunzip`, native `bzip2` and `ncompress` Profiles distinguish file replacement,
+keep, stdout and integrity modes. File modes declare possible successful source
+deletion; keep/stdout/test modes do not. GNU header-restored/custom-suffix and
+recursive output names, unsupported options and order-sensitive conflicting
+`bzip2` modes retain existing resolution/mutation approval. Environment defaults
+and filesystem/header contents are not probed or claimed as certified CLI facts.
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

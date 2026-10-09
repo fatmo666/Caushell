@@ -741,16 +741,33 @@ extensions: {}
             load_command_profile_from_path(&profile_path).expect("expected gunzip profile to load");
 
         assert_eq!(profile.primary_name(), "gunzip");
-        assert_eq!(profile.forms.len(), 1);
-        assert_eq!(profile.forms[0].id.as_str(), "default_file_mode");
+        assert_eq!(profile.forms.len(), 15);
+        let default = profile
+            .forms
+            .iter()
+            .find(|form| form.id.as_str() == "default_file_mode")
+            .expect("expected default named-file decompression form");
+        let input_paths = default
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name.as_str() == "input_paths")
+            .expect("expected named file input slot");
+        assert_eq!(input_paths.binding, BindingSpec::RemainingPositionals);
         assert_eq!(
-            profile.forms[0].parameters[0].binding,
-            BindingSpec::RemainingPositionals
+            default
+                .effects
+                .iter()
+                .map(|effect| effect.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                EffectKind::ReadPath,
+                EffectKind::WritePath,
+                EffectKind::DeletePath,
+                EffectKind::TransformData,
+            ]
         );
-        assert_eq!(profile.forms[0].effects[0].kind, EffectKind::ReadPath);
-        assert_eq!(profile.forms[0].effects[1].kind, EffectKind::WritePath);
         assert!(matches!(
-            profile.forms[0].effects[1].target,
+            default.effects[1].target,
             EffectTarget::DerivedPath(_)
         ));
     }

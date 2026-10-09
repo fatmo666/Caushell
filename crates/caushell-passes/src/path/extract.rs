@@ -257,11 +257,6 @@ fn projected_derived_target_depends_on_cwd(
     cwd: &str,
     home: Option<&str>,
 ) -> bool {
-    if !std::iter::once(&target.source).chain(target.root.iter()).any(|source| {
-        matches!(source, DerivedPathSource::Slot(slot) if slot_has_value_projection(&resolved.bound, slot))
-    }) {
-        return false;
-    }
     match target.root.as_ref().unwrap_or(&target.source) {
         DerivedPathSource::Slot(slot) => {
             slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home)
@@ -1155,6 +1150,7 @@ fn derive_semantic_slot_path_resolution(
             quoted,
             node_kind,
             span,
+            materialization: bound_materialization,
             ..
         }) => Some(derive_slot_target_path_resolution(
             parameter,
@@ -1164,10 +1160,27 @@ fn derive_semantic_slot_path_resolution(
             cwd,
             home,
             resolved.and_then(|resolved| arg_materialization_for_span(resolved, span)),
+            bound_materialization,
             slot_name,
             rule,
         )),
-        SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
+        SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain }) => {
+            let basis = DerivedPathBasis::PathOperand {
+                raw: format!("runtime input {source:?}"),
+                resolved_input_path: None,
+                slot_name: slot_name.to_string(),
+            };
+            Some(match domain {
+                Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape }) => {
+                    derive_bounded_path_resolution(roots, *may_escape, basis, rule, cwd)
+                }
+                _ => PathResolution::DerivedUnresolved {
+                    basis,
+                    rule: rule.clone(),
+                    reason: DerivedPathUnresolvedReason::UnsupportedRuntimeRule,
+                },
+            })
+        }
         SemanticValueRef::Projected { source, .. } => {
             let source_resolution = semantic_path_resolution(value, resolved, cwd, home).0;
             let raw = match source {
@@ -1179,10 +1192,19 @@ fn derive_semantic_slot_path_resolution(
                 resolved_input_path: source_resolution.concrete_path().map(str::to_string),
                 slot_name: slot_name.to_string(),
             };
-            Some(derive_path_resolution_from_concrete_source(
+            let spelling = match value {
+                SemanticValueRef::Projected { value, .. } => match &value.resolution {
+                    SemanticValueResolution::Known(text) => Some(text.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            Some(derive_path_resolution_from_spelling(
                 source_resolution,
                 basis,
                 rule,
+                spelling,
+                cwd,
             ))
         }
     }
@@ -1196,6 +1218,7 @@ fn derive_slot_target_path_resolution(
     cwd: &str,
     home: Option<&str>,
     materialization: Option<&ValueMaterialization>,
+    bound_materialization: &BoundArgumentMaterialization,
     slot_name: &str,
     rule: &DerivedPathRule,
 ) -> PathResolution {
@@ -1203,15 +1226,50 @@ fn derive_slot_target_path_resolution(
         SemanticType::Path(_) | SemanticType::InProcessCodeLoad(_)
             if path_semantics_for_parameter_value(&parameter.semantic, text).is_some() =>
         {
-            let source_resolution =
-                resolve_path_resolution(text, quoted, node_kind, cwd, home, materialization);
+            let source_resolution = resolve_bound_path_resolution(
+                text,
+                quoted,
+                node_kind,
+                cwd,
+                home,
+                bound_materialization,
+                materialization,
+            );
             let basis = DerivedPathBasis::PathOperand {
                 raw: text.to_string(),
                 resolved_input_path: source_resolution.concrete_path().map(str::to_string),
                 slot_name: slot_name.to_string(),
             };
 
-            derive_path_resolution_from_concrete_source(source_resolution, basis, rule)
+            // Filename transforms precede lexical normalization. In particular,
+            // `./` + `.gz` names a child, not a sibling of the cwd, and literal
+            // materialized `$`/`~` bytes must not undergo shell expansion again.
+            let spelling = match materialization {
+                Some(ValueMaterialization::ResolvedExactScalar { value, .. })
+                | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. }) => {
+                    Some(value.clone())
+                }
+                _ if !matches!(bound_materialization, BoundArgumentMaterialization::Literal) => {
+                    Some(text.to_string())
+                }
+                _ => caushell_parse::decode_static_shell_argument(text, quoted, node_kind).map(
+                    |word| {
+                        if !quoted && (word == "~" || word.starts_with("~/")) {
+                            home.map(|home| format!("{home}{}", &word[1..]))
+                                .unwrap_or(word)
+                        } else {
+                            word
+                        }
+                    },
+                ),
+            };
+            derive_path_resolution_from_spelling(
+                source_resolution,
+                basis,
+                rule,
+                spelling.as_deref(),
+                cwd,
+            )
         }
         SemanticType::Endpoint(endpoint)
             if endpoint.kind == caushell_profile::EndpointKind::Url =>
@@ -1234,11 +1292,131 @@ fn derive_slot_target_path_resolution(
     }
 }
 
+fn suffix_transform(text: &str, rule: &DerivedPathRule) -> Option<String> {
+    match rule {
+        DerivedPathRule::AppendSuffix { suffix } => Some(format!("{text}{suffix}")),
+        DerivedPathRule::StripSuffix { suffix } => text.strip_suffix(suffix).map(str::to_string),
+        DerivedPathRule::ReplaceSuffix { from, to } => {
+            text.strip_suffix(from).map(|stem| format!("{stem}{to}"))
+        }
+        _ => None,
+    }
+}
+
+fn derive_path_resolution_from_spelling(
+    source_resolution: PathResolution,
+    basis: DerivedPathBasis,
+    rule: &DerivedPathRule,
+    spelling: Option<&str>,
+    cwd: &str,
+) -> PathResolution {
+    if source_resolution.concrete_path().is_some()
+        && let Some(spelling) = spelling
+        && matches!(
+            rule,
+            DerivedPathRule::AppendSuffix { .. }
+                | DerivedPathRule::StripSuffix { .. }
+                | DerivedPathRule::ReplaceSuffix { .. }
+        )
+    {
+        return match suffix_transform(spelling, rule).filter(|output| !output.is_empty()) {
+            Some(output) => PathResolution::DerivedConcrete {
+                path: lexical_path_from_argv(&output, cwd),
+                basis,
+                rule: rule.clone(),
+            },
+            None => PathResolution::DerivedUnresolved {
+                basis,
+                rule: rule.clone(),
+                reason: DerivedPathUnresolvedReason::UnsupportedOperandShape,
+            },
+        };
+    }
+    derive_path_resolution_from_concrete_source(source_resolution, basis, rule)
+}
+
+/// A root bounds a set inclusively; it is NOT proof of an exact filename or
+/// a directory-only/strict-descendant set. Preserve the raw root spelling for
+/// append transforms, and widen to its parent when a transformed root or `..`
+/// basename can leave that root. No filename, filesystem or tool-name probes.
+fn derive_bounded_path_resolution(
+    roots: &[String],
+    may_escape: bool,
+    basis: DerivedPathBasis,
+    rule: &DerivedPathRule,
+    cwd: &str,
+) -> PathResolution {
+    let unresolved = || PathResolution::DerivedUnresolved {
+        basis: basis.clone(),
+        rule: rule.clone(),
+        reason: DerivedPathUnresolvedReason::UnsupportedRuntimeRule,
+    };
+    if roots.is_empty()
+        || roots
+            .iter()
+            .any(|root| root.is_empty() || root.contains('\0'))
+    {
+        return unresolved();
+    }
+    let component = |s: &str| !s.contains(['/', '\0']);
+    let preserves_root = match rule {
+        DerivedPathRule::AppendSuffix { suffix }
+            if component(suffix) && !suffix.is_empty() && suffix != "." && suffix != ".." =>
+        {
+            true
+        }
+        DerivedPathRule::StripSuffix { suffix } if component(suffix) && !suffix.is_empty() => false,
+        DerivedPathRule::ReplaceSuffix { from, to }
+            if component(from) && !from.is_empty() && component(to) =>
+        {
+            false
+        }
+        DerivedPathRule::SiblingFiles => false,
+        DerivedPathRule::ChildUnder { relative_path }
+            if !relative_path.starts_with('/')
+                && !relative_path.contains('\0')
+                && !relative_path.split('/').any(|part| part == "..") =>
+        {
+            return PathResolution::BoundedPathSet {
+                roots: roots
+                    .iter()
+                    .map(|root| lexical_path_from_argv(root, cwd))
+                    .collect(),
+                may_escape,
+            };
+        }
+        _ => return unresolved(),
+    };
+    let mut output_roots = Vec::with_capacity(roots.len());
+    for spelling in roots {
+        let root = lexical_path_from_argv(spelling, cwd);
+        let bound = if preserves_root
+            && (spelling.ends_with('/') || matches!(spelling.rsplit('/').next(), Some("." | "..")))
+        {
+            root
+        } else {
+            // Strip/replace can produce a special basename (`...gz` -> `..`).
+            // Their parent bound is necessary even when the root is `.`.
+            lexical_path_from_argv("..", &root)
+        };
+        if !output_roots.contains(&bound) {
+            output_roots.push(bound);
+        }
+    }
+    PathResolution::BoundedPathSet {
+        roots: output_roots,
+        may_escape,
+    }
+}
+
 fn derive_path_resolution_from_concrete_source(
     source_resolution: PathResolution,
     basis: DerivedPathBasis,
     rule: &DerivedPathRule,
 ) -> PathResolution {
+    if let PathResolution::BoundedPathSet { roots, may_escape } = &source_resolution {
+        return derive_bounded_path_resolution(roots, *may_escape, basis, rule, "/");
+    }
     let Some(source_path) = source_resolution.concrete_path() else {
         return PathResolution::DerivedUnresolved {
             basis,
@@ -1384,8 +1562,12 @@ fn compose_derived_path_under_root(
         PathResolution::HomeUnavailable { text } => {
             PathResolution::HomeUnavailable { text: text.clone() }
         }
-        PathResolution::BoundedPathSet { roots, may_escape } => PathResolution::BoundedPathSet {
-            roots: roots.clone(),
+        PathResolution::BoundedPathSet { may_escape, .. } => PathResolution::BoundedPathSet {
+            // The declared output root relocates the derived name. Retaining
+            // input roots would falsely certify a write to an external root.
+            // A bounded name may include a special basename after stripping;
+            // one parent covers that without inventing a concrete filename.
+            roots: vec![lexical_path_from_argv("..", root_path)],
             may_escape: *may_escape,
         },
     }
@@ -2204,6 +2386,273 @@ mod tests {
     };
     use caushell_profile::ImplicitInputSource;
     use caushell_types::RuntimeArgumentDomain;
+
+    fn derived_basis() -> caushell_types::DerivedPathBasis {
+        caushell_types::DerivedPathBasis::PathOperand {
+            raw: "synthetic runtime paths".into(),
+            resolved_input_path: None,
+            slot_name: "inputs".into(),
+        }
+    }
+
+    #[test]
+    fn bounded_suffix_proofs_account_for_the_root_itself_and_raw_spelling() {
+        use caushell_types::DerivedPathRule;
+        for (raw, expected) in [
+            (".", "/tmp/project"),
+            ("./", "/tmp/project"),
+            ("sub", "/tmp/project"),
+            ("sub/", "/tmp/project/sub"),
+            ("/tmp/project", "/tmp"),
+            ("/tmp/project/", "/tmp/project"),
+            ("..", "/tmp"),
+        ] {
+            let output = super::derive_bounded_path_resolution(
+                &[raw.into()],
+                false,
+                derived_basis(),
+                &DerivedPathRule::AppendSuffix {
+                    suffix: ".pack".into(),
+                },
+                "/tmp/project",
+            );
+            assert_eq!(
+                output,
+                PathResolution::BoundedPathSet {
+                    roots: vec![expected.into()],
+                    may_escape: false
+                },
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_strip_replace_and_sibling_rules_widen_to_parent() {
+        use caushell_types::DerivedPathRule;
+        for rule in [
+            DerivedPathRule::StripSuffix {
+                suffix: ".pack".into(),
+            },
+            DerivedPathRule::ReplaceSuffix {
+                from: ".pack".into(),
+                to: ".raw".into(),
+            },
+            DerivedPathRule::SiblingFiles,
+        ] {
+            assert_eq!(
+                super::derive_bounded_path_resolution(
+                    &[".".into(), "./".into()],
+                    false,
+                    derived_basis(),
+                    &rule,
+                    "/tmp/project"
+                ),
+                PathResolution::BoundedPathSet {
+                    roots: vec!["/tmp".into()],
+                    may_escape: false
+                }
+            );
+            assert_eq!(
+                super::derive_bounded_path_resolution(
+                    &["sub".into()],
+                    true,
+                    derived_basis(),
+                    &rule,
+                    "/tmp/project"
+                ),
+                PathResolution::BoundedPathSet {
+                    roots: vec!["/tmp/project".into()],
+                    may_escape: true
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_output_relocation_does_not_keep_input_roots() {
+        for may_escape in [false, true] {
+            let input = PathResolution::BoundedPathSet {
+                roots: vec!["/tmp/project".into()],
+                may_escape,
+            };
+            for (destination, expected) in [
+                ("/opt/output", "/opt"),
+                ("/tmp/project/output", "/tmp/project"),
+            ] {
+                assert_eq!(
+                    super::compose_derived_path_under_root(&input, destination),
+                    PathResolution::BoundedPathSet {
+                        roots: vec![expected.into()],
+                        may_escape
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_rules_never_invent_empty_unknown_or_traversing_proofs() {
+        use caushell_types::DerivedPathRule;
+        for rule in [
+            DerivedPathRule::AppendSuffix {
+                suffix: "/../out".into(),
+            },
+            DerivedPathRule::AppendSuffix { suffix: ".".into() },
+            DerivedPathRule::ReplaceSuffix {
+                from: ".p".into(),
+                to: "/../out".into(),
+            },
+            DerivedPathRule::ChildUnder {
+                relative_path: "../out".into(),
+            },
+            DerivedPathRule::UrlBasename,
+            DerivedPathRule::ArchiveMembers,
+        ] {
+            assert!(matches!(
+                super::derive_bounded_path_resolution(
+                    &[".".into()],
+                    false,
+                    derived_basis(),
+                    &rule,
+                    "/tmp/project"
+                ),
+                PathResolution::DerivedUnresolved { .. }
+            ));
+        }
+        for roots in [vec![], vec!["".into()], vec!["bad\0root".into()]] {
+            for rule in [
+                DerivedPathRule::AppendSuffix {
+                    suffix: ".pack".into(),
+                },
+                DerivedPathRule::ChildUnder {
+                    relative_path: "out".into(),
+                },
+            ] {
+                assert!(matches!(
+                    super::derive_bounded_path_resolution(
+                        &roots,
+                        false,
+                        derived_basis(),
+                        &rule,
+                        "/tmp/project"
+                    ),
+                    PathResolution::DerivedUnresolved { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_transforms_cover_finite_counterexamples_without_enumerating_at_runtime() {
+        use caushell_types::DerivedPathRule;
+        for raw in [
+            ".",
+            "./",
+            "sub",
+            "sub/",
+            "..",
+            "/tmp/project",
+            "/tmp/project/",
+            "/",
+        ] {
+            for rule in [
+                DerivedPathRule::AppendSuffix {
+                    suffix: ".pack".into(),
+                },
+                DerivedPathRule::StripSuffix {
+                    suffix: ".pack".into(),
+                },
+                DerivedPathRule::ReplaceSuffix {
+                    from: ".pack".into(),
+                    to: ".raw".into(),
+                },
+            ] {
+                let PathResolution::BoundedPathSet {
+                    roots,
+                    may_escape: false,
+                } = super::derive_bounded_path_resolution(
+                    &[raw.into()],
+                    false,
+                    derived_basis(),
+                    &rule,
+                    "/tmp/project",
+                )
+                else {
+                    panic!("missing proof")
+                };
+                for tail in [
+                    "",
+                    "/x.pack",
+                    "/.pack",
+                    "/..pack",
+                    "/...pack",
+                    "/nested/x.pack",
+                    "/nested/...pack",
+                    "/.",
+                    "/..",
+                ] {
+                    let input = format!("{raw}{tail}");
+                    let original = super::lexical_path_from_argv(&input, "/tmp/project");
+                    let root = super::lexical_path_from_argv(raw, "/tmp/project");
+                    if !super::path_is_within_root(&original, &root) {
+                        continue;
+                    }
+                    if let Some(output) =
+                        super::suffix_transform(&input, &rule).filter(|s| !s.is_empty())
+                    {
+                        let output = super::lexical_path_from_argv(&output, "/tmp/project");
+                        assert!(
+                            roots
+                                .iter()
+                                .any(|root| super::path_is_within_root(&output, root)),
+                            "{input} {rule:?} -> {output}, {roots:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_suffix_rules_transform_argv_before_normalization() {
+        use caushell_types::DerivedPathRule;
+        for (input, expected) in [
+            (".", "/tmp/project/..pack"),
+            ("./", "/tmp/project/.pack"),
+            ("sub/..", "/tmp/project/sub/...pack"),
+            ("/tmp/project/", "/tmp/project/.pack"),
+        ] {
+            let source = PathResolution::Concrete {
+                path: super::lexical_path_from_argv(input, "/tmp/project"),
+            };
+            let output = super::derive_path_resolution_from_spelling(
+                source,
+                derived_basis(),
+                &DerivedPathRule::AppendSuffix {
+                    suffix: ".pack".into(),
+                },
+                Some(input),
+                "/tmp/project",
+            );
+            assert_eq!(output.concrete_path(), Some(expected));
+        }
+        let source = PathResolution::Concrete {
+            path: "/tmp/project/x.pack".into(),
+        };
+        assert!(matches!(
+            super::derive_path_resolution_from_spelling(
+                source,
+                derived_basis(),
+                &DerivedPathRule::StripSuffix {
+                    suffix: ".pack".into()
+                },
+                Some("x.pack/"),
+                "/tmp/project"
+            ),
+            PathResolution::DerivedUnresolved { .. }
+        ));
+    }
 
     #[test]
     fn materialized_argv_paths_keep_dollar_and_tilde_as_literal_bytes() {

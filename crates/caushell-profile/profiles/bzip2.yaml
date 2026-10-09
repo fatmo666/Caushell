@@ -1,63 +1,183 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-
-identity:
-  canonical_name: bzip2
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+identity: {canonical_name: bzip2, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
 forms:
+  - id: information
+    selector: &help {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: &quiet {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: test_files
+    selector:
+      kind: all
+      items:
+        - &active
+          kind: all
+          items:
+            - {kind: not, item: *help}
+            # Native '-' is ignored before -- but is a filename after --.
+            # Do not invent stream/file semantics for that boundary.
+            - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+            # Mode flags are order-sensitive; conflicting modes remain opaque.
+            - kind: not
+              item:
+                kind: any
+                items:
+                  - {kind: all, items: [ &decode {kind: has_modifier, modifier: decompress}, &encode {kind: has_modifier, modifier: compress}]}
+                  - kind: all
+                    items:
+                      - &test {kind: has_modifier, modifier: test}
+                      - {kind: any, items: [*decode, *encode, &stdout {kind: has_modifier, modifier: stdout}]}
+        - *test
+        - &no_stdin
+          kind: not
+          item: &stdin
+            kind: any
+            items:
+              - {kind: no_positional_args}
+              - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters: &inputs
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects: [&read {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}]
+    stream_contract: *quiet
+  - id: test_stdin
+    selector: {kind: all, items: [*active, *test, *stdin]}
+    parameters: *inputs
+    effects: [*read]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: compress_stdout_files
+    selector:
+      kind: all
+      items:
+        - &stdout_operation
+          kind: all
+          items:
+            - *active
+            - {kind: not, item: *test}
+            - kind: any
+              items:
+                - *stdout
+                - kind: not
+                  item: &files {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([^-]|-[\s\S]|$)'}}
+        - {kind: not, item: *decode}
+        - *no_stdin
+    parameters: *inputs
+    effects: &compress_stream [*read, &compress_transform {kind: transform_data, target: {kind: none}, extensions: {transform.kind: compress}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: compress_stdout_stdin
+    selector: {kind: all, items: [*stdout_operation, {kind: not, item: *decode}, *stdin]}
+    parameters: *inputs
+    effects: *compress_stream
+    stream_contract: &stdin_output {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decompress_stdout_files
+    selector: {kind: all, items: [*stdout_operation, *decode, *no_stdin]}
+    parameters: *inputs
+    effects: &decode_stream [*read, &decode_transform {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decompress}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decompress_stdout_stdin
+    selector: {kind: all, items: [*stdout_operation, *decode, *stdin]}
+    parameters: *inputs
+    effects: *decode_stream
+    stream_contract: *stdin_output
   - id: compress_files
     selector:
-      kind: has_positional_at
-      index: 0
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
+      kind: all
+      items:
+        - &file_operation {kind: all, items: [*active, {kind: not, item: *test}, {kind: not, item: *stdout}, *files, *no_stdin]}
+        - {kind: not, item: *decode}
+        - &not_keep {kind: not, item: &keep {kind: has_modifier, modifier: keep}}
+    parameters: *inputs
     effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: write_path
-        target:
-          kind: derived_path
-          source:
-            kind: slot
-            name: input_paths
-          rule:
-            kind: append_suffix
-            suffix: ".bz2"
-          purpose: generic_operand
-
+      - *read
+      - &write_compressed {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: append_suffix, suffix: '.bz2'}, purpose: generic_operand}}
+      - &delete {kind: delete_path, target: {kind: slot, name: input_paths}}
+      - *compress_transform
+    stream_contract: *quiet
+  - id: compress_files_keep
+    selector: {kind: all, items: [*file_operation, {kind: not, item: *decode}, *keep]}
+    parameters: *inputs
+    effects: [*read, *write_compressed, *compress_transform]
+    stream_contract: *quiet
+  - id: decompress_bz2
+    selector: {kind: all, items: [*file_operation, *decode, *not_keep, &suffix_bz2 {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.bz2$'}}]}
+    parameters: *inputs
+    effects: [*read, &write_bz2 {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: strip_suffix, suffix: '.bz2'}, purpose: generic_operand}}, *delete, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_bz2_keep
+    selector: {kind: all, items: [*file_operation, *decode, *keep, *suffix_bz2]}
+    parameters: *inputs
+    effects: [*read, *write_bz2, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_bz
+    selector: {kind: all, items: [*file_operation, *decode, *not_keep, &suffix_bz {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.bz$'}}]}
+    parameters: *inputs
+    effects: [*read, &write_bz {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: strip_suffix, suffix: '.bz'}, purpose: generic_operand}}, *delete, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_bz_keep
+    selector: {kind: all, items: [*file_operation, *decode, *keep, *suffix_bz]}
+    parameters: *inputs
+    effects: [*read, *write_bz, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_tbz2
+    selector: {kind: all, items: [*file_operation, *decode, *not_keep, &suffix_tbz2 {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.tbz2$'}}]}
+    parameters: *inputs
+    effects: [*read, &write_tbz2 {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: replace_suffix, from: '.tbz2', to: '.tar'}, purpose: generic_operand}}, *delete, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_tbz2_keep
+    selector: {kind: all, items: [*file_operation, *decode, *keep, *suffix_tbz2]}
+    parameters: *inputs
+    effects: [*read, *write_tbz2, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_tbz
+    selector: {kind: all, items: [*file_operation, *decode, *not_keep, &suffix_tbz {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\.tbz$'}}]}
+    parameters: *inputs
+    effects: [*read, &write_tbz {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: replace_suffix, from: '.tbz', to: '.tar'}, purpose: generic_operand}}, *delete, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_tbz_keep
+    selector: {kind: all, items: [*file_operation, *decode, *keep, *suffix_tbz]}
+    parameters: *inputs
+    effects: [*read, *write_tbz, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_other_name
+    selector:
+      kind: all
+      items:
+        - *file_operation
+        - *decode
+        - *not_keep
+        - &other_name {kind: not, item: {kind: any, items: [*suffix_bz2, *suffix_bz, *suffix_tbz2, *suffix_tbz]}}
+    parameters: *inputs
+    # Includes unknown runtime names: native bzip2 derives sibling outputs for
+    # all decode suffixes, including its '.out' fallback. Do not invent a name.
+    effects: [*read, &sibling_write {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_paths}, rule: {kind: sibling_files}, purpose: generic_operand}}, *delete, *decode_transform]
+    stream_contract: *quiet
+  - id: decompress_other_name_keep
+    selector: {kind: all, items: [*file_operation, *decode, *keep, *other_name]}
+    parameters: *inputs
+    effects: [*read, *sibling_write, *decode_transform]
+    stream_contract: *quiet
 modifiers:
-  - id: keep
-    matcher:
-      kind: any_flag
-      flags:
-        - "-k"
-        - "--keep"
-
+  - {id: stdout, matcher: {kind: any_flag, flags: [-c, --stdout]}}
+  - {id: decompress, matcher: {kind: any_flag, flags: [-d, --decompress]}}
+  - {id: compress, matcher: {kind: any_flag, flags: [-z, --compress]}}
+  - {id: test, matcher: {kind: any_flag, flags: [-t, --test]}}
+  - {id: keep, matcher: {kind: any_flag, flags: [-k, --keep]}}
+  - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}
+  - {id: force, matcher: {kind: any_flag, flags: [-f, --force]}}
+  - {id: memory, matcher: {kind: any_flag, flags: [-s, --small]}}
+  - {id: diagnostics, matcher: {kind: any_flag, flags: [-v, --verbose, -q, --quiet]}}
+  - {id: version, matcher: {kind: any_flag, flags: [-V, --version, -L, --license]}}
+  - {id: level, matcher: {kind: any_flag, flags: ['-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9', --fast, --best]}}
+  - {id: legacy_tuning, matcher: {kind: any_flag, flags: [--repetitive-fast, --repetitive-best]}}
 subcommands: null
 extensions:
-  caushell.profile/source_research:
-    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/source_research: [https://sourceware.org/bzip2/manual/manual.html]
   caushell.profile/known_limitations:
-    - Success-conditioned deletion of the original input file is not modeled in this slice.
+    - Native 1.0.8 CLI semantics. BZIP/BZIP2 environment defaults are not interpreted; caller environment is not dynamically inspected.
+    - Conflicting mode flags and mixed stdin/file mutation forms remain opaque. No last-option precedence or runtime filesystem/header probing is assumed.
+    - Explicit dash operands remain opaque because the native CLI ignores a bare dash before -- and treats it as a filename after --; no false stdin provenance is assigned.
+    - Mixed decode suffix lists may retain unresolved targets for operands not matching the selected suffix form. The fallback is a bounded sibling family, not a guessed concrete .out file.
