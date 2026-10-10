@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: split
@@ -18,32 +20,42 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: information_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: split_with_prefix
+    remaining_selector: &running {kind: not, item: {kind: has_modifier, modifier: information}}
     selector:
-      kind: has_positional_at
-      index: 1
+      kind: all
+      items:
+        - &ordinary_output
+          kind: all
+          items:
+            - &not_filter {kind: not, item: {kind: has_modifier, modifier: filter_command}}
+            - &not_stdout_chunk {kind: not, item: &stdout_chunk {kind: has_modifier_parameter_matching, modifier: chunk_size, parameter: chunk_spec, matcher: {kind: regex_pattern, pattern: '^(l/|r/)?[0-9]+/[0-9]+$'}}}
+            - &safe_suffix {kind: not, item: {kind: has_modifier_parameter_matching, modifier: additional_suffix, parameter: additional_suffix, matcher: {kind: regex_pattern, pattern: '[/\\$`]'}}}
+        - &has_prefix {kind: has_positional_at, index: 1}
     parameters:
-      - name: input_paths
+      - name: output_prefix
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: positional_at, index: 1}
+        cardinality: required_one
+      - &input_paths
+        name: input_paths
         semantic:
           kind: path
           role: read
           purpose: generic_operand
-        binding:
-          kind: remaining_positionals_before_last
-        cardinality: optional_many
+        binding: {kind: positional_at, index: 0}
+        cardinality: optional_one
         value_constraints:
           - kind: exclude_literal
             value: "-"
-      - name: output_prefix
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: last_positional
-        cardinality: required_one
+      - &stdin_marker {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
     effects:
-      - kind: read_path
+      - &read_input
+        kind: read_path
         target:
           kind: slot
           name: input_paths
@@ -51,36 +63,55 @@ forms:
         target:
           kind: slot
           name: output_prefix
+    stream_contract: &file_streams {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
   - id: split_default_prefix
+    remaining_selector: *running
     selector:
-      kind: not
-      item:
-        kind: has_positional_at
-        index: 1
+      kind: all
+      items: [*ordinary_output, &no_prefix {kind: not, item: *has_prefix}]
     parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: optional_one
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
+      - *input_paths
+      - *stdin_marker
     effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
+      - *read_input
       - kind: write_path
         target:
           kind: tool_convention_path
           path: x*
           convention: split.default_prefix
           purpose: generic_operand
+    stream_contract: *file_streams
+
+  # --filter runs a shell program instead of opening each generated output.
+  # The tool-supplied FILE variable remains unknown until a genuine generated
+  # path-domain contract is available; do not fabricate a literal chunk name.
+  - id: filter_with_prefix
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_command}, *has_prefix, *safe_suffix]}
+    parameters:
+      - {name: output_prefix, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: required_one}
+      - *input_paths
+      - *stdin_marker
+    effects: [*read_input]
+    stream_contract: &filter_streams {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: filter_default_prefix
+    remaining_selector: *running
+    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_command}, *no_prefix, *safe_suffix]}
+    parameters: [*input_paths, *stdin_marker]
+    effects: [*read_input]
+    stream_contract: *filter_streams
+
+  - id: stdout_chunk
+    remaining_selector: *running
+    selector: {kind: all, items: [*stdout_chunk, *not_filter, *safe_suffix]}
+    parameters:
+      - {name: unused_prefix, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: optional_one}
+      - *input_paths
+      - *stdin_marker
+    effects: [*read_input]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
 modifiers:
   - id: chunk_size
@@ -110,7 +141,6 @@ modifiers:
       flags:
         - "-a"
         - "--suffix-length"
-        - "--additional-suffix"
     parameters:
       - name: suffix_value
         semantic:
@@ -120,7 +150,21 @@ modifiers:
           operand_mode: next_arg
         cardinality: optional_many
 
+  - id: additional_suffix
+    matcher: {kind: any_flag, flags: ["--additional-suffix"]}
+    parameters: [{name: additional_suffix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+  - {id: information, matcher: {kind: any_flag, flags: ["--help", "--version"]}}
+  - {id: ordinary_flags, matcher: {kind: any_flag, flags: ["-d", "-x", "-u", "--unbuffered", "-e", "--elide-empty-files", "--verbose"]}}
+  - id: suffix_start
+    matcher: {kind: any_flag, flags: ["--numeric-suffixes", "--hex-suffixes"]}
+    parameters: [{name: suffix_start, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}]
+  - id: separator
+    matcher: {kind: any_flag, flags: ["-t", "--separator"]}
+    parameters: [{name: separator, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+
   - id: filter_command
+    constraints: [{kind: mutually_exclusive_with, modifier: information}]
     matcher:
       kind: any_flag
       flags:
@@ -128,8 +172,7 @@ modifiers:
     parameters:
       - name: filter_command
         semantic:
-          kind: command_ref
-          dispatch: shell_payload
+          kind: plain_value
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
@@ -138,10 +181,18 @@ modifiers:
       - kind: dispatch_command
         target:
           kind: dispatch
-          command: filter_command
+          command_string: {slot: filter_command, syntax: posix_shell}
+          unknown_environment_names: [FILE]
+          stdin_from_tool: true
+          stdout_to_parent: true
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+    - https://www.gnu.org/software/coreutils/manual/html_node/split-invocation.html
+  caushell.profile/known_limitations:
+    - Filters are shell payloads parsed through the existing nested-command pipeline; the tool does not itself write output-prefix files in filter mode. FILE is a generated runtime name, not an inherited session value or a fabricated literal output.
+    - The command-string dispatch describes POSIX-shell filter syntax. GNU split also permits SHELL to select a different executable; environment-selected executors are not represented by the current dispatch DSL and remain outside this profile's modeled executor contract.
+    - Explicit -n K/N output selects stdout rather than output files. Slash, backslash or unmaterialized expansion syntax in additional suffixes retain unresolved operation semantics; optional inline suffix-start values are owned operands, not extra filenames.

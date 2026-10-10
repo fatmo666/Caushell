@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: perl
@@ -20,25 +22,24 @@ platform:
 forms:
   - id: command_string
     selector:
-      kind: has_flag
-      flag: "-e"
+      kind: all
+      items:
+        - &inline {kind: has_modifier, modifier: inline_code}
+        - &running {kind: not, item: {kind: has_modifier, modifier: information}}
+        - &not_in_place {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: in_place}}, {kind: has_modifier, modifier: compile_only}]}
     parameters:
-      - name: payload
-        semantic:
-          kind: payload
-          language: perl
-          source: inline_string
-          recursive: true
-        binding:
-          kind: following_flag
-          flag: "-e"
-          operand_mode: next_positional_after_dashdash
-        cardinality: required_one
-    effects:
-      - kind: execute_payload
-        target:
-          kind: slot
-          name: payload
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: &data_streams {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: command_string_in_place
+    selector: {kind: all, items: [*inline, *running, &safe_in_place {kind: all, items: [{kind: has_modifier, modifier: in_place}, {kind: not, item: {kind: has_modifier, modifier: compile_only}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: in_place, parameter: backup_suffix, matcher: {kind: regex_pattern, pattern: '[/\\*$`]'}}}]}]}
+    parameters: &in_place_inputs
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: &in_place_effects
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      # -i may replace the original entry; it is not a content-open exemption.
+      - {kind: write_path, target: {kind: slot, name: input_paths}}
+    stream_contract: *data_streams
 
   - id: script_file
     selector:
@@ -46,10 +47,9 @@ forms:
       items:
         - kind: has_positional_at
           index: 0
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-e"
+        - &not_inline {kind: all, items: [{kind: not, item: *inline}, {kind: not, item: {kind: has_modifier, modifier: configuration_information}}]}
+        - *not_in_place
+        - *running
     parameters:
       - name: script_path
         semantic:
@@ -75,15 +75,25 @@ forms:
           kind: slot
           name: script_path
 
+  - id: script_file_in_place
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, *not_inline, *running, *safe_in_place]}
+    parameters:
+      - {name: script_path, semantic: {kind: path, role: read, purpose: script_source}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: script_path}}
+      - {kind: execute_payload, target: {kind: slot, name: script_path}}
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, target: {kind: slot, name: input_paths}}
+    stream_contract: *data_streams
+
   - id: stdin_script
     selector:
       kind: all
       items:
         - kind: no_positional_args
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-e"
+        - *not_inline
+        - *running
         - kind: stdin_payload_available
     implicit_inputs:
       - source: stdin_payload
@@ -106,7 +116,36 @@ forms:
           kind: implicit_input
           source: stdin_payload
 
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: configuration_information
+    selector: {kind: all, items: [{kind: has_modifier, modifier: configuration_information}, {kind: not, item: *inline}, *running, {kind: not, item: {kind: has_modifier, modifier: in_place}}]}
+    parameters: [{name: config_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
 modifiers:
+  - id: inline_code
+    matcher: {kind: any_flag, flags: ["-e", "-E"]}
+    parameters:
+      - {name: payload, semantic: {kind: payload, language: perl, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: execute_payload, target: {kind: slot, name: payload}}]
+
+  - id: in_place
+    matcher: {kind: any_flag, flags: ["-i"]}
+    parameters:
+      - {name: backup_suffix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
+
+  - {id: loop_and_runtime_flags, matcher: {kind: any_flag, flags: ["-p", "-n", "-a", "-l", "-T", "-t", "-w", "-W", "-X", "-s", "-f", "-U"]}}
+  - {id: compile_only, matcher: {kind: any_flag, flags: ["-c"]}}
+  - {id: information, matcher: {kind: any_flag, flags: ["-h", "-v"]}}
+  - id: configuration_information
+    matcher: {kind: any_flag, flags: ["-V"]}
+    parameters: [{name: config_queries, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}]
+  - id: autosplit_pattern
+    matcher: {kind: any_flag, flags: ["-F"]}
+    parameters: [{name: autosplit_pattern, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}]
   - id: module_import
     matcher:
       kind: any_flag
@@ -151,5 +190,9 @@ modifiers:
 
 subcommands: null
 extensions:
+  caushell.profile/source_research:
+    - https://perldoc.perl.org/perlrun
   caushell.profile/known_limitations:
     - Perl inline and stdin payloads are recorded as nested payloads, but they are not recursively parsed by the current Bash-oriented parser.
+    - -i marks possible ARGV file replacement without interpreting Perl code or executing the diamond operator. No filename arguments means no fabricated write target. Simple backup suffixes cannot relocate a backup outside the original directory; slash, backslash, star templates and unmaterialized shell expansion syntax remain unresolved.
+    - Numeric attached runtime switches, debugger options, implicit startup code and script changes to ARGV are not expanded. Unknown leading options remain unresolved; script arguments after the native script boundary are not reinterpreted as interpreter options.

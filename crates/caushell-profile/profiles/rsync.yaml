@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: rsync
@@ -22,6 +24,7 @@ forms:
     selector:
       kind: all
       items:
+        - &actual_transfer {kind: not, item: &preview {kind: has_modifier, modifier: preview}}
         - kind: has_positional_at
           index: 1
         - kind: not
@@ -68,6 +71,7 @@ forms:
     selector:
       kind: all
       items:
+        - *actual_transfer
         - kind: has_positional_at
           index: 1
         - kind: has_positional_at_matching
@@ -112,6 +116,7 @@ forms:
     selector:
       kind: all
       items:
+        - *actual_transfer
         - kind: has_positional_at
           index: 1
         - kind: not
@@ -152,7 +157,81 @@ forms:
           kind: slot
           name: remote_destination
 
+  - id: preview_local_sync
+    selector:
+      kind: all
+      items:
+        - *preview
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: &remote {kind: structured_value_context, context: remote_spec}}}
+        - {kind: not, item: {kind: last_positional_matches, matcher: *remote}}
+    parameters:
+      - {name: source_paths, semantic: &read_path {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - {name: destination_path, semantic: *read_path, binding: {kind: last_positional}, cardinality: required_one}
+    effects: [{kind: read_path, target: {kind: slot, name: source_paths}}]
+
+  - id: preview_import_from_remote
+    selector:
+      kind: all
+      items:
+        - *preview
+        - {kind: has_positional_at, index: 1}
+        - {kind: has_positional_at_matching, index: 0, matcher: *remote}
+        - {kind: not, item: {kind: last_positional_matches, matcher: *remote}}
+    parameters:
+      - {name: remote_sources, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - {name: destination_path, semantic: *read_path, binding: {kind: last_positional}, cardinality: required_one}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: remote_sources}}]
+
+  - id: preview_export_to_remote
+    selector:
+      kind: all
+      items:
+        - *preview
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *remote}}
+        - {kind: last_positional_matches, matcher: *remote}
+    parameters:
+      - {name: source_paths, semantic: *read_path, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - {name: remote_destination, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: last_positional}, cardinality: required_one}
+    effects: [{kind: read_path, target: {kind: slot, name: source_paths}}, {kind: network_endpoint, target: {kind: slot, name: remote_destination}}]
+
+  - id: list_single_source_local
+    selector: {kind: all, items: [&single_source {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}]}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *remote}}]}
+    parameters:
+      - name: local_list_source
+        semantic: *read_path
+        binding: {kind: next_positional}
+        cardinality: required_one
+    effects: [{kind: read_path, target: {kind: slot, name: local_list_source}}]
+
+  - id: list_single_source_remote
+    selector: {kind: all, items: [*single_source, {kind: has_positional_at_matching, index: 0, matcher: *remote}]}
+    parameters: [{name: remote_list_source, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: remote_list_source}}]
+
 modifiers:
+  - {id: preview, matcher: {kind: any_flag, flags: ["-n", "--dry-run", "--list-only"]}}
+  # The destination transfer is suppressed in preview modes, not unrelated
+  # client-side logging or process/configuration inputs.
+  - id: ordinary_flags
+    matcher: {kind: any_flag, flags: ["-a", "-r", "-v", "-q", "-c", "-h", "-l", "-L", "-H", "-p", "-E", "-o", "-g", "-t", "-u", "-R", "-d", "-z", "-P", "-S", "-W", "-x", "-i", "-I", "-s", "-4", "-6", "--archive", "--recursive", "--verbose", "--quiet", "--checksum", "--human-readable", "--links", "--copy-links", "--copy-dirlinks", "--safe-links", "--hard-links", "--perms", "--executability", "--owner", "--group", "--times", "--update", "--relative", "--dirs", "--compress", "--partial", "--progress", "--sparse", "--whole-file", "--one-file-system", "--itemize-changes", "--ignore-times", "--secluded-args", "--stats", "--size-only", "--ignore-existing", "--existing", "--blocking-io", "--prune-empty-dirs", "--inplace", "--append", "--append-verify", "--delay-updates", "--numeric-ids", "--omit-dir-times", "--omit-link-times", "--acls", "--xattrs", "-A", "-X", "-O", "-J", "-b", "--backup", "--fsync", "--preallocate"]}
+  - id: plain_options
+    matcher: {kind: any_flag, flags: ["--exclude", "--include", "--chmod", "--out-format", "--log-file-format", "--iconv", "--bwlimit", "--timeout", "--contimeout", "--port", "--address", "--sockopts", "--max-size", "--min-size", "--max-delete", "--modify-window", "--block-size", "-B", "--compress-level", "--checksum-seed", "--protocol", "--info", "--debug", "--usermap", "--groupmap", "--chown"]}
+    parameters: [{name: plain_options, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: file_inputs
+    matcher: {kind: any_flag, flags: ["--files-from", "--include-from", "--exclude-from", "--password-file"]}
+    parameters: [{name: input_files, semantic: *read_path, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: input_files}}]
+  # These are rsync's selection rules, not executable shell programs.
+  # Merge-rule contents are not expanded into individual transfer members.
+  - id: filter_rules
+    matcher: {kind: any_flag, flags: ["-f", "--filter"]}
+    parameters: [{name: filter_rules, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: log_file
+    matcher: {kind: any_flag, flags: ["--log-file"]}
+    parameters: [{name: log_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: write_path, path_access: content_open, target: {kind: slot, name: log_file}}]
   - id: remote_shell
     matcher:
       kind: any_flag
@@ -192,6 +271,7 @@ modifiers:
         - "--delete-delay"
         - "--delete-after"
         - "--delete-excluded"
+    constraints: [{kind: mutually_exclusive_with, modifier: preview}]
     effects:
       - kind: delete_path
         target:
@@ -200,8 +280,23 @@ modifiers:
         catastrophic:
           semantic_class: delete_path
 
+  - id: delete_preview
+    matcher: {kind: any_flag, flags: ["--delete", "--delete-before", "--delete-during", "--delete-delay", "--delete-after", "--delete-excluded"]}
+    constraints: [{kind: requires_modifier, modifier: preview}]
+
+  - id: remove_source_files
+    matcher: {kind: any_flag, flags: ["--remove-source-files", "--remove-sent-files"]}
+    constraints: [{kind: mutually_exclusive_with, modifier: preview}]
+    effects: [{kind: delete_path, target: {kind: slot, name: source_paths}}]
+  - id: remove_source_files_preview
+    matcher: {kind: any_flag, flags: ["--remove-source-files", "--remove-sent-files"]}
+    constraints: [{kind: requires_modifier, modifier: preview}]
+
 subcommands: null
 extensions:
+  caushell.profile/source_research: [https://download.samba.org/pub/rsync/rsync.1]
   caushell.profile/known_limitations:
     - This profile covers the core local-vs-remote transfer boundary and does not expand rsync include/exclude rule files or daemon-side module configuration.
     - Directory sync writes are represented at the explicit destination operand rather than at each implicit member path.
+    - Dry-run and list-only suppress destination writes/deletes and source-file removal, not explicit client-side log writes or network/process activity. A single source is a listing only when static argv proves one operand; uncertain or multiple operands are not guessed into a read-only form.
+    - Filter strings are owned data operands; merge-rule file contents and individual membership are not expanded. Receiver-relative side directories, batch readers/writers and daemon/server modes remain unresolved, rather than being treated as harmless flags or borrowing a destination from an option operand.
