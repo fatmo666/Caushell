@@ -15,8 +15,8 @@ opaque_on_unresolved: true
 forms:
 - id: query_installed_packages
   selector:
-    kind: has_flag
-    flag: "-q"
+    kind: has_modifier
+    modifier: query
   parameters:
   - name: arguments
     semantic:
@@ -24,14 +24,18 @@ forms:
     binding:
       kind: remaining_args
     cardinality: optional_many
+  effects: [{kind: read_path, target: {kind: none}}]
   stream_contract:
     stdin_mode: ignored
     stdout_mode: data
     stderr_mode: data
+    stdout_dependency: inputs
 - id: install_local_package
   selector:
-    kind: has_flag
-    flag: "-i"
+    kind: all
+    items:
+    - {kind: has_flag, flag: "-i"}
+    - {kind: not, item: {kind: has_modifier, modifier: query}}
   parameters:
   - name: package_files
     semantic:
@@ -88,6 +92,13 @@ modifiers:
     kind: any_flag
     flags:
     - "-q"
+    - "--query"
+- id: query_file_owner
+  matcher: {kind: any_flag, flags: ["-f", "--file"]}
+  constraints: [{kind: requires_modifier, modifier: query}]
+- id: query_display
+  matcher: {kind: any_flag, flags: ["-l", "--list", "--info"]}
+  constraints: [{kind: requires_modifier, modifier: query}]
 - id: eval_macro
   matcher:
     kind: any_flag
@@ -151,6 +162,7 @@ extensions:
   caushell.profile/source_research: GTFOBins rpm command includes install scriptlet,
     --eval RPM macro execution, and --pipe shell execution.
   caushell.profile/known_limitations:
+  - In query mode, -f selects installed-package ownership and -i displays package information; -qi/-qfi must not select package installation. Without query mode -i retains package import, script execution and unknown writes. -f without query mode remains unresolved.
   - RPM --eval data is opaque RPM macro language. It is never parsed as Bash; macro
     expansions and embedded Lua are not interpreted.
   - rpm --pipe is documented by RPM source as /bin/sh -c. The shell command is recursively

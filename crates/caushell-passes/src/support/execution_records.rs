@@ -22,9 +22,13 @@ impl<'a> ExecutionResolveRecordRef<'a> {
                 .known_cwds()
                 .into_iter()
                 .map(Some)
-                .chain(cwd.has_unknown().then_some(None))
+                .chain((cwd.has_unknown() || !cwd.bounded_roots().is_empty()).then_some(None))
                 .collect(),
         }
+    }
+
+    pub(crate) fn cwd_cases(&self, fallback: &'a str) -> Vec<caushell_runner::CwdPathContext<'a>> {
+        crate::path::effective_cwd_cases(self.1, fallback)
     }
     pub(crate) fn source_node_id(&self) -> &'a NodeId {
         &self.0.source_node_id

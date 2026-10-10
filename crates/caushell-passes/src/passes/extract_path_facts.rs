@@ -18,6 +18,7 @@ use crate::path::{
     provenance_path_artifact_node_id, resolved_path_purpose_for_profile_purpose,
     resolved_path_role_for_profile_role,
 };
+use crate::path::{effective_cwd_cases, project_path_at_cwd};
 use crate::path::{join_shell_path, normalize_shell_path};
 use crate::support::{
     ExecutionResolveRecordRef, StreamSemanticsIndex, annotate_stream_output, bound_invocation,
@@ -121,17 +122,7 @@ fn collect_resolved_path_mutations(
                     .is_some_and(|p| caushell_query::IoTargetQuery::descriptor_alias(p).is_some())
                 {
                     let entry = ctx.effective_cwd_for_node(record.source_node_id());
-                    let entry_cwds = entry.map_or_else(
-                        || vec![Some(cwd)],
-                        |entry| {
-                            entry
-                                .known_cwds()
-                                .into_iter()
-                                .map(Some)
-                                .chain(entry.has_unknown().then_some(None))
-                                .collect()
-                        },
-                    );
+                    let entry_cwds = effective_cwd_cases(entry, cwd);
                     for entry_cwd in entry_cwds {
                         let target = execution_content_io_target(
                             ctx,
@@ -141,21 +132,16 @@ fn collect_resolved_path_mutations(
                             None,
                             &path.resolution,
                             path.cwd_dependent,
-                            entry_cwd.unwrap_or(cwd),
+                            entry_cwd.resolution_base(cwd),
                             home,
                         );
                         match target {
                             IoTarget::Path {
-                                mut resolution,
+                                resolution,
                                 cwd_dependent,
                             } => {
-                                if entry_cwd.is_none() && cwd_dependent {
-                                    resolution = PathResolution::UnsupportedDynamicText {
-                                        text:
-                                            "descriptor backing path depends on unknown shell cwd"
-                                                .into(),
-                                    };
-                                }
+                                let resolution =
+                                    project_path_at_cwd(resolution, cwd_dependent, entry_cwd);
                                 mutations.extend(project_plain_path_mutations(
                                     &path.source_node_id,
                                     path.command_index,
@@ -294,32 +280,16 @@ fn collect_redirection_path_mutations(
         // Redirections are opened by the caller shell, before a tool-local
         // chdir. Derived shell payloads have their own shell-entry cwd.
         let entry = ctx.effective_cwd_for_node(record.source_node_id());
-        let options: Vec<_> = entry.map_or_else(
-            || vec![Some(cwd)],
-            |entry| {
-                entry
-                    .known_cwds()
-                    .into_iter()
-                    .map(Some)
-                    .chain(entry.has_unknown().then_some(None))
-                    .collect()
-            },
-        );
+        let options = effective_cwd_cases(entry, cwd);
         for option in options {
             for mut path in
-                collect_redirection_path_facts(parsed_scope, option.unwrap_or(cwd), home)
+                collect_redirection_path_facts(parsed_scope, option.resolution_base(cwd), home)
             {
                 if redirection_parent_command_index(parsed_scope, &path.fact)
                     != Some(record.command_index())
                 {
                     continue;
                 }
-                if option.is_none() && path.cwd_dependent {
-                    path.resolution = PathResolution::UnsupportedDynamicText {
-                        text: format!("{} depends on unresolved shell cwd", path.slot_name),
-                    };
-                }
-
                 let target = execution_content_io_target(
                     ctx,
                     record.source_node_id(),
@@ -328,7 +298,7 @@ fn collect_redirection_path_mutations(
                     Some(path.redirection_index),
                     &path.resolution,
                     path.cwd_dependent,
-                    option.unwrap_or(cwd),
+                    option.resolution_base(cwd),
                     home,
                 );
                 if let IoTarget::Path {
@@ -336,13 +306,7 @@ fn collect_redirection_path_mutations(
                     cwd_dependent,
                 } = target
                 {
-                    path.resolution = if option.is_none() && cwd_dependent {
-                        PathResolution::UnsupportedDynamicText {
-                            text: "descriptor backing path depends on unknown shell cwd".into(),
-                        }
-                    } else {
-                        resolution
-                    };
+                    path.resolution = project_path_at_cwd(resolution, cwd_dependent, option);
                 } else {
                     let mut projected = stream_provenance_mutations(
                         ctx,

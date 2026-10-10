@@ -256,7 +256,7 @@ fn unknown_missing_and_argument_boundary_forms_keep_specific_resolution_uncertai
         "ascii-xfr -r /opt/shared/file",
         "ascii-xfr -s",
         "last -f",
-        "last -a -f input root",
+        "last --unsupported -f input root",
         "nm -C",
         "nm @response-file",
         "nm -Cstyle input",

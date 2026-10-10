@@ -12,7 +12,30 @@ platform:
   shell_families: []
   requires_features: []
 opaque_on_unresolved: true
+option_scope: permuted_options
 forms:
+- id: package_selection_query
+  selector:
+    kind: any
+    items:
+    - {kind: has_modifier, modifier: selections}
+    - {kind: has_modifier, modifier: search}
+  parameters:
+  - name: package_patterns
+    semantic: {kind: plain_value}
+    binding: {kind: remaining_positionals}
+    cardinality: optional_many
+  effects: [{kind: read_path, target: {kind: none}}]
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
+- id: local_package_information
+  selector: {kind: has_modifier, modifier: package_info}
+  parameters:
+  - name: package_files
+    semantic: {kind: path, role: read, purpose: generic_operand}
+    binding: {kind: remaining_positionals}
+    cardinality: required_many
+  effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: package_files}}]
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
 - id: package_metadata_query
   selector:
     kind: any
@@ -60,8 +83,8 @@ forms:
     stderr_mode: data
 - id: install_local_packages
   selector:
-    kind: has_flag
-    flag: "-i"
+    kind: has_modifier
+    modifier: install
   parameters:
   - name: package_files
     semantic:
@@ -95,6 +118,14 @@ forms:
     stdout_mode: data
     stderr_mode: data
 modifiers:
+- id: architecture_query
+  matcher: {kind: any_flag, flags: ["--print-architecture", "--print-foreign-architectures"]}
+- id: selections
+  matcher: {kind: any_flag, flags: ["--get-selections"]}
+- id: search
+  matcher: {kind: any_flag, flags: ["-S", "--search"]}
+- id: package_info
+  matcher: {kind: any_flag, flags: ["-I", "--info"]}
 - id: list
   matcher:
     kind: any_flag
@@ -135,6 +166,7 @@ extensions:
   caushell.profile/source_research: GTFOBins dpkg shell mechanism imports a local
     Debian package; dpkg invoke hooks execute through sh -c.
   caushell.profile/known_limitations:
+  - --get-selections and -S/--search query the native package database; their operands are patterns, not source files. -I/--info reads local archives without installing them or running package scripts. --set-selections is not a query and remains unresolved.
   - Package operands are modeled as local package files only when dpkg's install mode
     supplies them; package suffixes alone are not treated as path evidence.
   - Native pre/post-invoke settings are bound as data. The local read-only dpkg -l

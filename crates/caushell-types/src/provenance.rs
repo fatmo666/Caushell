@@ -94,10 +94,69 @@ pub enum ImplicitInputSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeArgumentDomain {
     Unbounded,
+    /// Producer argv-spelling anchors, including the root itself and emitted
+    /// descendant spellings. Preserve slashes/dots until string transforms
+    /// finish; normalized containment alone is not this stronger contract.
     PathSet {
         roots: Vec<String>,
         may_escape: bool,
     },
+    /// One path-valued input surrounded by already-decoded argv bytes.
+    /// Roots retain their producer spelling; affixes are not shell source.
+    PathTemplate {
+        roots: Vec<String>,
+        may_escape: bool,
+        prefix: String,
+        suffix: String,
+    },
+}
+
+impl RuntimeArgumentDomain {
+    /// Preserve a single replacement relation without evaluating filenames.
+    /// Repeated placeholders and unbounded input remain unbounded. Nested
+    /// affixes flatten, so the metadata cannot grow a recursive domain tree.
+    pub fn substitute_into(&self, template: &str, placeholder: &str) -> Self {
+        if placeholder.is_empty() || template.len() > 4096 {
+            return Self::Unbounded;
+        }
+        let Some((prefix, suffix)) = template.split_once(placeholder) else {
+            return Self::Unbounded;
+        };
+        if suffix.contains(placeholder) {
+            return Self::Unbounded;
+        }
+        if prefix.is_empty() && suffix.is_empty() {
+            return self.clone();
+        }
+        let (roots, may_escape, prefix, suffix) = match self {
+            Self::PathSet { roots, may_escape } => {
+                (roots, *may_escape, prefix.to_string(), suffix.to_string())
+            }
+            Self::PathTemplate {
+                roots,
+                may_escape,
+                prefix: inner_prefix,
+                suffix: inner_suffix,
+            } => {
+                if prefix.len() + suffix.len() + inner_prefix.len() + inner_suffix.len() > 4096 {
+                    return Self::Unbounded;
+                }
+                (
+                    roots,
+                    *may_escape,
+                    format!("{prefix}{inner_prefix}"),
+                    format!("{inner_suffix}{suffix}"),
+                )
+            }
+            Self::Unbounded => return Self::Unbounded,
+        };
+        Self::PathTemplate {
+            roots: roots.clone(),
+            may_escape,
+            prefix,
+            suffix,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

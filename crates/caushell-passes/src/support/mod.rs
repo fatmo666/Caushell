@@ -10,7 +10,7 @@ pub(crate) use io_provenance::stream_provenance_mutations;
 pub(crate) use io_target::{
     bound_invocation, content_io_target, execution_content_io_target, slot_uses_content_open,
 };
-pub(crate) use listener::{environment_default, network_listeners};
+pub(crate) use listener::{environment_default, network_listeners, shell_variable_default};
 mod node_ids;
 mod outside_workspace;
 mod payload_hard_deny;
@@ -34,6 +34,7 @@ pub(crate) use stream_records::stdin_path_records;
 pub(crate) use stream_semantics::{StreamSemanticsIndex, annotate_stream_output};
 mod top_level_units;
 mod variable_overlay;
+
 pub(crate) use runtime_variable_overlay::{
     RebasedBindingReplay, RuntimeBindingReplay, VariableBindingReplay,
     apply_runtime_variable_bindings_before_span, runtime_variable_overlay,
@@ -47,7 +48,7 @@ pub(crate) use execution_records::{
     ExecutionResolveRecordRef, graph_backed_execution_resolve_records,
     normalized_command_names_by_source_node, resolved_execution_records_for_local_analysis,
 };
-pub(crate) use function_overlay::visible_function_bindings_before_span;
+pub(crate) use function_overlay::{function_call_bindings, visible_function_bindings_before_span};
 pub(crate) use hard_deny::{
     CommandSinkReasonBuckets, HostTargetOperand, block_device_path_for_arg_with_optional_cwd,
     block_device_write_reason_for_redirection_with_optional_cwd, bound_argument_operands_for_slot,
@@ -93,5 +94,6 @@ pub(crate) use top_level_units::{
 };
 pub(crate) use variable_overlay::{
     PositionalParameterMutation, apply_visible_variable_bindings_before_span,
-    command_environment_bindings, request_variable_bindings, static_variable_overlay,
+    command_environment_bindings, positional_parameter_mutation_for_command,
+    request_variable_bindings, static_variable_overlay,
 };

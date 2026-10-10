@@ -24,7 +24,7 @@ pub(crate) struct PathRecords {
 pub(crate) fn stdin_path_records(
     parsed: &ParsedCommandArtifact,
     consumer: usize,
-    cwd: &str,
+    _cwd: &str,
     home: Option<&str>,
     max_hops: usize,
     mut resolve: impl FnMut(usize) -> Option<ResolvedInvocationArtifact>,
@@ -111,7 +111,7 @@ pub(crate) fn stdin_path_records(
                         // cwd that interprets the paths emitted by the producer.
                         // Tilde expansion belongs to the producer's shell only.
                         let root = if tilde_expanded {
-                            crate::path::resolve_path_operand(&decoded, false, "word", cwd, home)?
+                            crate::path::expand_home_path_spelling(&decoded, home)?
                         } else {
                             decoded.clone()
                         };

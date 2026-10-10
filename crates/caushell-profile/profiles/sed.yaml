@@ -17,17 +17,34 @@ platform:
   shell_families: []
   requires_features: []
 
+option_scope: permuted_options
+opaque_on_unresolved: true
+
 forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters:
+      - {name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
   - id: explicit_script_transform
     selector:
-      kind: any
+      kind: all
       items:
-        - kind: has_modifier
-          modifier: inline_script
-        - kind: has_modifier
-          modifier: script_file
-    parameters:
-      - name: input_paths
+        - &running
+          kind: all
+          items:
+            - {kind: not, item: *information}
+            # Native backup suffixes containing * rewrite the entire filename;
+            # slashes/backslashes may escape the sibling domain. Keep opaque.
+            - kind: not
+              item: {kind: has_modifier_parameter_matching, modifier: in_place, parameter: backup_suffix, matcher: {kind: regex_pattern, pattern: '[/\\*]'}}
+        - {kind: has_modifier, modifier: inline_script}
+        - {kind: not, item: {kind: has_modifier, modifier: script_file}}
+    parameters: &inputs
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - &input_paths
+        name: input_paths
         semantic:
           kind: path
           role: read
@@ -38,20 +55,45 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
-    stream_contract:
+    payload_projections:
+      -
+        format: sed_program
+        source: {kind: slot, name: scripts}
+        reads: script_reads
+        writes: script_writes
+        deletes: script_deletes
+        executions: script_executions
+        write_controls: [backup_suffix]
+        max_bytes: 65536
+        max_operations: 4096
+    stream_contract: &streams
       stdin_mode: data_optional
       stdout_mode: data
       stderr_mode: opaque
-    effects:
+      stdout_dependency: inputs
+    effects: &effects
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: script_reads}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: script_writes}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: delete_path, target: {kind: slot, name: script_deletes}}
+      - {kind: execute_payload, target: {kind: slot, name: script_executions}}
+
+  - id: file_script_transform
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: script_file}]}
+    parameters: *inputs
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+    stream_contract: *streams
 
   - id: positional_script_transform
     selector:
       kind: all
       items:
+        - *running
         - kind: not
           item:
             kind: any
@@ -65,31 +107,24 @@ forms:
     parameters:
       - name: script
         semantic:
-          kind: structured_value
-          context: sed_script
+          kind: plain_value
         binding:
           kind: next_positional
         cardinality: required_one
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - *input_paths
+    payload_projections:
+      - format: sed_program
+        source: {kind: slot, name: script}
+        reads: script_reads
+        writes: script_writes
+        deletes: script_deletes
+        executions: script_executions
+        write_controls: [backup_suffix]
+        max_bytes: 65536
+        max_operations: 4096
+    stream_contract: *streams
+    effects: *effects
 
 modifiers:
   - id: inline_script
@@ -101,12 +136,12 @@ modifiers:
     parameters:
       - name: scripts
         semantic:
-          kind: structured_value
-          context: sed_script
+          kind: plain_value
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
+    constraints: &unless_information [{kind: mutually_exclusive_with, modifier: information}]
 
   - id: script_file
     matcher:
@@ -117,21 +152,30 @@ modifiers:
     parameters:
       - name: script_files
         semantic:
-          kind: path
-          role: read
-          purpose: script_source
+          kind: payload
+          language: opaque
+          source: script_file_ref
+          recursive: true
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
+        structured_projection:
+          branches:
+            # -f - reads the program from stdin, not a file named '-'. The
+            # original payload stays opaque regardless of program source.
+            - matcher: {kind: literal, value: '-'}
+          fallback:
+            name: script_paths
+            semantic: {kind: path, role: read, purpose: script_source}
+    constraints: *unless_information
     effects:
       - kind: read_path
         target:
           kind: slot
-          name: script_files
+          name: script_paths
+        path_access: content_open
+      - {kind: execute_payload, target: {kind: slot, name: script_files}}
 
   - id: in_place
     matcher:
@@ -139,6 +183,9 @@ modifiers:
       flags:
         - "-i"
         - "--in-place"
+    constraints: *unless_information
+    parameters:
+      - {name: backup_suffix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
     effects:
       - kind: write_path
         target:
@@ -153,8 +200,23 @@ modifiers:
         - "--quiet"
         - "--silent"
 
+  - id: ordinary_controls
+    matcher: {kind: any_flag, flags: [-E, -r, --regexp-extended, -u, --unbuffered, -z, --null-data, --zero-terminated, -s, --separate, -b, --binary, --posix, --sandbox]}
+  - id: line_length
+    matcher: {kind: any_flag, flags: [-l, --line-length]}
+    parameters:
+      - {name: line_length, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: information
+    matcher: {kind: any_flag, flags: [--help, --version]}
+
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - In-place editing writes are modeled against input_paths when the -i flag appears, but backup suffix operands are not split from short-option clusters.
-    - Sed scripts are structured values, not recursively parsed shell payloads.
+    - Inline programs use a bounded lexical effect decoder, not a full regex or sed interpreter. Unsupported, dynamic or oversized programs retain unknown effects and opaque execution approval.
+    - e commands and substitution e flags are opaque executable boundaries. Pattern-space values are not fabricated as shell programs. File scripts remain opaque without filesystem inspection.
+    - Branch/address reachability is not used to erase effects. GNU sed may open w targets during compilation. Filenames terminate at newline and are literal tool data, not recursively expanded shell expressions.
+    - In-place writes retain input targets. Known suffixes without slash, backslash or star cannot relocate backups outside the input file's directory; exact backup names are not separately tracked. Unknown suffixes retain unknown writes. BSD separate -i suffix syntax is not inferred from GNU argv.
+    - Sandbox and POSIX switches do not clear risk evidence; unsupported extensions may therefore conservatively require approval even if a particular sed build rejects them.
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/sed/manual/sed.html
+    - https://raw.githubusercontent.com/mirror/sed/master/sed/compile.c

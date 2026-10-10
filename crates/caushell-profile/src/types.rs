@@ -284,6 +284,9 @@ pub enum StdoutScalarShape {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StdoutRecordProjection {
+    /// Intact root-relative/absolute path spellings: each record is a declared
+    /// root or a descendant emitted beneath that same argv spelling. A tool
+    /// promising only normalized containment cannot supply this contract.
     Paths {
         roots_slot: SlotName,
         default_root: Option<String>,
@@ -544,6 +547,8 @@ pub enum FlagOperandMode {
     /// Absence is valid only when the parameter's cardinality is optional.
     OptionalNextArg,
     SecondArg,
+    /// Own two immediate argv operands and bind the first; the second is data.
+    FirstOfTwoArgs,
     InlineOnly,
     /// A value is optional and may only be inline on a long option. A bare
     /// occurrence never owns a following argv token. Cardinality still applies.
@@ -692,10 +697,11 @@ pub enum ProjectionUnknownReason {
     PayloadUnavailable,
 }
 
-/// Opt-in decoding of data protocols, never executable shell payloads.
+/// Opt-in tool-owned grammars. Never evaluate or reinterpret them as Bash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadFormat {
     CodexApplyPatch,
+    SedProgram,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -711,6 +717,11 @@ pub struct PayloadProjection {
     pub reads: SlotName,
     pub writes: SlotName,
     pub deletes: SlotName,
+    /// Opaque executable boundary, present only when the grammar declares it.
+    pub executions: Option<SlotName>,
+    /// Optional tool controls whose unknown bytes retain an unknown write.
+    /// Absent optional controls do not fabricate an unresolved target.
+    pub write_controls: Vec<SlotName>,
     pub max_bytes: usize,
     pub max_operations: usize,
 }
@@ -1091,7 +1102,12 @@ pub enum ConfiguredPathMissing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfiguredPathTarget {
     pub sources: Vec<ConfiguredPathSource>,
+    /// This effect supplements an absent source, not a present explicit target.
+    pub only_when_sources_absent: bool,
     pub environment: Option<EnvironmentValueSource>,
+    /// A shell builtin's variable default, including unexported shell locals.
+    /// Mutually exclusive with the external-process environment default.
+    pub shell_variable: Option<ShellVariableValueSource>,
     pub relative_to: Option<ConfiguredPathAnchor>,
     /// Relative paths need a discovered root unavailable to static analysis.
     pub unresolved_relative_base: bool,
@@ -1108,6 +1124,12 @@ pub struct ConfiguredPathTarget {
 /// explicitly because CLI libraries differ on whether an empty env var is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentValueSource {
+    pub name: String,
+    pub empty_is_unset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellVariableValueSource {
     pub name: String,
     pub empty_is_unset: bool,
 }
@@ -1162,6 +1184,8 @@ pub struct Effect {
     pub kind: EffectKind,
     pub target: EffectTarget,
     pub path_access: Option<PathAccessKind>,
+    /// Opt-in root-inclusive traversal domain, distinct from a single entry.
+    pub path_scope: Option<PathScope>,
     pub interactive_escape_surface: Option<InteractiveEscapeSurface>,
     pub catastrophic: CatastrophicEffectMetadata,
     pub host_risk: HostRiskEffectMetadata,
@@ -1178,6 +1202,7 @@ impl Effect {
             kind,
             target: EffectTarget::None,
             path_access: None,
+            path_scope: None,
             interactive_escape_surface: None,
             catastrophic: CatastrophicEffectMetadata::default(),
             host_risk: HostRiskEffectMetadata::default(),
@@ -1198,6 +1223,11 @@ impl Effect {
         self.interactive_escape_surface = Some(surface);
         self
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathScope {
+    Subtree { escape_modifiers: Vec<ModifierId> },
 }
 
 /// How a path is accessed, not a safety classification or a path whitelist.
@@ -1408,6 +1438,13 @@ pub enum ArgumentBindingSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundImplicitArgumentOrigin {
+    pub span: SourceSpan,
+    /// Proven argv cardinality, not known bytes or a safe control value.
+    pub single_field: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundValue {
     Argument {
         text: String,
@@ -1420,6 +1457,7 @@ pub enum BoundValue {
     ImplicitInput {
         source: ImplicitInputSource,
         domain: Option<caushell_types::RuntimeArgumentDomain>,
+        origin: Option<BoundImplicitArgumentOrigin>,
     },
 }
 
@@ -1476,6 +1514,7 @@ impl BoundValue {
         Self::ImplicitInput {
             source,
             domain: None,
+            origin: None,
         }
     }
 }
@@ -1565,6 +1604,9 @@ pub struct BoundInvocation {
     pub payload_projections: Vec<PayloadProjection>,
     pub bound_implicit_inputs: Vec<BoundImplicitInput>,
     pub applied_modifiers: Vec<ModifierId>,
+    /// Matched parameter-bearing modifier flags, including bare optional
+    /// operands. Retains validated ownership/order even when no value binds.
+    pub modifier_parameter_flags: Vec<ArgumentBindingSource>,
     pub effects: Vec<Effect>,
     pub residuals: Vec<Residual>,
     /// A declared operation may have additional, unmodeled semantics.
@@ -1585,6 +1627,7 @@ impl BoundInvocation {
             payload_projections: Vec::new(),
             bound_implicit_inputs: Vec::new(),
             applied_modifiers: Vec::new(),
+            modifier_parameter_flags: Vec::new(),
             effects: Vec::new(),
             residuals: Vec::new(),
             operation_semantics_unresolved: false,
@@ -1663,6 +1706,8 @@ pub struct ArgumentRegionTerminator {
 pub struct ArgumentControlVocabulary {
     pub unmodeled_words: Vec<String>,
     pub unmodeled_short_clusters: Vec<String>,
+    /// Exact-name grammars may opt into clusters of declared operand-free flags.
+    pub operand_free_short_clusters: Vec<String>,
     /// Recognized controls after which new positional words are invalid.
     pub positional_boundary_words: Vec<String>,
 }

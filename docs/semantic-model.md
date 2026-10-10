@@ -522,6 +522,26 @@ The `find -exec`/`-execdir` and `xargs` profiles feed the same dispatch and exec
 
 Known argv data is never parsed again as shell source. A shell `-c` operand is the intentional exception at the payload boundary: it is parsed once as code, while its positional arguments remain typed data and are bound separately. Recursive inline execution uses the canonical execution frontier so graph expansion is bounded by the configured depth and preserves source relationships. This models common cases conservatively; it is not a complete shell, `find`, or `xargs` interpreter.
 
+The first argv field after a shell command string supplies `$0`, not `$1`.
+A fixed-width argument with unknown bytes is distinct from an unknown-width
+argument list: only an explicit `runtime_scalar` contract proves that a
+tool-generated marker denotes one field. `find -exec ... {} ;` substitutes
+one field, whereas the final `{}` in the `+` form denotes a batch; unresolved
+`xargs` append input also retains unknown width. Removing the first marker
+must never turn either batch into a proven empty `$@`. Any variable-width
+field invalidates completeness of the child shell's positional list, and
+numeric references at or after that boundary retain uncertainty. Genuine
+empty lists and read-only payloads still use normal semantics, not blanket
+approval. A proven scalar path keeps only an argv prefix common to all of its
+non-escaping producer anchors; neither a representative root nor unknown
+runtime bytes may supply this proof. After a known positional mutation,
+numeric arguments remain references for ordered `set`/`shift` replay rather
+than reusing startup values or tool-produced path bounds. Unknown shift counts
+invalidate the positional frame, while a statically invalid literal count
+does not claim a successful shift. This is static argv propagation shared by the
+canonical frontier and nested records, without new risk Passes or runtime
+observations.
+
 The default expansion depth is 8; the top-level command is depth 0. Reaching depth 8 is not itself a risk: a fully analysed leaf uses the normal decision rules. If child execution remains beyond the budget, expansion stops and the existing resolve-policy pass proposes `NeedApproval` under `execution_expansion_limit`. The decision trace retains the truncation evidence, depth budget and pending candidate count. This applies to both the canonical execution frontier and nested-payload truncation; a parsed ancestor or the default Observe action for unsupported static literals does not hide an incomplete expansion. Existing `Deny` findings still take precedence.
 
 ## Optional inline operands and matching positional arguments
@@ -588,6 +608,25 @@ default, then a literal default. An unresolved higher-priority value never falls
 back to a known lower-priority value. The generic `configured_path` target also
 accepts an `environment: {name: ..., empty_is_unset: true}` fallback so socket
 creation and cleanup retain the same path semantics.
+
+For shell builtin defaults, `configured_path` may instead declare
+`shell_variable: {name: HISTFILE, empty_is_unset: true}`. This includes
+unexported shell locals, using the existing ordered static binding frame;
+`environment` continues to mean only the external process environment. The two
+default scopes are mutually exclusive. Explicit CLI sources retain priority,
+and an unknown higher-priority value never falls back. Proven unset/null values
+can skip a target with `missing: skip`, but unknown presence/value produces an
+unresolved target even with that setting. No host variable lookup or new
+Harness field is involved.
+
+The Bash `history` Profile separates display/in-memory list operations from
+file reads (`-r`, `-n`) and writes (`-a`, `-w`). File operations use the first
+explicit filename, or the shell `HISTFILE` default when omitted. They do not
+guess a cwd-relative `.bash_history`, execute stored/expanded history strings,
+or describe reading the history file as immediate code loading. Mutation
+targets pass through the existing outside-workspace guard. Shell exit-time
+history persistence and implicit mutation on assigning `HISTFILESIZE` are not
+claimed by this explicit `history` invocation model.
 
 The extracted `ExecutionSemantics.network_listeners` facts are available through
 the semantic Query, decision trace and session snapshot. The independent
@@ -963,6 +1002,11 @@ with no residuals can supply this positive contract. Missing/unknown operands
 are not replaced with a default root. Defaults apply only to absent roots.
 Relative emitted path bounds remain relative until the consuming execution's
 effective cwd is known. They are not filesystem observations or captured bytes.
+Roots are producer argv-spelling anchors: records retain the root spelling or
+extend it with descendant components. Slashes and dot components must survive
+until string transforms finish. A tool that only promises normalized containment
+cannot declare this stronger contract, since prepending bytes can change how
+previously absolute or parent-traversing path spellings are interpreted.
 
 `projection: {kind: stdin}` declares byte-preserving forwarding, as for `tee`;
 it is not implied by `transform_data` or a data-dependency edge. The shared
@@ -974,8 +1018,8 @@ and independent file effects are never removed by a record proof.
 The xargs adapter preserves a NUL path domain only when its item parsing is
 also NUL-delimited. Child argv remains typed runtime input, not fabricated
 literal filenames or shell source. Exact replacement operands retain the
-domain; composite replacements remain unknown until a sound path projection
-exists. Ordinary whitespace-split find output stays unknown, since a filename
+domain; single-input composite replacements retain a path template for the
+shared path query below. Ordinary whitespace-split find output stays unknown, since a filename
 can contain whitespace/newlines and become different argv. The existing path
 extractor and mutation guards consume the resulting `PathSet`; no new risk
 Pass, dynamic probing or blanket xargs allow rule is added.
@@ -1040,6 +1084,29 @@ capability currently requires root `all_arguments`/`exact_names` without a
 subcommand tree; unsupported combinations and dangling references fail at load
 time. Profiles without regions keep their existing scan/binding behavior.
 
+Parent delimiters and child-CLI operand ownership are separate proof obligations.
+A bounded glob such as `report*` can exclude every parent delimiter yet still
+supply zero or many child fields. For example, a zero-field option operand can
+make the next pathname become the child's output target. Legacy child Profiles
+do not all certify this ownership, and an uncovered child may be configured to
+observe rather than approve. The parent therefore retains the width residual
+until both obligations can be proved; an independently projected child does not
+by itself discharge it. Quoted scalar operands can establish one field while
+their original bytes, spans, provenance and child effects remain intact. No
+filesystem enumeration, guessed variable value or risk-policy relaxation is used.
+
+`first_of_two_args` owns two immediate option operands and binds the first;
+the second is inert data, not another option. For example `find -fprintf file
+format` binds only `file` to a content-open output path. Missing operands or
+unknown field widths retain the existing ownership fallback. This is a generic
+binding mode, not a find-name exception.
+
+An exact-name region grammar can declare `operand_free_short_clusters` in its
+control vocabulary. Every member must already be a declared, operand-free
+single-letter flag; loading rejects other members. The scanner retains every
+member's semantics. It does not guess attached values or split long predicates
+such as `-name` into short options.
+
 The find adapter consumes these same ranges, rather than independently finding
 `-exec` in raw argv. Separate actions retain separate children; child `-L`,
 `-type`, `-name`, `--` and `-delete` cannot change the outer search domain or
@@ -1049,14 +1116,42 @@ the delimiter must be passed as `\;` or `';'`. This is not a full find expressio
 evaluator and does not add dynamic probing, an additional Pass or an action-map
 change.
 
+Confirmation actions `-ok`/`-okdir` use their own semicolon-only regions and
+retain the child's possible execution effects; the tool's confirmation is not
+a prior authorization fact. `xargs` grouping conflicts are ordered by their
+original option spans, including GNU's `-n1` exception after replacement.
+The shared binder retains matched parameter-bearing flags even when their
+optional operand is absent, including bare flags in short clusters. The tool
+adapter consumes this validated ownership instead of guessing flag positions
+from raw words. Replacement uses decoded argv affixes after shell quote removal.
+An unknown `-I` item substitutes in place as one `runtime_scalar` field, not an
+appended vector; its bytes and path remain unknown and are never re-expanded.
+Simple arithmetic output has an integer alphabet bound but no assumed value
+or IFS. Separate substitutions/array syntax keep the unknown fallback.
+
+For an explicitly declared content-open write, a syntactically proven process
+substitution is a generated channel, not an unresolved namespace mutation.
+Literal/projected lookalike text and namespace operations do not inherit this
+classification. All producer/consumer execution units and their mutations
+remain audited normally.
+
+Shell redirections own their first destination only. Later literals grouped
+under a redirect by tree-sitter-bash remain argv of the enclosing simple
+command, including child-region delimiters. A descriptor-close operator has
+no destination. Command text/spans and redirection owner spans identify the
+same complete simple statement; the redirect's own extent excludes trailing
+argv. Extraction does not promote nested substitutions or merge compound
+commands. This shared AST rule applies independently of command profiles.
+
 ### Bounded shell expansions in an outer grammar
 
 An exact region grammar may additionally declare a complete control vocabulary:
 
 ```yaml
 argument_control_vocabulary:
-  unmodeled_words: ["-ok", "-okdir", "-files0-from", "-fprintf"]
+  unmodeled_words: ["-files0-from", "-f", "-printx", "-exit"]
   unmodeled_short_clusters: ["EHLPXdsx"]
+  operand_free_short_clusters: ["EHLPXdsx"]
   positional_boundary_words: ["-name", "-iname", "-path"]
 ```
 
@@ -1209,6 +1304,12 @@ separators and child rules containing parent traversal retain unresolved targets
 Exact argv suffix transformations also precede path normalization, and already
 materialized filename bytes are not interpreted as shell source again.
 
+`lexical_ancestors` models parent-removal targets by truncating the original
+argv spelling. Relative paths without `..` stop at the effective cwd; absolute
+paths and explicit parent components widen to `/`. It is an ancestor set bound,
+not evidence that directories are empty. Missing spelling, unknown inputs,
+followed symlinks and unknown cwd do not gain a local-path guarantee.
+
 The existing Graph and mutation guard consume these path facts; neither gets a
 compression-command allowlist or a new risk pass. Relative runtime roots still
 depend on the effective cwd, and followed-symlink/unknown-origin domains retain
@@ -1220,6 +1321,317 @@ deletion; keep/stdout/test modes do not. GNU header-restored/custom-suffix and
 recursive output names, unsupported options and order-sensitive conflicting
 `bzip2` modes retain existing resolution/mutation approval. Environment defaults
 and filesystem/header contents are not probed or claimed as certified CLI facts.
+
+## Lexically bounded shell pathname generation
+
+Pure static pathname patterns can yield a `BoundedPathSet` rather than a
+fabricated filename or a blanket unknown. The path layer reuses the shared
+shell-word structure query, rejects dynamic/brace/extglob/mixed-quoted syntax,
+and bounds relative patterns by their starting cwd (or explicit parent).
+The directory anchor retains its trailing slash for existing derived-path
+rules. No filesystem lookup, glob execution, new risk Pass or command-name
+branch is involved. Literal `[]` and unmatched `[` use the same query instead
+of being misclassified as bracket expansion.
+
+A path parameter is not by itself proof that generated argv cannot become
+CLI controls. Unbounded option-like filename spellings keep approval; a
+shell redirection is a distinct data-only surface. Patterns that may generate
+`..`, or contain parent traversal after pathname generation, keep unknown
+resolution. Unknown cwd and external roots still use existing mutation rules.
+Bounds are lexical, like existing concrete path facts, not realpath/symlink
+observations. Case-insensitive globbing can change fixed directory components,
+so no exact subdirectory spelling is invented; absolute patterns keep a `/`
+bound and cannot certify containment in the workspace.
+
+Sources: [Bash filename expansion](https://www.gnu.org/s/bash/manual/html_node/Filename-Expansion.html),
+[Bash pattern matching](https://www.gnu.org/s/bash/manual/html_node/Pattern-Matching.html).
+
+## Path templates in dispatched argv
+
+`find -exec` and NUL-delimited `xargs -I` retain a path-valued replacement's
+original roots, escape uncertainty, and fixed argv prefix/suffix in a flat
+`RuntimeArgumentDomain::PathTemplate`. This is parameter semantics, not a new
+Harness fact, runtime observation, filename expansion, or risk Pass. Existing
+dispatch forwarding preserves that domain and its implicit-input source.
+
+The shared path query bounds actual string concatenation: `dest/` before an
+absolute input produces `dest//...`, not an absolute-path join. An appended
+basename suffix widens inclusive named roots to their parent to include sibling
+files; child suffixes retain the containing directory. Raw directory anchors
+are retained for subsequent tool-declared derived effects. No concrete runtime
+filename is invented and already-decoded affixes are not interpreted as shell.
+
+Unknown inputs, followed-path escape uncertainty and unknown execution cwd
+keep existing approval boundaries. Repeated placeholders, parent
+traversal in the suffix, option-like output spellings and oversized templates
+remain unproven. Ordinary newline-delimited `find | xargs` does not gain a path
+certificate: quotes, whitespace or newlines in filenames can change its argv.
+
+Sources: [GNU find execution](https://www.gnu.org/software/findutils/manual/html_node/find_html/Single-File.html),
+[GNU xargs replacement](https://www.gnu.org/software/findutils/manual/html_node/find_html/xargs-options.html).
+
+## Argument proofs and bounded execution directories
+
+Dispatch forwards expanded argv, not shell ASTs. The shared unchanged-field
+proof transfer also applies to static xargs expansion. Producer stdout shapes
+are evaluated in the original caller namespace and never recomputed after an
+environment-clearing wrapper or tool-local chdir. A shape such as empty-or-
+absolute-path is not a concrete cwd, a workspace certificate or a known value.
+
+Runtime argv bindings retain an optional original span and proven scalar-field
+cardinality. Transparent wrappers preserve this origin and the runtime domain;
+unknown projections discard it. A proven single field still has unknown bytes
+and may be a control value. Unknown argv tails remain unknown-width tails.
+The binder does not attach stdout contracts to aliases or shadowing functions.
+
+Dispatch can declare a child's cwd as the containing directories of enumerated
+paths. The declaration retains raw root spellings and is instantiated only
+after the parent's effective execution cwd is computed. Exact alternatives,
+directory-tree bounds and unknown alternatives are separate states. A bounded
+state is never returned by an exact-cwd accessor or committed as the session's
+single current directory.
+
+The find adapter emits this relation for execdir/okdir. A dedicated minimum-
+depth slot can exclude starting-point events; arbitrary predicates are not
+interpreted as scope proofs. Otherwise the original starting-point spelling's
+containing directory is also included. Thus an absolute '/workspace' starting
+point can include '/', whereas '.' and '/workspace/.' keep their lexical local
+directory. Unknown roots and followed-symlink traversal retain escape uncertainty.
+
+The common path query widens relative results over cwd bounds into existing
+BoundedPathSet facts. An output named 'out' under any cwd in '/workspace' is
+bounded by '/workspace', not by the fictitious file '/workspace/out' or the
+subtree '/workspace/out'. Parent traversal widens to the common ancestor;
+absolute targets remain independent; unknown bytes do not borrow cwd bounds.
+Mutation-scope roots use the same projection. Existing policies then decide
+whether all bounds lie within the workspace.
+
+Caller-shell redirects keep their entry directory. Tool-selected directories
+affect only children and descendants, including nested shells and wrappers.
+Known functions in derived shells enter the same depth-bounded expansion
+frontier; function-local positional parameters replace the caller's parameters
+without dropping caller variables. Execution expansion and variable-effect
+replay share one function-call binding query so unknown widths and temporary
+prefix assignments cannot become conflicting post-call variable facts.
+Their cwd summaries affect the invoking
+shell but do not escape a child shell or subshell. Unknown argument bytes stay
+unknown data; unknown argv width invalidates positional-list completeness,
+including after shift. Call-argument substitutions are analysed independently
+of the function body, and recursive calls retain the existing expansion-limit
+approval. Function bodies and their effects
+remain explicit Graph nodes, including when a function shadows an executable.
+Static content, package identity and inherited-FD queries that require one
+exact location retain uncertainty instead of choosing a representative bound.
+In particular, child-relative files cannot reuse a same-named caller file's
+known contents, while a proven outer redirect retains its original stream.
+
+No new risk Pass, request/Harness field, filesystem enumeration or runtime
+probe is introduced. Ordinary exact-cwd path extraction keeps its fast path;
+set work scales with declared roots and arguments, not the filesystem size.
+
+## Backquote boundaries and shell substitution effects
+
+Old-style backquote bodies remove exactly one escape layer for dollar signs,
+backquotes, backslashes and line continuations before nested parsing. Modern
+`$(...)` bodies retain their original shell source. Literal/escaped backquotes
+and quoted here-doc content are not promoted to executable source.
+
+The tree-sitter Bash grammar can greedily merge sibling backquotes. The parser
+projects only an AST-recognized opening whose first unescaped closing backquote
+precedes the node's reported end. An opaque, byte/line-preserving placeholder
+recovers outer argv and statement boundaries; original source text, quoting,
+coordinates and substitution facts are restored before semantic extraction.
+The placeholder is never executed or treated as a known argument value.
+Correctly bounded substitutions and inputs without this syntax keep the normal
+single-parse path. At most 32 boundary-repair rounds are allowed; exhaustion
+returns a parse error, not partial successful coverage.
+
+Shell argument substitutions execute independently of callee Profile coverage.
+Expanded argv data is never reparsed as source. Standalone, declaration and
+prefix-assignment values share the existing assignment-substitution frontier.
+Assignment event identity uses stable group ordinals (standalone events,
+declarations, then prefix-assignment events), with explicit original value
+metadata in each locator. Incomplete substitution-body parses retain an
+unresolved execution unit alongside any known effects; existing resolution
+policy and expansion-depth enforcement decide approval. No new risk Pass,
+dynamic probe or Harness/request field is introduced.
+
+Assignment-body cwd is anchored to the assignment's position in its containing
+source scope, not blindly to the enclosing invocation's entry cwd. The existing
+CwdFlow and resolved command outcomes are reused, including `&&`/`||`, background
+execution and subshell scope restoration. Intermediate scopes with no executable
+commands retain their enclosing position anchor. These are internal source facts,
+not observations supplied by a Harness. Ordinary commands do not perform this
+additional source-position query; statements and real commands already in the
+parsed artifact are reused without reparsing or filesystem lookup.
+
+Top-level and derived function calls use the same positional-argument binding
+query. An internal function-frame marker permits plain scalar `local name=value`
+statements to retain their static values within that function, without persisting
+them to the caller. Child interpreters clear the marker. Unsupported declaration
+options, unresolved array/nameref/readonly destinations and conditional local
+assignments remain uncertain; local export attributes are not guessed. This
+avoids treating a known literal argument to an assignment-body `eval` as unknown
+simply because it passed through `$1` and `local`.
+
+Restored nested effects keep existing I/O semantics: curl's explicit output file
+is a `content_open` write. `/dev/null` and descriptor aliases therefore use the
+shared I/O-target query, while genuine external output files still require
+approval. No tool-specific exemption is added to the risk guard.
+
+Source: [GNU Bash command substitution](https://www.gnu.org/s/bash/manual/html_node/Command-Substitution.html).
+Function scope and declaration failures: [GNU Bash builtins](https://www.gnu.org/s/bash/manual/html_node/Bash-Builtins.html),
+[GNU Bash functions](https://www.gnu.org/s/bash/manual/html_node/Shell-Functions.html).
+
+## Grammar compatibility and executable function scopes
+
+The pinned Bash grammar rejects some valid substring offset spellings such as
+`${data:$i:1}` and implicit-positional loops such as `for f do ...; done`.
+Compatibility projection is limited to AST-qualified error sites. A simple
+arithmetic variable's dollar prefix is masked for parsing, and a horizontal
+separator before an implicit loop's `do` is projected as a semicolon. Original
+token and assignment text, quotes, source coordinates and embedded substitution
+facts remain authoritative. These projections never evaluate slice contents or
+make unknown data into known execution bytes. Literal strings, comments and
+quoted here-docs do not qualify. Complete inputs skip repair entirely; at most
+eight repair rounds are performed, and remaining errors stay explicit Partial
+parses. Unsupported compound arithmetic is not silently certified as complete.
+
+A known top-level function invocation now retains its body scope independently
+of its ordinary executable commands. Assignment/declaration substitutions are
+seeded once per invocation even if the body consists entirely of assignments.
+An assignment-only body inherits the caller's source-position cwd anchor;
+bodies containing commands retain their existing record-scope cwd flow. No
+dummy executable is inserted into the Graph to stand in for an assignment.
+Call-argument command/process substitutions are owned by the call site rather
+than by the first command of the body. Ordinary calls have a cheap syntax
+trigger before constructing this additional query context. Existing expansion
+depth admission and unresolved-execution approval remain in force. Defining an
+unused function does not execute its body. No risk Pass, command-name exception,
+request field, runtime inspection or policy relaxation is added.
+
+Syntax references: [GNU Bash parameter expansion](https://www.gnu.org/s/bash/manual/html_node/Shell-Parameter-Expansion.html),
+[GNU Bash looping constructs](https://www.gnu.org/software/bash/manual/html_node/Looping-Constructs.html).
+
+## Traversal domains and configured destructive targets
+
+Path effects can opt into `path_scope: {kind: subtree, escape_modifiers: [...]}`.
+The declared root-inclusive family is projected to the same `BoundedPathSet`
+in Graph facts and mutation analysis. Known roots are retained; active escape
+modifiers widen the domain, and unknown roots never acquire a known fallback.
+Ordinary effects remain single-target operations. The declaration only accepts
+slot/configured filesystem targets, validates modifier references, and cannot
+be combined with a single-file `content_open` declaration. No filesystem
+enumeration or symlink resolution is performed.
+
+`configured_path.only_when_sources_absent: true` declares a supplemental
+literal default. Provided or unknown source operands suppress this effect;
+an incomplete invocation cannot prove absence. It requires source slots and
+a literal default, and cannot combine another environment/default provider.
+This keeps explicit glob/runtime path bounds intact rather than adding an
+unresolved duplicate mutation target. Legacy configured paths retain their
+existing first-applicable/last-value resolution behavior.
+
+`find -delete` uses this scope for explicit and default search roots. Following
+symlinks can reach outside the lexical search root, so `-L`, `-H` or `-follow`
+widens its possible mutation domain. Known configured targets may now carry the
+same catastrophic/host-risk annotations as explicit slot targets. The existing
+guard uses the shared configured-path resolver and only a concrete static
+target supplies a hard-deny proof. An unknown cwd cannot resolve a relative
+default to `/`; known absolute configured targets remain independent of cwd.
+
+Named `find` file-output actions can write to stdout descriptor aliases. They
+therefore disable the unconditional NUL stdout-path guarantee, even alongside
+`-print0`. Downstream consumers retain unknown input rather than borrowing a
+false workspace-bounded domain. This is conservative for known ordinary output
+files too; it does not change their own local-file/sink write policy. Repeated
+`-H/-L/-P` precedence is still conservatively approximated by active modifiers.
+
+References: [GNU Findutils starting points](https://www.gnu.org/software/findutils/manual/html_node/find_html/Starting-points.html),
+[symlinks](https://www.gnu.org/software/findutils/manual/html_node/find_html/Symbolic-Links.html),
+[file output](https://www.gnu.org/software/findutils/manual/html_node/find_html/Print-File-Name.html).
+
+## Bounded query and conversion forms
+
+The `ffmpeg`, `ip` and `php` ordinary-form coverage uses only Profile declarations;
+it adds no command-name branch, risk Pass, runtime probe or Harness input.
+
+- `ffmpeg` owns exact native option names and their operands across the argv.
+  Every `-i` is an input and every remaining positional is an output, not merely
+  the last one. Explicit `-` is stdin/stdout, not a file named dash. File outputs
+  retain both the explicit write and a bounded sibling family for implicit
+  container side files. Filters, protocol URLs, filename patterns, unlisted
+  options and mixed/repeated `-f` declarations do not enter the ordinary form.
+  The existing LADSPA code-loading form remains separate.
+  Unknown read operands retain unknown path facts under the existing read
+  policy; they are not proof of a local filename or a resolved protocol.
+- `ip` distinguishes a declared object's default/show/list query from a
+  mutation or unknown operation. Route `get` is a separate query form. Root
+  rendering/namespace options own their operands; nested `netns exec` retains
+  normal child dispatch. Short operation guesses are not accepted: `link s`
+  can mean `set`, not `show`.
+- `php -l`/`--syntax-check` retains file reads or possible stdin without a PHP
+  execution payload. Leading-option ownership prevents `php script.php -l`
+  from being reclassified as lint. Explicit INI/config options and conflicting
+  execution modes with lint remain unresolved. Information/module queries do
+  not authorize ordinary PHP execution. Implicit PHP startup configuration is
+  not inspected. File lint ignores stdin; stdin lint consumes it. `php -i`
+  declares inherited environment input rather than claiming independent
+  public output. This does not imply complete variable-level secret tracking.
+
+References: [FFmpeg command-line semantics](https://ffmpeg.org/ffmpeg.html),
+[iproute2 native route dispatch](https://github.com/iproute2/iproute2/blob/main/ip/iproute.c),
+[PHP CLI modes](https://www.php.net/manual/en/features.commandline.options.php).
+
+## Embedded sed effects
+
+The sed Profile opts into `payload_projections: {format: sed_program, ...}`
+on its plain inline-program slot. The adapter is a bounded lexical effect
+decoder, not a sed interpreter or regex evaluator, and is independent of the
+executable's name. Other Profiles retain the early empty-projection skip.
+It scans at most 64 KiB and 4,096 commands, without recursion, disk inspection,
+new runtime facts, a new risk Pass or a command-name branch in shared code.
+
+Numeric/regex addresses, groups, escaped delimiters, bracket expressions,
+substitution flags, comments, branches and continued text determine which
+bytes are commands and which are data. The `r/R` commands retain content reads;
+`w/W` and substitution `w` retain content-open writes. Their filenames extend
+through newline, including spaces, semicolons and literal shell-like text.
+Outer shell materialization occurs once; filenames are never expanded again.
+Multiple `-e` expressions are decoded as an ordered program with newline
+boundaries and original argument/span origins retained. Empty programs are
+valid. Unsupported, dynamic or oversized programs retain unknown reads/writes
+and an opaque execution boundary, never a successful safe-prefix result.
+
+The optional `executions` projection slot records `e` and substitution `e`
+as opaque executable boundaries for existing approval logic. It does not
+fabricate Bash source from sed's runtime pattern space. File-script mode is
+also opaque, including a script supplied through stdin. Explicit empty semantic
+views suppress execution flags/payload mode in the shared execution-semantics
+query; missing or unknown slots do not prove absence. The `-f -` stdin marker
+does not produce a file named `-`; ordinary script-file arguments keep their
+original read paths and opaque payload sources.
+
+Optional `write_controls` reference declared plain control slots. An absent
+control adds nothing; an unknown present control preserves its original
+source/span and emits an unknown write. Sed uses this for optional `-i`
+backup suffixes. Known suffixes containing slash, backslash or star remain
+outside the supported form. Ordinary fixed suffixes cannot relocate a backup
+outside the edited file's directory; exact backup filenames are not separately
+tracked. BSD separate-suffix argv is not guessed from a GNU invocation.
+Sandbox/POSIX options do not clear effect evidence. Branch/address reachability
+does not erase file effects: GNU sed opens `w` targets while compiling.
+
+The shared lexical value decoder distinguishes a literal non-expanding `$`
+(such as a regex end anchor) from variable, special-parameter, arithmetic and
+command-substitution starts. This includes legacy `$[...]` arithmetic and
+expansion starts joined across shell backslash-newline continuations. It does
+not resolve an unknown expansion.
+
+References: [GNU sed commands and syntax](https://www.gnu.org/software/sed/manual/sed.html),
+[GNU sed native compiler](https://github.com/mirror/sed/blob/master/sed/compile.c),
+[Bash line continuations](https://www.gnu.org/s/bash/manual/html_node/Escape-Character.html),
+[Bash maintainer on legacy arithmetic expansion](https://lists.gnu.org/archive/html/help-bash/2022-01/msg00011.html).
 
 ## Further Reading
 

@@ -229,6 +229,7 @@ modifiers:
         cardinality: required_one
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: output_path

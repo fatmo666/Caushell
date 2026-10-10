@@ -54,6 +54,7 @@ pub struct RawArgumentRegionTerminator {
 pub struct RawArgumentControlVocabulary {
     pub unmodeled_words: Vec<String>,
     pub unmodeled_short_clusters: Vec<String>,
+    pub operand_free_short_clusters: Vec<String>,
     pub positional_boundary_words: Vec<String>,
 }
 
@@ -183,6 +184,7 @@ pub struct RawForm {
 #[serde(rename_all = "snake_case")]
 pub enum RawPayloadFormat {
     CodexApplyPatch,
+    SedProgram,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -200,6 +202,10 @@ pub struct RawPayloadProjection {
     pub reads: String,
     pub writes: String,
     pub deletes: String,
+    #[serde(default)]
+    pub executions: Option<String>,
+    #[serde(default)]
+    pub write_controls: Vec<String>,
     #[serde(default = "default_payload_max_bytes")]
     pub max_bytes: usize,
     #[serde(default = "default_payload_max_operations")]
@@ -502,6 +508,7 @@ pub enum RawFlagOperandMode {
     NextArg,
     OptionalNextArg,
     SecondArg,
+    FirstOfTwoArgs,
     InlineOnly,
     OptionalInlineOnly,
     OptionalInlineOrShortAttached,
@@ -769,6 +776,8 @@ pub struct RawEffect {
     #[serde(default)]
     pub path_access: Option<crate::PathAccessKind>,
     #[serde(default)]
+    pub path_scope: Option<RawPathScope>,
+    #[serde(default)]
     pub surface: Option<RawInteractiveEscapeSurface>,
     #[serde(default)]
     pub catastrophic: Option<RawCatastrophicEffectMetadata>,
@@ -784,6 +793,15 @@ pub struct RawEffect {
     pub shell_job_operation: Option<caushell_types::ShellJobOperationKind>,
     #[serde(default)]
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawPathScope {
+    Subtree {
+        #[serde(default)]
+        escape_modifiers: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -916,6 +934,7 @@ pub enum RawDerivedPathRule {
     ArchiveMembers,
     ChildUnder { relative_path: String },
     SiblingFiles,
+    LexicalAncestors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -950,7 +969,11 @@ pub enum RawEffectTarget {
     ConfiguredPath {
         sources: Vec<RawConfiguredPathSource>,
         #[serde(default)]
+        only_when_sources_absent: bool,
+        #[serde(default)]
         environment: Option<RawEnvironmentValueSource>,
+        #[serde(default)]
+        shell_variable: Option<RawShellVariableValueSource>,
         #[serde(default)]
         relative_to: Option<RawConfiguredPathAnchor>,
         #[serde(default)]
@@ -1059,6 +1082,14 @@ pub enum RawDispatchStringSyntax {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawEnvironmentValueSource {
+    pub name: String,
+    #[serde(default)]
+    pub empty_is_unset: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawShellVariableValueSource {
     pub name: String,
     #[serde(default)]
     pub empty_is_unset: bool,

@@ -255,7 +255,7 @@ fn unsupported_shapes_remain_unresolved_instead_of_becoming_path_or_data_forms()
         (ASCII_XFR, "ascii-xfr -r /outside"),
         (ASCII_XFR, "ascii-xfr -s"),
         (LAST, "last -f"),
-        (LAST, "last -a -f /path/to/file root"),
+        (LAST, "last --unsupported -f /path/to/file root"),
         (NM, "nm -C"),
         (NM, "nm --plugin=/outside/plugin /path/to/file"),
         (

@@ -249,6 +249,17 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
         .unwrap();
     parameter.values[0] = BoundValue::ImplicitInput {
         source: caushell_profile::ImplicitInputSource::StdinData,
+        origin: Some(BoundImplicitArgumentOrigin {
+            span: caushell_parse::SourceSpan {
+                start_byte: 0,
+                end_byte: 1,
+                start_row: 0,
+                end_row: 0,
+                start_column: 0,
+                end_column: 1,
+            },
+            single_field: true,
+        }),
         domain: Some(RuntimeArgumentDomain::PathSet {
             roots: vec!["/workspace".into()],
             may_escape: false,
@@ -269,6 +280,50 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
         child.argv[0].runtime_argument_domain,
         Some(RuntimeArgumentDomain::Unbounded)
     );
+    assert_ne!(
+        child.argv[0].node_kind, "runtime_scalar",
+        "transformed unknowns cannot borrow source cardinality"
+    );
+}
+
+#[test]
+fn arbitrary_wrappers_keep_proven_scalar_width_but_do_not_upgrade_unknown_tails() {
+    let profile = load_command_profile_from_str(
+        "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: arbitrary_forwarder}\nforms:\n  - id: forward\n    parameters:\n      - name: command\n        semantic: {kind: command_ref, dispatch: wrapper_command}\n        binding: {kind: next_positional}\n        cardinality: required_one\n      - name: argv\n        semantic: {kind: plain_value}\n        binding: {kind: remaining_args}\n        cardinality: optional_many\n    effects:\n      - kind: dispatch_command\n        target: {kind: dispatch, command: command, argv: [argv]}\n"
+    ).unwrap();
+    let registry = ProfileRegistry::from_profiles(vec![profile]).unwrap();
+    for (kind, quoted) in [("runtime_scalar", true), ("runtime_input", false)] {
+        let mut parsed = parse_command("arbitrary_forwarder child data", ShellKind::Bash).unwrap();
+        let argument = &mut parsed.commands[0].tokens[1];
+        let span = argument.span.clone();
+        argument.text.clear();
+        argument.implicit_input_source = Some(ImplicitInputSource::StdinData);
+        argument.runtime_argument_domain = Some(RuntimeArgumentDomain::Unbounded);
+        argument.node_kind = kind.into();
+        argument.quoted = quoted;
+        let ResolveInvocationResult::Resolved(resolved) = resolve_invocation_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+            &SessionBindings::new(),
+        ) else {
+            panic!("forwarder must bind argv data")
+        };
+        let child = collect_dispatch_command_projection(&resolved.bound)
+            .resolved
+            .remove(0);
+        assert_eq!(child.argv[0].node_kind, kind);
+        assert_eq!(child.argv[0].quoted, quoted);
+        assert_eq!(child.argv[0].span, span);
+        assert_eq!(
+            child.argv[0].implicit_input_source,
+            Some(ImplicitInputSource::StdinData)
+        );
+        assert_eq!(
+            child.argv[0].runtime_argument_domain,
+            Some(RuntimeArgumentDomain::Unbounded)
+        );
+    }
 }
 
 #[test]

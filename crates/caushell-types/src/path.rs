@@ -111,6 +111,9 @@ pub enum DerivedPathRule {
     /// Tool-generated filenames sharing a statically known parent directory.
     /// This is a bounded set, not a fictitious concrete filename.
     SiblingFiles,
+    /// Parent-removal targets formed by truncating the original argv spelling.
+    /// Relative spellings stop at the cwd; absolute/parent spellings widen.
+    LexicalAncestors,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

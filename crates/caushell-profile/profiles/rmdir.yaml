@@ -5,6 +5,8 @@ identity:
   canonical_name: rmdir
   aliases: []
 
+opaque_on_unresolved: true
+
 trust:
   tier: tier_a
   source: built_in
@@ -46,6 +48,13 @@ modifiers:
       flags:
         - "-p"
         - "--parents"
+    # Parent removal truncates argv spelling; do not normalize ./ away first.
+    effects:
+      - kind: delete_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: path_targets}
+          rule: {kind: lexical_ancestors}
 
   - id: ignore_non_empty
     matcher:
@@ -53,7 +62,15 @@ modifiers:
       flags:
         - "--ignore-fail-on-non-empty"
 
+  - id: verbose
+    matcher:
+      kind: any_flag
+      flags:
+        - "-v"
+        - "--verbose"
+
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - https://www.gnu.org/s/coreutils/manual/html_node/rmdir-invocation.html

@@ -45,7 +45,10 @@ pub(crate) fn operand_declarations(
         }
         *previous = Some(mode);
         // Region grammars use exact option words and immediate argv operands.
-        if !matches!(mode, FlagOperandMode::NextArg | FlagOperandMode::SecondArg) {
+        if !matches!(
+            mode,
+            FlagOperandMode::NextArg | FlagOperandMode::SecondArg | FlagOperandMode::FirstOfTwoArgs
+        ) {
             return Err(format!(
                 "argument_regions: unsupported operand mode for {flag:?}"
             ));
@@ -146,9 +149,11 @@ pub(crate) fn scan(
             while end < scope.end_index {
                 let Some(word) = argv_value(&projection.args[end]) else {
                     let structure = argument_structure(&projection.args[end]);
-                    // A child target must be known, and variable-width child
-                    // argv can affect its own CLI grammar. For single fields,
-                    // only possible delimiters make parent ownership uncertain.
+                    // A bounded word may exclude every parent delimiter but
+                    // still disappear or widen inside the child's CLI. Until
+                    // child operand ownership is independently certified, keep
+                    // that uncertainty: a missing option value can swallow the
+                    // next path, and a legacy child Profile may not audit it.
                     result.ownership_unresolved |= end == index + 1
                         || structure.fields != ArgumentFieldCount::ExactlyOne
                         || region
@@ -211,7 +216,7 @@ pub(crate) fn scan(
             });
             let operands = match mode {
                 None => 0,
-                Some(FlagOperandMode::SecondArg) => 2,
+                Some(FlagOperandMode::SecondArg | FlagOperandMode::FirstOfTwoArgs) => 2,
                 Some(_) => 1,
             };
             if index + operands >= scope.end_index {
@@ -230,6 +235,23 @@ pub(crate) fn scan(
             continue;
         }
         if value.starts_with('-') && value.len() > 1 {
+            if let Some(tail) = value.strip_prefix('-')
+                && vocabulary.is_some_and(|v| {
+                    v.operand_free_short_clusters.iter().any(|letters| {
+                        !tail.is_empty() && tail.chars().all(|c| letters.contains(c))
+                    })
+                })
+            {
+                // Retain each member's semantics (not just the final flag).
+                // Validation excludes any member with an argv operand.
+                for flag in tail.chars() {
+                    result
+                        .flags
+                        .push((index, FlagName::new(format!("-{flag}"))));
+                }
+                index += 1;
+                continue;
+            }
             result.error = Some(format!(
                 "argument_regions: undeclared outer option {value:?}; operand ownership unknown"
             ));

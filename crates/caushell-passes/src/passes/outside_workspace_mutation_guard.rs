@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use caushell_parse::ParsedCommandArtifact;
 use caushell_profile::EffectKind;
 use caushell_query::IoTarget;
-use caushell_runner::{EffectiveCwd, RunnerContext, SessionAnalysisPass, SessionView};
+use caushell_runner::{CwdPathContext, RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{PathResolution, RuleId};
 
 use crate::path::{
     MutationTargetCandidate, collect_effect_mutation_targets, collect_redirection_path_facts,
-    normalize_shell_path, path_is_within_root,
+    effective_cwd_cases, normalize_shell_path, path_is_within_root, project_path_at_cwd,
 };
 use crate::support::{
     bound_invocation, content_io_target, decision_for_rule_action,
@@ -44,9 +44,8 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                 (ctx.execution_cwd_for_node(record.source_node_id()), false),
                 (ctx.effective_cwd_for_node(record.source_node_id()), true),
             ] {
-                let cwd_options = effective_cwd_options(effective_cwd, &fallback_cwd);
-                for cwd in cwd_options {
-                    let resolution_cwd = cwd.as_deref().unwrap_or(&fallback_cwd);
+                for case in effective_cwd_cases(effective_cwd, &fallback_cwd) {
+                    let resolution_cwd = case.resolution_base(&fallback_cwd);
                     let targets = if redirections {
                         collect_redirection_mutation_targets(
                             record.parsed_scope(),
@@ -72,7 +71,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                             let shell_cwd = ctx.effective_cwd_for_node(record.source_node_id());
                             // A tool-local chdir must not change the interpretation
                             // of a relative file opened earlier by the caller shell.
-                            let entries = effective_cwd_options(shell_cwd, &fallback_cwd);
+                            let entries = effective_cwd_cases(shell_cwd, &fallback_cwd);
                             for entry in entries {
                                 let io = content_io_target(
                                     record.parsed_scope(),
@@ -80,17 +79,19 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                                     None,
                                     &target.resolution,
                                     target.cwd_dependent,
-                                    entry.as_deref().unwrap_or(&fallback_cwd),
+                                    entry.resolution_base(&fallback_cwd),
                                     home.as_deref(),
                                 );
                                 if let Some((resolution, dependent)) = mutation_path_for_io(io) {
+                                    let resolution =
+                                        project_path_at_cwd(resolution, dependent, entry);
                                     add_reason_for_target(
                                         &mut reasons,
                                         target.operation,
                                         &target.slot_name,
                                         &resolution,
                                         dependent,
-                                        entry.is_none(),
+                                        matches!(entry, CwdPathContext::Unknown),
                                         workspace_root.as_deref(),
                                     );
                                 }
@@ -106,13 +107,15 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                         {
                             continue;
                         }
+                        let resolution =
+                            project_path_at_cwd(target.resolution, target.cwd_dependent, case);
                         add_reason_for_target(
                             &mut reasons,
                             target.operation,
                             &target.slot_name,
-                            &target.resolution,
+                            &resolution,
                             target.cwd_dependent,
-                            cwd.is_none(),
+                            matches!(case, CwdPathContext::Unknown),
                             workspace_root.as_deref(),
                         );
                     }
@@ -152,24 +155,6 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                 );
             }
         }
-    }
-}
-
-fn effective_cwd_options(effective: Option<&EffectiveCwd>, fallback: &str) -> Vec<Option<String>> {
-    match effective {
-        Some(cwd) if cwd.is_unreachable() => Vec::new(),
-        Some(cwd) => {
-            let mut options: Vec<Option<String>> = cwd
-                .known_cwds()
-                .iter()
-                .map(|path| Some(path.to_string()))
-                .collect();
-            if cwd.has_unknown() || options.is_empty() {
-                options.push(None);
-            }
-            options
-        }
-        None => vec![Some(fallback.to_string())],
     }
 }
 

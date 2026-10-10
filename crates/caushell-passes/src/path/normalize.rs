@@ -57,6 +57,20 @@ fn resolve_literal_path(text: &str, cwd: &str) -> String {
     join_shell_path(cwd, text)
 }
 
+/// Expand only a declared home prefix while retaining argv spelling. Unlike
+/// path resolution, this must not erase the slash/dot before a later suffix.
+pub(crate) fn expand_home_path_spelling(text: &str, home: Option<&str>) -> Option<String> {
+    let home = home?;
+    if text == "~" {
+        return Some(home.to_string());
+    }
+    let rest = text.strip_prefix("~/")?;
+    Some(format!(
+        "{home}{}{rest}",
+        if home.ends_with('/') { "" } else { "/" }
+    ))
+}
+
 pub(crate) fn join_shell_path(base: &str, child: &str) -> String {
     let mut joined = base.to_string();
 

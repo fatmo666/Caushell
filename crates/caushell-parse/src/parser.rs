@@ -73,6 +73,7 @@ pub fn parse_command(
         source,
         &tree.descriptors,
         &tree.here_strings,
+        &tree.backticks,
     );
 
     if artifact.status == ParseStatus::Partial {
@@ -85,6 +86,7 @@ pub fn parse_command(
                 source,
                 &repaired_tree.descriptors,
                 &repaired_tree.here_strings,
+                &repaired_tree.backticks,
             );
             if repaired_artifact.status == ParseStatus::Complete {
                 return Ok(repaired_artifact);
@@ -105,6 +107,7 @@ pub fn parse_command(
                 repaired_source,
                 &repaired_tree.descriptors,
                 &repaired_tree.here_strings,
+                &repaired_tree.backticks,
             );
 
             if repaired_artifact.status == ParseStatus::Complete
@@ -131,6 +134,7 @@ struct DescriptorTree {
     tree: Tree,
     descriptors: Vec<DescriptorProjection>,
     here_strings: Vec<SourceSpan>,
+    backticks: Vec<CommandSubstitutionFact>,
 }
 
 fn malformed_here_string_prefix(node: Node<'_>, bytes: &[u8]) -> Option<SourceSpan> {
@@ -153,21 +157,36 @@ fn parse_with_descriptor_ownership(
     source: &str,
     brace_expansions: &[StaticBraceCommand],
 ) -> Result<DescriptorTree, ParseError> {
-    let tree = parser
-        .parse(source, None)
-        .ok_or(ParseError::ParseCancelled)?;
+    let projected = crate::backtick::project(parser, source)?;
     let bytes = source.as_bytes();
+    let (tree, projected_source) =
+        crate::syntax_compat::project(parser, projected.tree, bytes, projected.source)?;
     if !bytes.iter().any(|byte| matches!(byte, b'<' | b'>')) {
         return Ok(DescriptorTree {
             tree,
             descriptors: Vec::new(),
             here_strings: Vec::new(),
+            backticks: projected.facts,
         });
     }
-    let mut repaired_source = None;
+    let mut repaired_source = projected_source;
     let mut descriptors = Vec::new();
     let mut here_strings = Vec::new();
     walk(tree.root_node(), &mut |node| {
+        // A close-FD operator followed by argv can hit the grammar's optional
+        // destination branch and swallow/error on the first argument. Project
+        // ONLY an AST-recognized close operator as duplication of FD 0. The
+        // original adjacent '-' is restored as close semantics during fact
+        // extraction; byte positions and the remaining argv stay unchanged.
+        if node.kind() == "file_redirect" && node.has_error() {
+            for child in all_children(node) {
+                if !child.is_named() && matches!(source_text(child, bytes).as_str(), "<&-" | ">&-")
+                {
+                    repaired_source.get_or_insert_with(|| bytes.to_vec())[child.end_byte() - 1] =
+                        b'0';
+                }
+            }
+        }
         // The grammar can split a here-string following another redirect
         // into ERROR("<<") plus a file redirect("<"). Mask only this
         // AST-qualified operator prefix; restore the original carrier below.
@@ -270,6 +289,7 @@ fn parse_with_descriptor_ownership(
         tree,
         descriptors,
         here_strings,
+        backticks: projected.facts,
     })
 }
 
@@ -307,6 +327,7 @@ fn artifact_from_tree(
     source: &[u8],
     descriptors: &[DescriptorProjection],
     here_strings: &[SourceSpan],
+    backticks: &[CommandSubstitutionFact],
 ) -> ParsedCommandArtifact {
     let diagnostics = collect_diagnostics(root, source);
     let status = if root.has_error() || !diagnostics.is_empty() {
@@ -349,6 +370,7 @@ fn artifact_from_tree(
         }
     }
     restore_descriptor_ownership(&mut artifact, source, descriptors);
+    crate::backtick::restore(&mut artifact, backticks);
     artifact
 }
 
@@ -453,10 +475,10 @@ pub fn parse_command_substitutions(
         .set_language(&language)
         .map_err(|error| ParseError::LanguageInit(error.to_string()))?;
 
-    let tree = parser
-        .parse(raw_fragment, None)
-        .ok_or(ParseError::ParseCancelled)?;
+    let projected = crate::backtick::project(&mut parser, raw_fragment)?;
     let source = raw_fragment.as_bytes();
+    let (tree, _) =
+        crate::syntax_compat::project(&mut parser, projected.tree, source, projected.source)?;
     let root = tree.root_node();
     let mut substitutions = Vec::new();
 
@@ -477,6 +499,8 @@ pub fn parse_command_substitutions(
         });
     });
 
+    substitutions.extend(projected.facts);
+    substitutions.sort_by_key(|fact| fact.span.start_byte);
     Ok(substitutions)
 }
 
@@ -491,10 +515,10 @@ pub fn parse_process_substitutions(
         .set_language(&language)
         .map_err(|error| ParseError::LanguageInit(error.to_string()))?;
 
-    let tree = parser
-        .parse(raw_fragment, None)
-        .ok_or(ParseError::ParseCancelled)?;
     let source = raw_fragment.as_bytes();
+    let projected = crate::backtick::project(&mut parser, raw_fragment)?;
+    let (tree, _) =
+        crate::syntax_compat::project(&mut parser, projected.tree, source, projected.source)?;
     let root = tree.root_node();
     let mut substitutions = Vec::new();
 
@@ -1212,16 +1236,13 @@ fn collect_state_builtin_argument(
 }
 
 fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
+    let scope = simple_command_scope(node);
     let mut command_name = None;
     let mut prefix_assignments = Vec::new();
-    let mut tokens = Vec::new();
+    let mut tokens: Vec<CommandToken> = Vec::new();
     let mut dashdash_seen = false;
 
-    for i in 0..node.child_count() {
-        let Some(child) = child_at(node, i) else {
-            continue;
-        };
-
+    for child in simple_command_words(node) {
         if child.kind() == "variable_assignment" {
             if command_name.is_none() {
                 if let Some(assignment) = parse_variable_assignment(child, source) {
@@ -1246,6 +1267,25 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
         let Some((text, quoted)) = extract_token_text(child, source) else {
             continue;
         };
+
+        if let Some(previous) = tokens.last_mut()
+            && previous.span.end_byte == child.start_byte()
+        {
+            // Adjacent AST fragments are one shell word; never bridge a gap,
+            // delimiter or redirect to establish this adjacency.
+            previous.text =
+                String::from_utf8_lossy(&source[previous.span.start_byte..child.end_byte()])
+                    .into_owned();
+            previous.quoted = false;
+            previous.node_kind = "concatenation".into();
+            previous.span.end_byte = child.end_byte();
+            previous.span.end_row = child.end_position().row;
+            previous.span.end_column = child.end_position().column;
+            previous
+                .command_substitutions
+                .extend(command_substitutions_for_expansion_node(child, source));
+            continue;
+        }
 
         let kind = if text == "--" {
             dashdash_seen = true;
@@ -1280,7 +1320,7 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
     Some(CommandFact {
         command_name,
         command_name_runtime_data: false,
-        text: source_text(node, source),
+        text: source_text(scope, source),
         prefix_assignments,
         tokens,
         in_pipeline: pipeline.is_some(),
@@ -1302,8 +1342,62 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
             ],
         ),
         top_level_span: top_level_command_span(node),
-        span: span_for(node),
+        span: span_for(scope),
     })
+}
+
+fn simple_command_scope(node: Node<'_>) -> Node<'_> {
+    node.parent()
+        .filter(|parent| parent.kind() == "redirected_statement")
+        .unwrap_or(node)
+}
+
+// tree-sitter-bash intentionally groups all literals following a file
+// redirect into repeated `destination` fields. Only the first is the shell
+// redirection operand; the others remain argv of this SAME simple command.
+// Never descend into a destination/expansion or a compound statement.
+fn simple_command_words(node: Node<'_>) -> Vec<Node<'_>> {
+    fn append<'a>(node: Node<'a>, words: &mut Vec<Node<'a>>) {
+        for child in all_children(node) {
+            match child.kind() {
+                "file_redirect" => words.extend(file_redirect_argv(child)),
+                "herestring_redirect" | "heredoc_redirect" => {}
+                _ => words.push(child),
+            }
+        }
+    }
+    let scope = simple_command_scope(node);
+    let mut words = Vec::new();
+    if scope.id() == node.id() {
+        append(node, &mut words);
+    } else {
+        for child in all_children(scope) {
+            if child.id() == node.id() {
+                append(child, &mut words);
+            } else if child.kind() == "file_redirect" {
+                words.extend(file_redirect_argv(child));
+            }
+        }
+    }
+    words
+}
+
+fn file_redirect_argv(node: Node<'_>) -> Vec<Node<'_>> {
+    let closes_fd = all_children(node)
+        .iter()
+        .any(|child| matches!(child.kind(), "<&-" | ">&-"));
+    let mut cursor = node.walk();
+    let words: Vec<_> = node
+        .children_by_field_name("destination", &mut cursor)
+        .collect();
+    let mut start = usize::from(!closes_fd && !words.is_empty());
+    while start > 0
+        && start < words.len()
+        && words[start - 1].end_byte() == words[start].start_byte()
+    {
+        start += 1;
+    }
+    words.into_iter().skip(start).collect()
 }
 
 fn top_level_command_span(node: Node<'_>) -> SourceSpan {
@@ -1630,7 +1724,9 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
 
         if child.kind() == "file_descriptor" {
             file_descriptor = Some(source_text(child, source));
-        } else if let Some((text, quoted)) = extract_token_text(child, source) {
+        } else if target.is_none()
+            && let Some((text, quoted)) = extract_token_text(child, source)
+        {
             target = Some(RedirectionOperandFact {
                 text,
                 quoted,
@@ -1651,9 +1747,84 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
 
     let (parent_command_name, parent_command_span) = parent_command_info(node, source);
 
+    if let Some(operand) = &mut target {
+        let mut cursor = node.walk();
+        for fragment in node
+            .children_by_field_name("destination", &mut cursor)
+            .skip(1)
+        {
+            if fragment.start_byte() != operand.span.end_byte {
+                break;
+            }
+            operand.span.end_byte = fragment.end_byte();
+            operand.span.end_row = fragment.end_position().row;
+            operand.span.end_column = fragment.end_position().column;
+            operand.text =
+                String::from_utf8_lossy(&source[operand.span.start_byte..operand.span.end_byte])
+                    .into_owned();
+            operand.quoted = false;
+            operand.node_kind = "concatenation".into();
+        }
+    }
+
+    let repaired_close_operand = target
+        .as_ref()
+        .filter(|operand| {
+            operand.text == "-"
+                && matches!(operand.node_kind.as_str(), "word" | "number")
+                && operator
+                    .as_deref()
+                    .is_some_and(|op| matches!(op, "<&" | ">&"))
+                && all_children(node)
+                    .iter()
+                    .any(|child| !child.is_named() && child.end_byte() == operand.span.start_byte)
+        })
+        .map(|operand| operand.span.clone());
+    if repaired_close_operand.is_some() {
+        operator.as_mut().unwrap().push('-');
+    }
+    if operator
+        .as_deref()
+        .is_some_and(|op| matches!(op, "<&-" | ">&-"))
+    {
+        target = None;
+    }
+    // Keep the actual redirect's source extent separate from trailing argv
+    // that happens to be nested under this AST node.
+    let end_byte = repaired_close_operand
+        .as_ref()
+        .map(|span| span.end_byte)
+        .or_else(|| target.as_ref().map(|operand| operand.span.end_byte))
+        .or_else(|| {
+            all_children(node)
+                .into_iter()
+                .find(|child| !child.is_named())
+                .map(|child| child.end_byte())
+        })
+        .unwrap_or(node.end_byte());
+    let end_point = repaired_close_operand
+        .as_ref()
+        .map(|span| (span.end_row, span.end_column))
+        .or_else(|| {
+            target
+                .as_ref()
+                .map(|operand| (operand.span.end_row, operand.span.end_column))
+        })
+        .or_else(|| {
+            all_children(node)
+                .into_iter()
+                .find(|child| !child.is_named())
+                .map(|child| (child.end_position().row, child.end_position().column))
+        })
+        .unwrap_or((node.end_position().row, node.end_position().column));
+    let mut span = span_for(node);
+    span.end_byte = end_byte;
+    span.end_row = end_point.0;
+    span.end_column = end_point.1;
+
     RedirectionFact {
         kind: RedirectionKind::File,
-        text: source_text(node, source),
+        text: String::from_utf8_lossy(&source[node.start_byte()..end_byte]).into_owned(),
         file_descriptor,
         operator,
         heredoc_start: None,
@@ -1662,7 +1833,7 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         parent_command_name,
         parent_command_span,
         top_level_span: top_level_command_span(node),
-        span: span_for(node),
+        span,
     }
 }
 
@@ -1790,7 +1961,7 @@ fn parent_command_info(node: Node<'_>, source: &[u8]) -> (Option<String>, Option
 
     (
         command.and_then(|command| extract_command_name(command, source)),
-        command.map(span_for),
+        command.map(|command| span_for(simple_command_scope(command))),
     )
 }
 
@@ -1811,6 +1982,7 @@ fn extract_token_text(node: Node<'_>, source: &[u8]) -> Option<(String, bool)> {
         | "number"
         | "concatenation"
         | "simple_expansion"
+        | "expansion"
         | "command_substitution"
         | "process_substitution"
         | "arithmetic_expansion" => Some((source_text(node, source), false)),
@@ -1891,7 +2063,7 @@ fn command_substitution_body_text(text: &str) -> Option<String> {
         .strip_prefix('`')
         .and_then(|rest| rest.strip_suffix('`'))
     {
-        return Some(body.to_string());
+        return Some(crate::backtick::decode_body(body));
     }
 
     None

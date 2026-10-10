@@ -168,6 +168,7 @@ pub(crate) fn decode_argument_prefix(text: &str, quoted: bool, node_kind: &str) 
             }
             Quote::Double => match character {
                 '"' if initial == Quote::None => quote = Quote::None,
+                '$' if !dollar_starts_expansion(chars.clone(), true) => output.push('$'),
                 '"' | '$' | '`' => return (output, false),
                 '\\' => match chars.next() {
                     Some(escaped @ ('$' | '`' | '"' | '\\')) => output.push(escaped),
@@ -188,6 +189,7 @@ pub(crate) fn decode_argument_prefix(text: &str, quoted: bool, node_kind: &str) 
                     Some(other) => output.push(other),
                     None => return (output, false),
                 },
+                '$' if !dollar_starts_expansion(chars.clone(), false) => output.push('$'),
                 '$' | '`' | '*' | '?' | '[' | '{' | '}' => return (output, false),
                 '~' if output.is_empty() || output.ends_with('=') => return (output, false),
                 other => output.push(other),
@@ -195,4 +197,23 @@ pub(crate) fn decode_argument_prefix(text: &str, quoted: bool, node_kind: &str) 
         }
     }
     (output, quote == initial)
+}
+
+fn dollar_starts_expansion(
+    mut remaining: std::iter::Peekable<std::str::Chars<'_>>,
+    in_double_quotes: bool,
+) -> bool {
+    // Shell line continuations disappear before expansion recognition. Do not
+    // mistake $ followed by backslash-newline and NAME/( for a literal anchor.
+    while let Some(c) = remaining.next() {
+        if c == '\\' && remaining.peek() == Some(&'\n') {
+            remaining.next();
+            continue;
+        }
+        return c.is_ascii_alphanumeric()
+            || c == '_'
+            || matches!(c, '{' | '(' | '[' | '$' | '!' | '?' | '#' | '-' | '@' | '*')
+            || (!in_double_quotes && matches!(c, '\'' | '"'));
+    }
+    false
 }

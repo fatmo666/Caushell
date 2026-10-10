@@ -109,6 +109,71 @@ fn declared_views_preserve_original_arguments_and_provenance() {
 }
 
 #[test]
+fn non_expanding_dollar_is_literal_but_shell_expansion_starts_remain_unknown() {
+    use caushell_profile::project_value;
+    let span = SourceSpan {
+        start_byte: 0,
+        end_byte: 0,
+        start_row: 0,
+        end_row: 0,
+        start_column: 0,
+        end_column: 0,
+    };
+    for (text, expected) in [
+        ("cost$", "cost$"),
+        ("cost$/x", "cost$/x"),
+        ("cost$.txt", "cost$.txt"),
+        ("s/^$//", "s/^$//"),
+        ("s/a$/b/", "s/a$/b/"),
+        ("s/^$\\\n//", "s/^$//"),
+    ] {
+        let value = BoundValue::argument_with_node_kind(
+            text,
+            true,
+            "string",
+            span.clone(),
+            ArgumentBindingSource::RemainingArg,
+        );
+        assert_eq!(
+            project_value(&ValueProjection::Identity, &value),
+            Some(known(expected)),
+            "{text}"
+        );
+    }
+    for text in [
+        "$NAME",
+        "${NAME}",
+        "$(pwd)",
+        "$1",
+        "$@",
+        "$*",
+        "$?",
+        "$$",
+        "$!",
+        "$#",
+        "$-",
+        "$[1+1]",
+        "$((1+1))",
+        "$\\\nNAME",
+        "$\\\n(pwd)",
+        "$\\\n\\\n{NAME}",
+    ] {
+        let value = BoundValue::argument_with_node_kind(
+            text,
+            true,
+            "string",
+            span.clone(),
+            ArgumentBindingSource::RemainingArg,
+        );
+        assert_eq!(
+            project_value(&ValueProjection::Identity, &value),
+            Some(unknown(ProjectionUnknownReason::DynamicArgument)),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn prefix_uses_first_delimiter_and_default_original_policy() {
     let profile =
         load_command_profile_from_str(&PROFILE.replace(", if_absent: original", "")).unwrap();
@@ -393,6 +458,7 @@ fn implicit_runtime_operand_has_unknown_substring_not_inherited_path_bounds() {
 fn projection_does_not_inherit_a_runtime_domain_for_the_whole_operand() {
     let original = BoundValue::ImplicitInput {
         source: ImplicitInputSource::DispatchOutput,
+        origin: None,
         domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
             roots: vec!["/tmp/project".into()],
             may_escape: false,

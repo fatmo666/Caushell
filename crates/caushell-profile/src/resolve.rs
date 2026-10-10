@@ -545,6 +545,7 @@ fn attach_bound_argument_materialization(
                 node_kind,
                 span,
                 materialization,
+                binding_source,
                 ..
             } = value
             else {
@@ -559,6 +560,41 @@ fn attach_bound_argument_materialization(
                 .find(|(arg, _)| {
                     arg.text == *text && arg.node_kind == *node_kind && arg.span == *span
                 });
+            // Inline flag operands carry the owner's span, but their decoded
+            // suffix cannot equal the complete argv word. Keep its binding
+            // origin without replacing the suffix with the whole flag word.
+            if matches!(materialization, BoundArgumentMaterialization::RuntimeData)
+                && matches!(
+                    binding_source,
+                    crate::ArgumentBindingSource::FollowingFlag { flag_span, .. }
+                        | crate::ArgumentBindingSource::MatchedModifierFlag { flag_span, .. }
+                        if *flag_span == *span
+                )
+            {
+                if let Some((_, origin)) = materialized_projection
+                    .invocation
+                    .args
+                    .iter()
+                    .zip(materialized_projection.arg_resolutions.iter())
+                    .find(|(arg, _)| arg.span == *span)
+                {
+                    match origin {
+                        ValueMaterialization::ResolvedExactScalar { variable_name, .. } => {
+                            *materialization = BoundArgumentMaterialization::ResolvedExactScalar {
+                                variable_name: variable_name.clone(),
+                            };
+                        }
+                        ValueMaterialization::ResolvedRuntimeProduced { variable_name, .. } => {
+                            *materialization =
+                                BoundArgumentMaterialization::ResolvedRuntimeProduced {
+                                    variable_name: variable_name.clone(),
+                                };
+                        }
+                        _ => {}
+                    }
+                }
+                continue;
+            }
             let runtime_data = resolution.is_some_and(|(arg, _)| arg.runtime_data);
             let resolution = resolution.map(|(_, resolution)| resolution);
             // Binding may already use the materialized argv. Its resulting
@@ -8878,7 +8914,7 @@ mod tests {
             "crontab -r",
             "crontab",
             "remove_crontab",
-            &[EffectKind::MetadataMutation],
+            &[EffectKind::DeletePath],
         );
         assert_resolves_command_without_catastrophic_semantic(
             &registry,
@@ -11822,10 +11858,7 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "sed");
-                assert_eq!(
-                    resolved.selection.form.id.as_str(),
-                    "explicit_script_transform"
-                );
+                assert_eq!(resolved.selection.form.id.as_str(), "file_script_transform");
                 assert_eq!(
                     first_argument_text(&resolved.bound, "script_files"),
                     "rewrite.sed"
@@ -11836,8 +11869,15 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::ReadPath]
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::ReadPath,
+                        EffectKind::ExecutePayload
+                    ]
                 );
+                let candidates = crate::collect_recursive_payload_candidates(&resolved.bound);
+                assert_eq!(candidates.len(), 1);
+                assert_eq!(candidates[0].language, crate::PayloadLanguage::Opaque);
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -11866,8 +11906,33 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::ReadPath,
+                        EffectKind::WritePath,
+                        EffectKind::DeletePath,
+                        EffectKind::ExecutePayload,
+                        EffectKind::WritePath,
+                    ]
                 );
+                for slot in [
+                    "script_reads",
+                    "script_writes",
+                    "script_deletes",
+                    "script_executions",
+                ] {
+                    let parameter = resolved
+                        .bound
+                        .bound_parameters
+                        .iter()
+                        .find(|p| p.name.as_str() == slot)
+                        .expect("projected effect slot");
+                    assert!(
+                        parameter.semantic_values_are_inapplicable(),
+                        "{slot}: {parameter:?}"
+                    );
+                }
+                assert!(crate::collect_recursive_payload_candidates(&resolved.bound).is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -13012,7 +13077,10 @@ mod tests {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "crontab");
                 assert_eq!(resolved.selection.form.id.as_str(), "list_crontab");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::LoadConfig]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::ReadPath, EffectKind::LoadConfig]
+                );
             }
             other => panic!("unexpected crontab resolve result: {other:?}"),
         }
@@ -13799,8 +13867,8 @@ mod tests {
             (
                 "history -w",
                 "history",
-                "read_or_write_history",
-                &[EffectKind::LoadConfig, EffectKind::WritePath],
+                "write_default_file",
+                &[EffectKind::WritePath],
             ),
             (
                 "yes ok",

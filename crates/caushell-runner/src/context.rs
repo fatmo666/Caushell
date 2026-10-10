@@ -132,7 +132,10 @@ pub struct BlockDeviceSearchScope {
 pub struct ExecutionUnitInheritedScope {
     pub catastrophic_search_roots: Vec<CatastrophicSearchRootScope>,
     pub block_device_search_scopes: Vec<BlockDeviceSearchScope>,
-    pub dispatch_working_directory: Option<EffectiveCwd>,
+    pub dispatch_working_directory: Option<caushell_profile::DispatchWorkingDirectory>,
+    /// A pre-cwd-computation static-input lookup cannot assume the request cwd
+    /// after a tool-selected directory. This uncertainty survives wrappers.
+    pub static_input_cwd_unproven: bool,
     /// Applies only to this direct Dispatch origin, not arbitrary descendant
     /// shell events. Each new dispatch replaces it from its own declaration.
     pub dispatch_stdout_to_parent: bool,
@@ -144,10 +147,70 @@ pub enum EffectiveCwd {
     Known(String),
     KnownOneOf(Vec<String>),
     KnownOrUnknown(Vec<String>),
+    /// Directory-tree bounds are sets, never concrete cwd alternatives.
+    Bounded {
+        known: Vec<String>,
+        roots: Vec<String>,
+        unknown: bool,
+    },
     Unknown,
 }
 
 impl EffectiveCwd {
+    pub fn with_bounds(
+        known: impl IntoIterator<Item = String>,
+        roots: impl IntoIterator<Item = String>,
+        unknown: bool,
+    ) -> Self {
+        let mut known: Vec<_> = known.into_iter().collect();
+        let mut roots: Vec<_> = roots.into_iter().collect();
+        known.sort();
+        known.dedup();
+        roots.sort();
+        roots.dedup();
+        if roots.is_empty() {
+            if unknown {
+                Self::known_or_unknown(known)
+            } else if known.is_empty() {
+                Self::Unreachable
+            } else {
+                Self::known_one_of(known)
+            }
+        } else {
+            Self::Bounded {
+                known,
+                roots,
+                unknown,
+            }
+        }
+    }
+
+    pub fn bounded_roots(&self) -> &[String] {
+        match self {
+            Self::Bounded { roots, .. } => roots,
+            _ => &[],
+        }
+    }
+
+    pub fn cases(&self) -> Vec<CwdPathContext<'_>> {
+        match self {
+            Self::Known(path) => return vec![CwdPathContext::Exact(path)],
+            Self::Unknown => return vec![CwdPathContext::Unknown],
+            Self::Unreachable => return Vec::new(),
+            _ => {}
+        }
+        self.known_cwds()
+            .into_iter()
+            .map(CwdPathContext::Exact)
+            .chain(
+                self.bounded_roots()
+                    .iter()
+                    .map(|root| CwdPathContext::Subtree(root)),
+            )
+            .chain(self.has_unknown().then_some(CwdPathContext::Unknown))
+            .collect()
+    }
+
     pub fn known(cwd: impl Into<String>) -> Self {
         Self::Known(cwd.into())
     }
@@ -179,7 +242,10 @@ impl EffectiveCwd {
     pub fn as_known(&self) -> Option<&str> {
         match self {
             Self::Known(cwd) => Some(cwd.as_str()),
-            Self::Unreachable | Self::KnownOneOf(_) | Self::KnownOrUnknown(_) => None,
+            Self::Unreachable
+            | Self::KnownOneOf(_)
+            | Self::KnownOrUnknown(_)
+            | Self::Bounded { .. } => None,
             Self::Unknown => None,
         }
     }
@@ -191,16 +257,36 @@ impl EffectiveCwd {
             Self::KnownOneOf(cwds) | Self::KnownOrUnknown(cwds) => {
                 cwds.iter().map(String::as_str).collect()
             }
+            Self::Bounded { known, .. } => known.iter().map(String::as_str).collect(),
             Self::Unknown => Vec::new(),
         }
     }
 
     pub fn has_unknown(&self) -> bool {
-        matches!(self, Self::KnownOrUnknown(_) | Self::Unknown)
+        matches!(
+            self,
+            Self::KnownOrUnknown(_) | Self::Unknown | Self::Bounded { unknown: true, .. }
+        )
     }
 
     pub fn is_unreachable(&self) -> bool {
         matches!(self, Self::Unreachable)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CwdPathContext<'a> {
+    Exact(&'a str),
+    Subtree(&'a str),
+    Unknown,
+}
+
+impl<'a> CwdPathContext<'a> {
+    pub fn resolution_base(self, fallback: &'a str) -> &'a str {
+        match self {
+            Self::Exact(path) | Self::Subtree(path) => path,
+            Self::Unknown => fallback,
+        }
     }
 }
 
@@ -226,6 +312,9 @@ pub struct ExecutionUnitResolveRecord {
 pub enum ExecutionUnitOriginLocator {
     #[default]
     None,
+    FunctionExpansion {
+        function_name: String,
+    },
     DispatchStdinFromParent,
     DispatchInheritedStdin,
     CommandSubstitutionBody {
@@ -233,6 +322,10 @@ pub enum ExecutionUnitOriginLocator {
         substitution_index: usize,
     },
     CommandSubstitutionAssignmentValue {
+        /// Namespace of an assignment-bearing nested source scope. This is
+        /// provenance identity, not a request/runtime observation.
+        assignment_scope_key: Option<String>,
+        source_cwd_anchor: ShellSourceCwdAnchor,
         assignment_command_index: usize,
         assignment_index: usize,
         substitution_index: usize,
@@ -248,6 +341,20 @@ pub enum ExecutionUnitOriginLocator {
         location_subindex: usize,
         substitution_index: usize,
     },
+}
+
+/// Internal source-location fact, never a request or runtime observation.
+/// Executable-free nested substitutions keep their enclosing position anchor.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShellSourceCwdAnchor {
+    RequestPosition {
+        start_byte: usize,
+    },
+    RecordScopePosition {
+        source_node_id: NodeId,
+        start_byte: usize,
+    },
+    InvocationEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

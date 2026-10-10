@@ -18,13 +18,16 @@ mod recursive;
 mod registry;
 mod resolve;
 mod runtime_variables;
+mod sed_payload;
 mod structured_projection;
 mod types;
 mod value_projection;
 mod value_shape;
 
 pub use argument_regions::BoundArgumentRegion;
-pub use argument_structure::{ArgumentFieldCount, ArgumentStructure, argument_structure};
+pub use argument_structure::{
+    ArgumentFieldCount, ArgumentStructure, argument_structure, shell_word_structure,
+};
 pub use bind::{
     ArgumentScope, BindError, InvocationSelection, InvocationShape, SelectedModifier,
     bind_invocation, match_modifiers, select_form, select_invocation,
@@ -33,7 +36,7 @@ pub use builtin::BuiltInRegistryError;
 pub use caushell_types::ResolveGapKind;
 pub use dispatch::{
     DispatchArgument, DispatchCommandCandidate, DispatchCommandProjection,
-    UnresolvedDispatchCommand, collect_dispatch_command_candidates,
+    DispatchWorkingDirectory, UnresolvedDispatchCommand, collect_dispatch_command_candidates,
     collect_dispatch_command_projection,
 };
 pub use loader::{
@@ -60,6 +63,7 @@ pub use projection::{
     project_invocation,
 };
 pub use raw::RawArgumentControlVocabulary;
+pub use raw::RawPathScope;
 pub use raw::{
     RawArgumentFileRule, RawBindingSpec, RawCardinality, RawCatastrophicEffectMetadata,
     RawCatastrophicSemanticClass, RawCommandIdentity, RawCommandProfile,
@@ -76,9 +80,9 @@ pub use raw::{
     RawPayloadLanguage, RawPayloadSource, RawPlatformConstraints, RawProcessTargetKind,
     RawProfileSourceKind, RawProfileTrustMetadata, RawProfileTrustTier, RawProjectionAbsentPolicy,
     RawRepositoryOperationKind, RawRepositoryWorktreePathSet, RawRuntimeFeature, RawSelectorExpr,
-    RawSemanticType, RawShellFamily, RawStreamContract, RawStreamInputMode, RawStreamOutputMode,
-    RawStructuredValueContext, RawSubcommandNode, RawSubcommandTree, RawValueConstraint,
-    RawValueMatcher, RawValueProjection,
+    RawSemanticType, RawShellFamily, RawShellVariableValueSource, RawStreamContract,
+    RawStreamInputMode, RawStreamOutputMode, RawStructuredValueContext, RawSubcommandNode,
+    RawSubcommandTree, RawValueConstraint, RawValueMatcher, RawValueProjection,
 };
 pub use raw::{RawArgumentRegion, RawArgumentRegionTerminator};
 pub use raw::{RawPayloadFormat, RawPayloadInputSource, RawPayloadProjection};
@@ -106,12 +110,13 @@ pub use resolve::{
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
 pub use types::ArgumentControlVocabulary;
 pub use types::PathAccessKind;
+pub use types::PathScope;
 pub use types::StdoutScalarShape;
 pub use types::{
     ArgumentBindingSource, ArgumentFileRule, ArgumentRegion, ArgumentRegionTerminator, BindingSpec,
-    BoundArgumentMaterialization, BoundImplicitInput, BoundInvocation, BoundParameter, BoundValue,
-    Cardinality, CatastrophicEffectMetadata, CatastrophicSemanticClass, CommandIdentity,
-    CommandName, CommandProfile, CommandRefSemantic, ConditionalEnvironmentUnset,
+    BoundArgumentMaterialization, BoundImplicitArgumentOrigin, BoundImplicitInput, BoundInvocation,
+    BoundParameter, BoundValue, Cardinality, CatastrophicEffectMetadata, CatastrophicSemanticClass,
+    CommandIdentity, CommandName, CommandProfile, CommandRefSemantic, ConditionalEnvironmentUnset,
     ConfiguredPathAnchor, ConfiguredPathMissing, ConfiguredPathSource, ConfiguredPathTarget,
     ConfiguredScalar, DefaultSubcommandBehavior, DerivedPathSource, DerivedPathTarget,
     DispatchCommandSource, DispatchKind, DispatchStringSyntax, DispatchTarget, Effect, EffectKind,
@@ -126,10 +131,10 @@ pub use types::{
     ProcessTargetSemantic, ProfileSourceKind, ProfileTrustMetadata, ProfileTrustTier,
     ProjectedSemanticValue, ProjectionAbsentPolicy, ProjectionUnknownReason, Residual,
     ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType,
-    SemanticValueRef, SemanticValueResolution, ShellFamily, SlotName, StreamContract,
-    StreamInputMode, StreamOutputMode, StructuredValueContext, StructuredValueSemantic,
-    SubcommandNode, SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher,
-    ValueProjection,
+    SemanticValueRef, SemanticValueResolution, ShellFamily, ShellVariableValueSource, SlotName,
+    StreamContract, StreamInputMode, StreamOutputMode, StructuredValueContext,
+    StructuredValueSemantic, SubcommandNode, SubcommandTree, ToolConventionPathTarget,
+    ValueConstraint, ValueMatcher, ValueProjection,
 };
 pub use types::{ModuleEntrypoint, PayloadFormat, PayloadInputSource, PayloadProjection};
 pub use types::{StdoutRecordContract, StdoutRecordProjection, StreamRecordSeparator};

@@ -44,6 +44,7 @@ forms:
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
 modifiers:
   - {id: all, matcher: {kind: any_flag, flags: ['-a', '--all']}}
+  - {id: display, matcher: {kind: any_flag, flags: ['-W', '--wide', '-T', '--silent-truncation', '-h', '--file-header', '-l', '--program-headers', '--segments', '-S', '--section-headers', '--sections', '-g', '--section-groups', '-t', '--section-details', '-e', '--headers', '-s', '--syms', '--symbols', '--dyn-syms', '--lto-syms', '-n', '--notes', '-r', '--relocs', '-u', '--unwind', '-d', '--dynamic', '-V', '--version-info', '-A', '--arch-specific', '-D', '--use-dynamic', '-L', '--lint', '--enable-checks', '-c', '--archive-index', '-I', '--histogram', '--quiet']}}
   - {id: help, matcher: {kind: any_flag, flags: ['-H', '--help']}}
   - {id: version, matcher: {kind: any_flag, flags: ['-v', '--version']}}
 subcommands: null

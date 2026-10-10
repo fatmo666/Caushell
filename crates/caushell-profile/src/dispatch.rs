@@ -19,6 +19,19 @@ pub struct DispatchArgument {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchWorkingDirectory {
+    Inherit,
+    Unknown,
+    /// Relative roots are anchored to the parent's effective execution cwd,
+    /// not the request-entry cwd. Roots retain their original argv spelling.
+    ContainingDirectories {
+        roots: Vec<String>,
+        start_points_excluded: bool,
+        may_escape: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchCommandCandidate {
     pub module_runtime: Option<String>,
     pub dispatch_index: usize,
@@ -30,7 +43,7 @@ pub struct DispatchCommandCandidate {
     pub unknown_environment_from: Vec<crate::EnvironmentValueSource>,
     pub unknown_environment_names: Vec<String>,
     pub unset_environment: Vec<DispatchArgument>,
-    pub execution_cwd_unknown: bool,
+    pub working_directory: DispatchWorkingDirectory,
     pub stdin_from_parent: bool,
     pub stdin_from_tool: bool,
     pub stdout_to_parent: bool,
@@ -223,7 +236,7 @@ pub fn collect_dispatch_command_projection(
                         unknown_environment_from: target.unknown_environment_from.clone(),
                         unknown_environment_names: target.unknown_environment_names.clone(),
                         unset_environment: environment_removals(invocation, target, &mut next_span),
-                        execution_cwd_unknown: false,
+                        working_directory: DispatchWorkingDirectory::Inherit,
                         stdin_from_parent: target.stdin_from_parent,
                         stdin_from_tool: target.stdin_from_tool,
                         stdout_to_parent: target.stdout_to_parent,
@@ -295,7 +308,7 @@ pub fn collect_dispatch_command_projection(
                 &mut next_synthetic_span_byte,
             )
             .values,
-            execution_cwd_unknown: false,
+            working_directory: DispatchWorkingDirectory::Inherit,
             clear_environment: target
                 .clear_environment_when
                 .iter()
@@ -491,8 +504,14 @@ fn argument_from_bound_value(
             span: span.clone(),
             binding_source: binding_source.clone(),
         },
-        BoundValue::ImplicitInput { source, domain } => DispatchArgument {
-            span: {
+        BoundValue::ImplicitInput {
+            source,
+            domain,
+            origin,
+        } => DispatchArgument {
+            span: if let Some(origin) = origin.as_ref().filter(|_| text_override.is_none()) {
+                origin.span.clone()
+            } else {
                 let start_byte = *next_synthetic_span_byte;
                 *next_synthetic_span_byte = next_synthetic_span_byte.saturating_add(1);
                 SourceSpan {
@@ -509,8 +528,14 @@ fn argument_from_bound_value(
             implicit_input_source: Some(source.to_caushell_types_implicit_input_source()),
             runtime_argument_domain: domain.clone(),
             runtime_data: false,
-            quoted: false,
-            node_kind: "runtime_input".to_string(),
+            quoted: text_override.is_none() && origin.as_ref().is_some_and(|o| o.single_field),
+            node_kind:
+                if text_override.is_none() && origin.as_ref().is_some_and(|o| o.single_field) {
+                    "runtime_scalar"
+                } else {
+                    "runtime_input"
+                }
+                .to_string(),
             binding_source: ArgumentBindingSource::RemainingArg,
         },
     }
@@ -523,7 +548,7 @@ fn maximum_bound_source_span_end(invocation: &BoundInvocation) -> usize {
         .flat_map(|parameter| parameter.values.iter())
         .filter_map(|value| match value {
             BoundValue::Argument { span, .. } => Some(span.end_byte),
-            BoundValue::ImplicitInput { .. } => None,
+            BoundValue::ImplicitInput { origin, .. } => origin.as_ref().map(|o| o.span.end_byte),
         })
         .max()
         .unwrap_or_default()
@@ -610,6 +635,7 @@ mod tests {
         Effect {
             kind: EffectKind::DispatchCommand,
             path_access: None,
+            path_scope: None,
             target: EffectTarget::Dispatch(DispatchTarget {
                 module_runtime: None,
                 command: crate::DispatchCommandSource::Slot(SlotName::new(command)),
@@ -766,6 +792,7 @@ mod tests {
                 BoundParameter::new(SlotName::new("wrapped_args"), SemanticType::PlainValue)
                     .with_value(BoundValue::ImplicitInput {
                         source: crate::ImplicitInputSource::StdinData,
+                        origin: None,
                         domain: Some(RuntimeArgumentDomain::PathSet {
                             roots: vec!["/tmp/root".to_string()],
                             may_escape: false,
@@ -773,6 +800,7 @@ mod tests {
                     })
                     .with_value(BoundValue::ImplicitInput {
                         source: crate::ImplicitInputSource::DispatchOutput,
+                        origin: None,
                         domain: Some(RuntimeArgumentDomain::Unbounded),
                     }),
             )
@@ -818,14 +846,16 @@ mod tests {
             &path_targets.values[0],
             BoundValue::ImplicitInput {
                 source: crate::ImplicitInputSource::StdinData,
-                domain: Some(RuntimeArgumentDomain::PathSet { .. })
+                domain: Some(RuntimeArgumentDomain::PathSet { .. }),
+                ..
             }
         ));
         assert!(matches!(
             &path_targets.values[1],
             BoundValue::ImplicitInput {
                 source: crate::ImplicitInputSource::DispatchOutput,
-                domain: Some(RuntimeArgumentDomain::Unbounded)
+                domain: Some(RuntimeArgumentDomain::Unbounded),
+                ..
             }
         ));
     }

@@ -2,7 +2,8 @@
 //! process, application configuration or host environment is inspected.
 use caushell_profile::{
     BoundInvocation, ConfiguredScalar, EffectTarget, EnvironmentValueRef, EnvironmentValueSource,
-    SemanticValueResolution, SessionValue, ValueProjection, project_value,
+    SemanticValueResolution, SessionValue, ShellVariableValueSource, ValueProjection,
+    VariablePresence, project_value,
 };
 use caushell_types::{NetworkListenScope, NetworkListener};
 
@@ -10,6 +11,25 @@ use super::ExecutionResolveRecordRef;
 
 pub(crate) fn environment_default(
     source: &EnvironmentValueSource,
+    record: Option<ExecutionResolveRecordRef<'_>>,
+) -> Option<SemanticValueResolution> {
+    variable_default(&source.name, source.empty_is_unset, false, record)
+}
+
+/// Shell defaults include unexported locals; unknown presence is not absence.
+/// Prefix assignments and scalar materialization use the same supplied-fact
+/// query as process environment defaults, without observing the host shell.
+pub(crate) fn shell_variable_default(
+    source: &ShellVariableValueSource,
+    record: Option<ExecutionResolveRecordRef<'_>>,
+) -> Option<SemanticValueResolution> {
+    variable_default(&source.name, source.empty_is_unset, true, record)
+}
+
+fn variable_default(
+    name: &str,
+    empty_is_unset: bool,
+    shell_scope: bool,
     record: Option<ExecutionResolveRecordRef<'_>>,
 ) -> Option<SemanticValueResolution> {
     let unknown = || {
@@ -27,7 +47,7 @@ pub(crate) fn environment_default(
             .prefix_assignments
             .iter()
             .rev()
-            .find(|a| a.name == source.name)
+            .find(|a| a.name == name)
     });
     let value = if let Some(assignment) = prefix {
         if assignment.operator != caushell_parse::AssignmentOperator::Assign {
@@ -39,8 +59,17 @@ pub(crate) fn environment_default(
                 record.bindings(),
             ),
         )
+    } else if shell_scope {
+        match record.bindings().variable_presence(name) {
+            VariablePresence::Absent => return None,
+            VariablePresence::Unknown => return unknown(),
+            VariablePresence::Present => match record.bindings().get(name) {
+                Some(binding) => binding.value.clone(),
+                None => return unknown(),
+            },
+        }
     } else {
-        match record.bindings().environment_value(&source.name) {
+        match record.bindings().environment_value(name) {
             EnvironmentValueRef::Absent => return None,
             EnvironmentValueRef::Unknown => return unknown(),
             EnvironmentValueRef::Present(value) => value.clone(),
@@ -48,7 +77,7 @@ pub(crate) fn environment_default(
     };
     match value {
         SessionValue::ExactScalar(value) | SessionValue::RuntimeProduced { value, .. } => {
-            if source.empty_is_unset && value.is_empty() {
+            if empty_is_unset && value.is_empty() {
                 None
             } else {
                 Some(SemanticValueResolution::Known(value))

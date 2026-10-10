@@ -34,6 +34,8 @@ fn nul_path_records_reach_known_child_mutation_slots() {
         "find -type f -print0 | xargs -0 chmod 644",
         r"find . -name \*.py -print0 | xargs -0 sed -i '1a Line of text here'",
         "find . -type f -print0 | xargs -0 -I{} mv {} archive",
+        "find . -print0 | xargs -0 -I{} mv {} {}.bak",
+        "find /tmp/project/ -print0 | xargs -0 -I{} mv {} {}.bak",
         "find './space dir' -print0 | xargs -0 chmod 644",
         "find ./src /tmp/project/lib -print0 | xargs -0 chmod 644",
         "root=./src; find \"$root\" -print0 | xargs -0 chmod 644",
@@ -66,7 +68,12 @@ fn outside_unknown_or_escaping_roots_are_not_laundered() {
         "find . -follow -print0 | xargs -0 chmod 644",
         "cd /opt/shared; find . -print0 | xargs -0 chmod 644",
         "find . -print0 | xargs -0 -I{} mv {} /opt/shared",
-        "find . -print0 | xargs -0 -I{} mv {} {}.bak",
+        "find /opt/shared -print0 | xargs -0 -I{} mv {} {}.bak",
+        // The inclusive named root may itself become /tmp/project.bak;
+        // unlike a root spelled with a trailing '/', this can escape.
+        "find /tmp/project -print0 | xargs -0 -I{} mv {} {}.bak",
+        "find -L . -print0 | xargs -0 -I{} mv {} {}.bak",
+        "find \"$unknown\" -print0 | xargs -0 -I{} mv {} {}.bak",
         "find . -print0 | tee /opt/shared/paths | xargs -0 chmod 644",
     ] {
         expect(command, Decision::NeedApproval);
@@ -77,6 +84,7 @@ fn outside_unknown_or_escaping_roots_are_not_laundered() {
 fn non_preserving_output_and_fd_routing_remain_unknown() {
     for command in [
         "find . -print | xargs chmod 644",
+        "find . -print | xargs -I{} mv {} {}.bak",
         "find . -print0 | xargs chmod 644",
         "find . -print | xargs -0 chmod 644",
         "find . -print0 -print | xargs -0 chmod 644",

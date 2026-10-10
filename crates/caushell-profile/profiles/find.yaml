@@ -24,9 +24,12 @@ opaque_on_unresolved: true
 # Keep unmodeled expression controls/clusters opaque when a glob can generate
 # them; this is a grammar fact, not a risk allowlist.
 argument_control_vocabulary:
-  unmodeled_words: ["-ok", "-okdir", "-fprintf", "-files0-from", "-f", "-mnewer", "-printx", "-exit", "-O", "--"]
+  # -O / -- belong only to the leading-option grammar, already guarded by
+  # the prefix proof. They cannot introduce an action inside an expression.
+  unmodeled_words: ["-files0-from", "-f", "-printx", "-exit"]
   unmodeled_short_clusters: ["EHLPXdsx"]
-  positional_boundary_words: ["-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-wholename", "-iwholename", "-lname", "-ilname", "-context"]
+  operand_free_short_clusters: ["EHLPXdsx"]
+  positional_boundary_words: ["-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-wholename", "-iwholename", "-lname", "-ilname", "-context", "-type", "-xtype", "-amin", "-atime", "-cmin", "-ctime", "-mmin", "-mtime", "-Bmin", "-Btime", "-size", "-inum", "-links", "-uid", "-gid", "-used", "-perm", "-flags", "-user", "-group", "-fstype", "-newer", "-mnewer", "-anewer", "-cnewer", "-Bnewer", "-samefile", "-newerat", "-newerBt", "-newerct", "-newermt", "-printf", "-fprintf", "-fprint", "-fprint0", "-fls", "-print", "-print0", "-ls", "-delete", "-empty", "-true", "-false", "-readable", "-writable", "-executable", "-nouser", "-nogroup", "-acl", "-sparse", "-local", "-xattr", "-depth", "-xdev", "-mount", "-prune", "-quit", "-maxdepth", "-mindepth", "-regextype", "-daystart", "-noleaf", "-ignore_readdir_race", "-noignore_readdir_race", "-warn", "-nowarn"]
 argument_regions:
   - id: exec
     start_flags: ["-exec"]
@@ -38,6 +41,12 @@ argument_regions:
     terminators:
       - {value: ";"}
       - {value: "+", preceding: "{}"}
+  - id: ok
+    start_flags: ["-ok"]
+    terminators: [{value: ";"}]
+  - id: okdir
+    start_flags: ["-okdir"]
+    terminators: [{value: ";"}]
 
 forms:
   - id: exec_command
@@ -49,6 +58,8 @@ forms:
           items:
             - {kind: has_flag, flag: "-exec"}
             - {kind: has_flag, flag: "-execdir"}
+            - {kind: has_flag, flag: "-ok"}
+            - {kind: has_flag, flag: "-okdir"}
         - kind: not
           item: &formatted_stdout
             kind: any
@@ -101,6 +112,22 @@ forms:
             value: ";"
           - kind: exclude_literal
             value: "+"
+      - name: ok_command
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: argument_region_command, region: ok}
+        cardinality: optional_many
+      - name: okdir_command
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: argument_region_command, region: okdir}
+        cardinality: optional_many
+      - name: ok_args
+        semantic: {kind: plain_value}
+        binding: {kind: argument_region_args, region: ok}
+        cardinality: optional_many
+      - name: okdir_args
+        semantic: {kind: plain_value}
+        binding: {kind: argument_region_args, region: okdir}
+        cardinality: optional_many
     stream_contract:
       stdin_mode: ignored
       stdout_mode: path_list
@@ -115,6 +142,7 @@ forms:
         target:
           kind: configured_path
           sources: [{slot: search_roots, projection: {kind: identity}}]
+          only_when_sources_absent: true
           default_value: "."
           purpose: generic_operand
       - kind: dispatch_command
@@ -129,6 +157,10 @@ forms:
           command: execdir_command
           argv:
             - execdir_args
+      - kind: dispatch_command
+        target: {kind: dispatch, command: ok_command, argv: [ok_args]}
+      - kind: dispatch_command
+        target: {kind: dispatch, command: okdir_command, argv: [okdir_args]}
 
   - id: exec_formatted_output
     selector: {kind: all, items: [*has_dispatch, *formatted_stdout]}
@@ -163,7 +195,9 @@ forms:
         separator: nul
         escape_modifiers: [follow_symlinks]
       required_modifiers: [nul_output]
-      excluded_modifiers: [line_output, information_options]
+      # Named file outputs can alias stdout. Their combined stream has no
+      # unconditional pure-path guarantee, even alongside -print0.
+      excluded_modifiers: [line_output, information_options, file_output, formatted_file_output, legacy_archive_output]
     effects: &enumerate_effects
       - kind: read_path
         target:
@@ -191,7 +225,7 @@ modifiers:
       kind: any_flag
       flags: ["(", ")", "!", ",", "-a", "-and", "-o", "-or", "-not", "-depth", "-d", "-xdev", "-x", "-mount", "-prune", "-quit"]
   - id: operand_free_tests
-    matcher: {kind: any_flag, flags: ["-empty", "-true", "-false", "-readable", "-writable", "-executable", "-nouser", "-nogroup", "-acl", "-sparse"]}
+    matcher: {kind: any_flag, flags: ["-empty", "-true", "-false", "-readable", "-writable", "-executable", "-nouser", "-nogroup", "-acl", "-sparse", "-local", "-xattr"]}
   - id: traversal_options
     matcher:
       kind: any_flag
@@ -242,7 +276,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-maxdepth"
-        - "-mindepth"
     parameters:
       - name: depth_values
         semantic:
@@ -250,6 +283,14 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
+        cardinality: required_many
+
+  - id: minimum_traversal_depth
+    matcher: {kind: any_flag, flags: ["-mindepth"]}
+    parameters:
+      - name: minimum_depth
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
         cardinality: required_many
 
   # These arguments are tests, not search roots or file modifications. In
@@ -317,7 +358,7 @@ modifiers:
   - id: reference_file_filter
     matcher:
       kind: any_flag
-      flags: ["-newer", "-anewer", "-cnewer", "-Bnewer", "-samefile", "-neweraa", "-neweraB", "-newerac", "-neweram", "-newerBa", "-newerBB", "-newerBc", "-newerBm", "-newerca", "-newercB", "-newercc", "-newercm", "-newerma", "-newermB", "-newermc", "-newermm"]
+      flags: ["-newer", "-mnewer", "-anewer", "-cnewer", "-Bnewer", "-samefile", "-neweraa", "-neweraB", "-newerac", "-neweram", "-newerBa", "-newerBB", "-newerBc", "-newerBm", "-newerca", "-newercB", "-newercc", "-newercm", "-newerma", "-newermB", "-newermc", "-newermm"]
     parameters:
       - name: reference_files
         semantic: {kind: path, role: read, purpose: generic_operand}
@@ -360,6 +401,33 @@ modifiers:
 
   - id: nul_output
     matcher: {kind: any_flag, flags: ["-print0"]}
+  # Both operands belong to this action. The second is format data, never
+  # an outer predicate, traversal root or dispatch opener.
+  - id: formatted_file_output
+    matcher: {kind: any_flag, flags: ["-fprintf"]}
+    parameters:
+      - name: formatted_output_paths
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: first_of_two_args}
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: formatted_output_paths}
+        catastrophic: {semantic_class: raw_write_target}
+
+  - id: legacy_archive_output
+    matcher: {kind: any_flag, flags: ["-cpio", "-ncpio"]}
+    parameters:
+      - name: archive_output_paths
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: archive_output_paths}
+        catastrophic: {semantic_class: raw_write_target}
   - id: line_output
     matcher: {kind: any_flag, flags: ["-print"]}
   - id: list_output
@@ -372,6 +440,7 @@ modifiers:
         - "-delete"
     effects:
       - kind: delete_path
+        path_scope: {kind: subtree, escape_modifiers: [follow_symlinks]}
         target:
           kind: slot
           name: search_roots
@@ -381,11 +450,14 @@ modifiers:
       # configured target supplements it with find's implicit cwd when the
       # slot is empty; an unresolved explicit root must not become '.'.
       - kind: delete_path
+        path_scope: {kind: subtree, escape_modifiers: [follow_symlinks]}
         target:
           kind: configured_path
           sources: [{slot: search_roots, projection: {kind: identity}}]
+          only_when_sources_absent: true
           default_value: "."
           purpose: generic_operand
+        catastrophic: {semantic_class: delete_path}
 
 subcommands: null
 extensions:
@@ -395,9 +467,12 @@ extensions:
     - https://www.gnu.org/software/findutils/manual/html_node/find_html/Print-File-Name.html
     - https://www.gnu.org/software/findutils/manual/html_node/find_html/Print-File-Information.html
     - https://man.freebsd.org/cgi/man.cgi?query=find&sektion=1
+    - https://docs.oracle.com/cd/E86824_01/html/E54763/find-1.html
   caushell.profile/known_limitations:
     - Outer option ownership is opt-in and exact; an undeclared outer option or unknown argv boundary requires approval rather than guessing its operand count. Child argv never supplies outer flags or search roots.
     - Common GNU/BSD filters and their operands are modeled, but expressions are not evaluated against the filesystem; possible actions are conservatively retained across boolean branches.
-    - Undeclared forms including -fprintf (two distinct operands), -files0-from (runtime-provided traversal roots), BSD -f (mixed positional and flag-provided root sets), and -ok/-okdir (confirmation-based dispatch) remain unresolved and require approval. They must not be declared as operand-free or mapped to incorrect traversal domains.
+    - -files0-from (runtime-provided traversal roots) and BSD -f (mixed positional and flag-provided root sets, including attached forms) remain unresolved and require approval. They must not be declared as operand-free or mapped to incorrect traversal domains.
+    - Confirmation-based -ok/-okdir children retain their possible execution effects. Tool confirmation does not certify the operation as authorized or safe.
     - Semicolon and plus terminators are recognized for dispatch, but batched execution cardinality and all platform-specific find behavior are not modeled exactly.
     - Symlink traversal and execution-directory context that cannot be established conservatively widen or leave the argument domain unknown.
+    - Named file output actions disable the unconditional stdout path-record guarantee: file targets can alias descriptors and mix other data with -print0. This does not make the file output itself an external write when the shared I/O query proves a local file or a sink.

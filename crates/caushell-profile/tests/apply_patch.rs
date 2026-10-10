@@ -160,7 +160,8 @@ fn stdin_starts_unknown_and_requires_explicit_complete_evidence() {
         parameter(&b, "patch_writes").values.as_slice(),
         [BoundValue::ImplicitInput {
             source: ImplicitInputSource::StdinData,
-            domain: None
+            domain: None,
+            ..
         }]
     ));
     refresh_payload_projections(&mut b, None);

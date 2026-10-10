@@ -79,7 +79,9 @@ fn invocation_streams(
 ) -> InvocationStreams {
     let entry = ctx.effective_cwd_for_node(node);
     let known_cwds = entry.map(|cwd| cwd.known_cwds()).unwrap_or_default();
-    let uncertain_cwd = entry.is_some_and(|cwd| cwd.has_unknown() || known_cwds.len() != 1);
+    let uncertain_cwd = entry.is_some_and(|cwd| {
+        cwd.has_unknown() || !cwd.bounded_roots().is_empty() || known_cwds.len() != 1
+    });
     let cwd = known_cwds
         .first()
         .copied()

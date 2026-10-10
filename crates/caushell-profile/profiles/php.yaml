@@ -8,23 +8,47 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
 forms:
   - id: information
-    selector: {kind: has_modifier, modifier: information}
+    selector: {kind: all, items: [{kind: has_modifier, modifier: information}, {kind: not, item: {kind: has_modifier, modifier: ini_definition}}]}
+  - id: runtime_information
+    selector: {kind: all, items: [{kind: has_modifier, modifier: runtime_information}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: ini_definition}}]}
+    implicit_inputs: [{source: inherited_environment, semantic: {kind: plain_value}}]
+    effects: [{kind: transform_data, target: {kind: implicit_input, source: inherited_environment}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: lint_files
+    selector:
+      kind: all
+      items:
+        - &lint_active
+          kind: all
+          items:
+            - {kind: has_modifier, modifier: lint}
+            - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: runtime_information}, {kind: has_modifier, modifier: code}, {kind: has_modifier, modifier: script_file}, {kind: has_modifier, modifier: server}, {kind: has_modifier, modifier: document_root}, {kind: has_modifier, modifier: ini_definition}]}}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - {name: lint_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: lint_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: lint_stdin
+    selector: {kind: all, items: [*lint_active, {kind: no_positional_args}]}
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: inline_code
-    selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    selector: {kind: all, items: [{kind: has_modifier, modifier: code}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: lint}}]}
     parameters: [{name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: script_file
-    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: script_file}}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: server}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: script_file}}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: server}}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: lint}}]}
     parameters:
       - {name: script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_path, semantic: {kind: path, role: read, purpose: script_source}}}}
       - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
     effects: [{kind: read_path, target: {kind: slot, name: script_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
     stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: script_file_option
-    selector: {kind: all, items: [{kind: has_modifier, modifier: script_file}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    selector: {kind: all, items: [{kind: has_modifier, modifier: script_file}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: lint}}]}
     stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: built_in_server
-    selector: {kind: all, items: [{kind: has_modifier, modifier: server}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    selector: {kind: all, items: [{kind: has_modifier, modifier: server}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: lint}}]}
     parameters:
       - {name: router_script, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: optional_one, structured_projection: {branches: [], fallback: {name: router_path, semantic: {kind: path, role: read, purpose: script_source}}}}
       - {name: server_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
@@ -51,7 +75,10 @@ modifiers:
     matcher: {kind: any_flag, flags: ['-t']}
     parameters: [{name: document_root, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
     effects: []
-  - {id: information, matcher: {kind: any_flag, flags: ['-h', '--help', '-v', '--version', '--ini']}, ends_option_scope: true}
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '--help', '-v', '--version', '--ini', '-m', '--modules']}, ends_option_scope: true}
+  - {id: runtime_information, matcher: {kind: any_flag, flags: ['-i', '--info']}, ends_option_scope: true}
+  - {id: lint, matcher: {kind: any_flag, flags: ['-l', '--syntax-check']}}
+  - {id: no_ini, matcher: {kind: any_flag, flags: ['-n', '--no-php-ini']}}
   - {id: ini_definition, matcher: {kind: any_flag, flags: ['-d', '-c']}, parameters: [{name: ini_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]}
 extensions:
   caushell.profile/source_research: [https://www.php.net/manual/en/features.commandline.options.php]
@@ -59,3 +86,4 @@ extensions:
     - PHP code and PHP files are opaque; no PHP syntax or included file behavior is interpreted.
     - -S is modeled as a host_port endpoint, and -t as its document-root read path; this DSL cannot split addr:port into a safe listener host and port, so no Listener fact is emitted. The optional URI router is an opaque PHP file when explicitly provided.
     - Request-driven PHP file execution is not inferred for arbitrary files in the document root.
+    - Lint records file reads (or possible stdin) without executing PHP code. Positional script arguments remain governed by the native leading-option boundary; a -l after a script path does not turn execution into lint. Explicit configuration/INI directives or conflicting execution modes with lint remain unresolved rather than suppressing possible native loading behavior.

@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use caushell_parse::{CommandFact, ParsedCommandArtifact, StatementTerminator};
 use caushell_profile::{
     InvocationRuntimeContext, ProfileRegistry, ResolveInvocationArtifactResult, SessionBindings,
-    SessionValue, ValueMaterialization, materialize_command_name, materialize_projected_invocation,
-    project_invocation, resolve_invocation_artifact_with_bindings, runtime_variable_writes,
+    SessionValue, materialize_command_name, materialize_projected_invocation, project_invocation,
+    resolve_invocation_artifact_with_bindings, runtime_variable_writes,
 };
 use caushell_types::{
     CheckRequest, CommandSequenceNo, SessionAliasBinding, SessionFunctionBinding, SessionSummary,
@@ -295,27 +295,12 @@ impl RuntimeVariableContext<'_> {
                 &project_invocation(&expanded, InvocationRuntimeContext::default()),
                 bindings,
             );
-            let mut local = bindings.clone();
-            local.replace_positional_parameters(projection.invocation.args.iter().enumerate().map(
-                |(i, a)| {
-                    match projection.arg_resolutions.get(i) {
-                        Some(ValueMaterialization::ResolvedExactScalar { .. }) => {
-                            SessionValue::exact_scalar(&a.text)
-                        }
-                        _ if a.runtime_data => SessionValue::exact_scalar(&a.text),
-                        Some(ValueMaterialization::Static) => {
-                            caushell_parse::decode_static_shell_argument(
-                                &a.text,
-                                a.quoted,
-                                &a.node_kind,
-                            )
-                            .map(SessionValue::exact_scalar)
-                            .unwrap_or_else(|| SessionValue::opaque_dynamic(&a.text))
-                        }
-                        _ => SessionValue::opaque_dynamic(&a.text),
-                    }
-                },
-            ));
+            let environment = super::command_environment_bindings(
+                bindings,
+                parsed,
+                &caushell_runner::ParsedCommandRef::new(usize::MAX, command.span.clone()),
+            );
+            let local = super::function_call_bindings(&environment, &projection);
             let mut child = RuntimeVariableContext {
                 registry: self.registry,
                 request: self.request,

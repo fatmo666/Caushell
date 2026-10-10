@@ -488,6 +488,7 @@ pub fn bind_invocation(
     }
 
     bind_runtime_argument_sources(&mut bound, projection);
+    bound.modifier_parameter_flags = state.modifier_parameter_flags.clone();
     crate::structured_projection::project_parameters(
         &mut bound,
         targets
@@ -833,6 +834,10 @@ fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &Proje
             *value = BoundValue::ImplicitInput {
                 source: ImplicitInputSource::from_caushell_types_implicit_input_source(source),
                 domain: argument.runtime_argument_domain.clone(),
+                origin: Some(crate::BoundImplicitArgumentOrigin {
+                    span: argument.span.clone(),
+                    single_field: argument.node_kind == "runtime_scalar",
+                }),
             };
         }
         crate::refresh_parameter_semantic_values(parameter);
@@ -2016,6 +2021,7 @@ struct BindingState<'p, 'm> {
     argument_regions: Vec<crate::BoundArgumentRegion>,
     audit_operation_semantics: bool,
     unbound_flag_operands: Vec<usize>,
+    modifier_parameter_flags: Vec<ArgumentBindingSource>,
     flag_operand_indices: Vec<bool>,
     projection: &'p ProjectedInvocation,
     consumed: Vec<bool>,
@@ -2038,6 +2044,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             projection,
             audit_operation_semantics: false,
             unbound_flag_operands: Vec::new(),
+            modifier_parameter_flags: Vec::new(),
             flag_operand_indices: Vec::new(),
             consumed: vec![false; projection.args.len()],
             declared_short_flags: BTreeSet::new(),
@@ -2063,6 +2070,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             projection,
             audit_operation_semantics: false,
             unbound_flag_operands: Vec::new(),
+            modifier_parameter_flags: Vec::new(),
             flag_operand_indices: Vec::new(),
             consumed: consumed.to_vec(),
             declared_short_flags: BTreeSet::new(),
@@ -2447,6 +2455,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 },
             };
 
+            if modifier.is_some() && !self.modifier_parameter_flags.contains(&binding_source) {
+                self.modifier_parameter_flags.push(binding_source.clone());
+            }
             self.consumed[index] = true;
 
             let value_count = values.len();
@@ -2492,7 +2503,10 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
                 FlagTokenMatch::LongInlineOperand(inline_operand)
                 | FlagTokenMatch::ShortAttachedOperand(inline_operand) => {
-                    if matches!(operand_mode, FlagOperandMode::SecondArg) {
+                    if matches!(
+                        operand_mode,
+                        FlagOperandMode::SecondArg | FlagOperandMode::FirstOfTwoArgs
+                    ) {
                         if self.audit_operation_semantics {
                             self.unbound_flag_operands.push(index);
                         }
@@ -2500,13 +2514,22 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     }
 
                     if argument_satisfies_value_constraints(inline_operand, value_constraints) {
-                        values.push(BoundValue::argument_with_node_kind(
+                        let mut value = BoundValue::argument_with_node_kind(
                             inline_operand.to_string(),
                             arg.quoted,
                             arg.node_kind.clone(),
                             arg.span.clone(),
                             binding_source,
-                        ));
+                        );
+                        // Scoped binding obtained this suffix from complete,
+                        // decoded argv, not from raw shell source. Preserve that
+                        // distinction; a dollar sign in it is not a new expansion.
+                        if self.exact_option_words || arg.runtime_data {
+                            value = value.with_materialization(
+                                crate::BoundArgumentMaterialization::RuntimeData,
+                            );
+                        }
+                        values.push(value);
                     }
                 }
             }
@@ -2557,6 +2580,23 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 binding_source,
                 value_constraints,
             ),
+            FlagOperandMode::FirstOfTwoArgs => {
+                let second = flag_index.checked_add(2)?;
+                if second >= scope.end_index || self.consumed[second] {
+                    return None;
+                }
+                let value = self.consume_immediate_arg_after(
+                    flag_index,
+                    scope,
+                    binding_source,
+                    value_constraints,
+                )?;
+                self.consumed[second] = true;
+                if self.audit_operation_semantics {
+                    self.flag_operand_indices[second] = true;
+                }
+                Some(value)
+            }
             FlagOperandMode::InlineOnly
             | FlagOperandMode::OptionalInlineOnly
             | FlagOperandMode::OptionalInlineOrShortAttached
@@ -4154,7 +4194,7 @@ fn modifier_allows_inline_long_operand(modifier: &Modifier) -> bool {
             parameter.binding,
             BindingSpec::FollowingMatchedFlag { operand_mode }
                 | BindingSpec::FollowingFlag { operand_mode, .. }
-                if !matches!(operand_mode, FlagOperandMode::SecondArg)
+                if !matches!(operand_mode, FlagOperandMode::SecondArg | FlagOperandMode::FirstOfTwoArgs)
         )
     })
 }

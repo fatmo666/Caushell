@@ -16,6 +16,31 @@ opaque_on_unresolved: true
 option_scope: leading_options
 option_matching: exact_names
 forms:
+- id: query_network_state
+  selector:
+    kind: all
+    items:
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: not, item: {kind: has_modifier, modifier: batch_file}}
+    - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(address|addr|a|route|r|link|l|neighbour|neighbor|neigh|tcp_metrics|tcpmetrics)$'}}
+    - kind: any
+      items:
+      - {kind: not, item: {kind: has_positional_at, index: 1}}
+      - {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(show|list|lst)$'}}
+  parameters: &query_parameters
+  - {name: query_object, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+  - {name: query_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+  stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+- id: query_route_lookup
+  selector:
+    kind: all
+    items:
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: not, item: {kind: has_modifier, modifier: batch_file}}
+    - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(route|r)$'}}
+    - {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: get}}
+  parameters: *query_parameters
+  stream_contract: *query_stream
 - id: information
   selector:
     kind: has_modifier
@@ -67,6 +92,11 @@ forms:
       kind: slot
       name: batch_payload
 modifiers:
+- id: query_rendering
+  matcher: {kind: any_flag, flags: ['-4', '-6', '-0', '-j', '-json', '-o', '-oneline', '-br', '-brief', '-s', '-stats', '-statistics', '-d', '-details', '-r', '-resolve', '-iec', '-human', '-h']}
+- id: namespace_context
+  matcher: {kind: any_flag, flags: ['-n', '-netns']}
+  parameters: [{name: namespace_context, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
 - id: information
   matcher:
     kind: any_flag
@@ -165,6 +195,11 @@ subcommands:
 extensions:
   caushell.profile/source_research:
   - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/ip (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+  - https://github.com/iproute2/iproute2/blob/main/ip/ipaddress.c
+  - https://github.com/iproute2/iproute2/blob/main/ip/iproute.c
+  - https://github.com/iproute2/iproute2/blob/main/ip/iplink.c
+  - https://manpages.debian.org/trixie/iproute2/ip-neighbour.8.en.html
+  - https://manpages.debian.org/trixie/iproute2/ip-tcp_metrics.8.en.html
   caushell.profile/known_limitations:
   - Source-specific bounded forms are modeled; unresolved CLI combinations remain
     opaque.
@@ -173,3 +208,4 @@ extensions:
     unknown write because no dedicated runtime namespace effect exists.
   - Inner configuration payloads and generated native child argv not explicitly represented
     by a form remain partial.
+  - Read-only show/list and default-show forms are limited to declared network objects. Mutations, unknown operations and ambiguous command abbreviations (for example link s means set) remain unresolved; no global read-only assumption is made for ip.

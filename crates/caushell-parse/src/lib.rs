@@ -1,6 +1,8 @@
 mod artifact;
+mod backtick;
 mod error;
 mod parser;
+mod syntax_compat;
 
 pub use artifact::{
     AssignmentCommandFact, AssignmentOperator, AssignmentValueFact, CommandFact,

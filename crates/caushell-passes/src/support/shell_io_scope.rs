@@ -129,7 +129,7 @@ pub(crate) fn inherited_shell_descriptor_target(
             && (!cwd_dependent
                 || ctx
                     .effective_cwd_for_node(&parent)
-                    .is_none_or(|cwd| !cwd.has_unknown())) =>
+                    .is_none_or(|cwd| cwd.as_known().is_some())) =>
         {
             Some(target)
         }

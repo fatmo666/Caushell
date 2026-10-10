@@ -89,6 +89,8 @@ pub struct BindingValueRef<'a> {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionBindings {
+    // Static shell frame kind; no process/runtime observation is involved.
+    in_function_scope: bool,
     functions: BTreeMap<String, SessionFunctionBinding>,
     // Variable existence is not child-environment presence: an unexported
     // variable still prevents plain unset from falling back to a function.
@@ -99,6 +101,8 @@ pub struct SessionBindings {
     unresolved_runtime_variable_targets: std::collections::BTreeSet<String>,
     session_variables: BTreeMap<String, SessionValue>,
     inherited_environment: BTreeMap<String, SessionValue>,
+    // $0 belongs to the shell frame, not to the list changed by set/shift.
+    shell_program_name: Option<SessionValue>,
     positional_parameters: Vec<SessionValue>,
     // No snapshot is not an empty argv. Materializing $@/$* requires proof
     // that the entire positional list is known, including a known empty list.
@@ -124,6 +128,13 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn enter_function_scope(&mut self) {
+        self.in_function_scope = true;
+    }
+
+    pub fn in_function_scope(&self) -> bool {
+        self.in_function_scope
+    }
     pub fn variable_presence(&self, name: &str) -> VariablePresence {
         if let Some(presence) = self.variable_presence.get(name) {
             return *presence;
@@ -417,10 +428,14 @@ impl SessionBindings {
 
     pub fn positional_parameter(&self, position: usize) -> Option<&SessionValue> {
         if position == 0 {
-            return None;
+            return self.shell_program_name.as_ref();
         }
 
         self.positional_parameters.get(position - 1)
+    }
+
+    pub fn set_shell_program_name(&mut self, value: Option<SessionValue>) {
+        self.shell_program_name = value;
     }
 
     pub fn positional_parameters(&self) -> &[SessionValue] {
@@ -429,6 +444,11 @@ impl SessionBindings {
 
     pub fn positional_parameters_are_complete(&self) -> bool {
         self.positional_parameters_complete
+    }
+
+    pub fn forget_positional_parameters(&mut self) {
+        self.positional_parameters.clear();
+        self.positional_parameters_complete = false;
     }
 
     pub fn remove(&mut self, name: &str) {
@@ -491,6 +511,7 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        self.in_function_scope = false;
         // Function export is deliberately not modeled. Ordinary shell
         // functions must not leak into a new interpreter's namespace.
         self.functions.clear();
@@ -658,7 +679,13 @@ pub fn exact_scalar_shell_parameter_value(
             exact_scalar_session_value(bindings.get(name)?.value)
         }
         ShellParameterReference::Positional(position) => {
-            exact_scalar_session_value(bindings.positional_parameter(*position)?)
+            match bindings.positional_parameter(*position) {
+                Some(value) => exact_scalar_session_value(value),
+                None if *position > 0 && bindings.positional_parameters_are_complete() => {
+                    Some(String::new())
+                }
+                None => None,
+            }
         }
         ShellParameterReference::AllPositionals(kind) => {
             exact_scalar_all_positional_parameters(bindings, *kind)
@@ -693,6 +720,7 @@ enum ShellWordQuote {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShellWordMode {
     CommandName,
+    PositionalArgument,
     Assignment,
 }
 
@@ -737,7 +765,18 @@ fn materialize_shell_word(
     mode: ShellWordMode,
     initial_quote: ShellWordQuote,
 ) -> Option<String> {
+    materialize_shell_word_with_references(text, bindings, mode, initial_quote)
+        .map(|(value, _)| value)
+}
+
+fn materialize_shell_word_with_references(
+    text: &str,
+    bindings: &SessionBindings,
+    mode: ShellWordMode,
+    initial_quote: ShellWordQuote,
+) -> Option<(String, Vec<ShellParameterReference>)> {
     let mut out = String::with_capacity(text.len());
+    let mut references = Vec::new();
     let mut chars = text.chars().peekable();
     let mut quote = initial_quote;
 
@@ -765,11 +804,21 @@ fn materialize_shell_word(
                 },
                 '$' => {
                     let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
+                    if mode == ShellWordMode::PositionalArgument
+                        && !matches!(
+                            reference,
+                            ShellParameterReference::Variable(_)
+                                | ShellParameterReference::Positional(_)
+                        )
+                    {
+                        return None;
+                    }
                     let value = exact_scalar_shell_parameter_value(bindings, &reference)?;
                     if value.contains('\0') {
                         return None;
                     }
                     out.push_str(&value);
+                    references.push(reference);
                 }
                 '`' => return None,
                 _ => out.push(ch),
@@ -780,18 +829,31 @@ fn materialize_shell_word(
                 '\\' => out.push(chars.next()?),
                 '$' => {
                     let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
+                    if mode == ShellWordMode::PositionalArgument
+                        && !matches!(
+                            reference,
+                            ShellParameterReference::Variable(_)
+                                | ShellParameterReference::Positional(_)
+                        )
+                    {
+                        return None;
+                    }
                     let value = exact_scalar_shell_parameter_value(bindings, &reference)?;
                     if value.contains('\0')
-                        || (mode == ShellWordMode::CommandName
+                        || (mode != ShellWordMode::Assignment
                             && !value.is_empty()
                             && !is_safe_unquoted_scalar(&value))
                     {
                         return None;
                     }
                     out.push_str(&value);
+                    references.push(reference);
                 }
                 '`' => return None,
-                '*' | '?' | '[' if mode == ShellWordMode::CommandName => return None,
+                '*' | '?' | '[' if mode != ShellWordMode::Assignment => return None,
+                // Brace expansion can produce multiple fields before parameter
+                // expansion. This scalar query must not collapse those fields.
+                '{' | '}' if mode == ShellWordMode::PositionalArgument => return None,
                 '~' if out.is_empty() && matches!(chars.peek(), None | Some('/')) => {
                     let home = exact_scalar_shell_parameter_reference_value("$HOME", bindings)?;
                     if home.contains('\0') {
@@ -806,8 +868,10 @@ fn materialize_shell_word(
     }
 
     let quote_complete = quote == initial_quote;
-    let value_allowed = mode == ShellWordMode::Assignment || !out.is_empty();
-    (quote_complete && value_allowed).then_some(out)
+    let value_allowed = mode == ShellWordMode::Assignment
+        || !out.is_empty()
+        || (mode == ShellWordMode::PositionalArgument && initial_quote == ShellWordQuote::Double);
+    (quote_complete && value_allowed).then_some((out, references))
 }
 
 fn exact_scalar_all_positional_parameters(
@@ -1550,6 +1614,16 @@ pub(crate) fn materialize_argument_text(
         };
     }
 
+    // A dollar sign inside a single-quoted segment is literal, including
+    // concatenated flag operands. Keep the source for its first lexical
+    // decode; do not invent a variable origin from the whole source word.
+    if crate::value_projection::decode_argument_prefix(text, quoted, node_kind).1 {
+        return MaterializedText {
+            text: text.to_string(),
+            resolution: ValueMaterialization::Static,
+        };
+    }
+
     if let Some(variable_name) = exact_variable_reference(text) {
         let Some(binding) = bindings.get(variable_name) else {
             return MaterializedText {
@@ -1745,6 +1819,91 @@ pub(crate) fn materialize_argument_text(
     }
 
     if contains_unescaped_dynamic_syntax(text) {
+        // Composite positional words (e.g. "$10", "${1}0")
+        // use the same parameter grammar as command names/assignments. Only
+        // statically proven single-field expansions are materialized; unknown
+        // bindings, splitting, pathname generation and substitutions stay
+        // unresolved. Resolved bytes remain argv data, never shell source.
+        if let Some((value, references)) = materialize_shell_word_with_references(
+            text,
+            bindings,
+            ShellWordMode::PositionalArgument,
+            if quoted && node_kind == "string" {
+                ShellWordQuote::Double
+            } else {
+                ShellWordQuote::None
+            },
+        ) {
+            // Preserve the actual variable's origin for attached operands
+            // such as -e"$CODE". Expanded bytes are argv data and must never
+            // be decoded/expanded again as outer-shell source.
+            let reference_value = |reference: &ShellParameterReference| match reference {
+                ShellParameterReference::Variable(name) => bindings
+                    .get(name)
+                    .map(|binding| (binding.value, binding.origin)),
+                ShellParameterReference::Positional(position) => bindings
+                    .positional_parameter(*position)
+                    .map(|value| (value, BindingOrigin::SessionBinding)),
+                _ => None,
+            };
+            let resolution = if references.len() == 1 {
+                let variable_name = shell_parameter_reference_name(&references[0]);
+                match reference_value(&references[0]) {
+                    Some((SessionValue::RuntimeProduced { kind, .. }, origin)) => {
+                        Some(ValueMaterialization::ResolvedRuntimeProduced {
+                            variable_name,
+                            value: value.clone(),
+                            kind: *kind,
+                            origin,
+                        })
+                    }
+                    Some((SessionValue::ExactScalar(_), origin)) => {
+                        Some(ValueMaterialization::ResolvedExactScalar {
+                            variable_name,
+                            value: value.clone(),
+                            origin,
+                        })
+                    }
+                    // Complete positional bindings prove absent positions
+                    // expand to empty strings; the lexical prefix may remain.
+                    None if matches!(references[0], ShellParameterReference::Positional(_))
+                        && bindings.positional_parameters_are_complete() =>
+                    {
+                        Some(ValueMaterialization::ResolvedExactScalar {
+                            variable_name,
+                            value: value.clone(),
+                            origin: BindingOrigin::SessionBinding,
+                        })
+                    }
+                    _ => None,
+                }
+            } else if !references.is_empty()
+                && references.iter().all(|reference| {
+                    matches!(
+                        reference_value(reference),
+                        Some((SessionValue::ExactScalar(_), _))
+                    ) || (matches!(reference, ShellParameterReference::Positional(_))
+                        && reference_value(reference).is_none()
+                        && bindings.positional_parameters_are_complete())
+                })
+            {
+                Some(ValueMaterialization::ResolvedExactScalar {
+                    variable_name: text.to_string(),
+                    value: value.clone(),
+                    origin: BindingOrigin::SessionBinding,
+                })
+            } else {
+                // The present origin model cannot express multiple runtime
+                // producers. Do not collapse them into an exact literal.
+                None
+            };
+            if let Some(resolution) = resolution {
+                return MaterializedText {
+                    text: value,
+                    resolution,
+                };
+            }
+        }
         return MaterializedText {
             text: text.to_string(),
             resolution: ValueMaterialization::UnsupportedDynamicText {
@@ -1902,6 +2061,110 @@ mod tests {
     }
 
     #[test]
+    fn numeric_reference_grammar_distinguishes_braces_and_suffixes() {
+        for (text, expected) in [("$1", 1), ("${1}", 1), ("${10}", 10), ("${00}", 0)] {
+            assert_eq!(
+                super::exact_shell_parameter_reference(text),
+                Some(super::ShellParameterReference::Positional(expected)),
+                "{text}"
+            );
+        }
+        for text in ["$10", "$00", "$99", "${1}0", r"\$10"] {
+            assert_eq!(super::exact_shell_parameter_reference(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn composite_positionals_materialize_single_fields_not_fictitious_indices() {
+        let mut bindings = SessionBindings::new();
+        bindings.set_shell_program_name(Some(crate::SessionValue::exact_scalar("/opt/program")));
+        bindings.replace_positional_parameters_with_exact_scalars([
+            "/opt/first",
+            "a2",
+            "a3",
+            "a4",
+            "a5",
+            "a6",
+            "a7",
+            "a8",
+            "a9",
+            "./tenth",
+        ]);
+        for (text, expected) in [
+            ("$10", "/opt/first0"),
+            ("${10}", "./tenth"),
+            ("${1}0", "/opt/first0"),
+            ("$00", "/opt/program0"),
+            ("${00}", "/opt/program"),
+        ] {
+            let result = super::materialize_argument_text(text, true, "string", &bindings);
+            assert_eq!(result.text, expected, "{text}");
+            assert!(
+                matches!(
+                    result.resolution,
+                    ValueMaterialization::ResolvedExactScalar { .. }
+                ),
+                "{text}"
+            );
+        }
+        bindings.replace_positional_parameters_with_exact_scalars(["./changed"]);
+        assert_eq!(
+            super::materialize_argument_text("$00", true, "string", &bindings).text,
+            "/opt/program0"
+        );
+        bindings.replace_positional_parameters_with_exact_scalars(std::iter::empty::<&str>());
+        assert_eq!(
+            super::materialize_argument_text("$10", true, "string", &bindings).text,
+            "0"
+        );
+        bindings.forget_positional_parameters();
+        assert!(matches!(
+            super::materialize_argument_text("$10", true, "string", &bindings).resolution,
+            ValueMaterialization::UnsupportedDynamicText { .. }
+        ));
+    }
+
+    #[test]
+    fn composite_positionals_keep_quoting_and_uncertainty_boundaries() {
+        let mut bindings = SessionBindings::new();
+        bindings.replace_positional_parameters_with_exact_scalars(["/opt/a b$literal*"]);
+        let result = super::materialize_argument_text("$10", true, "string", &bindings);
+        assert_eq!(result.text, "/opt/a b$literal*0");
+        assert!(matches!(
+            result.resolution,
+            ValueMaterialization::ResolvedExactScalar { .. }
+        ));
+        for (text, quoted, kind) in [
+            ("$10", false, "concatenation"),
+            ("$10*", false, "concatenation"),
+            ("${1}{a,b}", false, "concatenation"),
+            ("$(echo x)$10", true, "string"),
+            ("$unknown$10", true, "string"),
+        ] {
+            let result = super::materialize_argument_text(text, quoted, kind, &bindings);
+            assert!(
+                matches!(
+                    result.resolution,
+                    ValueMaterialization::UnsupportedDynamicText { .. }
+                ),
+                "{text}: {:?}",
+                result.resolution
+            );
+        }
+        let result = super::materialize_argument_text("$10", true, "raw_string", &bindings);
+        assert_eq!(result.text, "$10");
+        assert_eq!(result.resolution, ValueMaterialization::Static);
+        let artifact = parse_command(r#"touch "$10""#, ShellKind::Bash).unwrap();
+        let projection = project_invocation(
+            &artifact.commands[0],
+            crate::InvocationRuntimeContext::new(),
+        );
+        let result = materialize_projected_invocation(&projection, &bindings);
+        assert_eq!(result.invocation.args[0].text, "/opt/a b$literal*0");
+        assert!(result.invocation.args[0].runtime_data);
+    }
+
+    #[test]
     fn materializes_quoted_exact_scalar_payload() {
         let bindings = SessionBindings::new().with_exact_scalar("cmd", "echo ok");
         let candidate = RecursivePayloadCandidate {
@@ -1999,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_dynamic_text_remains_unmaterialized() {
+    fn quoted_composite_scalar_preserves_its_origin_and_unknown_boundary() {
         let bindings = SessionBindings::new().with_exact_scalar("cmd", "echo ok");
         let candidate = RecursivePayloadCandidate {
             language: PayloadLanguage::Bash,
@@ -2020,8 +2283,17 @@ mod tests {
 
         assert_eq!(
             materialized.resolution,
+            ValueMaterialization::ResolvedExactScalar {
+                variable_name: "cmd".into(),
+                value: "prefixecho ok".into(),
+                origin: BindingOrigin::SessionBinding,
+            }
+        );
+        let unknown = materialize_recursive_payload_candidate(&candidate, &SessionBindings::new());
+        assert_eq!(
+            unknown.resolution,
             ValueMaterialization::UnsupportedDynamicText {
-                text: "prefix$cmd".to_string(),
+                text: "prefix$cmd".into(),
             }
         );
     }
@@ -2264,6 +2536,29 @@ mod tests {
                 origin: BindingOrigin::SessionBinding,
             }
         );
+    }
+
+    #[test]
+    fn forgotten_positional_list_is_not_a_proven_empty_argv() {
+        let mut bindings = SessionBindings::new();
+        bindings.replace_positional_parameters_with_exact_scalars(["before"]);
+        bindings.forget_positional_parameters();
+        assert!(!bindings.positional_parameters_are_complete());
+        assert!(bindings.positional_parameter(1).is_none());
+        let parsed = parse_command("echo \"$@\"", ShellKind::Bash).unwrap();
+        let projection = crate::project_invocation(
+            &parsed.commands[0],
+            crate::InvocationRuntimeContext::default(),
+        );
+        let result = materialize_projected_invocation(&projection, &bindings);
+        assert!(
+            !result.invocation.args.is_empty(),
+            "unknown argv must not disappear"
+        );
+        assert!(result.arg_resolutions.iter().all(|r| !matches!(
+            r,
+            ValueMaterialization::Static | ValueMaterialization::ResolvedExactScalar { .. }
+        )));
     }
 
     #[test]

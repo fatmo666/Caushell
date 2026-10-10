@@ -13,6 +13,66 @@ fn shape(word: &str) -> ArgumentStructure {
     argument_structure(&projection.args[0])
 }
 
+#[test]
+fn runtime_tail_is_unknown_width_unless_explicitly_scalar() {
+    let parsed = parse_command("echo placeholder", ShellKind::Bash).unwrap();
+    let mut projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let arg = &mut projection.args[0];
+    arg.text.clear();
+    arg.quoted = true;
+    arg.implicit_input_source = Some(caushell_types::ImplicitInputSource::DispatchOutput);
+    for kind in ["word", "runtime_argument_list", "xargs_input_item"] {
+        arg.node_kind = kind.into();
+        let facts = argument_structure(arg);
+        assert_eq!(facts.fields, ArgumentFieldCount::Unknown, "{kind}");
+        assert!(!facts.exact && facts.may_equal("--"));
+    }
+    arg.node_kind = "runtime_scalar".into();
+    let facts = argument_structure(arg);
+    assert_eq!(facts.fields, ArgumentFieldCount::ExactlyOne);
+    assert!(!facts.exact);
+    arg.implicit_input_source = None;
+    arg.runtime_data = true;
+    assert_eq!(argument_structure(arg).exact_value(), Some(""));
+}
+
+#[test]
+fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
+    let parsed = parse_command("echo placeholder", ShellKind::Bash).unwrap();
+    let mut projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let arg = &mut projection.args[0];
+    arg.text.clear();
+    arg.node_kind = "runtime_scalar".into();
+    arg.implicit_input_source = Some(caushell_types::ImplicitInputSource::DispatchOutput);
+    for (roots, escape, prefix, control) in [
+        (vec!["."], false, ".", false),
+        (vec!["/opt/shared/"], false, "/opt/shared", false),
+        (vec!["safe/", "safe/cache"], false, "safe", false),
+        (vec!["安全/a", "安全/b"], false, "安全/", false),
+        (vec![".", "-delete"], false, "", true),
+        (vec!["."], true, "", true),
+        (vec![""], false, "", true),
+        (vec![], false, "", true),
+    ] {
+        arg.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: roots.into_iter().map(String::from).collect(),
+            may_escape: escape,
+        });
+        let facts = argument_structure(arg);
+        assert_eq!(facts.static_prefix, prefix, "{arg:?}");
+        assert_eq!(facts.may_equal("-delete"), control, "{arg:?}");
+        assert_eq!(facts.fields, ArgumentFieldCount::ExactlyOne);
+        assert!(!facts.exact);
+    }
+    arg.node_kind = "runtime_argument_list".into();
+    arg.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
+        roots: vec![".".into()],
+        may_escape: false,
+    });
+    assert_eq!(argument_structure(arg).fields, ArgumentFieldCount::Unknown);
+    assert_eq!(argument_structure(arg).static_prefix, "");
+}
+
 fn bound_with(yaml: &str, command: &str) -> BoundInvocation {
     let profile = load_command_profile_from_str(yaml).unwrap();
     let parsed = parse_command(command, ShellKind::Bash).unwrap();
@@ -91,6 +151,61 @@ fn standalone_process_substitution_is_one_unknown_path_not_its_shell_body() {
         assert!(!facts.may_equal(";") && !facts.may_equal("{}"));
     }
     assert!(!find("find . -newer <(cat stamp) -print").operation_semantics_unresolved);
+}
+
+#[test]
+fn arithmetic_alphabet_proof_never_evaluates_or_swallows_other_expansions() {
+    for word in ["-$((age + 1))", "+$(((${age} + 1)))", "$((x * 24))"] {
+        let facts = shape(word);
+        assert_eq!(facts.fields, ArgumentFieldCount::ZeroOrMore, "{word}");
+        assert!(facts.may_equal("-24") || facts.may_equal("24"));
+        assert!(!facts.may_equal("-exec") && !facts.may_equal("-delete"));
+    }
+    for word in [
+        "$((1))$(other)$((2))",
+        "$((1))$other",
+        "$((1))*.txt",
+        "$((array[$x]))",
+        "$(( $(other) ))",
+    ] {
+        assert_eq!(shape(word).fields, ArgumentFieldCount::Unknown, "{word}");
+    }
+}
+
+#[test]
+fn operand_free_cluster_declaration_rejects_value_taking_or_unknown_members() {
+    let yaml = include_str!("../profiles/find.yaml");
+    for letters in ["f", "D", "Z", "-s", ""] {
+        let bad = yaml.replace(
+            "operand_free_short_clusters: [\"EHLPXdsx\"]",
+            &format!("operand_free_short_clusters: [\"{letters}\"]"),
+        );
+        assert!(load_command_profile_from_str(&bad).is_err(), "{letters}");
+    }
+    let generic = yaml.replace("canonical_name: find", "canonical_name: probe");
+    let bound = bound_with(&generic, "probe -Ld . -print0");
+    assert!(!bound.operation_semantics_unresolved);
+    assert!(
+        bound
+            .applied_modifiers
+            .iter()
+            .any(|m| m.as_str() == "follow_symlinks")
+    );
+}
+
+#[test]
+fn bare_cluster_parameter_flags_retain_validated_source_without_an_operand() {
+    let yaml = include_str!("../profiles/xargs.yaml")
+        .replace("canonical_name: xargs", "canonical_name: probe");
+    let bound = bound_with(&yaml, "probe -0i echo '{}'");
+    assert!(
+        bound
+            .modifier_parameter_flags
+            .iter()
+            .any(|source| matches!(source,
+        caushell_profile::ArgumentBindingSource::MatchedModifierFlag {modifier_id, flag_name, ..}
+        if modifier_id.as_str() == "replace_token_optional" && flag_name.as_str() == "-i"))
+    );
 }
 
 fn slot_values<'a>(bound: &'a BoundInvocation, name: &str) -> Vec<&'a str> {
@@ -195,7 +310,7 @@ fn finite_control_vocabulary_is_command_independent_and_validated() {
     );
     assert!(
         load_command_profile_from_str(&yaml.replace(
-            "unmodeled_words: [\"-ok\"",
+            "unmodeled_words: [\"-files0-from\"",
             "unmodeled_words: [\"bad control\""
         ))
         .is_err()

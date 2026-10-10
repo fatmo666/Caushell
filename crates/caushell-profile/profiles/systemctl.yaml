@@ -14,6 +14,30 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: explicit_list_pager
+  selector:
+    kind: all
+    items:
+    - &list_command {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(list-units|list-unit-files)$'}}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: not, item: {kind: has_modifier, modifier: no_pager}}
+  parameters: &list_arguments
+  - {name: list_operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+  - {name: unit_patterns, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+  effects:
+  - kind: open_interactive_escape_surface
+    target: {kind: none}
+    surface: {kind: pager, requires_tty: true, capabilities: [run_command, spawn_shell]}
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+- id: explicit_list_no_pager
+  selector:
+    kind: all
+    items:
+    - *list_command
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: has_modifier, modifier: no_pager}
+  parameters: *list_arguments
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
 - id: information
   selector:
     kind: has_modifier
@@ -197,6 +221,12 @@ forms:
     target:
       kind: none
 modifiers:
+- id: unit_type
+  matcher: {kind: any_flag, flags: ["-t", "--type"]}
+  parameters:
+  - {name: unit_types, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+- id: list_display
+  matcher: {kind: any_flag, flags: ["-a", "--all", "--full", "--plain", "--no-legend"]}
 - id: information
   matcher:
     kind: any_flag

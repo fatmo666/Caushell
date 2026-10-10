@@ -17,6 +17,9 @@ platform:
   shell_families: []
   requires_features: []
 
+option_scope: permuted_options
+opaque_on_unresolved: true
+
 forms:
   - id: extract_archive
     selector:
@@ -29,6 +32,8 @@ forms:
         binding:
           kind: remaining_positionals
         cardinality: optional_many
+    implicit_inputs:
+      - {source: stdin_data, semantic: {kind: plain_value}}
     stream_contract:
       stdin_mode: data_optional
       stdout_mode: opaque
@@ -56,6 +61,8 @@ forms:
         binding:
           kind: remaining_positionals
         cardinality: optional_many
+    implicit_inputs:
+      - {source: stdin_data, semantic: {kind: plain_value}}
     stream_contract:
       stdin_mode: data_optional
       stdout_mode: data
@@ -83,27 +90,25 @@ forms:
         - kind: has_positional_at
           index: 0
     parameters:
-      - name: source_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals_before_last
-        cardinality: optional_many
       - name: destination_path
         semantic:
           kind: path
           role: write
           purpose: generic_operand
         binding:
-          kind: last_positional
+          kind: remaining_positionals
         cardinality: required_one
+    implicit_inputs:
+      - {source: stdin_data, semantic: {kind: plain_value}}
+    # Copy-pass takes its source name list from stdin, not argv. Its one
+    # destination is independently known even if that list cannot be decoded.
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: opaque
+      stderr_mode: opaque
     effects:
       - kind: read_path
-        target:
-          kind: slot
-          name: source_paths
+        target: {kind: implicit_input, source: stdin_data}
       - kind: write_path
         target:
           kind: slot
@@ -130,6 +135,48 @@ modifiers:
       flags:
         - "-p"
         - "--pass-through"
+
+  # Declare operand-free flags so the shared option grammar decodes every
+  # member of -pdm, -dump, -pdv0, etc. No command-specific binder logic.
+  - id: copy_behavior
+    matcher:
+      kind: any_flag
+      flags: ["-d", "--make-directories", "-m", "--preserve-modification-time", "-u", "--unconditional", "-l", "--link", "-L", "--dereference", "--no-preserve-owner", "--sparse"]
+
+  - id: name_list_format
+    matcher: {kind: any_flag, flags: ["-0", "--null"]}
+
+  - id: output_owner
+    matcher: {kind: any_flag, flags: ["-R", "--owner"]}
+    parameters:
+      - name: output_owner
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+    # Ownership applies to copied/extracted output files (already modeled as
+    # writes), or to archive headers in create mode; it is not a source write.
+
+  - id: reset_source_access_time
+    matcher: {kind: any_flag, flags: ["-a", "--reset-access-time"]}
+    # This changes source metadata, whose path list is runtime stdin. Do not
+    # certify those writes just because the destination is in the workspace.
+    effects:
+      - kind: metadata_mutation
+        target: {kind: implicit_input, source: stdin_data}
+
+  - id: output_options
+    matcher: {kind: any_flag, flags: ["-v", "--verbose", "-V", "--dot", "--quiet"]}
+
+  - id: archive_options
+    matcher: {kind: any_flag, flags: ["-B", "-b", "--swap", "-s", "--swap-bytes", "-S", "--swap-halfwords", "-c", "-k", "-n", "--numeric-uid-gid", "-f", "--nonmatching", "--force-local", "--no-absolute-filenames", "--absolute-filenames"]}
+
+  - id: archive_format
+    matcher: {kind: any_flag, flags: ["-H", "--format"]}
+    parameters:
+      - name: archive_format
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
 
   - id: archive_file
     matcher:
@@ -209,3 +256,4 @@ extensions:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
   caushell.profile/known_limitations:
     - Cpio mode-specific archive file surfaces are split, but extraction outputs into the working tree and stdin-provided file lists remain implicit.
+    - Reset-access-time keeps an unresolved source metadata target until the stdin name-list format and path domain are modeled; a local destination alone cannot certify source mutations.

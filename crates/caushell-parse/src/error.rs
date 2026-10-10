@@ -7,6 +7,7 @@ pub enum ParseError {
     UnsupportedShell(ShellKind),
     LanguageInit(String),
     ParseCancelled,
+    BacktickBoundaryLimit,
 }
 
 impl fmt::Display for ParseError {
@@ -22,6 +23,12 @@ impl fmt::Display for ParseError {
                 write!(f, "failed to initialize parser language: {message}")
             }
             Self::ParseCancelled => write!(f, "tree-sitter returned no parse tree"),
+            Self::BacktickBoundaryLimit => {
+                write!(
+                    f,
+                    "backquote boundary projection exceeded its bounded parse budget"
+                )
+            }
         }
     }
 }

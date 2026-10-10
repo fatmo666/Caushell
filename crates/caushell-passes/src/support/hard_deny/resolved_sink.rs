@@ -64,6 +64,53 @@ pub(crate) fn each_resolved_host_risk_sink<'a, F>(
     }
 }
 
+/// Configured targets have already-decoded, statically resolved path semantics.
+/// Relative targets cannot be certified when cwd is unknown. No host lookup is
+/// performed and an unresolved target never becomes a hard-deny proof.
+pub(crate) fn each_configured_host_risk_sink(
+    record: crate::support::ExecutionResolveRecordRef<'_>,
+    cwd: Option<&str>,
+    home: Option<&str>,
+    mut visit: impl FnMut(ResolvedHostRiskSink<'_>),
+) {
+    let caushell_profile::ResolveInvocationArtifactResult::Resolved(resolved) = record.result()
+    else {
+        return;
+    };
+    for effect in &resolved.bound.effects {
+        let EffectTarget::ConfiguredPath(target) = &effect.target else {
+            continue;
+        };
+        let Some(semantic_class) = effect_semantic_class(effect) else {
+            continue;
+        };
+        if !required_modifiers_satisfied(resolved, effect) {
+            continue;
+        }
+        let Some(path) = crate::path::resolve_configured_path(
+            &resolved.bound,
+            target,
+            cwd.unwrap_or("/"),
+            home,
+            Some(record),
+        ) else {
+            continue;
+        };
+        if cwd.is_none() && path.cwd_dependent {
+            continue;
+        }
+        let Some(path) = path.resolution.concrete_path() else {
+            continue;
+        };
+        visit(ResolvedHostRiskSink {
+            semantic_class,
+            target_operands: vec![HostTargetOperand::literal_argv_data(path)],
+            runtime_targets: Vec::new(),
+            normalized_command_name: resolved.normalized_command_name.as_str(),
+        });
+    }
+}
+
 fn bound_runtime_targets_for_slot(
     bound: &BoundInvocation,
     slot_name: &str,
@@ -74,7 +121,7 @@ fn bound_runtime_targets_for_slot(
         .filter(|parameter| parameter.name.as_str() == slot_name)
         .flat_map(|parameter| parameter.semantic_values())
         .filter_map(|value| match value {
-            SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain }) => {
+            SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain, .. }) => {
                 Some(ResolvedRuntimeHostTarget {
                     source: source.clone(),
                     domain: domain.clone(),
@@ -195,6 +242,7 @@ mod tests {
         );
         let runtime = BoundValue::ImplicitInput {
             source: ImplicitInputSource::StdinData,
+            origin: None,
             domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded),
         };
         let bound = BoundInvocation::new(CommandName::new("dd"), FormId::new("write"))

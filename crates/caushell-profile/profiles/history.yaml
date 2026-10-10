@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: history
@@ -14,39 +16,187 @@ platform:
     - posix
     - linux
     - macos
-  shell_families:
-    - bash
-    - sh
+  shell_families: [bash]
   requires_features: []
 
 forms:
-  - id: read_or_write_history
+  - id: information
+    selector: &help
+      kind: has_modifier
+      modifier: help
+    stream_contract: &no_input
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+      stdout_dependency: independent
+
+  - id: memory_operation
     selector:
       kind: all
-      items: []
-    parameters:
+      items:
+        - &valid_mode
+          kind: all
+          items:
+            - {kind: not, item: *help}
+            # Bash rejects combinations among -a/-n/-r/-w before any action.
+            - kind: not
+              item:
+                kind: any
+                items:
+                  - {kind: all, items: [{kind: has_modifier, modifier: append}, {kind: has_modifier, modifier: write}]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: append}, {kind: has_modifier, modifier: read}]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: append}, {kind: has_modifier, modifier: read_new}]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: has_modifier, modifier: read}]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: write}, {kind: has_modifier, modifier: read_new}]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: read}, {kind: has_modifier, modifier: read_new}]}
+        - &memory_mode
+          kind: any
+          items:
+            - {kind: has_modifier, modifier: store}
+            - {kind: has_modifier, modifier: expand}
+            - {kind: has_modifier, modifier: delete}
+            # -c with no remaining operand returns after clearing memory,
+            # even if a file mode is also present (e.g. history -cw).
+            - {kind: all, items: [{kind: has_modifier, modifier: clear}, {kind: no_positional_args}]}
+    parameters: &plain_arguments
       - name: arguments
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_args
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    stream_contract: *no_input
+
+  - id: display_history
+    selector:
+      kind: all
+      items:
+        - *valid_mode
+        - {kind: not, item: *memory_mode}
+        - kind: not
+          item: &file_mode
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: append}
+              - {kind: has_modifier, modifier: write}
+              - {kind: has_modifier, modifier: read}
+              - {kind: has_modifier, modifier: read_new}
+        - kind: any
+          items:
+            - {kind: no_positional_args}
+            - kind: has_positional_at_matching
+              index: 0
+              matcher: {kind: regex_pattern, pattern: '^[0-9]+$'}
+    parameters: *plain_arguments
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+      stdout_dependency: independent
+
+  - id: write_explicit_file
+    selector:
+      kind: all
+      items:
+        - &write_mode
+          kind: all
+          items:
+            - *valid_mode
+            - {kind: not, item: *memory_mode}
+            - kind: any
+              items:
+                - {kind: has_modifier, modifier: append}
+                - {kind: has_modifier, modifier: write}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - name: filename
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      # Bash selects the FIRST filename and ignores subsequent operands.
+      - &ignored_arguments
+        name: ignored_arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
     effects:
-      - kind: load_config
-        target:
-          kind: tool_convention_path
-          path: .bash_history
-          convention: bash.history_file
-          purpose: tool_config
       - kind: write_path
-        target:
-          kind: tool_convention_path
-          path: .bash_history
-          convention: bash.history_file
-          purpose: tool_config
+        path_access: content_open
+        target: {kind: slot, name: filename}
+    stream_contract: *no_input
 
-modifiers: []
+  - id: write_default_file
+    selector:
+      kind: all
+      items:
+        - *write_mode
+        - {kind: no_positional_args}
+    effects:
+      - kind: write_path
+        target: &history_default
+          kind: configured_path
+          sources: []
+          shell_variable: {name: HISTFILE, empty_is_unset: true}
+          missing: skip
+          purpose: generic_operand
+    stream_contract: *no_input
+
+  - id: read_explicit_file
+    selector:
+      kind: all
+      items:
+        - &read_mode
+          kind: all
+          items:
+            - *valid_mode
+            - {kind: not, item: *memory_mode}
+            - kind: any
+              items:
+                - {kind: has_modifier, modifier: read}
+                - {kind: has_modifier, modifier: read_new}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - name: filename
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - *ignored_arguments
+    effects:
+      - kind: read_path
+        target: {kind: slot, name: filename}
+    stream_contract: *no_input
+
+  - id: read_default_file
+    selector:
+      kind: all
+      items:
+        - *read_mode
+        - {kind: no_positional_args}
+    effects:
+      - kind: read_path
+        target: *history_default
+    stream_contract: *no_input
+
+modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: ['--help']}}
+  - {id: append, matcher: {kind: any_flag, flags: ['-a']}}
+  - {id: write, matcher: {kind: any_flag, flags: ['-w']}}
+  - {id: read, matcher: {kind: any_flag, flags: ['-r']}}
+  - {id: read_new, matcher: {kind: any_flag, flags: ['-n']}}
+  - {id: clear, matcher: {kind: any_flag, flags: ['-c']}}
+  - {id: store, matcher: {kind: any_flag, flags: ['-s']}}
+  - {id: expand, matcher: {kind: any_flag, flags: ['-p']}}
+  - id: delete
+    matcher: {kind: any_flag, flags: ['-d']}
+    parameters:
+      - name: offset
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - https://www.gnu.org/s/bash/manual/html_node/Bash-History-Builtins.html
+    - https://fossies.org/linux/bash/builtins/history.def
+  caushell.profile/known_limitations:
+    - This models explicit Bash history invocations, not implicit startup/exit persistence or filesystem mutation caused by assignment to HISTFILESIZE.
+    - Stored or expanded history strings are not immediately executed. History-list contents and expansion results are not guessed or dynamically inspected.

@@ -1,6 +1,6 @@
 use caushell_profile::{
-    BoundInvocation, DerivedPathTarget, EffectKind, EffectTarget, PathPurpose, PayloadSource,
-    ResolveInvocationArtifactResult, SemanticType,
+    BoundInvocation, DerivedPathTarget, Effect, EffectKind, EffectTarget, PathPurpose,
+    PayloadSource, ResolveInvocationArtifactResult, SemanticType,
 };
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
@@ -124,12 +124,13 @@ fn execution_semantics_for_bound(
         .iter()
         .any(|effect| effect.kind == EffectKind::TerminateCurrentShell);
     if invocation.effects.iter().any(|effect| {
-        matches!(
-            effect.kind,
-            EffectKind::ExecutePayload
-                | EffectKind::SourceScriptIntoCurrentShell
-                | EffectKind::ExecuteHook
-        )
+        effect_target_is_applicable(invocation, effect)
+            && matches!(
+                effect.kind,
+                EffectKind::ExecutePayload
+                    | EffectKind::SourceScriptIntoCurrentShell
+                    | EffectKind::ExecuteHook
+            )
     }) {
         semantics = semantics.executing_payload();
     }
@@ -301,14 +302,27 @@ fn payload_mode_for_invocation(invocation: &BoundInvocation) -> Option<Execution
         .effects
         .iter()
         .filter(|effect| {
-            matches!(
-                effect.kind,
-                EffectKind::ExecutePayload
-                    | EffectKind::SourceScriptIntoCurrentShell
-                    | EffectKind::ExecuteHook
-            )
+            effect_target_is_applicable(invocation, effect)
+                && matches!(
+                    effect.kind,
+                    EffectKind::ExecutePayload
+                        | EffectKind::SourceScriptIntoCurrentShell
+                        | EffectKind::ExecuteHook
+                )
         })
         .find_map(|effect| payload_mode_for_effect(invocation, effect))
+}
+
+// An explicit empty semantic projection proves the effect absent. A missing
+// slot, unknown value or legacy unprojected parameter does not prove absence.
+fn effect_target_is_applicable(invocation: &BoundInvocation, effect: &Effect) -> bool {
+    match &effect.target {
+        EffectTarget::Slot(slot) => !invocation
+            .bound_parameters
+            .iter()
+            .any(|p| p.name == *slot && p.semantic_values_are_inapplicable()),
+        _ => true,
+    }
 }
 
 fn process_control_semantics_for_invocation(
@@ -470,7 +484,9 @@ fn payload_mode_for_semantic(
 
 #[cfg(test)]
 mod tests {
-    use super::ExtractExecutionSemanticsPass;
+    use super::{
+        ExtractExecutionSemanticsPass, execution_semantics_for_bound, payload_mode_for_invocation,
+    };
     use crate::{
         ExtractPipelineFlowPass, ParseCommandPass, ProjectTopLevelCommandsPass,
         ResolveInvocationPass, support::execution_semantics_node_id,
@@ -509,6 +525,64 @@ mod tests {
     fn registry_from_yaml(yaml: &str) -> ProfileRegistry {
         let profile = load_command_profile_from_str(yaml).expect("expected profile to load");
         ProfileRegistry::from_profiles(vec![profile]).expect("expected registry to build")
+    }
+
+    #[test]
+    fn explicitly_absent_payload_slot_is_not_execution_but_unknown_and_missing_are() {
+        use caushell_profile::{
+            BoundInvocation, BoundParameter, BoundValue, Effect, EffectKind, ImplicitInputSource,
+            PayloadLanguage, PayloadSemantic, PayloadSource, ProjectedSemanticValue,
+            ProjectionUnknownReason, SemanticType, SemanticValueResolution, SlotName,
+        };
+        for kind in [
+            EffectKind::ExecutePayload,
+            EffectKind::ExecuteHook,
+            EffectKind::SourceScriptIntoCurrentShell,
+        ] {
+            let mut invocation = BoundInvocation::new(
+                caushell_profile::CommandName::new("arbitrary-tool"),
+                caushell_profile::FormId::new("run"),
+            );
+            invocation
+                .effects
+                .push(Effect::new(kind).for_slot("maybe_program"));
+            assert!(
+                execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                    .executes_payload
+            );
+            let mut p = BoundParameter::new(
+                SlotName::new("maybe_program"),
+                SemanticType::Payload(PayloadSemantic {
+                    language: PayloadLanguage::Opaque,
+                    source: PayloadSource::InlineString,
+                    recursive: true,
+                }),
+            );
+            p.values
+                .push(BoundValue::implicit_input(ImplicitInputSource::StdinData));
+            p.projected_values = Some(Vec::new());
+            invocation.bound_parameters.push(p);
+            assert!(
+                !execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                    .executes_payload
+            );
+            assert_eq!(payload_mode_for_invocation(&invocation), None);
+            invocation.bound_parameters[0].projected_values = Some(vec![ProjectedSemanticValue {
+                source_index: 0,
+                resolution: SemanticValueResolution::Unknown(
+                    ProjectionUnknownReason::DynamicArgument,
+                ),
+            }]);
+            assert!(
+                execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                    .executes_payload
+            );
+            invocation.bound_parameters[0].projected_values = None;
+            assert!(
+                execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                    .executes_payload
+            );
+        }
     }
 
     #[test]

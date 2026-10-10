@@ -7,7 +7,32 @@ option_scope: permuted_options
 opaque_on_unresolved: true
 forms:
   - id: convert_input_to_file
-    selector: {kind: all, items: [{kind: has_modifier, modifier: output}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
+    selector:
+      kind: all
+      items:
+        # FORMAT may also load a custom Lua reader/writer. Only declared native
+        # names and their extension syntax qualify for these data-only forms.
+        # Unknown/custom formats retain opaque selection instead of guessing
+        # safety from an arbitrary filename's extension.
+        - &native_formats
+          kind: all
+          items:
+            - kind: any
+              items:
+                - {kind: not, item: {kind: has_modifier, modifier: input_format}}
+                - kind: has_modifier_parameter_matching
+                  modifier: input_format
+                  parameter: input_format
+                  matcher: &native_format_name
+                    kind: regex_pattern
+                    pattern: '^(ansi|asciidoc|asciidoc_legacy|asciidoctor|bbcode|bbcode_fluxbb|bbcode_phpbb|bbcode_steam|bbcode_hubzilla|bbcode_xenforo|beamer|biblatex|bibtex|bits|chunkedhtml|commonmark|commonmark_x|context|creole|csljson|csv|djot|docbook|docbook4|docbook5|docx|dokuwiki|dzslides|endnotexml|epub|epub2|epub3|fb2|fodt|gfm|haddock|html|html4|html5|icml|ipynb|jats|jats_archiving|jats_articleauthoring|jats_publishing|jira|json|latex|man|markdown|markdown_github|markdown_mmd|markdown_phpextra|markdown_strict|markua|mediawiki|ms|muse|native|odt|opendocument|opml|org|plain|pod|pptx|revealjs|ris|rst|rtf|s5|slideous|slidy|t2t|tei|texinfo|textile|tikiwiki|tsv|twiki|typst|vimdoc|vimwiki|xlsx|xml|xwiki|zimwiki)([+-][a-z][a-z0-9_]*)*$'
+            - kind: any
+              items:
+                - {kind: not, item: {kind: has_modifier, modifier: format}}
+                - {kind: has_modifier_parameter_matching, modifier: format, parameter: output_format, matcher: *native_format_name}
+        - {kind: has_modifier, modifier: output}
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}}
     parameters:
       - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
     effects:
@@ -15,23 +40,24 @@ forms:
       - {kind: write_path, target: {kind: configured_path, sources: [{slot: output_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}}
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
   - id: convert_input_to_stdout
-    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: output}}, {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}]}]}
+    selector: {kind: all, items: [*native_formats, {kind: has_positional_at, index: 0}, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: output}}, {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}]}]}
     parameters:
       - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
     effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: convert_stdin_to_file
-    selector: {kind: all, items: [{kind: has_modifier, modifier: output}, {kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
+    selector: {kind: all, items: [*native_formats, {kind: has_modifier, modifier: output}, {kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}}]}
     effects: [{kind: write_path, target: {kind: configured_path, sources: [{slot: output_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}}]
     stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque}
   - id: convert_stdin_to_stdout
-    selector: {kind: all, items: [{kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    selector: {kind: all, items: [*native_formats, {kind: any, items: [{kind: not, item: {kind: has_modifier, modifier: output}}, {kind: has_modifier_parameter_matching, modifier: output, parameter: output_path, matcher: {kind: literal, value: '-'}}]}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
     stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 modifiers:
   - id: output
     matcher: {kind: any_flag, flags: ['-o', '--output']}
     parameters: [{name: output_path, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
-  - {id: format, matcher: {kind: any_flag, flags: ['-t', '--to']}, parameters: [{name: output_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+  - {id: format, matcher: {kind: any_flag, flags: ['-t', '--to', '-w', '--write']}, parameters: [{name: output_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+  - {id: input_format, matcher: {kind: any_flag, flags: ['-f', '--from', '-r', '--read']}, parameters: [{name: input_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
   - id: lua_filter
     matcher: {kind: any_flag, flags: ['-L', '--lua-filter']}
     parameters:
@@ -46,4 +72,4 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research: ['https://pandoc.org/MANUAL.html#general-options', 'https://pandoc.org/lua-filters.html', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/pandoc file-read, file-write, inherit lua']
-  caushell.profile/known_limitations: ['Lua filters are opaque Lua source files and are recorded as ExecutePayload; they are not parsed as Bash. Formats and filter internals are opaque. Multiple output flags and input values that are literal - remain unresolved.']
+  caushell.profile/known_limitations: ['Lua filters are opaque Lua source files and are recorded as ExecutePayload; they are not parsed as Bash. The data-only conversion forms require declared native format names; custom Lua readers/writers, PDF generation, unknown formats and unknown format values remain unresolved and require approval. Native format extensions are syntax, not executable file classification. Multiple format/output flags and input values that are literal - remain unresolved.']

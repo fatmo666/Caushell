@@ -7,11 +7,11 @@ mod runner;
 mod staged;
 
 pub use context::{
-    BlockDeviceSearchScope, CatastrophicSearchRootScope, DecisionProposal, EffectiveCwd,
-    ExecutionUnitInheritedScope, ExecutionUnitOriginKind, ExecutionUnitOriginLocator,
+    BlockDeviceSearchScope, CatastrophicSearchRootScope, CwdPathContext, DecisionProposal,
+    EffectiveCwd, ExecutionUnitInheritedScope, ExecutionUnitOriginKind, ExecutionUnitOriginLocator,
     ExecutionUnitResolveRecord, ParsedCommandRef, ParsedCommandScope,
     ProcessSubstitutionLocationKind, ProcessSubstitutionOuterRelation, RunnerContext,
-    UnresolvedDispatchRecord,
+    ShellSourceCwdAnchor, UnresolvedDispatchRecord,
 };
 pub use mutation::{MutationGraphError, PendingMutation};
 pub use nested::{

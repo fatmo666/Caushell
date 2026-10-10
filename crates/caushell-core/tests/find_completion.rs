@@ -8,8 +8,9 @@ use caushell_passes::{
 use caushell_profile::ProfileRegistry;
 use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, ResolvedPathRole, RuleId, RuntimeMetadata,
-    SessionId, SessionSummary, ShellKind, ShellRuntimeCapabilities, ShellStateSnapshot,
+    CheckRequest, CommandSequenceNo, Decision, PathResolution, ResolvedPathRole, RuleId,
+    RuntimeMetadata, SessionId, SessionSummary, ShellKind, ShellRuntimeCapabilities,
+    ShellStateSnapshot,
 };
 
 fn request(command: &str) -> CheckRequest {
@@ -40,6 +41,41 @@ fn assert_allow(command: &str) {
             .any(|f| f.rule_id == RuleId::SelectionError),
         "{command}: {result:?}"
     );
+}
+
+#[test]
+fn interleaved_shell_redirection_keeps_child_delimiters_and_real_write_targets() {
+    for command in [
+        r"find . -name '*.sh' -exec grep -Hn text {} 2>/dev/null \;",
+        r"find . -exec echo {} >/dev/null \; -print",
+        r"find . -exec echo {} 2>&- \; -print",
+    ] {
+        assert_allow(command);
+    }
+    for command in [
+        r"find . -exec echo {} >/opt/shared/log \; -print",
+        r"find /opt/shared -exec rm {} 2>/dev/null \;",
+        r"find . -exec rm /opt/shared/file 2>/dev/null \;",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result.decision_trace.derived_invocations.is_empty(),
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::SelectionError),
+            "{command}: {result:?}"
+        );
+    }
 }
 
 #[test]
@@ -220,8 +256,11 @@ fn implicit_root_and_output_files_use_effective_cwd_without_widening_explicit_ro
         "{paths:?}"
     );
     assert!(
-        paths.contains(&(ResolvedPathRole::Target, "/opt/shared")),
-        "{paths:?}"
+        staged.graph().nodes().any(|node| matches!(&node.kind,
+            NodeKind::PathFact { role: ResolvedPathRole::Target, resolution, .. }
+                if matches!(resolution, PathResolution::BoundedPathSet { roots, may_escape: false }
+                    if roots == &vec!["/opt/shared".to_string()]))),
+        "default deletion must retain the traversal domain"
     );
     assert_allow("cd /opt/shared; find /tmp/project -mtime -7 -delete");
 }
@@ -276,8 +315,6 @@ fn unsupported_complex_forms_and_missing_operands_are_not_silently_allowed() {
         "find -f /opt/shared -delete",
         "find . -f /opt/shared -f . -delete",
         r"find . -f /opt/shared -exec rm {} \;",
-        r"find . -ok rm {} \;",
-        r"find . -okdir rm {} \;",
         "find . -mtime",
         "find . -size",
         "find . -perm",
@@ -293,6 +330,188 @@ fn unsupported_complex_forms_and_missing_operands_are_not_silently_allowed() {
             "{command}: {result:?}"
         );
     }
+}
+
+#[test]
+fn additional_filters_clusters_and_confirmation_actions_keep_complete_semantics() {
+    for command in [
+        "find . -mnewer /opt/reference -print",
+        "find . ! -local -prune -o -print",
+        "find -ds . -mindepth 1 -type f -print0",
+        "find -EPdsx . -print",
+        r"find . -ok rm {} \;",
+        r"find . -okdir rm {} \;",
+        r"find /opt/shared -ok ls -l {} \;",
+        r"find . -okdir diff {} /opt/reference \;",
+        "find /opt/shared -mmin -$((currtime + 1440)) -mmin +$((${currtime} + 1))",
+    ] {
+        assert_allow(command);
+    }
+    for command in [
+        r"find /opt/shared -ok rm {} \;",
+        r"find . -ok rm /opt/shared/file \;",
+        r"find /opt/shared -okdir rm {} \;",
+        r"find -LPds . -exec rm {} \;",
+        r"find -ds /opt/shared -delete",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation),
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::SelectionError),
+            "{command}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn two_operand_and_legacy_output_actions_bind_only_the_actual_output_file() {
+    for command in [
+        "find . -fprintf ./out '-delete'",
+        "find . -fprintf ./out '-exec' -fprintf ./other '-okdir'",
+        "find /opt/shared -fprintf ./out '%p\\n'",
+        "find . -cpio ./archive -print",
+        "find . -ncpio ./archive",
+    ] {
+        assert_allow(command);
+    }
+    for command in [
+        "find . -false -fprintf /opt/out '%p'",
+        "find . -fprintf ./out '%p' -fprintf /opt/out '%p'",
+        "find . -cpio /opt/archive",
+        "find . -ncpio /opt/archive",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+        assert!(
+            !result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::SelectionError)
+        );
+    }
+    for command in [
+        "find . -fprintf",
+        "find . -fprintf ./out",
+        "find . -fprintf ./out '%p' -fprintf ./other",
+        "find . -ok echo {} +",
+    ] {
+        assert_eq!(
+            ShellQueryCore::new().check(request(command)).decision,
+            Decision::NeedApproval,
+            "{command}"
+        );
+    }
+    assert_eq!(
+        ShellQueryCore::new()
+            .check(request("find . -fprintf /dev/sda '%p'"))
+            .decision,
+        Decision::Deny
+    );
+}
+
+#[test]
+fn xargs_replace_preserves_find_operand_position_and_single_field_width() {
+    for options in [
+        "-n 1 -I '{}'",
+        "-I '{}' -n 1",
+        "-I{}",
+        "--replace",
+        "-i",
+        "-0i",
+    ] {
+        let command = format!("xargs {options} find . -type f -inum '{{}}' -print");
+        assert_allow(&command);
+        let command = format!("printf '123\\n' | xargs {options} find . -inum '{{}}' -print");
+        assert_allow(&command);
+    }
+    for command in [
+        "printf '/opt/out\\n' | xargs -n1 -I{} find . -fprintf '{}' '%p'",
+        "xargs -n1 -I{} find . -fprintf '{}' '%p'",
+        "xargs -n1 -I{} find '{}' -delete",
+        "find . -type f -print0 | xargs -0i sh -c \"cat /dev/null > \\\"{}\\\"\"",
+        "find . -print0 | xargs -0I{} sh -c 'echo {}'",
+        "find . -print0 | xargs -0I{} cp {} ~/outside",
+        "find . -print0 | xargs -0I{} mv {} ~/outside",
+        "cat paths | xargs -I{} ln -s {} ~/newlinks",
+        "find . -print0 | xargs -0I{} touch ~/outside-{}",
+    ] {
+        assert_eq!(
+            ShellQueryCore::new().check(request(command)).decision,
+            Decision::NeedApproval,
+            "{command}"
+        );
+    }
+    assert_allow(
+        r#"find FOLDER1 -type f -print0 | xargs -0 -I % find FOLDER2 -type f -exec diff -qs --from-file="%" '{}' \+"#,
+    );
+}
+
+#[test]
+fn output_content_channels_keep_consumer_effects_and_are_not_file_mutations() {
+    for command in [
+        "find . -name '*.php' -print0 -fprint >(pv --line-mode)",
+        "find . -fprintf >(cat) '%p'",
+        "echo foo | tee >(sha1sum) >(md5sum)",
+        "find . -fprint '>(cat)'",
+    ] {
+        assert_allow(command);
+    }
+    for command in [
+        // The channel's consumer can contribute to inherited stdout too:
+        // -print0 plus newline file output is not a pure NUL path stream.
+        "find . -name '*.php' -print0 -fprint >(pv --line-mode) | xargs -0 chmod 755",
+        "find . -fprint >(cat > /opt/output)",
+        "find . -fprintf >(rm /opt/file) '%p'",
+        "find . -fprint >(cat) -fprint /opt/output",
+        "find . -fprint \"$UNKNOWN\"",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+    }
+    // Namespace removal cannot acquire a content-channel exemption.
+    assert_eq!(
+        ShellQueryCore::new().check(request("rm >(cat)")).decision,
+        Decision::NeedApproval
+    );
 }
 
 #[test]

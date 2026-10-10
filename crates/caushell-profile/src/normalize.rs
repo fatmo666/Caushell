@@ -67,6 +67,7 @@ pub enum NormalizeError {
     InvalidValueProjection(String),
     InvalidConfiguredPath(String),
     InvalidPathAccess(String),
+    InvalidPathScope(String),
     InvalidStructuredProjection(String),
     InvalidArgumentFileRule(String),
     InvalidPayloadProjection(String),
@@ -177,9 +178,12 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
             .map(|v| crate::ArgumentControlVocabulary {
                 unmodeled_words: v.unmodeled_words,
                 unmodeled_short_clusters: v.unmodeled_short_clusters,
+                operand_free_short_clusters: v.operand_free_short_clusters,
                 positional_boundary_words: v.positional_boundary_words,
             });
     if let Some(vocabulary) = &argument_control_vocabulary {
+        let declarations = crate::argument_regions::operand_declarations(&modifiers, &forms)
+            .map_err(NormalizeError::InvalidArgumentRegion)?;
         if argument_regions.is_empty()
             || vocabulary
                 .unmodeled_words
@@ -189,6 +193,13 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 .unmodeled_short_clusters
                 .iter()
                 .any(|s| s.is_empty() || !s.bytes().all(|c| c.is_ascii_alphabetic()))
+            || vocabulary.operand_free_short_clusters.iter().any(|s| {
+                s.is_empty()
+                    || !s.bytes().all(|c| {
+                        c.is_ascii_alphabetic()
+                            && declarations.get(&format!("-{}", char::from(c))) == Some(&None)
+                    })
+            })
             || vocabulary.positional_boundary_words.iter().any(|word| {
                 !modifiers
                     .iter()
@@ -391,6 +402,16 @@ fn validate_configured_path_references(
         .flat_map(|form| &form.effects)
         .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
     {
+        if let Some(crate::PathScope::Subtree { escape_modifiers }) = &effect.path_scope {
+            for modifier in escape_modifiers {
+                if !modifier_names.contains(modifier.as_str()) {
+                    return Err(NormalizeError::InvalidPathScope(format!(
+                        "undeclared traversal escape modifier: {}",
+                        modifier.as_str()
+                    )));
+                }
+            }
+        }
         if let EffectTarget::Dispatch(target) = &effect.target {
             if let crate::DispatchCommandSource::WhitespaceArgv(slot)
             | crate::DispatchCommandSource::CommandString { slot, .. } = &target.command
@@ -1283,6 +1304,18 @@ fn normalize_payload_projection(
             "budgets must be positive".into(),
         ));
     }
+    match (raw.format, &raw.executions) {
+        (crate::RawPayloadFormat::SedProgram, Some(name)) => {
+            ensure_non_empty(name, "payload_projections.executions")?;
+        }
+        (crate::RawPayloadFormat::SedProgram, None)
+        | (crate::RawPayloadFormat::CodexApplyPatch, Some(_)) => {
+            return Err(NormalizeError::InvalidPayloadProjection(
+                "sed_program requires an executions slot; codex_apply_patch forbids it".into(),
+            ));
+        }
+        _ => {}
+    }
     let source = match raw.source {
         crate::RawPayloadInputSource::Slot { name } => {
             ensure_non_empty(&name, "payload_projections.source.name")?;
@@ -1290,14 +1323,20 @@ fn normalize_payload_projection(
         }
         crate::RawPayloadInputSource::Stdin => crate::PayloadInputSource::Stdin,
     };
+    for slot in &raw.write_controls {
+        ensure_non_empty(slot, "payload_projections.write_controls")?;
+    }
     Ok(crate::PayloadProjection {
         format: match raw.format {
             crate::RawPayloadFormat::CodexApplyPatch => crate::PayloadFormat::CodexApplyPatch,
+            crate::RawPayloadFormat::SedProgram => crate::PayloadFormat::SedProgram,
         },
         source,
         reads: SlotName::new(raw.reads),
         writes: SlotName::new(raw.writes),
         deletes: SlotName::new(raw.deletes),
+        executions: raw.executions.map(SlotName::new),
+        write_controls: raw.write_controls.into_iter().map(SlotName::new).collect(),
         max_bytes: raw.max_bytes,
         max_operations: raw.max_operations,
     })
@@ -1329,6 +1368,22 @@ fn validate_payload_projection_references(
             }
         }
         for projection in &form.payload_projections {
+            let mut controls = BTreeSet::new();
+            for slot in &projection.write_controls {
+                if !controls.insert(slot.as_str())
+                    || !parameters.iter().any(|p| {
+                        p.name == *slot
+                            && p.semantic == SemanticType::PlainValue
+                            && p.value_projection.is_none()
+                            && p.structured_projection.is_none()
+                    })
+                {
+                    return Err(NormalizeError::InvalidPayloadProjection(format!(
+                        "write control must reference a distinct unprojected plain-value slot: {}",
+                        slot.as_str()
+                    )));
+                }
+            }
             match &projection.source {
                 crate::PayloadInputSource::Slot(slot) => {
                     if !parameters.iter().any(|p| {
@@ -1372,6 +1427,19 @@ fn validate_payload_projection_references(
                 {
                     return Err(NormalizeError::InvalidPayloadProjection(format!(
                         "missing {kind:?} effect for {}",
+                        slot.as_str()
+                    )));
+                }
+            }
+            if let Some(slot) = &projection.executions {
+                if !names.insert(slot.as_str().to_string())
+                    || !form.effects.iter().any(|e| {
+                        e.kind == EffectKind::ExecutePayload
+                            && e.target == EffectTarget::Slot(slot.clone())
+                    })
+                {
+                    return Err(NormalizeError::InvalidPayloadProjection(format!(
+                        "execution slot collision or missing execute_payload effect: {}",
                         slot.as_str()
                     )));
                 }
@@ -1503,6 +1571,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
         RawFlagOperandMode::NextArg => FlagOperandMode::NextArg,
         RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
         RawFlagOperandMode::SecondArg => FlagOperandMode::SecondArg,
+        RawFlagOperandMode::FirstOfTwoArgs => FlagOperandMode::FirstOfTwoArgs,
         RawFlagOperandMode::InlineOnly => FlagOperandMode::InlineOnly,
         RawFlagOperandMode::OptionalInlineOnly => FlagOperandMode::OptionalInlineOnly,
         RawFlagOperandMode::OptionalInlineOrShortAttached => {
@@ -1764,6 +1833,27 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if raw.path_scope.is_some()
+        && (!matches!(
+            kind,
+            EffectKind::ReadPath
+                | EffectKind::WritePath
+                | EffectKind::DeletePath
+                | EffectKind::MovePath
+                | EffectKind::ChangeMode
+                | EffectKind::ChangeOwner
+                | EffectKind::ChangeGroup
+                | EffectKind::MetadataMutation
+                | EffectKind::TargetPath
+        ) || !matches!(
+            target,
+            EffectTarget::Slot(_) | EffectTarget::ConfiguredPath(_)
+        ) || raw.path_access.is_some())
+    {
+        return Err(NormalizeError::InvalidPathScope(
+            "subtree requires a slot/configured filesystem target, not a content open".into(),
+        ));
+    }
     if matches!(target, EffectTarget::VariableName(_))
         && kind != EffectKind::BindVariableFromRuntimeInput
     {
@@ -1816,11 +1906,6 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         {
             return Err(NormalizeError::InvalidConfiguredPath("incidental_cache fallback is only valid for cache writes, not deletion or explicit targets".into()));
         }
-        if raw.catastrophic.is_some() || raw.host_risk.is_some() {
-            return Err(NormalizeError::InvalidConfiguredPath(
-                "host-risk annotations currently require their supported target kinds".into(),
-            ));
-        }
     }
     let surface = normalize_effect_surface(kind, raw.surface)?;
     let repository_operation = normalize_repository_operation(kind, raw.repository_operation)?;
@@ -1854,6 +1939,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         kind,
         target,
         path_access: raw.path_access,
+        path_scope: raw.path_scope.map(|scope| match scope {
+            crate::RawPathScope::Subtree { escape_modifiers } => crate::PathScope::Subtree {
+                escape_modifiers: escape_modifiers.into_iter().map(ModifierId::new).collect(),
+            },
+        }),
         interactive_escape_surface: surface,
         catastrophic: normalize_catastrophic_effect_metadata(raw.catastrophic)?,
         host_risk: normalize_host_risk_effect_metadata(raw.host_risk)?,
@@ -2071,18 +2161,32 @@ fn normalize_interactive_escape_capability(
 fn normalize_environment_source(
     raw: crate::raw::RawEnvironmentValueSource,
 ) -> Result<crate::EnvironmentValueSource, NormalizeError> {
-    if raw.name.is_empty()
-        || !raw
-            .name
+    validate_configured_variable_name(&raw.name)?;
+    Ok(crate::EnvironmentValueSource {
+        name: raw.name,
+        empty_is_unset: raw.empty_is_unset,
+    })
+}
+
+fn validate_configured_variable_name(name: &str) -> Result<(), NormalizeError> {
+    if name.is_empty()
+        || !name
             .bytes()
             .enumerate()
             .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
     {
         return Err(NormalizeError::InvalidConfiguredPath(
-            "invalid environment variable name".into(),
+            "invalid configured variable name".into(),
         ));
     }
-    Ok(crate::EnvironmentValueSource {
+    Ok(())
+}
+
+fn normalize_shell_variable_source(
+    raw: crate::RawShellVariableValueSource,
+) -> Result<crate::ShellVariableValueSource, NormalizeError> {
+    validate_configured_variable_name(&raw.name)?;
+    Ok(crate::ShellVariableValueSource {
         name: raw.name,
         empty_is_unset: raw.empty_is_unset,
     })
@@ -2119,7 +2223,9 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
         )),
         RawEffectTarget::ConfiguredPath {
             sources,
+            only_when_sources_absent,
             environment,
+            shell_variable,
             relative_to,
             unresolved_relative_base,
             expand_environment,
@@ -2129,14 +2235,31 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             fallback_parent_slots,
             purpose,
         } => {
+            if only_when_sources_absent
+                && (sources.is_empty()
+                    || default_value.is_none()
+                    || environment.is_some()
+                    || shell_variable.is_some()
+                    || !fallback_parent_slots.is_empty())
+            {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "only_when_sources_absent requires source slots and a literal default, not another default provider".into()
+                ));
+            }
             if sources.is_empty()
                 && environment.is_none()
+                && shell_variable.is_none()
                 && default_value.is_none()
                 && fallback_parent_slots.is_empty()
                 && missing != crate::RawConfiguredPathMissing::Unknown
             {
                 return Err(NormalizeError::InvalidConfiguredPath(
                     "configured path must declare a source, default, or unresolved fallback".into(),
+                ));
+            }
+            if environment.is_some() && shell_variable.is_some() {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "environment and shell_variable defaults are mutually exclusive".into(),
                 ));
             }
             if unresolved_relative_base && relative_to.is_some() {
@@ -2193,7 +2316,11 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 .transpose()?;
             Ok(EffectTarget::ConfiguredPath(crate::ConfiguredPathTarget {
                 sources,
+                only_when_sources_absent,
                 environment: environment.map(normalize_environment_source).transpose()?,
+                shell_variable: shell_variable
+                    .map(normalize_shell_variable_source)
+                    .transpose()?,
                 relative_to,
                 unresolved_relative_base,
                 expand_environment,
@@ -2501,6 +2628,9 @@ fn normalize_derived_path_rule(
         }
         RawDerivedPathRule::UrlBasename => Ok(caushell_types::DerivedPathRule::UrlBasename),
         RawDerivedPathRule::ArchiveMembers => Ok(caushell_types::DerivedPathRule::ArchiveMembers),
+        RawDerivedPathRule::LexicalAncestors => {
+            Ok(caushell_types::DerivedPathRule::LexicalAncestors)
+        }
         RawDerivedPathRule::SiblingFiles => Ok(caushell_types::DerivedPathRule::SiblingFiles),
         RawDerivedPathRule::ChildUnder { relative_path } => {
             ensure_non_empty(&relative_path, "effects.target.rule.relative_path")?;
@@ -2756,6 +2886,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -2797,6 +2928,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
                 constraints: Vec::new(),
@@ -2925,6 +3057,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -3025,6 +3158,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -3190,6 +3324,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
@@ -3328,6 +3463,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,

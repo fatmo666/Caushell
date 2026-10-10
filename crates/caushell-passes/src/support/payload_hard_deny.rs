@@ -180,7 +180,7 @@ fn effective_cwd_options_for_node<'a>(
             for known in cwd.known_cwds() {
                 push_unique_cwd_option(&mut options, Some(known));
             }
-            if cwd.has_unknown() || options.is_empty() {
+            if cwd.has_unknown() || !cwd.bounded_roots().is_empty() || options.is_empty() {
                 push_unique_cwd_option(&mut options, None);
             }
         }

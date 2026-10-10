@@ -42,7 +42,22 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
                 }
                 _ => None,
             };
-            let path_by_redirection_index = redirection_paths_by_index(parsed_scope, cwd, home);
+            let shell_cwd = ctx
+                .known_effective_cwd_for_node(record.source_node_id())
+                .unwrap_or(cwd);
+            let exact_cwd = ctx
+                .effective_cwd_for_node(record.source_node_id())
+                .is_none_or(|cwd| cwd.as_known().is_some());
+            let path_by_redirection_index: BTreeMap<_, _> =
+                collect_redirection_path_facts(parsed_scope, shell_cwd, home)
+                    .into_iter()
+                    .filter(|path| exact_cwd || !path.cwd_dependent)
+                    .filter_map(|path| {
+                        path.resolution
+                            .concrete_path()
+                            .map(|p| (path.redirection_index, p.to_string()))
+                    })
+                    .collect();
 
             // A descriptor alias retains the original source; an overwritten
             // redirect is not input consumed by this command.
@@ -86,7 +101,7 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
                                 !cwd_dependent
                                     || ctx
                                         .effective_cwd_for_node(record.source_node_id())
-                                        .is_none_or(|cwd| !cwd.has_unknown())
+                                        .is_none_or(|cwd| cwd.as_known().is_some())
                             }) {
                                 mutations.extend(project_stdin_redirection_provenance_mutation(
                                     ctx.request().sequence_no.0,

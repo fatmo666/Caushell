@@ -186,6 +186,19 @@ fn missing_command_name_reason(
     ctx: &RunnerContext,
     record: &caushell_runner::ExecutionUnitResolveRecord,
 ) -> String {
+    if matches!(
+        record.result,
+        ResolveInvocationArtifactResult::MissingCommandName {
+            gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation
+        }
+    ) && let Some(diagnostic) = record
+        .parsed_scope
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.node_kind == "execution_body")
+    {
+        return diagnostic.text.clone();
+    }
     let command = record
         .parsed_scope
         .commands

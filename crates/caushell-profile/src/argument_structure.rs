@@ -396,9 +396,119 @@ fn opaque_glob(arg: &ProjectedArg, prefix: String) -> ArgumentStructure {
     }
 }
 
+fn arithmetic_field_bounds(arg: &ProjectedArg) -> Option<ArgumentStructure> {
+    if arg.quoted {
+        return None;
+    }
+    let start = arg.text.find("$((")?;
+    // Prove the boundary of ONE supported arithmetic construct. A last-`))`
+    // search would wrongly swallow a second substitution or ordinary text.
+    let mut depth = 1usize;
+    let mut end = None;
+    let body = &arg.text[start + 3..];
+    if body.contains(['\'', '"', '`', '[', ']', '\\']) || body.contains("$(") {
+        return None;
+    }
+    for (offset, ch) in body.char_indices() {
+        match ch {
+            '(' => depth = depth.checked_add(1)?,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let closing = start + 3 + offset;
+                    if arg.text.as_bytes().get(closing + 1) != Some(&b')') {
+                        return None;
+                    }
+                    end = Some(closing + 2);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    let prefix = &arg.text[..start];
+    let suffix = &arg.text[end..];
+    // Only literal affixes surrounding one arithmetic expansion. Integer
+    // output may be split by any IFS, but cannot manufacture letter controls.
+    // This is an output alphabet proof, not arithmetic evaluation; embedded
+    // command substitutions and variable effects remain independently audited.
+    if end <= start + 4
+        || prefix.chars().chain(suffix.chars()).any(|c| {
+            matches!(
+                c,
+                '$' | '`' | '*' | '?' | '[' | '{' | '}' | '~' | '\'' | '"' | '\\'
+            )
+        })
+    {
+        return None;
+    }
+    Some(ArgumentStructure {
+        fields: ArgumentFieldCount::ZeroOrMore,
+        static_prefix: String::new(),
+        static_suffix: String::new(),
+        exact: false,
+        spelling: Some(vec![SpellingPart::CharacterRun(format!(
+            "0123456789+-{prefix}{suffix}"
+        ))]),
+        pathname_generation: false,
+    })
+}
+
 /// Query existing lexical metadata without parsing another AST, running a
 /// command, or looking up files. Unsupported constructs return Unknown.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
+    if arg.implicit_input_source.is_some() && arg.node_kind == "runtime_scalar" {
+        // A tool-substituted single argv item is not re-split by a shell.
+        // Its bytes may still be ANY control word or an unknown path.
+        let mut structure = incomplete_word(String::new(), true);
+        match &arg.runtime_argument_domain {
+            Some(caushell_types::RuntimeArgumentDomain::PathTemplate {
+                prefix, suffix, ..
+            }) => {
+                // Decoded tool-argv affixes, not shell source. The tool substitutes
+                // one data field without removing/expanding these bytes again.
+                structure.static_prefix = prefix.clone();
+                structure.static_suffix = suffix.clone();
+            }
+            Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                roots,
+                may_escape: false,
+            }) if !roots.is_empty()
+                && roots
+                    .iter()
+                    .all(|root| !root.is_empty() && !root.contains('\0')) =>
+            {
+                // The domain carries producer argv-spelling anchors, not just
+                // normalized containment. Use only a prefix shared by EVERY
+                // root and descendant; no representative path or filename.
+                let mut prefix = roots[0].trim_end_matches('/').to_string();
+                if prefix.is_empty() {
+                    prefix.push('/');
+                }
+                for root in &roots[1..] {
+                    let length = prefix
+                        .chars()
+                        .zip(root.chars())
+                        .take_while(|(a, b)| a == b)
+                        .map(|(a, _)| a.len_utf8())
+                        .sum();
+                    prefix.truncate(length);
+                    if prefix.is_empty() {
+                        break;
+                    }
+                }
+                structure.static_prefix = prefix;
+            }
+            _ => {}
+        }
+        return structure;
+    }
+    if arg.implicit_input_source.is_some() {
+        // A runtime tail marker represents unknown argv width, not a single
+        // empty field. Only an explicit scalar contract above proves arity.
+        return ArgumentStructure::unknown();
+    }
     if arg.substitution_shape == Some(crate::StdoutScalarShape::AbsolutePath) {
         return ArgumentStructure {
             fields: ArgumentFieldCount::ExactlyOne,
@@ -433,6 +543,9 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
         };
     }
     if let Some(bounds) = pid_field_bounds(arg) {
+        return bounds;
+    }
+    if let Some(bounds) = arithmetic_field_bounds(arg) {
         return bounds;
     }
     if !matches!(
@@ -646,4 +759,27 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
         spelling: Some(spelling),
         pathname_generation,
     }
+}
+
+/// Lexical-only form of the argv query, for shell path/redirection facts.
+/// No runtime value, output proof, or source identity is manufactured here.
+pub fn shell_word_structure(text: &str, quoted: bool, node_kind: &str) -> ArgumentStructure {
+    argument_structure(&ProjectedArg {
+        text: text.into(),
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: false,
+        substitution_shape: None,
+        kind: crate::ProjectedArgKind::Positional,
+        quoted,
+        node_kind: node_kind.into(),
+        span: caushell_parse::SourceSpan {
+            start_byte: 0,
+            end_byte: 0,
+            start_row: 0,
+            start_column: 0,
+            end_row: 0,
+            end_column: 0,
+        },
+    })
 }

@@ -124,11 +124,63 @@ pub(super) fn apply_variable_overlay(
                 if !state_visible(&declaration.shell_scope_span, span_start_byte) {
                     continue;
                 }
-                if declaration.kind != caushell_parse::DeclarationCommandKind::Export
-                    && declaration.options.iter().any(|option| {
-                        option.starts_with('-')
-                            && option[1..].chars().any(|c| matches!(c, 'n' | 'a' | 'A'))
+                if declaration.kind == caushell_parse::DeclarationCommandKind::Local
+                    && bindings.in_function_scope()
+                    && declaration.options.is_empty()
+                    && !declaration.assignments.is_empty()
+                    && declaration.assignments.iter().all(|a| {
+                        scalar_identifier(&a.name)
+                            && !bindings.runtime_variable_target_is_unresolved(&a.name)
+                            && a.operator == caushell_parse::AssignmentOperator::Assign
                     })
+                {
+                    // Operands expand before the declaration takes effect.
+                    // Keep scalar bytes only in a proved function frame; local
+                    // export attributes remain unknown rather than guessed.
+                    let values = declaration
+                        .assignments
+                        .iter()
+                        .map(|a| classify_assignment_value(&a.value, &bindings))
+                        .collect::<Vec<_>>();
+                    for (assignment, value) in declaration.assignments.iter().zip(values) {
+                        assigned.insert(assignment.name.clone());
+                        apply_binding(
+                            &mut bindings,
+                            SessionVariableBinding::new(
+                                assignment.name.clone(),
+                                value,
+                                false,
+                                observed_at,
+                            ),
+                        );
+                        if declaration.conditional_execution {
+                            bindings.insert_opaque_dynamic(
+                                &assignment.name,
+                                "conditional local assignment",
+                            );
+                        }
+                        bindings.set_environment_value(
+                            &assignment.name,
+                            SessionValue::opaque_dynamic("unresolved local export attribute"),
+                        );
+                    }
+                    for name in &declaration.names {
+                        bindings.insert_opaque_dynamic(name, "uninitialised local declaration");
+                        bindings.set_environment_value(
+                            name,
+                            SessionValue::opaque_dynamic("unresolved local export attribute"),
+                        );
+                    }
+                    continue;
+                }
+                if declaration.kind == caushell_parse::DeclarationCommandKind::Readonly
+                    || (declaration.kind != caushell_parse::DeclarationCommandKind::Export
+                        && declaration.options.iter().any(|option| {
+                            option.starts_with('-')
+                                && option[1..]
+                                    .chars()
+                                    .any(|c| matches!(c, 'n' | 'a' | 'A' | 'r'))
+                        }))
                 {
                     for name in declaration
                         .names
@@ -564,6 +616,10 @@ pub(crate) fn apply_positional_parameter_mutation(
             bindings.replace_positional_parameters(values);
         }
         PositionalParameterMutation::Shift(count) => {
+            if !bindings.positional_parameters_are_complete() {
+                bindings.forget_positional_parameters();
+                return;
+            }
             let values = bindings
                 .positional_parameters()
                 .iter()
@@ -573,7 +629,7 @@ pub(crate) fn apply_positional_parameter_mutation(
             bindings.replace_positional_parameters(values);
         }
         PositionalParameterMutation::Forget => {
-            bindings.replace_positional_parameters(Vec::<SessionValue>::new());
+            bindings.forget_positional_parameters();
         }
     }
 }
@@ -585,12 +641,19 @@ fn shift_positional_parameters(
     let count = match command.tokens.as_slice() {
         [] => 1,
         [token] if token.kind == CommandTokenKind::Arg => {
-            let value = exact_set_positional_token_value(token, bindings)?;
+            let Some(value) = exact_set_positional_token_value(token, bindings) else {
+                // An unknown count can change any positional index. It is
+                // not evidence that shift was invalid or did nothing.
+                return Some(PositionalParameterMutation::Forget);
+            };
             value.parse::<usize>().ok()?
         }
         _ => return None,
     };
 
+    if !bindings.positional_parameters_are_complete() {
+        return Some(PositionalParameterMutation::Forget);
+    }
     if count > bindings.positional_parameters().len() {
         return None;
     }

@@ -82,6 +82,7 @@ enum CommandSubstitutionArtifactKey {
     },
     AssignmentValueLocator {
         parent_node_id: NodeId,
+        assignment_scope_key: Option<String>,
         assignment_command_index: usize,
         assignment_index: usize,
         substitution_index: usize,
@@ -161,6 +162,7 @@ fn command_substitution_descriptor_for_record(
             command_substitution_body_descriptor(parent_record, *token_index, *substitution_index)
         }
         ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+            assignment_scope_key,
             assignment_command_index,
             assignment_index,
             substitution_index,
@@ -170,6 +172,7 @@ fn command_substitution_descriptor_for_record(
             ..
         } => command_substitution_assignment_descriptor(
             &record.parent_execution_node_id,
+            assignment_scope_key.as_deref(),
             *assignment_command_index,
             *assignment_index,
             *substitution_index,
@@ -237,6 +240,7 @@ fn command_substitution_parent_slot_name(
 
 fn command_substitution_assignment_descriptor(
     parent_node_id: &NodeId,
+    assignment_scope_key: Option<&str>,
     assignment_command_index: usize,
     assignment_index: usize,
     substitution_index: usize,
@@ -247,6 +251,7 @@ fn command_substitution_assignment_descriptor(
     Some(CommandSubstitutionProvenanceRecord {
         artifact_key: CommandSubstitutionArtifactKey::AssignmentValueLocator {
             parent_node_id: parent_node_id.clone(),
+            assignment_scope_key: assignment_scope_key.map(str::to_string),
             assignment_command_index,
             assignment_index,
             substitution_index,
@@ -330,14 +335,18 @@ fn command_substitution_output_artifact_node_id(
         )),
         CommandSubstitutionArtifactKey::AssignmentValueLocator {
             parent_node_id,
+            assignment_scope_key,
             assignment_command_index,
             assignment_index,
             substitution_index,
         } => NodeId::new(format!(
-            "artifact:command-substitution-output:{}:{}:{}:assign:{}:{}:{}",
+            "artifact:command-substitution-output:{}:{}:{}:assign:{}{}:{}:{}",
             request.session_id.0.as_str(),
             request.sequence_no.0,
             parent_node_id.0,
+            assignment_scope_key
+                .as_ref()
+                .map_or(String::new(), |key| format!("scope:{key}:")),
             assignment_command_index,
             assignment_index,
             substitution_index,

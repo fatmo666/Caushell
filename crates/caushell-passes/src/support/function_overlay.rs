@@ -1,7 +1,57 @@
 //! Function state operations shared by ordered analysis and persistence.
-use caushell_profile::{SessionBindings, VariablePresence};
+use caushell_profile::{
+    ArgumentFieldCount, MaterializedProjectedInvocation, SessionBindings, SessionValue,
+    ValueMaterialization, VariablePresence, argument_structure,
+};
 use caushell_runner::PendingMutation;
 use caushell_types::{CommandSequenceNo, SessionFunctionBinding};
+
+/// A function shares its caller namespace, but replaces positional parameters.
+/// Both execution expansion and variable-effect replay consume this query.
+pub(crate) fn function_call_bindings(
+    base: &SessionBindings,
+    projection: &MaterializedProjectedInvocation,
+) -> SessionBindings {
+    let mut bindings = base.clone();
+    bindings.enter_function_scope();
+    if projection
+        .invocation
+        .args
+        .iter()
+        .any(|arg| argument_structure(arg).fields != ArgumentFieldCount::ExactlyOne)
+    {
+        bindings.forget_positional_parameters();
+        return bindings;
+    }
+    bindings.replace_positional_parameters(projection.invocation.args.iter().enumerate().map(
+        |(i, a)| {
+            match projection.arg_resolutions.get(i) {
+                Some(ValueMaterialization::ResolvedExactScalar { .. })
+                    if a.implicit_input_source.is_none() =>
+                {
+                    SessionValue::exact_scalar(&a.text)
+                }
+                Some(ValueMaterialization::ResolvedRuntimeProduced { kind, .. })
+                    if a.implicit_input_source.is_none() =>
+                {
+                    SessionValue::runtime_produced(&a.text, *kind)
+                }
+                _ if a.runtime_data && a.implicit_input_source.is_none() => {
+                    SessionValue::exact_scalar(&a.text)
+                }
+                Some(ValueMaterialization::Static) if a.implicit_input_source.is_none() => {
+                    caushell_parse::decode_static_shell_argument(&a.text, a.quoted, &a.node_kind)
+                        .map(SessionValue::exact_scalar)
+                        .unwrap_or_else(|| {
+                            SessionValue::opaque_dynamic("unresolved function argument")
+                        })
+                }
+                _ => SessionValue::opaque_dynamic("unresolved function argument"),
+            }
+        },
+    ));
+    bindings
+}
 
 pub(crate) fn visible_function_bindings_before_span(
     summary: &caushell_types::SessionSummary,

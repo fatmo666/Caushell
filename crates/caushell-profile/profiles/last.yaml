@@ -12,9 +12,20 @@ forms:
       items:
         - {kind: not, item: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}
         - {kind: has_modifier, modifier: file}
-        - {kind: no_positional_args}
-    parameters: []
+    parameters: &filters
+      - {name: record_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: list_default_accounting_records
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: not, item: {kind: has_modifier, modifier: file}}
+    parameters: *filters
+    # last and lastb have different native default databases. Keep the read
+    # dependency without inventing one concrete pathname for both aliases.
+    effects: [{kind: read_path, target: {kind: none}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: information
     selector: *information
@@ -32,6 +43,13 @@ modifiers:
   - {id: ip_address, matcher: {kind: any_flag, flags: ['-i', '--ip']}}
   - {id: wide, matcher: {kind: any_flag, flags: ['-w', '--fullnames']}}
   - {id: fulltimes, matcher: {kind: any_flag, flags: ['-F', '--fulltimes']}}
+  - {id: nohostname, matcher: {kind: any_flag, flags: ['-R', '--nohostname']}}
+  - id: present
+    matcher: {kind: any_flag, flags: ['-p', '--present']}
+    parameters: [{name: present_time, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: time_format
+    matcher: {kind: any_flag, flags: ['--time-format']}
+    parameters: [{name: time_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
   - id: since
     matcher: {kind: any_flag, flags: ['-s', '--since']}
     parameters: [{name: since_time, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
@@ -48,6 +66,6 @@ extensions:
     - GTFOBins fixed snapshot last/file-read/0
     - GTFOBins fixed snapshot lastb alias; explicit -f follows the same interface, but its default database differs.
   caushell.profile/known_limitations:
-    - The source uses -f to select a wtmp-format file and -a to place the host field last. Repeated -f operands are all read paths; positional usernames and ttys are deliberately unsupported here.
+    - The source uses -f to select a wtmp-format file and -a to place the host field last. Repeated -f operands are all read paths; positional usernames and ttys are record filters, not filesystem operands.
     - Output can be incomplete or corrupted for files that are not valid accounting databases; bytes are interpreted as records, not copied unchanged.
-    - Default system wtmp access, positional filters, and unresolved options are not claimed as this explicit-file form.
+    - Default database reads retain an unspecified native read dependency, distinct from explicit -f paths; unresolved options remain opaque.

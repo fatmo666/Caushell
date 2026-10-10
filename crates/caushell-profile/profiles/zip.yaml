@@ -17,6 +17,8 @@ platform:
   requires_features: []
 forms:
 - id: add_files_to_archive_implicit_extension
+  implicit_inputs: &name_list_input
+  - {source: stdin_data, semantic: {kind: plain_value}}
   selector:
     kind: all
     items:
@@ -77,10 +79,11 @@ forms:
         suffix: ".zip"
       purpose: generic_operand
   stream_contract:
-    stdin_mode: ignored
+    stdin_mode: data_optional
     stdout_mode: opaque
     stderr_mode: opaque
 - id: add_files_to_archive
+  implicit_inputs: *name_list_input
   selector:
     kind: all
     items:
@@ -129,10 +132,11 @@ forms:
       missing: unknown
       purpose: generic_operand
   stream_contract:
-    stdin_mode: ignored
+    stdin_mode: data_optional
     stdout_mode: opaque
     stderr_mode: opaque
 - id: test_archive_implicit_extension
+  implicit_inputs: *name_list_input
   selector:
     kind: all
     items:
@@ -210,10 +214,11 @@ forms:
       kind: slot
       name: test_payload_long
   stream_contract:
-    stdin_mode: ignored
+    stdin_mode: data_optional
     stdout_mode: opaque
     stderr_mode: opaque
 - id: test_archive
+  implicit_inputs: *name_list_input
   selector:
     kind: all
     items:
@@ -289,10 +294,11 @@ forms:
       kind: slot
       name: test_payload_long
   stream_contract:
-    stdin_mode: ignored
+    stdin_mode: data_optional
     stdout_mode: opaque
     stderr_mode: opaque
 - id: archive_to_stdout
+  implicit_inputs: *name_list_input
   selector:
     kind: all
     items:
@@ -319,18 +325,27 @@ forms:
     semantic: *2
     binding:
       kind: remaining_positionals
-    cardinality: required_many
+    cardinality: optional_many
   effects:
   - kind: read_path
     target:
       kind: slot
       name: input_paths
   stream_contract:
-    stdin_mode: ignored
+    stdin_mode: data_optional
     stdout_mode: data
     stderr_mode: opaque
     stdout_dependency: inputs
 modifiers:
+- id: compression_level
+  matcher: {kind: any_flag, flags: ["-0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"]}
+- id: archive_layout
+  matcher: {kind: any_flag, flags: ["-j", "--junk-paths", "-r", "--recurse-paths", "-q", "--quiet"]}
+- id: filenames_from_stdin
+  matcher: {kind: any_flag, flags: ["-@", "--names-stdin"]}
+  effects:
+  - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+  - {kind: read_path, target: {kind: implicit_input, source: stdin_data}}
 - id: test_mode
   matcher:
     kind: any_flag
@@ -359,4 +374,5 @@ extensions:
     test mode it remains data. zip adds .zip when the basename has no extension; -
     writes to stdout and is not a file. Template expansion, appended archive argv,
     and external unzip defaults are not represented as fabricated Bash invocations.
-    Other update modes and stdin filename lists remain unresolved.
+    Stdin filename lists are read dependencies, not shell payloads or invented concrete paths. Other update/move/delete modes remain unresolved.
+  - Stdin remains optional across these forms, since a '-' input operand also reads archive member bytes from stdin. Do not infer ignored stdin merely from the absence of -@.

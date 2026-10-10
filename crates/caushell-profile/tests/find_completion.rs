@@ -192,6 +192,30 @@ fn formatted_stdout_is_data_not_a_traversal_bounded_path_list() {
 }
 
 #[test]
+fn file_outputs_suppress_unconditional_nul_stdout_guarantees() {
+    let registry = caushell_profile::ProfileRegistry::built_in().unwrap();
+    for action in [
+        "-fprint /dev/stdout",
+        "-fprint0 /proc/self/fd/1",
+        "-fls ./out",
+        "-fprintf /dev/fd/1 '/etc/passwd\\0'",
+        "-cpio ./out",
+    ] {
+        let parsed = parse_command(&format!("find . {action} -print0"), ShellKind::Bash).unwrap();
+        let result = caushell_profile::resolve_invocation_artifact_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+            &caushell_profile::SessionBindings::new(),
+        );
+        let caushell_profile::ResolveInvocationArtifactResult::Resolved(r) = result else {
+            panic!("{action}: {result:?}");
+        };
+        assert!(r.proven_stdout_records().is_none(), "{action}: {r:?}");
+    }
+}
+
+#[test]
 fn all_pattern_aliases_own_data_not_outer_flags() {
     for flag in [
         "-name",
@@ -344,10 +368,7 @@ fn every_required_option_operand_is_checked_at_each_occurrence() {
 fn deliberately_unmodeled_forms_remain_explicitly_unresolved() {
     let profile = load_command_profile_from_str(include_str!("../profiles/find.yaml")).unwrap();
     for command in [
-        "find . -fprintf /opt/output '%p'",
         "find -files0-from roots -delete",
-        r"find . -ok rm {} \;",
-        r"find . -okdir rm {} \;",
         "find . -unsupported",
         "find -O4 . -print",
         "find . -newertt yesterday -print",
@@ -359,4 +380,29 @@ fn deliberately_unmodeled_forms_remain_explicitly_unresolved() {
             "{command}"
         );
     }
+}
+
+#[test]
+fn two_operand_output_binding_is_command_independent_and_preserves_each_file() {
+    let profile = load_command_profile_from_str(
+        &include_str!("../profiles/find.yaml")
+            .replace("canonical_name: find", "canonical_name: probe"),
+    )
+    .unwrap();
+    let parsed = parse_command(
+        "probe . -fprintf first '-delete' -fprintf second '-exec' -print",
+        ShellKind::Bash,
+    )
+    .unwrap();
+    let projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let selection = select_invocation(&profile, &projection).unwrap();
+    let bound = bind_invocation(&profile, &projection, &selection);
+    assert!(!bound.operation_semantics_unresolved, "{bound:?}");
+    assert_eq!(
+        values(&bound, "formatted_output_paths"),
+        ["first", "second"]
+    );
+    assert_eq!(values(&bound, "search_roots"), ["."]);
+    assert!(bound.argument_regions.is_empty());
+    assert!(!has_effect(&bound, EffectKind::DeletePath, "search_roots"));
 }

@@ -139,6 +139,7 @@ pub fn collect_recursive_payload_candidates(
                 BoundValue::ImplicitInput {
                     source: implicit_source,
                     domain,
+                    ..
                 } => {
                     candidates.push(RecursivePayloadCandidate {
                         language,

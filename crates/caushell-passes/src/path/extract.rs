@@ -16,9 +16,11 @@ use caushell_types::{
 };
 
 use super::configured::resolve_configured_path;
+use super::glob::resolve_glob_path_operand;
 use super::normalize::{
     join_shell_path, normalize_shell_path, path_is_within_root, resolve_path_operand,
 };
+use super::runtime::runtime_path_bounds;
 use crate::support::{ExecutionResolveRecordRef, is_file_write_redirection_operator};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,11 +105,19 @@ fn bound_path_operand_depends_on_cwd(
 fn runtime_input_path_depends_on_cwd(
     domain: Option<&caushell_types::RuntimeArgumentDomain>,
 ) -> bool {
-    !matches!(
-        domain,
-        Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, .. })
-            if !roots.is_empty() && roots.iter().all(|root| root.starts_with('/'))
-    )
+    use caushell_types::RuntimeArgumentDomain;
+    match domain {
+        Some(RuntimeArgumentDomain::PathSet { roots, .. }) => {
+            roots.is_empty() || roots.iter().any(|root| !root.starts_with('/'))
+        }
+        Some(RuntimeArgumentDomain::PathTemplate { roots, prefix, .. }) => {
+            !(prefix.starts_with('/')
+                || prefix.is_empty()
+                    && !roots.is_empty()
+                    && roots.iter().all(|root| root.starts_with('/')))
+        }
+        _ => true,
+    }
 }
 
 fn runtime_input_path_resolution<S: std::fmt::Debug>(
@@ -115,21 +125,18 @@ fn runtime_input_path_resolution<S: std::fmt::Debug>(
     domain: Option<&caushell_types::RuntimeArgumentDomain>,
     cwd: &str,
 ) -> PathResolution {
-    match domain {
-        Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape }) => {
-            PathResolution::BoundedPathSet {
-                roots: roots
-                    .iter()
-                    .map(|root| lexical_path_from_argv(root, cwd))
-                    .collect(),
-                may_escape: *may_escape,
-            }
-        }
-        Some(caushell_types::RuntimeArgumentDomain::Unbounded) | None => {
-            PathResolution::UnsupportedDynamicText {
-                text: format!("path operand depends on runtime input {source:?}"),
-            }
-        }
+    match domain.and_then(runtime_path_bounds) {
+        Some(bounds) => PathResolution::BoundedPathSet {
+            roots: bounds
+                .roots
+                .iter()
+                .map(|root| lexical_path_from_argv(root, cwd))
+                .collect(),
+            may_escape: bounds.may_escape,
+        },
+        None => PathResolution::UnsupportedDynamicText {
+            text: format!("path operand depends on runtime input {source:?}"),
+        },
     }
 }
 
@@ -198,7 +205,7 @@ fn semantic_path_resolution(
                 ),
             )
         }
-        SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain }) => (
+        SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain, .. }) => (
             runtime_input_path_resolution(source, domain.as_ref(), cwd),
             runtime_input_path_depends_on_cwd(domain.as_ref()),
         ),
@@ -216,6 +223,14 @@ fn semantic_value_text(value: SemanticValueRef<'_>) -> &str {
     }
 }
 
+/// Positive syntax provenance, not a guessed fd pathname or text match.
+/// Projected/transformed values and literal strings like '>(cat)' are files.
+fn process_substitution_content_channel(value: SemanticValueRef<'_>) -> bool {
+    matches!(value, SemanticValueRef::Original(BoundValue::Argument {
+        node_kind, materialization: BoundArgumentMaterialization::Literal, ..
+    }) if node_kind == "process_substitution")
+}
+
 fn path_target_is_inapplicable(invocation: &BoundInvocation, target: &EffectTarget) -> bool {
     let slot_is_inapplicable = |slot: &SlotName| {
         bound_parameter(invocation, slot.as_str())
@@ -230,10 +245,6 @@ fn path_target_is_inapplicable(invocation: &BoundInvocation, target: &EffectTarg
         }
         _ => false,
     }
-}
-
-fn slot_has_value_projection(invocation: &BoundInvocation, slot: &SlotName) -> bool {
-    bound_parameter(invocation, slot.as_str()).is_some_and(|p| p.projected_values.is_some())
 }
 
 fn slot_depends_on_cwd(
@@ -276,19 +287,40 @@ fn projected_mutation_scope_depends_on_cwd(
 ) -> bool {
     match target {
         MutationScopeTarget::RepositoryWorktree { root, subtree, .. } => {
-            if !root
-                .iter()
-                .chain(subtree.iter())
-                .any(|slot| slot_has_value_projection(&resolved.bound, slot))
-            {
-                return false;
-            }
             root.as_ref()
                 .is_none_or(|slot| slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home))
                 || subtree.as_ref().is_some_and(|slot| {
                     slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home)
                 })
         }
+    }
+}
+
+/// Preserve the declared affected path family in both Graph and policy views.
+/// Unknown roots stay unknown; traversal may widen a known domain, never narrow it.
+fn effect_path_scope(
+    effect: &Effect,
+    invocation: &BoundInvocation,
+    resolution: PathResolution,
+) -> PathResolution {
+    let Some(caushell_profile::PathScope::Subtree { escape_modifiers }) = &effect.path_scope else {
+        return resolution;
+    };
+    let escape = escape_modifiers
+        .iter()
+        .any(|id| invocation.applied_modifiers.contains(id));
+    match resolution {
+        PathResolution::Concrete { path }
+        | PathResolution::ToolConvention { path, .. }
+        | PathResolution::DerivedConcrete { path, .. } => PathResolution::BoundedPathSet {
+            roots: vec![path],
+            may_escape: escape,
+        },
+        PathResolution::BoundedPathSet { roots, may_escape } => PathResolution::BoundedPathSet {
+            roots,
+            may_escape: may_escape || escape,
+        },
+        unknown => unknown,
     }
 }
 
@@ -349,7 +381,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     targets.push(MutationTargetCandidate {
                         operation: effect.kind,
                         slot_name: format!("configured_path_{effect_index}"),
-                        resolution: path.resolution,
+                        resolution: effect_path_scope(effect, bound, path.resolution),
                         cwd_dependent: path.cwd_dependent,
                         implicit_incidental_cache: path.implicit_incidental_cache,
                     });
@@ -360,7 +392,19 @@ pub(crate) fn collect_effect_mutation_targets(
             }
             EffectTarget::Slot(slot) => {
                 if let Some(parameter) = bound_parameter(bound, slot.as_str()) {
+                    let mut saw_value = false;
                     for value in parameter.semantic_values() {
+                        saw_value = true;
+                        if effect.kind == EffectKind::WritePath
+                            && effect.path_access
+                                == Some(caushell_profile::PathAccessKind::ContentOpen)
+                            && process_substitution_content_channel(value)
+                        {
+                            // Opening this generated channel is not namespace
+                            // mutation. Its producer/consumer remains a separate
+                            // audited execution unit with its own real effects.
+                            continue;
+                        }
                         let (resolution, cwd_dependent) =
                             semantic_path_resolution(value, resolved, cwd, home);
                         targets.push(MutationTargetCandidate {
@@ -368,8 +412,11 @@ pub(crate) fn collect_effect_mutation_targets(
                             operation: effect.kind,
                             slot_name: slot.as_str().to_string(),
                             cwd_dependent,
-                            resolution,
+                            resolution: effect_path_scope(effect, bound, resolution),
                         });
+                    }
+                    if saw_value {
+                        continue;
                     }
                 }
             }
@@ -379,7 +426,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     operation: effect.kind,
                     slot_name: tool_convention_slot_name(effect_index, &target.convention),
                     resolution: resolve_tool_convention_path(target, cwd),
-                    cwd_dependent: false,
+                    cwd_dependent: !target.path.starts_with('/'),
                 });
             }
             EffectTarget::DerivedPath(target) => {
@@ -410,8 +457,13 @@ pub(crate) fn collect_effect_mutation_targets(
                 }));
             }
             EffectTarget::MutationScope(scope) => {
-                let (slot_name, scope_resolution) =
-                    resolve_mutation_scope_target(scope, bound, cwd, home, true);
+                let (slot_name, scope_resolution) = resolve_mutation_scope_target(
+                    scope,
+                    bound,
+                    cwd,
+                    home,
+                    caushell_runner::CwdPathContext::Exact(cwd),
+                );
                 let resolution = match scope_resolution {
                     MutationScopeResolution::RepositoryWorktree { root, scope, .. } => {
                         match scope {
@@ -462,9 +514,9 @@ pub(crate) fn collect_path_facts(
     let mut paths = Vec::new();
 
     for &record in records {
-        for option in record.cwd_options(cwd) {
+        for case in record.cwd_cases(cwd) {
             let start = paths.len();
-            let resolution_cwd = option.unwrap_or(cwd);
+            let resolution_cwd = case.resolution_base(cwd);
             match record.result() {
                 ResolveInvocationArtifactResult::Resolved(resolved) => {
                     collect_resolved_record_path_facts(
@@ -496,13 +548,13 @@ pub(crate) fn collect_path_facts(
                     ..
                 } => {}
             }
-            if option.is_none() {
+            if !matches!(case, caushell_runner::CwdPathContext::Exact(_)) {
                 for path in &mut paths[start..] {
-                    if path.cwd_dependent {
-                        path.resolution = PathResolution::UnsupportedDynamicText {
-                            text: format!("{} depends on unresolved execution cwd", path.slot_name),
-                        };
-                    }
+                    path.resolution = super::cwd::project_path_at_cwd(
+                        path.resolution.clone(),
+                        path.cwd_dependent,
+                        case,
+                    );
                 }
             }
         }
@@ -523,13 +575,13 @@ pub(crate) fn collect_mutation_scope_facts(
             continue;
         };
 
-        for option in record.cwd_options(cwd) {
+        for case in record.cwd_cases(cwd) {
             collect_resolved_record_mutation_scope_facts(
                 record,
                 resolved,
-                option.unwrap_or(cwd),
+                case.resolution_base(cwd),
                 home,
-                option.is_some(),
+                case,
                 &mut scopes,
             );
         }
@@ -653,7 +705,7 @@ fn collect_resolved_record_mutation_scope_facts(
     resolved: &ResolvedInvocationArtifact,
     cwd: &str,
     home: Option<&str>,
-    cwd_known: bool,
+    case: caushell_runner::CwdPathContext<'_>,
     out: &mut Vec<MutationScopeFactCandidate>,
 ) {
     for (effect_index, effect) in resolved.bound.effects.iter().enumerate() {
@@ -666,7 +718,7 @@ fn collect_resolved_record_mutation_scope_facts(
         };
 
         let (slot_name, resolution) =
-            resolve_mutation_scope_target(target, &resolved.bound, cwd, home, cwd_known);
+            resolve_mutation_scope_target(target, &resolved.bound, cwd, home, case);
 
         out.push(MutationScopeFactCandidate {
             source_node_id: record.source_node_id().clone(),
@@ -685,7 +737,7 @@ fn resolve_mutation_scope_target(
     invocation: &BoundInvocation,
     cwd: &str,
     home: Option<&str>,
-    cwd_known: bool,
+    case: caushell_runner::CwdPathContext<'_>,
 ) -> (String, MutationScopeResolution) {
     match target {
         MutationScopeTarget::RepositoryWorktree {
@@ -695,26 +747,20 @@ fn resolve_mutation_scope_target(
         } => {
             let root_resolution = root
                 .as_ref()
-                .and_then(|slot| {
-                    first_path_resolution_for_slot(invocation, slot, cwd, home, cwd_known)
-                })
+                .and_then(|slot| first_path_resolution_for_slot(invocation, slot, cwd, home, case))
                 .unwrap_or_else(|| {
-                    if cwd_known {
+                    super::cwd::project_path_at_cwd(
                         PathResolution::Concrete {
                             path: normalize_shell_path(cwd),
-                        }
-                    } else {
-                        PathResolution::UnsupportedDynamicText {
-                            text: "repository root depends on unresolved execution cwd".into(),
-                        }
-                    }
+                        },
+                        true,
+                        case,
+                    )
                 });
 
             let scope = subtree
                 .as_ref()
-                .and_then(|slot| {
-                    first_path_resolution_for_slot(invocation, slot, cwd, home, cwd_known)
-                })
+                .and_then(|slot| first_path_resolution_for_slot(invocation, slot, cwd, home, case))
                 .map(|path| RepositoryWorktreeScopeResolution::Subtree { path })
                 .unwrap_or(RepositoryWorktreeScopeResolution::WholeWorktree);
 
@@ -739,7 +785,7 @@ fn first_path_resolution_for_slot(
     slot: &SlotName,
     cwd: &str,
     home: Option<&str>,
-    cwd_known: bool,
+    case: caushell_runner::CwdPathContext<'_>,
 ) -> Option<PathResolution> {
     let parameter = invocation
         .bound_parameters
@@ -750,13 +796,7 @@ fn first_path_resolution_for_slot(
         SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
         _ => {
             let (resolution, dependent) = semantic_path_resolution(value, None, cwd, home);
-            Some(if !cwd_known && dependent {
-                PathResolution::UnsupportedDynamicText {
-                    text: format!("{} depends on unresolved execution cwd", slot.as_str()),
-                }
-            } else {
-                resolution
-            })
+            Some(super::cwd::project_path_at_cwd(resolution, dependent, case))
         }
     })
 }
@@ -772,8 +812,16 @@ fn collect_effect_target_path_facts(
 ) {
     for (effect_index, effect) in invocation.effects.iter().enumerate() {
         let Some(role) = path_role_for_effect(effect.kind).or_else(|| {
-            (effect.kind == EffectKind::DeletePath
-                && matches!(effect.target, EffectTarget::ConfiguredPath(_)))
+            (matches!(
+                effect.kind,
+                EffectKind::DeletePath
+                    | EffectKind::MovePath
+                    | EffectKind::ChangeMode
+                    | EffectKind::ChangeOwner
+                    | EffectKind::ChangeGroup
+                    | EffectKind::MetadataMutation
+            ) && (effect.path_scope.is_some()
+                || matches!(effect.target, EffectTarget::ConfiguredPath(_))))
             .then_some(PathRole::Target)
         }) else {
             continue;
@@ -794,7 +842,7 @@ fn collect_effect_target_path_facts(
                         slot_name: format!("configured_path_{effect_index}"),
                         semantic_slot: None,
                         normalized_command_name: normalized_command_name.to_string(),
-                        resolution: path.resolution,
+                        resolution: effect_path_scope(effect, invocation, path.resolution),
                         cwd_dependent: path.cwd_dependent,
                         role,
                         purpose: target.purpose,
@@ -836,7 +884,7 @@ fn collect_effect_target_path_facts(
                 // Parameters provide a base role, not an exclusive role. A
                 // declared read/modify effect on the same file must also enter
                 // the graph. Avoid duplicating the parameter's existing role.
-                if path.role == role {
+                if path.role == role && effect.path_scope.is_none() {
                     continue;
                 }
                 for value in parameter.semantic_values() {
@@ -848,7 +896,7 @@ fn collect_effect_target_path_facts(
                         slot_name: format!("{}_effect_{effect_index}", slot.as_str()),
                         semantic_slot: Some(slot.clone()),
                         normalized_command_name: normalized_command_name.into(),
-                        resolution,
+                        resolution: effect_path_scope(effect, invocation, resolution),
                         cwd_dependent,
                         role,
                         purpose: path.purpose,
@@ -1164,16 +1212,20 @@ fn derive_semantic_slot_path_resolution(
             slot_name,
             rule,
         )),
-        SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain }) => {
+        SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain, .. }) => {
             let basis = DerivedPathBasis::PathOperand {
                 raw: format!("runtime input {source:?}"),
                 resolved_input_path: None,
                 slot_name: slot_name.to_string(),
             };
-            Some(match domain {
-                Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape }) => {
-                    derive_bounded_path_resolution(roots, *may_escape, basis, rule, cwd)
-                }
+            Some(match domain.as_ref().and_then(runtime_path_bounds) {
+                Some(bounds) => derive_bounded_path_resolution(
+                    &bounds.roots,
+                    bounds.may_escape,
+                    basis,
+                    rule,
+                    cwd,
+                ),
                 _ => PathResolution::DerivedUnresolved {
                     basis,
                     rule: rule.clone(),
@@ -1310,6 +1362,12 @@ fn derive_path_resolution_from_spelling(
     spelling: Option<&str>,
     cwd: &str,
 ) -> PathResolution {
+    if matches!(rule, DerivedPathRule::LexicalAncestors)
+        && source_resolution.concrete_path().is_some()
+        && let Some(spelling) = spelling
+    {
+        return ancestor_path_bounds(&[spelling.to_string()], false, cwd);
+    }
     if source_resolution.concrete_path().is_some()
         && let Some(spelling) = spelling
         && matches!(
@@ -1357,6 +1415,9 @@ fn derive_bounded_path_resolution(
             .any(|root| root.is_empty() || root.contains('\0'))
     {
         return unresolved();
+    }
+    if matches!(rule, DerivedPathRule::LexicalAncestors) {
+        return ancestor_path_bounds(roots, may_escape, cwd);
     }
     let component = |s: &str| !s.contains(['/', '\0']);
     let preserves_root = match rule {
@@ -1426,6 +1487,11 @@ fn derive_path_resolution_from_concrete_source(
     };
 
     match rule {
+        // Without the original argv spelling, normalized absolute paths
+        // cannot certify a relative parent-removal stopping point.
+        DerivedPathRule::LexicalAncestors => {
+            ancestor_path_bounds(&[source_path.to_string()], false, "/")
+        }
         DerivedPathRule::SiblingFiles => sibling_file_resolution(source_path, false),
         DerivedPathRule::AppendSuffix { suffix } => PathResolution::DerivedConcrete {
             path: format!("{source_path}{suffix}"),
@@ -1485,6 +1551,24 @@ fn sibling_file_resolution(source_path: &str, is_directory: bool) -> PathResolut
         roots: vec![root.to_string()],
         may_escape: false,
     }
+}
+
+fn ancestor_path_bounds(spellings: &[String], may_escape: bool, cwd: &str) -> PathResolution {
+    let mut roots = Vec::new();
+    for spelling in spellings {
+        // Removing parents of relative `a/b` or `./a/b` never truncates
+        // into the cwd's parent. Absolute paths and explicit `..` have no
+        // such floor; keep the broad root instead of assuming emptiness.
+        let root = if spelling.starts_with('/') || spelling.split('/').any(|c| c == "..") {
+            "/".to_string()
+        } else {
+            normalize_shell_path(cwd)
+        };
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    PathResolution::BoundedPathSet { roots, may_escape }
 }
 
 fn derive_path_resolution_under_root(
@@ -1867,6 +1951,10 @@ fn resolve_path_resolution(
         return PathResolution::Concrete { path };
     }
 
+    if let Some(resolution) = resolve_glob_path_operand(text, quoted, node_kind, cwd, home, false) {
+        return resolution;
+    }
+
     if home.is_none() && is_home_relative_operand(text, quoted, node_kind) {
         return PathResolution::HomeUnavailable {
             text: text.to_string(),
@@ -2050,14 +2138,24 @@ fn redirection_path_fact(
         return None;
     }
     let role = path_role_for_redirection_operator(operator)?;
-    let resolution = resolve_path_resolution(
+    let resolution = resolve_glob_path_operand(
         &target.text,
         target.quoted,
         &target.node_kind,
         cwd,
         home,
-        None,
-    );
+        true,
+    )
+    .unwrap_or_else(|| {
+        resolve_path_resolution(
+            &target.text,
+            target.quoted,
+            &target.node_kind,
+            cwd,
+            home,
+            None,
+        )
+    });
 
     Some((
         role,
@@ -2271,6 +2369,7 @@ fn derived_path_rule_id_suffix(rule: &DerivedPathRule) -> String {
         }
         DerivedPathRule::UrlBasename => "url-basename".to_string(),
         DerivedPathRule::ArchiveMembers => "archive-members".to_string(),
+        DerivedPathRule::LexicalAncestors => "lexical-ancestors".to_string(),
         DerivedPathRule::SiblingFiles => "sibling-files".to_string(),
         DerivedPathRule::ChildUnder { relative_path } => {
             format!("child-under:{relative_path}")

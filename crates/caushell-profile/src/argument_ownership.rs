@@ -42,7 +42,7 @@ pub(crate) fn may_be_unmodeled_control(
 fn arity(mode: Option<FlagOperandMode>) -> usize {
     match mode {
         None => 0,
-        Some(FlagOperandMode::SecondArg) => 2,
+        Some(FlagOperandMode::SecondArg | FlagOperandMode::FirstOfTwoArgs) => 2,
         Some(_) => 1,
     }
 }
@@ -251,6 +251,11 @@ pub(crate) fn covered_positionals(
         .iter()
         .map(|(i, name)| (*i, name.as_str()))
         .collect();
+    if flags.len() != baseline.flags.len() {
+        // Multiple cluster members share one lexical index. The one-owner
+        // automaton cannot certify width shifts across their combined effects.
+        return None;
+    }
     let inert: BTreeMap<_, _> = flags
         .iter()
         .map(|(i, name)| (*i, inert_operand(name, modifiers, forms)))

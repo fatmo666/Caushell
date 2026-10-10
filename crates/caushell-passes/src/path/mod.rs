@@ -1,8 +1,12 @@
 mod configured;
+mod cwd;
 pub(crate) use configured::resolve_configured_path;
+pub(crate) use cwd::{effective_cwd_cases, project_path_at_cwd};
 mod expression;
 mod extract;
+mod glob;
 mod normalize;
+mod runtime;
 mod target_match;
 
 pub(crate) use expression::{
@@ -17,6 +21,7 @@ pub(crate) use extract::{
     resolved_path_role_for_profile_role,
 };
 pub(crate) use normalize::{
-    join_shell_path, normalize_shell_path, path_is_within_root, resolve_path_operand,
+    expand_home_path_spelling, join_shell_path, normalize_shell_path, path_is_within_root,
+    resolve_path_operand,
 };
 pub(crate) use target_match::match_path_expression_against_target_or_direct_children;

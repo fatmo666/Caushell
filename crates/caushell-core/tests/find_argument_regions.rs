@@ -64,7 +64,7 @@ fn real_outer_and_child_deletion_still_reach_existing_guards() {
         r"find /opt/shared -exec printf %s -delete \; -delete",
         r"find /opt/shared -exec echo {} + -delete",
         r"find . -exec printf %s -- {} \; -exec rm /opt/shared/file \;",
-        r"find . -exec printf %s -delete \; -execdir rm {} \;",
+        r"find /opt/shared -exec printf %s -delete \; -execdir rm {} \;",
         r"find /opt/shared -exec rm {} \;",
     ] {
         let result = ShellQueryCore::new().check(request(command));
@@ -102,6 +102,7 @@ fn known_option_operands_cannot_create_fake_children() {
 #[test]
 fn child_symlink_and_type_flags_cannot_widen_other_child_domains() {
     for command in [
+        r"find . -exec printf %s -delete \; -execdir rm {} \;",
         r"find . -exec printf %s -L {} \; -exec rm {} \;",
         r"find . -exec printf %s -type b {} \; -exec rm {} \;",
         r"find . -type f -exec printf %s -name /etc {} \; -exec rm {} \;",

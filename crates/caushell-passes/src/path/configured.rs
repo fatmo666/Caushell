@@ -153,6 +153,22 @@ pub(crate) fn resolve_configured_path(
     home: Option<&str>,
     record: Option<crate::support::ExecutionResolveRecordRef<'_>>,
 ) -> Option<ConfiguredPathResolution> {
+    if target.only_when_sources_absent {
+        // Unknown/provided operands suppress the supplemental default just as
+        // known operands do. Their own effects remain responsible for them.
+        if target.sources.iter().any(|source| {
+            last_value(invocation, source.slot.as_str(), &source.projection).is_some()
+        }) {
+            return None;
+        }
+        if invocation.operation_semantics_unresolved || !invocation.residuals.is_empty() {
+            return Some(ConfiguredPathResolution {
+                resolution: unknown("source absence cannot be proved for an incomplete invocation"),
+                cwd_dependent: true,
+                implicit_incidental_cache: false,
+            });
+        }
+    }
     let selected = target
         .sources
         .iter()
@@ -162,6 +178,12 @@ pub(crate) fn resolve_configured_path(
                 .environment
                 .as_ref()
                 .and_then(|env| crate::support::environment_default(env, record))
+        })
+        .or_else(|| {
+            target
+                .shell_variable
+                .as_ref()
+                .and_then(|source| crate::support::shell_variable_default(source, record))
         })
         .or_else(|| {
             target
@@ -302,6 +324,40 @@ modifiers:
     }
 
     #[test]
+    fn supplemental_defaults_require_proven_absence_not_unresolved_values() {
+        let (empty, mut target) = bound("configured-tool");
+        target.only_when_sources_absent = true;
+        target.default_value = Some(".".into());
+        assert_eq!(
+            resolve_configured_path(&empty, &target, "/work", None, None)
+                .unwrap()
+                .resolution
+                .concrete_path(),
+            Some("/work")
+        );
+        for command in [
+            "configured-tool --output ./file",
+            "configured-tool --output \"$unknown\"",
+            "configured-tool --output ./src/*",
+        ] {
+            let (provided, _) = bound(command);
+            assert!(
+                resolve_configured_path(&provided, &target, "/work", None, None).is_none(),
+                "{command}"
+            );
+        }
+        let mut incomplete = empty;
+        incomplete.operation_semantics_unresolved = true;
+        assert!(
+            resolve_configured_path(&incomplete, &target, "/work", None, None)
+                .unwrap()
+                .resolution
+                .concrete_path()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn missing_unknown_and_inapplicable_are_distinct() {
         let (bound, mut target) = bound("configured-tool --ini unrelated=anything");
         assert!(resolve_configured_path(&bound, &target, "/work", None, None).is_none());
@@ -374,6 +430,7 @@ modifiers:
         let (mut bound, mut target) = bound("configured-tool --ini path=/work/cache");
         bound.bound_parameters[0].values = vec![BoundValue::ImplicitInput {
             source: ImplicitInputSource::StdinData,
+            origin: None,
             domain: Some(RuntimeArgumentDomain::PathSet {
                 roots: vec!["/work".into()],
                 may_escape: false,

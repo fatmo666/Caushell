@@ -1,6 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-option_scope: all_arguments
+option_scope: permuted_options
 option_matching: exact_names
 opaque_on_unresolved: true
 identity:
@@ -17,6 +17,55 @@ platform:
   shell_families: []
   requires_features: []
 forms:
+# The native CLI treats every non-option, non -i operand as an output URL.
+# Bind all local outputs, not just the final one. Unmodeled URL protocols,
+# filter languages and multi-file muxers are intentionally not covered here.
+- id: transcode_local_media
+  selector:
+    kind: all
+    items:
+    - {kind: has_modifier, modifier: media_input}
+    - {kind: has_positional_at, index: 0}
+    - {kind: no_dash_dash}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: not, item: {kind: has_modifier, modifier: audio_filter}}
+    - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: media_input, parameter: input_source, matcher: &protocol {kind: regex_pattern, pattern: '^[A-Za-z][A-Za-z0-9+.-]*:'}}}
+    - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: *protocol}}
+    - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '%'}}}
+    # -f is file-scoped and order-sensitive. A single known single-file format
+    # is bounded; mixed/repeated format declarations retain opaque semantics.
+    - {kind: not, item: {kind: has_flag_at_least, flag: '-f', count: 2}}
+    - kind: any
+      items:
+      - {kind: not, item: {kind: has_modifier, modifier: input_format}}
+      - {kind: has_modifier_parameter_matching, modifier: input_format, parameter: input_format, matcher: {kind: regex_pattern, pattern: '^(image2pipe|flv|mp4|mov|matroska|webm|wav|mp3|ogg|mpegts|mpeg|avi|rawvideo|s16le|s24le|s32le|f32le)$'}}
+  parameters:
+  - name: input_operand
+    semantic: {kind: plain_value}
+    binding: {kind: following_flag, flag: '-i', operand_mode: next_arg}
+    cardinality: required_many
+    structured_projection:
+      branches:
+      - {matcher: {kind: literal, value: '-'}, target: {name: input_stream, semantic: {kind: plain_value}}}
+      fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}
+  - name: stdout_output
+    semantic: {kind: plain_value}
+    binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
+    cardinality: optional_many
+  - name: output_paths
+    semantic: {kind: path, role: write, purpose: generic_operand}
+    binding: {kind: remaining_positionals}
+    cardinality: optional_many
+    value_constraints: [{kind: exclude_literal, value: '-'}]
+  effects:
+  - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+  - {kind: consume_stdin, target: {kind: slot, name: input_stream}}
+  - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_paths}}
+  # A container selected by the filename can produce sibling side files.
+  # Preserve the explicit target and a directory-bounded output family.
+  - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: output_paths}, rule: {kind: sibling_files}, purpose: generic_operand}}
+  - {kind: transform_data, target: {kind: none}}
+  stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 - id: show_help
   selector:
     kind: has_modifier
@@ -55,6 +104,10 @@ forms:
         kind: has_modifier
         modifier: information
   parameters:
+  - name: generator_input
+    semantic: {kind: plain_value}
+    binding: {kind: following_flag, flag: '-i', operand_mode: next_arg}
+    cardinality: required_many
   - name: output_path
     semantic:
       kind: path
@@ -85,7 +138,7 @@ modifiers:
     binding:
       kind: following_matched_flag
       operand_mode: next_arg
-    cardinality: required_one
+    cardinality: required_many
 - id: media_input
   matcher:
     kind: any_flag
@@ -98,7 +151,9 @@ modifiers:
     binding:
       kind: following_matched_flag
       operand_mode: next_arg
-    cardinality: required_one
+    # This plain mirror supplies pre-binding selectors. Active forms own and
+    # require the actual -i operands, with form-specific file/generator types.
+    cardinality: optional_many
 - id: audio_filter
   matcher:
     kind: any_flag
@@ -122,10 +177,19 @@ modifiers:
     - "-h"
     - "-help"
     - "-version"
+- id: media_switches
+  matcher: {kind: any_flag, flags: ['-y', '-n', '-an', '-vn', '-sn', '-dn', '-nostdin', '-hide_banner', '-stats', '-nostats']}
+- id: media_values
+  matcher:
+    kind: any_flag
+    flags: ['-vcodec', '-acodec', '-codec', '-codec:v', '-codec:a', '-c', '-c:v', '-c:a', '-b', '-b:v', '-b:a', '-ab', '-ar', '-ac', '-r', '-framerate', '-s', '-pix_fmt', '-crf', '-q:v', '-q:a', '-qscale:v', '-qscale:a', '-profile:v', '-level', '-level:v', '-preset', '-tune', '-movflags', '-map', '-map_metadata', '-id3v2_version', '-ss', '-t', '-to', '-threads', '-loglevel', '-v']
+  parameters:
+  - {name: media_settings, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
 subcommands:
 extensions:
   caushell.profile/source_research:
   - https://gtfobins.org/gtfobins/ffmpeg/
+  - https://ffmpeg.org/ffmpeg.html
   caushell.profile/known_limitations:
   - The pinned recipe loads a LADSPA shared library through an opaque filter expression.
     The exact shared-library path inside that expression is not extracted.
@@ -133,3 +197,6 @@ extensions:
     is terminal input, not an inferred child process.
   - Unknown options and configuration-driven behavior remain unresolved; the profile
     records only the demonstrated mechanism.
+  - Ordinary conversion models declared file reads, stdin, every explicit local output and byte transformation. It does not execute ffmpeg or inspect media/container headers.
+  - Unknown read operands stay unknown reads under the existing policy; they are not proven local files or dynamically resolved protocols. This Profile does not introduce a blanket approval rule for unknown reads.
+  - URL protocols (including file and pipe), filename patterns, filter expressions, multi-file formats and repeated -f declarations retain approval through unresolved invocation selection. Output-side logs, passes, attachments and other unlisted options are not silently accepted.

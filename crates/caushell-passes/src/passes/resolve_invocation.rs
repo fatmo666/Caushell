@@ -10,7 +10,7 @@ use caushell_profile::{
     parse_recursive_payload_candidate, resolve_invocation_artifact_with_bindings,
 };
 use caushell_runner::{
-    BlockDeviceSearchScope, CatastrophicSearchRootScope, EffectiveCwd, ExecutionUnitInheritedScope,
+    BlockDeviceSearchScope, CatastrophicSearchRootScope, ExecutionUnitInheritedScope,
     ExecutionUnitOriginKind, ExecutionUnitOriginLocator, ExecutionUnitResolveRecord,
     NestedPayloadParentRef, NestedPayloadRecord, NestedPayloadRecordId, NestedPayloadResolution,
     ParsedCommandRef, ParsedCommandScope, PendingMutation, ProcessSubstitutionLocationKind,
@@ -83,7 +83,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         binding_request.shell_state_before.observability.aliases =
             caushell_types::ShellStateKnowledge::Complete;
 
-        let (records, alias_derived_commands, function_derived_commands) =
+        let (records, alias_derived_commands, function_derived_commands, function_scopes) =
             collect_top_level_command_resolve_records(
                 &self.registry,
                 session.summary(),
@@ -141,6 +141,7 @@ impl SessionTransformPass for ResolveInvocationPass {
                 &records,
                 &function_derived_commands,
                 &function_derived_records,
+                &function_scopes,
                 &dispatch_derived_commands,
                 &dispatch_derived_records,
                 &nested_payload_records,
@@ -485,8 +486,22 @@ struct TopLevelFunctionDerivedCommand {
     derived_command_index: usize,
     parent_node_id: caushell_graph::NodeId,
     bindings: SessionBindings,
+    scope_base_bindings: SessionBindings,
     parsed_body: caushell_parse::ParsedCommandArtifact,
     command: caushell_parse::CommandFact,
+}
+
+/// A function invocation owns a shell scope even when that scope contains no
+/// executable CommandFact. Assignment expansions must not depend on finding a
+/// first ordinary command to act as their seed.
+struct TopLevelFunctionScope {
+    source_command_index: usize,
+    function_name: String,
+    parent_node_id: caushell_graph::NodeId,
+    call_command: caushell_parse::CommandFact,
+    call_bindings: SessionBindings,
+    bindings: SessionBindings,
+    parsed_body: caushell_parse::ParsedCommandArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -508,11 +523,13 @@ fn collect_top_level_command_resolve_records(
     Vec<ResolvedCommandSeed>,
     Vec<TopLevelAliasDerivedCommand>,
     Vec<TopLevelFunctionDerivedCommand>,
+    Vec<TopLevelFunctionScope>,
 ) {
     let mut alias_overlay = alias_bindings(summary, request);
     let mut records = Vec::with_capacity(parsed.commands.len());
     let mut alias_derived_commands = Vec::new();
     let mut function_derived_commands = Vec::new();
+    let mut function_scopes = Vec::new();
 
     for (command_index, command) in parsed.commands.iter().enumerate() {
         let source_node_id = source_node_id_for_command(request, parsed, command_index, command);
@@ -548,14 +565,38 @@ fn collect_top_level_command_resolve_records(
             .and_then(|command_name| variable_overlay.function_binding(command_name))
             .filter(|binding| binding.uncertainty.is_none())
         {
-            function_derived_commands.extend(project_function_derived_commands(
+            let projection = caushell_profile::materialize_projected_invocation(
+                &caushell_profile::project_invocation(
+                    &resolved_command,
+                    runtime_context_for_top_level_command(parsed, command_index, &resolved_command),
+                ),
+                &variable_overlay,
+            );
+            let environment = crate::support::command_environment_bindings(
+                &variable_overlay,
+                parsed,
+                &ParsedCommandRef::new(command_index, command.span.clone()),
+            );
+            let function_bindings =
+                crate::support::function_call_bindings(&environment, &projection);
+            let (derived_commands, parsed_body) = project_function_derived_commands(
                 registry,
                 request,
                 command_index,
                 &source_node_id,
                 binding,
-                &variable_overlay,
-            ));
+                &function_bindings,
+            );
+            function_derived_commands.extend(derived_commands);
+            function_scopes.push(TopLevelFunctionScope {
+                source_command_index: command_index,
+                function_name: binding.name.clone(),
+                parent_node_id: source_node_id,
+                call_command: resolved_command,
+                call_bindings: variable_overlay.clone(),
+                bindings: function_bindings,
+                parsed_body,
+            });
             apply_alias_command(&mut alias_overlay, command, request.sequence_no);
             continue;
         }
@@ -582,7 +623,12 @@ fn collect_top_level_command_resolve_records(
         apply_alias_command(&mut alias_overlay, command, request.sequence_no);
     }
 
-    (records, alias_derived_commands, function_derived_commands)
+    (
+        records,
+        alias_derived_commands,
+        function_derived_commands,
+        function_scopes,
+    )
 }
 
 fn project_alias_derived_commands(
@@ -623,12 +669,14 @@ fn project_function_derived_commands(
     source_node_id: &caushell_graph::NodeId,
     binding: &SessionFunctionBinding,
     bindings: &SessionBindings,
-) -> Vec<TopLevelFunctionDerivedCommand> {
-    let Ok(parsed_body) = caushell_parse::parse_command(&binding.body, request.shell_kind) else {
-        return Vec::new();
-    };
+) -> (
+    Vec<TopLevelFunctionDerivedCommand>,
+    caushell_parse::ParsedCommandArtifact,
+) {
+    let (parsed_body, _) =
+        execution_body_scope(&binding.body, request.shell_kind, false, "function body");
 
-    parsed_body
+    let commands = parsed_body
         .commands
         .iter()
         .enumerate()
@@ -638,6 +686,7 @@ fn project_function_derived_commands(
                 function_name: binding.name.clone(),
                 derived_command_index,
                 parent_node_id: source_node_id.clone(),
+                scope_base_bindings: bindings.clone(),
                 bindings: apply_runtime_variable_bindings_before_span(
                     registry,
                     request,
@@ -650,7 +699,8 @@ fn project_function_derived_commands(
                 command: command.clone(),
             },
         )
-        .collect()
+        .collect();
+    (commands, parsed_body)
 }
 
 fn project_parsed_command_scopes(
@@ -1011,7 +1061,7 @@ fn dispatch_candidates_for_resolved(
             .bound
             .argument_regions
             .iter()
-            .all(|r| matches!(r.id.as_str(), "exec" | "execdir"))
+            .all(|r| matches!(r.id.as_str(), "exec" | "execdir" | "ok" | "okdir"))
     {
         let candidates = find_dispatch_candidates(resolved, cwd, home);
         let unresolved = candidates
@@ -1068,13 +1118,15 @@ fn find_dispatch_candidates(
     cwd: &str,
     home: Option<&str>,
 ) -> Vec<caushell_profile::DispatchCommandCandidate> {
-    use caushell_profile::{ArgumentBindingSource, DispatchArgument, DispatchCommandCandidate};
+    use caushell_profile::{
+        ArgumentBindingSource, DispatchArgument, DispatchCommandCandidate, DispatchWorkingDirectory,
+    };
 
     let tokens = &resolved.materialized_projection.invocation.args;
     let decoded = tokens
         .iter()
         .zip(&resolved.materialized_projection.arg_resolutions)
-        .map(|(token, resolution)| decoded_find_argv_value(token, resolution))
+        .map(|(token, resolution)| decoded_projected_argv_value(token, resolution, home))
         .collect::<Vec<_>>();
     let root_values = resolved
         .bound
@@ -1114,7 +1166,7 @@ fn find_dispatch_candidates(
                         roots_unknown = true;
                         return None;
                     };
-                    let Some(resolved_root) =
+                    let Some(_) =
                         resolve_path_operand(&root, *quoted, node_kind, cwd, home)
                     else {
                         roots_unknown = true;
@@ -1122,9 +1174,11 @@ fn find_dispatch_candidates(
                     };
                     let tilde_expanded =
                         !runtime_data && !quoted && (root == "~" || root.starts_with("~/"));
-                    if root.starts_with('/') || tilde_expanded {
-                        Some(resolved_root)
+                    if tilde_expanded {
+                        crate::path::expand_home_path_spelling(&root, home)
                     } else {
+                        // Keep argv spelling, including absolute trailing '/'
+                        // and dot components, until any suffix is applied.
                         Some(root)
                     }
                 }
@@ -1137,6 +1191,55 @@ fn find_dispatch_candidates(
         .applied_modifiers
         .iter()
         .any(|modifier| modifier.as_str() == "follow_symlinks");
+    let search_domain = caushell_types::RuntimeArgumentDomain::PathSet {
+        may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
+        roots: roots.clone(),
+    };
+    // Only a validated, static global minimum depth excludes the starting
+    // points. Do not interpret arbitrary find predicates as scope proofs.
+    let start_points_excluded = resolved
+        .bound
+        .bound_parameters
+        .iter()
+        .filter(|p| p.name.as_str() == "minimum_depth")
+        .flat_map(|p| &p.values)
+        .last()
+        .and_then(|value| match value {
+            BoundValue::Argument {
+                text,
+                quoted,
+                node_kind,
+                materialization,
+                ..
+            } => {
+                let value = if matches!(
+                    materialization,
+                    caushell_profile::BoundArgumentMaterialization::Literal
+                ) {
+                    caushell_parse::decode_static_shell_argument(text, *quoted, node_kind)
+                } else {
+                    Some(text.clone())
+                };
+                value?.parse::<u64>().ok()
+            }
+            _ => None,
+        })
+        .is_some_and(|depth| depth >= 1);
+    let execdir_domain = caushell_types::RuntimeArgumentDomain::PathSet {
+        // execdir argv contains local basenames prefixed with ./, not the
+        // caller-relative full paths emitted by -exec. The root '/' remains
+        // '/' and is covered by the child's root-directory cwd.
+        roots: if !start_points_excluded
+            && roots
+                .iter()
+                .any(|root| root.trim_end_matches('/').rsplit('/').next() == Some(".."))
+        {
+            vec![".".into(), "..".into()]
+        } else {
+            vec![".".into()]
+        },
+        may_escape: roots_unknown,
+    };
     let mut candidates = Vec::new();
 
     // Use the same ownership result as Profile selection and binding. Do not
@@ -1145,6 +1248,8 @@ fn find_dispatch_candidates(
         let action = match region.id.as_str() {
             "exec" => Some(("exec_command", false)),
             "execdir" => Some(("execdir_command", true)),
+            "ok" => Some(("ok_command", false)),
+            "okdir" => Some(("okdir_command", true)),
             _ => None,
         };
         let Some((command_slot, execdir)) = action else {
@@ -1153,6 +1258,7 @@ fn find_dispatch_candidates(
         let command_index = region.command_index;
         let end = region.end_index;
         let command_token = &tokens[command_index];
+        let batch = decoded.get(end).and_then(|value| value.as_deref()) == Some("+");
 
         let make_argument = |slot: &str,
                              token: &caushell_profile::ProjectedArg,
@@ -1162,11 +1268,13 @@ fn find_dispatch_candidates(
             let dynamic_placeholder = force_placeholder
                 || value.is_some_and(|value| value.contains("{}") && value != "{}");
             let unknown = value.is_none();
-            let domain = (is_placeholder && !execdir).then(|| {
-                caushell_types::RuntimeArgumentDomain::PathSet {
-                    roots: roots.clone(),
-                    may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
+            let domain = value.filter(|value| value.contains("{}")).map(|value| {
+                if execdir {
+                    &execdir_domain
+                } else {
+                    &search_domain
                 }
+                .substitute_into(value, "{}")
             });
             DispatchArgument {
                 slot: caushell_profile::SlotName::new(slot),
@@ -1185,7 +1293,19 @@ fn find_dispatch_candidates(
                 runtime_argument_domain: domain,
                 runtime_data: !unknown && !dynamic_placeholder && !is_placeholder,
                 quoted: token.quoted,
-                node_kind: token.node_kind.clone(),
+                node_kind: if dynamic_placeholder || is_placeholder {
+                    // ';' substitutes one argv item; '+' replaces the final
+                    // placeholder with a variable-width batch. Preserve this
+                    // fact when the child is itself a shell or a wrapper.
+                    if batch {
+                        "runtime_argument_list"
+                    } else {
+                        "runtime_scalar"
+                    }
+                    .into()
+                } else {
+                    token.node_kind.clone()
+                },
                 span: token.span.clone(),
                 binding_source: ArgumentBindingSource::RemainingArg,
             }
@@ -1221,16 +1341,25 @@ fn find_dispatch_candidates(
             unknown_environment_from: Vec::new(),
             unknown_environment_names: Vec::new(),
             unset_environment: Vec::new(),
-            execution_cwd_unknown: execdir,
+            working_directory: if execdir {
+                DispatchWorkingDirectory::ContainingDirectories {
+                    roots: roots.clone(),
+                    start_points_excluded,
+                    may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
+                }
+            } else {
+                DispatchWorkingDirectory::Inherit
+            },
         });
     }
 
     candidates
 }
 
-fn decoded_find_argv_value(
+fn decoded_projected_argv_value(
     token: &caushell_profile::ProjectedArg,
     resolution: &ValueMaterialization,
+    home: Option<&str>,
 ) -> Option<String> {
     if token.runtime_data
         || matches!(
@@ -1245,11 +1374,21 @@ fn decoded_find_argv_value(
     }
 
     if matches!(resolution, ValueMaterialization::Static) {
-        return caushell_parse::decode_static_shell_argument(
+        let value = caushell_parse::decode_static_shell_argument(
             &token.text,
             token.quoted,
             &token.node_kind,
-        );
+        )?;
+        // Quote removal is not the whole shell-to-argv conversion. A leading
+        // unquoted tilde is expanded by the parent shell BEFORE tool dispatch.
+        // Check source spelling, not decoded data: '\~/x' and '~/x' must keep
+        // their literal tilde, as must values supplied by variables/tools.
+        // Unsupported named/directory-stack prefixes or unknown HOME remain
+        // unresolved rather than being laundered into relative child paths.
+        if !token.quoted && token.text.starts_with('~') {
+            return crate::path::expand_home_path_spelling(&value, home);
+        }
+        return Some(value);
     }
 
     // Missing or runtime-dependent values must stay unresolved. In
@@ -1602,11 +1741,8 @@ fn refresh_execution_payload_projections(
         }
         return;
     }
-    let (cwd, reliable) = match &entry.inherited_scope.dispatch_working_directory {
-        None => (request.shell_state_before.cwd(), true),
-        Some(EffectiveCwd::Known(cwd)) => (cwd.as_str(), true),
-        _ => (request.shell_state_before.cwd(), false),
-    };
+    let cwd = request.shell_state_before.cwd();
+    let reliable = !entry.inherited_scope.static_input_cwd_unproven;
     let evidence = static_stdin_evidence_for_scoped_command(
         caushell_query::QuerySession::from_session(&session),
         &entry.static_payload_scope.parsed_scope,
@@ -1644,6 +1780,7 @@ fn collect_execution_unit_resolve_records(
     top_level_records: &[ResolvedCommandSeed],
     function_derived_commands: &[TopLevelFunctionDerivedCommand],
     function_derived_records: &[ResolvedCommandSeed],
+    function_scopes: &[TopLevelFunctionScope],
     dispatch_derived_commands: &[TopLevelDispatchDerivedCommand],
     dispatch_derived_records: &[ResolvedCommandSeed],
     nested_payload_records: &[NestedPayloadRecord],
@@ -1719,7 +1856,7 @@ fn collect_execution_unit_resolve_records(
                 parsed_scope: command.parsed_body.clone(),
                 command_index: record.command_ref.command_index,
                 bindings: command.bindings.clone(),
-                scope_base_bindings: command.bindings.clone(),
+                scope_base_bindings: command.scope_base_bindings.clone(),
                 stdin_is_parent_output: false,
             },
             history_anchor_node_id: command.parent_node_id.clone(),
@@ -1728,6 +1865,101 @@ fn collect_execution_unit_resolve_records(
             origin_locator: ExecutionUnitOriginLocator::None,
             inherited_scope: ExecutionUnitInheritedScope::default(),
         });
+    }
+
+    for scope in function_scopes {
+        let call = &parsed_request.commands[scope.source_command_index];
+        let call_cwd = caushell_runner::ShellSourceCwdAnchor::RequestPosition {
+            start_byte: call.span.start_byte,
+        };
+        let body_scope_node = (!scope.parsed_body.commands.is_empty()).then(|| {
+            function_derived_invocation_node_id(
+                &request.session_id,
+                request.sequence_no,
+                scope.source_command_index,
+                0,
+            )
+        });
+        frontier.extend(
+            expanded_assignment_command_substitution_body_children_for_scope(
+                registry,
+                request,
+                &scope.parsed_body,
+                request.shell_kind,
+                &scope.parent_node_id,
+                &scope.parent_node_id,
+                scope.source_command_index,
+                2,
+                &scope.bindings,
+                &ExecutionUnitInheritedScope::default(),
+                None,
+                Some("function-scope"),
+                body_scope_node
+                    .as_ref()
+                    .map(AssignmentCwdSource::RecordScope)
+                    .unwrap_or(AssignmentCwdSource::Fixed(&call_cwd)),
+                max_nested_parse_depth,
+            ),
+        );
+        // Argument expansions execute before a known function too. They are
+        // owned by the call site, not by whichever commands its body contains.
+        // Cheap syntax-only trigger: literals may cause extra analysis, never
+        // new effects. Ordinary function calls need no extra scope clones.
+        let expanded_call = &scope.call_command;
+        if !expanded_call.text.contains("$(")
+            && !expanded_call.text.contains('`')
+            && !expanded_call.text.contains("<(")
+            && !expanded_call.text.contains(">(")
+        {
+            continue;
+        }
+        let mut call_scope = parsed_request.clone();
+        call_scope.commands[scope.source_command_index] = expanded_call.clone();
+        let call_entry = ExpandedFrontierEntry {
+            source_node_id: scope.parent_node_id.clone(),
+            command_ref: ParsedCommandRef::new(
+                scope.source_command_index,
+                expanded_call.span.clone(),
+            ),
+            parsed_scope: call_scope.clone(),
+            rendered_command_text: expanded_call.text.clone(),
+            // This query-only call entry is never staged as an unresolved
+            // external executable; the known body owns function semantics.
+            result: ResolveInvocationArtifactResult::NoProfile {
+                normalized_command_name: scope.function_name.clone(),
+                gap_kind: caushell_types::ResolveGapKind::NoProfile,
+            },
+            shell_kind: request.shell_kind,
+            root_command_index: scope.source_command_index,
+            depth: 0,
+            parent_execution_node_id: scope.parent_node_id.clone(),
+            bindings: scope.call_bindings.clone(),
+            static_payload_scope: StaticPayloadLookupScope {
+                parsed_scope: call_scope,
+                command_index: scope.source_command_index,
+                bindings: scope.call_bindings.clone(),
+                scope_base_bindings: request_scope_base_bindings.clone(),
+                stdin_is_parent_output: false,
+            },
+            history_anchor_node_id: scope.parent_node_id.clone(),
+            origin_kind: ExecutionUnitOriginKind::TopLevel,
+            origin_index: scope.source_command_index,
+            origin_locator: ExecutionUnitOriginLocator::None,
+            inherited_scope: ExecutionUnitInheritedScope::default(),
+        };
+        frontier.extend(expanded_command_substitution_body_children(
+            registry,
+            request,
+            &call_entry,
+            max_nested_parse_depth,
+        ));
+        frontier.extend(expanded_process_substitution_body_children(
+            registry,
+            request,
+            &call_entry,
+            None,
+            max_nested_parse_depth,
+        ));
     }
 
     for record in nested_payload_records {
@@ -1810,6 +2042,7 @@ fn collect_execution_unit_resolve_records(
         session,
         request,
         parsed_request,
+        max_nested_parse_depth,
     ));
 
     // Conservatively retain every alias definition in the enclosing request.
@@ -1868,6 +2101,31 @@ fn collect_execution_unit_resolve_records(
             max_nested_parse_depth,
         );
 
+        // Known shell functions are execution payloads, not external commands
+        // lacking a Profile (or an executable sharing the function's name).
+        // Top-level calls already enter as FunctionExpansion seeds. Derived
+        // calls use the same frontier and its ordinary depth admission gate.
+        let function_children =
+            expanded_function_body_children(registry, request, &entry, max_nested_parse_depth);
+        if let Some((name, _, incomplete)) = &function_children {
+            entry.result = if let Some(reason) = incomplete {
+                ResolveInvocationArtifactResult::SelectionError {
+                    normalized_command_name: name.clone(),
+                    gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                    error: caushell_profile::BindError::UncertainFunctionBinding {
+                        command_name: name.clone(),
+                        reason: reason.clone(),
+                    },
+                    partial_bound: None,
+                }
+            } else {
+                ResolveInvocationArtifactResult::NoProfile {
+                    normalized_command_name: name.clone(),
+                    gap_kind: caushell_types::ResolveGapKind::NoProfile,
+                }
+            };
+        }
+
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();
         let child_inherited_scope = entry.inherited_scope.clone();
@@ -1900,43 +2158,77 @@ fn collect_execution_unit_resolve_records(
             inherited_scope: child_inherited_scope.clone(),
         });
 
-        let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
+        if let Some((_, children, _)) = function_children {
+            if frontier_depth < max_nested_parse_depth {
+                frontier.extend(children);
+            } else if !children.is_empty() {
+                expansion_limit_evidence.push(Evidence::execution_expansion_truncated(
+                    entry.source_node_id.0.clone(),
+                    entry.rendered_command_text.clone(),
+                    entry.root_command_index,
+                    entry.depth,
+                    max_nested_parse_depth,
+                    children.len(),
+                ));
+            }
             continue;
-        };
+        }
 
-        let mut children = expanded_dispatch_children(registry, request, &entry, resolved);
-        children.extend(expanded_shell_payload_children(
-            registry, request, &entry, resolved,
-        ));
-        children.extend(expanded_recursive_payload_children(
+        // Shell argument substitutions execute before the callee, regardless
+        // of its Profile coverage or selection success. Already-expanded argv
+        // data is excluded by the producer query, not reparsed as shell code.
+        let mut children = expanded_command_substitution_body_children(
             registry,
-            session,
-            request,
-            &entry,
-            resolved,
-            max_nested_parse_depth,
-        ));
-        children.extend(expanded_command_substitution_body_children(
-            registry, request, &entry,
-        ));
-        children.extend(expanded_command_substitution_materialization_children(
-            registry,
-            session,
             request,
             &entry,
             max_nested_parse_depth,
-        ));
-        children.extend(expanded_static_xargs_children(
-            registry,
-            session,
-            request,
-            &entry,
-            resolved,
-            max_nested_parse_depth,
-        ));
+        );
+        let resolved = match &entry.result {
+            ResolveInvocationArtifactResult::Resolved(resolved) => Some(resolved),
+            _ => None,
+        };
         children.extend(expanded_process_substitution_body_children(
-            registry, request, &entry, resolved,
+            registry,
+            request,
+            &entry,
+            resolved,
+            max_nested_parse_depth,
         ));
+        if let Some(resolved) = resolved {
+            children.extend(expanded_dispatch_children(
+                registry, request, &entry, resolved,
+            ));
+            children.extend(expanded_shell_payload_children(
+                registry,
+                request,
+                &entry,
+                resolved,
+                max_nested_parse_depth,
+            ));
+            children.extend(expanded_recursive_payload_children(
+                registry,
+                session,
+                request,
+                &entry,
+                resolved,
+                max_nested_parse_depth,
+            ));
+            children.extend(expanded_command_substitution_materialization_children(
+                registry,
+                session,
+                request,
+                &entry,
+                max_nested_parse_depth,
+            ));
+            children.extend(expanded_static_xargs_children(
+                registry,
+                session,
+                request,
+                &entry,
+                resolved,
+                max_nested_parse_depth,
+            ));
+        }
 
         if frontier_depth < max_nested_parse_depth {
             frontier.extend(children);
@@ -1944,13 +2236,14 @@ fn collect_execution_unit_resolve_records(
             // All existing child producers share this admission gate. Do not
             // recurse beyond the budget or silently drop the pending frontier.
             // No extra graph traversal or command-specific risk logic is needed.
-            let unresolved_dispatch_count = if should_skip_generic_dispatch_projection(resolved) {
-                0
-            } else {
-                registered_dispatch_projection(registry, resolved)
-                    .unresolved
-                    .len()
-            };
+            let unresolved_dispatch_count =
+                if resolved.is_none_or(should_skip_generic_dispatch_projection) {
+                    0
+                } else {
+                    registered_dispatch_projection(registry, resolved.unwrap())
+                        .unresolved
+                        .len()
+                };
             let next_candidate_count = children.len() + unresolved_dispatch_count;
             if next_candidate_count > 0 {
                 expansion_limit_evidence.push(Evidence::execution_expansion_truncated(
@@ -1966,6 +2259,138 @@ fn collect_execution_unit_resolve_records(
     }
 
     (records, expansion_limit_evidence)
+}
+
+fn expanded_function_body_children(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    max_nested_parse_depth: u8,
+) -> Option<(String, Vec<ExpandedFrontierEntry>, Option<String>)> {
+    if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
+        return None;
+    }
+    let command = entry
+        .parsed_scope
+        .commands
+        .get(entry.command_ref.command_index)?;
+    let name = caushell_profile::materialize_command_name(
+        command.command_name.as_deref()?,
+        &entry.bindings,
+    )?;
+    let binding = entry.bindings.function_binding(&name)?;
+    if binding.uncertainty.is_some() {
+        return None; // The ordinary resolver already emits OpaqueInvocation.
+    }
+    let Ok(body) = caushell_parse::parse_command(&binding.body, entry.shell_kind) else {
+        return Some((
+            name,
+            Vec::new(),
+            Some("function body could not be parsed".into()),
+        ));
+    };
+    let projection = caushell_profile::materialize_projected_invocation(
+        &caushell_profile::project_invocation(command, InvocationRuntimeContext::default()),
+        &entry.bindings,
+    );
+    let environment = crate::support::command_environment_bindings(
+        &entry.bindings,
+        &entry.parsed_scope,
+        &entry.command_ref,
+    );
+    // Functions keep the caller's variables and shell namespace, unlike an
+    // executable shell. Only their positional parameters are replaced.
+    let bindings = crate::support::function_call_bindings(&environment, &projection);
+    // Unknown bytes are data, not unanalysed code. Unknown argv width is a
+    // separate fact: never pin a later literal to the wrong $n or treat an
+    // unresolved $@ as a proven empty list, including after shift.
+    let mut children: Vec<_> = body
+        .commands
+        .iter()
+        .enumerate()
+        .map(|(index, child)| {
+            let child_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
+                bindings.clone(),
+                &body,
+                child.span.start_byte,
+                request.sequence_no,
+            );
+            ExpandedFrontierEntry {
+                source_node_id: expanded_virtual_node_id(
+                    "function-body",
+                    &entry.source_node_id,
+                    index,
+                ),
+                command_ref: ParsedCommandRef::new(index, child.span.clone()),
+                parsed_scope: body.clone(),
+                rendered_command_text: child.text.clone(),
+                result: resolve_invocation_artifact_with_bindings(
+                    registry,
+                    child,
+                    runtime_context_for_parsed_command(&body, index, child),
+                    &child_bindings,
+                ),
+                shell_kind: entry.shell_kind,
+                root_command_index: entry.root_command_index,
+                depth: entry.depth.saturating_add(1),
+                parent_execution_node_id: entry.source_node_id.clone(),
+                bindings: child_bindings.clone(),
+                static_payload_scope: StaticPayloadLookupScope {
+                    parsed_scope: body.clone(),
+                    command_index: index,
+                    bindings: child_bindings,
+                    scope_base_bindings: bindings.clone(),
+                    stdin_is_parent_output: false,
+                },
+                history_anchor_node_id: entry.history_anchor_node_id.clone(),
+                origin_kind: ExecutionUnitOriginKind::FunctionExpansion,
+                origin_index: index,
+                origin_locator: ExecutionUnitOriginLocator::FunctionExpansion {
+                    function_name: name.clone(),
+                },
+                inherited_scope: entry.inherited_scope.clone(),
+            }
+        })
+        .collect();
+    children.extend(
+        expanded_assignment_command_substitution_body_children_for_scope(
+            registry,
+            request,
+            &body,
+            entry.shell_kind,
+            &entry.source_node_id,
+            &entry.history_anchor_node_id,
+            entry.root_command_index,
+            entry.depth.saturating_add(2),
+            &bindings,
+            &entry.inherited_scope,
+            None,
+            Some("function-body"),
+            children
+                .first()
+                .map(|child| AssignmentCwdSource::RecordScope(&child.source_node_id))
+                .unwrap_or(AssignmentCwdSource::InvocationEntry),
+            max_nested_parse_depth,
+        ),
+    );
+    // Shell substitutions in the call run before the function, independently
+    // of whether its body ever consumes their resulting argument bytes.
+    children.extend(expanded_command_substitution_body_children(
+        registry,
+        request,
+        entry,
+        max_nested_parse_depth,
+    ));
+    children.extend(expanded_process_substitution_body_children(
+        registry,
+        request,
+        entry,
+        None,
+        max_nested_parse_depth,
+    ));
+    Some((name, children, None))
 }
 
 fn refresh_substitution_shape_proofs(
@@ -2076,20 +2501,160 @@ fn nested_payload_history_anchor_node_id(
     }
 }
 
+/// Stable assignment-bearing event ordinals: standalone assignments first,
+/// then declarations, then executable prefix assignments. The locator stores
+/// all value metadata; this ordinal is identity, not a lookup into one AST Vec.
+fn assignment_substitution_groups(
+    parsed: &caushell_parse::ParsedCommandArtifact,
+) -> impl Iterator<
+    Item = (
+        &caushell_parse::SourceSpan,
+        &caushell_parse::SourceSpan,
+        &[caushell_parse::VariableAssignmentFact],
+    ),
+> {
+    parsed
+        .assignment_commands
+        .iter()
+        .map(|c| (&c.top_level_span, &c.span, c.assignments.as_slice()))
+        .chain(
+            parsed
+                .declaration_commands
+                .iter()
+                .map(|c| (&c.top_level_span, &c.span, c.assignments.as_slice())),
+        )
+        .chain(
+            parsed
+                .commands
+                .iter()
+                .map(|c| (&c.top_level_span, &c.span, c.prefix_assignments.as_slice())),
+        )
+}
+
+/// Retain an explicit unresolved execution unit when a substitution body
+/// cannot be parsed completely. A parser budget/error is never empty output.
+/// Known partial commands are preserved; the extra unit has no invented name.
+fn execution_body_scope(
+    text: &str,
+    shell_kind: caushell_types::ShellKind,
+    depth_exhausted: bool,
+    source_label: &str,
+) -> (caushell_parse::ParsedCommandArtifact, Option<usize>) {
+    use caushell_parse::{
+        CommandFact, DiagnosticKind, ParseDiagnostic, ParseStatus, ParsedCommandArtifact,
+        SourceSpan,
+    };
+    let end_row = text.bytes().filter(|&b| b == b'\n').count();
+    let span = SourceSpan {
+        start_byte: 0,
+        end_byte: text.len(),
+        start_row: 0,
+        start_column: 0,
+        end_row,
+        end_column: text.rfind('\n').map_or(text.len(), |i| text.len() - i - 1),
+    };
+    // A statically empty payload cannot contain a pending invocation. Parsing
+    // it creates no deeper execution scope at an expansion boundary.
+    let parsed = (!depth_exhausted || text.trim().is_empty())
+        .then(|| caushell_parse::parse_command(text, shell_kind));
+    let (mut parsed, error) = match parsed {
+        Some(Ok(parsed)) if parsed.status == ParseStatus::Complete => return (parsed, None),
+        Some(Ok(parsed)) => (
+            parsed,
+            format!("{source_label} contains unresolved shell syntax"),
+        ),
+        error => (
+            ParsedCommandArtifact {
+                raw_command: text.into(),
+                shell_kind,
+                status: ParseStatus::Partial,
+                commands: Vec::new(),
+                declaration_commands: Vec::new(),
+                assignment_commands: Vec::new(),
+                unset_commands: Vec::new(),
+                function_definitions: Vec::new(),
+                redirections: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            match error {
+                Some(Err(error)) => {
+                    format!("{source_label} could not be parsed: {error}")
+                }
+                None => format!("{source_label} exceeds execution expansion depth budget"),
+                Some(Ok(_)) => unreachable!(),
+            },
+        ),
+    };
+    parsed.diagnostics.push(ParseDiagnostic {
+        kind: DiagnosticKind::ErrorNode,
+        node_kind: "execution_body".into(),
+        text: error,
+        span: span.clone(),
+    });
+    let unknown_index = parsed.commands.len();
+    parsed.commands.push(CommandFact {
+        command_name: None,
+        command_name_runtime_data: false,
+        text: text.into(),
+        prefix_assignments: Vec::new(),
+        tokens: Vec::new(),
+        in_pipeline: false,
+        pipeline_position: None,
+        pipeline_span: None,
+        terminator: None,
+        guarded: false,
+        conditional_execution: false,
+        shell_scope_span: None,
+        subshell_span: None,
+        control_flow_span: None,
+        top_level_span: span.clone(),
+        span,
+    });
+    (parsed, Some(unknown_index))
+}
+
+#[derive(Clone, Copy)]
+enum AssignmentCwdSource<'a> {
+    Request,
+    RecordScope(&'a caushell_graph::NodeId),
+    InvocationEntry,
+    Fixed(&'a caushell_runner::ShellSourceCwdAnchor),
+}
+
+impl AssignmentCwdSource<'_> {
+    fn at(self, start_byte: usize) -> caushell_runner::ShellSourceCwdAnchor {
+        use caushell_runner::ShellSourceCwdAnchor;
+        match self {
+            Self::Request => ShellSourceCwdAnchor::RequestPosition { start_byte },
+            Self::RecordScope(source_node_id) => ShellSourceCwdAnchor::RecordScopePosition {
+                source_node_id: source_node_id.clone(),
+                start_byte,
+            },
+            Self::InvocationEntry => ShellSourceCwdAnchor::InvocationEntry,
+            Self::Fixed(anchor) => anchor.clone(),
+        }
+    }
+}
+
 fn expanded_assignment_command_substitution_body_roots(
     registry: &ProfileRegistry,
     session: SessionView<'_>,
     request: &CheckRequest,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
+    max_nested_parse_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
     let mut children = Vec::new();
 
-    for (assignment_command_index, assignment_command) in
-        parsed_request.assignment_commands.iter().enumerate()
+    for (assignment_command_index, (top_level_span, span, assignments)) in
+        assignment_substitution_groups(parsed_request).enumerate()
     {
-        let Some(parent_unit) =
-            top_level_unit_for_span(parsed_request, &assignment_command.top_level_span)
-        else {
+        if !assignments
+            .iter()
+            .any(|a| !a.value.command_substitutions.is_empty())
+        {
+            continue;
+        }
+        let Some(parent_unit) = top_level_unit_for_span(parsed_request, top_level_span) else {
             continue;
         };
         let parent_execution_node_id = parent_unit.node_id(request);
@@ -2098,7 +2663,7 @@ fn expanded_assignment_command_substitution_body_roots(
             session.summary(),
             request,
             parsed_request,
-            assignment_command.span.start_byte,
+            span.start_byte,
             request.sequence_no,
         );
 
@@ -2116,6 +2681,8 @@ fn expanded_assignment_command_substitution_body_roots(
                 &ExecutionUnitInheritedScope::default(),
                 Some(assignment_command_index),
                 None,
+                AssignmentCwdSource::Request,
+                max_nested_parse_depth,
             ),
         );
     }
@@ -2136,13 +2703,21 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
     inherited_scope: &ExecutionUnitInheritedScope,
     only_assignment_command_index: Option<usize>,
     source_suffix_prefix: Option<&str>,
+    cwd_source: AssignmentCwdSource<'_>,
+    max_nested_parse_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
     let mut children = Vec::new();
 
-    for (assignment_command_index, assignment_command) in
-        parsed_scope.assignment_commands.iter().enumerate()
+    for (assignment_command_index, (_, span, assignments)) in
+        assignment_substitution_groups(parsed_scope).enumerate()
     {
         if only_assignment_command_index.is_some_and(|target| target != assignment_command_index) {
+            continue;
+        }
+        if !assignments
+            .iter()
+            .any(|a| !a.value.command_substitutions.is_empty())
+        {
             continue;
         }
 
@@ -2151,20 +2726,23 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
             request,
             base_bindings.clone(),
             parsed_scope,
-            assignment_command.span.start_byte,
+            span.start_byte,
             request.sequence_no,
         );
+        let source_cwd_anchor = cwd_source.at(span.start_byte);
 
-        for (assignment_index, assignment) in assignment_command.assignments.iter().enumerate() {
+        for (assignment_index, assignment) in assignments.iter().enumerate() {
             for (substitution_index, substitution) in
                 assignment.value.command_substitutions.iter().enumerate()
             {
-                let Ok(parsed_substitution) =
-                    caushell_parse::parse_command(&substitution.body_text, shell_kind)
-                else {
-                    continue;
-                };
+                let (parsed_substitution, unknown_index) = execution_body_scope(
+                    &substitution.body_text,
+                    shell_kind,
+                    depth > max_nested_parse_depth,
+                    "command substitution body",
+                );
 
+                let scope_records_start = children.len();
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
                 {
@@ -2194,16 +2772,22 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                         ),
                         parsed_scope: parsed_substitution.clone(),
                         rendered_command_text: child_command.text.clone(),
-                        result: resolve_invocation_artifact_with_bindings(
-                            registry,
-                            child_command,
-                            runtime_context_for_parsed_command(
-                                &parsed_substitution,
-                                command_index,
+                        result: if unknown_index == Some(command_index) {
+                            ResolveInvocationArtifactResult::MissingCommandName {
+                                gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                            }
+                        } else {
+                            resolve_invocation_artifact_with_bindings(
+                                registry,
                                 child_command,
-                            ),
-                            &command_bindings,
-                        ),
+                                runtime_context_for_parsed_command(
+                                    &parsed_substitution,
+                                    command_index,
+                                    child_command,
+                                ),
+                                &command_bindings,
+                            )
+                        },
                         shell_kind,
                         root_command_index,
                         depth,
@@ -2221,6 +2805,8 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                         origin_index: command_index,
                         origin_locator:
                             ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+                                assignment_scope_key: source_suffix_prefix.map(str::to_string),
+                                source_cwd_anchor: source_cwd_anchor.clone(),
                                 assignment_command_index,
                                 assignment_index,
                                 substitution_index,
@@ -2231,6 +2817,21 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                             },
                         inherited_scope: inherited_scope.clone(),
                     });
+                }
+                if depth <= max_nested_parse_depth {
+                    let scope_record_node_id = children
+                        .get(scope_records_start)
+                        .filter(|_| !parsed_substitution.commands.is_empty())
+                        .map(|e| e.source_node_id.clone());
+                    children.extend(expanded_assignment_command_substitution_body_children_for_scope(
+                        registry, request, &parsed_substitution, shell_kind,
+                        parent_execution_node_id, history_anchor_node_id, root_command_index,
+                        depth.saturating_add(1), &assignment_bindings, inherited_scope, None,
+                        Some(&format!("{}:nested:{assignment_command_index}:{assignment_index}:{substitution_index}", source_suffix_prefix.unwrap_or("subst-assign"))),
+                        scope_record_node_id.as_ref().map(AssignmentCwdSource::RecordScope)
+                            .unwrap_or(AssignmentCwdSource::Fixed(&source_cwd_anchor)),
+                        max_nested_parse_depth,
+                    ));
                 }
             }
         }
@@ -2266,8 +2867,13 @@ fn expanded_dispatch_children(
     .resolved
     {
         let mut child_inherited_scope = inherited_scope.clone();
+        let inherits_cwd = matches!(
+            child.working_directory,
+            caushell_profile::DispatchWorkingDirectory::Inherit
+        );
+        child_inherited_scope.static_input_cwd_unproven |= !inherits_cwd;
         child_inherited_scope.dispatch_working_directory =
-            child.execution_cwd_unknown.then_some(EffectiveCwd::Unknown);
+            (!inherits_cwd).then(|| child.working_directory.clone());
         child_inherited_scope.dispatch_stdout_to_parent = child.stdout_to_parent;
         let command = materialized_dispatch_child_command_fact(resolved, &child);
         let parent_bindings = crate::support::command_environment_bindings(
@@ -2348,6 +2954,7 @@ fn expanded_shell_payload_children(
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
+    max_nested_parse_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
     let shell_kind = match resolved.normalized_command_name.as_str() {
         "bash" => caushell_types::ShellKind::Bash,
@@ -2364,9 +2971,12 @@ fn expanded_shell_payload_children(
     else {
         return Vec::new();
     };
-    let Ok(mut parsed_payload) = caushell_parse::parse_command(&shell_payload, shell_kind) else {
-        return Vec::new();
-    };
+    let (mut parsed_payload, unknown_index) = execution_body_scope(
+        &shell_payload,
+        shell_kind,
+        entry.depth.saturating_add(1) > max_nested_parse_depth,
+        "shell command-string payload",
+    );
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
 
@@ -2392,21 +3002,27 @@ fn expanded_shell_payload_children(
                 command_ref: ParsedCommandRef::new(command_index, command.span.clone()),
                 parsed_scope: parsed_payload.clone(),
                 rendered_command_text: command.text.clone(),
-                result: resolve_invocation_artifact_with_bindings(
-                    registry,
-                    command,
-                    InvocationRuntimeContext {
-                        stdin_payload_available: resolved.projection.stdin_payload_available
-                            || runtime_context_for_parsed_command(
-                                &parsed_payload,
-                                command_index,
-                                command,
-                            )
-                            .stdin_payload_available,
-                        interactive_session: false,
-                    },
-                    &command_bindings,
-                ),
+                result: if unknown_index == Some(command_index) {
+                    ResolveInvocationArtifactResult::MissingCommandName {
+                        gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                    }
+                } else {
+                    resolve_invocation_artifact_with_bindings(
+                        registry,
+                        command,
+                        InvocationRuntimeContext {
+                            stdin_payload_available: resolved.projection.stdin_payload_available
+                                || runtime_context_for_parsed_command(
+                                    &parsed_payload,
+                                    command_index,
+                                    command,
+                                )
+                                .stdin_payload_available,
+                            interactive_session: false,
+                        },
+                        &command_bindings,
+                    )
+                },
                 shell_kind,
                 root_command_index: entry.root_command_index,
                 depth: entry.depth.saturating_add(1),
@@ -2437,11 +3053,16 @@ fn expanded_shell_payload_children(
             &entry.source_node_id,
             &entry.history_anchor_node_id,
             entry.root_command_index,
-            entry.depth.saturating_add(1),
+            entry.depth.saturating_add(2),
             &entry.bindings,
             &entry.inherited_scope,
             None,
             Some("shell-payload"),
+            children
+                .first()
+                .map(|child| AssignmentCwdSource::RecordScope(&child.source_node_id))
+                .unwrap_or(AssignmentCwdSource::InvocationEntry),
+            max_nested_parse_depth,
         ),
     );
 
@@ -2459,10 +3080,11 @@ fn expanded_recursive_payload_children(
     if matches!(
         entry.origin_kind,
         ExecutionUnitOriginKind::TopLevel
-            | ExecutionUnitOriginKind::FunctionExpansion
             | ExecutionUnitOriginKind::Dispatch
             | ExecutionUnitOriginKind::NestedPayload
-    ) {
+    ) || (entry.origin_kind == ExecutionUnitOriginKind::FunctionExpansion
+        && entry.origin_locator == ExecutionUnitOriginLocator::None)
+    {
         return Vec::new();
     }
 
@@ -2595,6 +3217,7 @@ fn expanded_command_substitution_body_children(
     registry: &ProfileRegistry,
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
+    max_nested_parse_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
     let Some(command) = entry
         .parsed_scope
@@ -2606,12 +3229,16 @@ fn expanded_command_substitution_body_children(
 
     let mut children = Vec::new();
     for (token_index, token) in command.tokens.iter().enumerate() {
+        if token.runtime_data || token.implicit_input_source.is_some() {
+            continue;
+        }
         for (substitution_index, substitution) in token.command_substitutions.iter().enumerate() {
-            let Ok(parsed_substitution) =
-                caushell_parse::parse_command(&substitution.body_text, entry.shell_kind)
-            else {
-                continue;
-            };
+            let (parsed_substitution, unknown_index) = execution_body_scope(
+                &substitution.body_text,
+                entry.shell_kind,
+                entry.depth.saturating_add(1) > max_nested_parse_depth,
+                "command substitution body",
+            );
 
             for (command_index, child_command) in parsed_substitution.commands.iter().enumerate() {
                 let command_bindings = apply_runtime_variable_bindings_before_span(
@@ -2631,16 +3258,22 @@ fn expanded_command_substitution_body_children(
                     command_ref: ParsedCommandRef::new(command_index, child_command.span.clone()),
                     parsed_scope: parsed_substitution.clone(),
                     rendered_command_text: child_command.text.clone(),
-                    result: resolve_invocation_artifact_with_bindings(
-                        registry,
-                        child_command,
-                        runtime_context_for_parsed_command(
-                            &parsed_substitution,
-                            command_index,
+                    result: if unknown_index == Some(command_index) {
+                        ResolveInvocationArtifactResult::MissingCommandName {
+                            gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                        }
+                    } else {
+                        resolve_invocation_artifact_with_bindings(
+                            registry,
                             child_command,
-                        ),
-                        &command_bindings,
-                    ),
+                            runtime_context_for_parsed_command(
+                                &parsed_substitution,
+                                command_index,
+                                child_command,
+                            ),
+                            &command_bindings,
+                        )
+                    },
                     shell_kind: entry.shell_kind,
                     root_command_index: entry.root_command_index,
                     depth: entry.depth.saturating_add(1),
@@ -2664,6 +3297,13 @@ fn expanded_command_substitution_body_children(
                 });
             }
 
+            let scope_record_node_id = parsed_substitution.commands.first().map(|_| {
+                expanded_virtual_node_id_with_suffix(
+                    "subst-body",
+                    &entry.source_node_id,
+                    &format!("{token_index}:{substitution_index}:0"),
+                )
+            });
             children.extend(
                 expanded_assignment_command_substitution_body_children_for_scope(
                     registry,
@@ -2673,11 +3313,16 @@ fn expanded_command_substitution_body_children(
                     &entry.source_node_id,
                     &entry.history_anchor_node_id,
                     entry.root_command_index,
-                    entry.depth.saturating_add(1),
+                    entry.depth.saturating_add(2),
                     &entry.bindings,
                     &entry.inherited_scope,
                     None,
                     Some(&format!("subst-body:{token_index}:{substitution_index}")),
+                    scope_record_node_id
+                        .as_ref()
+                        .map(AssignmentCwdSource::RecordScope)
+                        .unwrap_or(AssignmentCwdSource::InvocationEntry),
+                    max_nested_parse_depth,
                 ),
             );
         }
@@ -2779,11 +3424,12 @@ fn expanded_process_substitution_body_children(
     registry: &ProfileRegistry,
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
-    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    resolved: Option<&caushell_profile::ResolvedInvocationArtifact>,
+    max_nested_parse_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
     let mut children = Vec::new();
 
-    if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
+    if (entry.origin_kind != ExecutionUnitOriginKind::TopLevel || resolved.is_none())
         && entry.origin_kind != ExecutionUnitOriginKind::StaticXargs
         && let Some(command) = entry
             .parsed_scope
@@ -2791,6 +3437,9 @@ fn expanded_process_substitution_body_children(
             .get(entry.command_ref.command_index)
     {
         for (token_index, token) in command.tokens.iter().enumerate() {
+            if token.runtime_data || token.implicit_input_source.is_some() {
+                continue; // Expanded argv is data, never fresh shell source.
+            }
             let Ok(substitutions) =
                 caushell_parse::parse_process_substitutions(&token.text, entry.shell_kind)
             else {
@@ -2798,11 +3447,12 @@ fn expanded_process_substitution_body_children(
             };
 
             for (substitution_index, substitution) in substitutions.iter().enumerate() {
-                let Ok(parsed_substitution) =
-                    caushell_parse::parse_command(&substitution.body_text, entry.shell_kind)
-                else {
-                    continue;
-                };
+                let (parsed_substitution, unknown_index) = execution_body_scope(
+                    &substitution.body_text,
+                    entry.shell_kind,
+                    entry.depth.saturating_add(1) > max_nested_parse_depth,
+                    "process substitution body",
+                );
 
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
@@ -2829,18 +3479,24 @@ fn expanded_process_substitution_body_children(
                         ),
                         parsed_scope: parsed_substitution.clone(),
                         rendered_command_text: child_command.text.clone(),
-                        result: resolve_invocation_artifact_with_bindings(
-                            registry,
-                            child_command,
-                            runtime_context_for_process_substitution_command(
-                                &parsed_substitution,
-                                command_index,
+                        result: if unknown_index == Some(command_index) {
+                            ResolveInvocationArtifactResult::MissingCommandName {
+                                gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                            }
+                        } else {
+                            resolve_invocation_artifact_with_bindings(
+                                registry,
                                 child_command,
-                                substitution.operator
-                                    == caushell_parse::ProcessSubstitutionOperator::Output,
-                            ),
-                            &command_bindings,
-                        ),
+                                runtime_context_for_process_substitution_command(
+                                    &parsed_substitution,
+                                    command_index,
+                                    child_command,
+                                    substitution.operator
+                                        == caushell_parse::ProcessSubstitutionOperator::Output,
+                                ),
+                                &command_bindings,
+                            )
+                        },
                         shell_kind: entry.shell_kind,
                         root_command_index: entry.root_command_index,
                         depth: entry.depth.saturating_add(1),
@@ -2866,6 +3522,13 @@ fn expanded_process_substitution_body_children(
                     });
                 }
 
+                let scope_record_node_id = parsed_substitution.commands.first().map(|_| {
+                    expanded_virtual_node_id_with_suffix(
+                        "procsub-body",
+                        &entry.source_node_id,
+                        &format!("arg-token:{token_index}:0:{substitution_index}:0"),
+                    )
+                });
                 children.extend(
                     expanded_assignment_command_substitution_body_children_for_scope(
                         registry,
@@ -2875,19 +3538,27 @@ fn expanded_process_substitution_body_children(
                         &entry.source_node_id,
                         &entry.history_anchor_node_id,
                         entry.root_command_index,
-                        entry.depth.saturating_add(1),
+                        entry.depth.saturating_add(2),
                         &entry.bindings,
                         &entry.inherited_scope,
                         None,
                         Some(&format!(
                             "procsub-arg-token:{token_index}:0:{substitution_index}"
                         )),
+                        scope_record_node_id
+                            .as_ref()
+                            .map(AssignmentCwdSource::RecordScope)
+                            .unwrap_or(AssignmentCwdSource::InvocationEntry),
+                        max_nested_parse_depth,
                     ),
                 );
             }
         }
     }
 
+    let Some(resolved) = resolved else {
+        return children;
+    };
     for (parameter_index, parameter) in resolved.bound.bound_parameters.iter().enumerate() {
         for (value_index, value) in parameter.values.iter().enumerate() {
             let caushell_profile::BoundValue::Argument {
@@ -2907,11 +3578,12 @@ fn expanded_process_substitution_body_children(
             };
 
             for (substitution_index, substitution) in substitutions.iter().enumerate() {
-                let Ok(parsed_substitution) =
-                    caushell_parse::parse_command(&substitution.body_text, entry.shell_kind)
-                else {
-                    continue;
-                };
+                let (parsed_substitution, unknown_index) = execution_body_scope(
+                    &substitution.body_text,
+                    entry.shell_kind,
+                    entry.depth.saturating_add(1) > max_nested_parse_depth,
+                    "process substitution body",
+                );
 
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
@@ -2938,7 +3610,11 @@ fn expanded_process_substitution_body_children(
                         ),
                         parsed_scope: parsed_substitution.clone(),
                         rendered_command_text: child_command.text.clone(),
-                        result: resolve_invocation_artifact_with_bindings(
+                        result: if unknown_index == Some(command_index) {
+                            ResolveInvocationArtifactResult::MissingCommandName {
+                                gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                            }
+                        } else { resolve_invocation_artifact_with_bindings(
                             registry,
                             child_command,
                             runtime_context_for_process_substitution_command(
@@ -2949,7 +3625,7 @@ fn expanded_process_substitution_body_children(
                                     == caushell_parse::ProcessSubstitutionOperator::Output,
                             ),
                             &command_bindings,
-                        ),
+                        ) },
                         shell_kind: entry.shell_kind,
                         root_command_index: entry.root_command_index,
                         depth: entry.depth.saturating_add(1),
@@ -2975,6 +3651,13 @@ fn expanded_process_substitution_body_children(
                     });
                 }
 
+                let scope_record_node_id = parsed_substitution.commands.first().map(|_| {
+                    expanded_virtual_node_id_with_suffix(
+                        "procsub-body",
+                        &entry.source_node_id,
+                        &format!("arg:{parameter_index}:{value_index}:{substitution_index}:0"),
+                    )
+                });
                 children.extend(
                     expanded_assignment_command_substitution_body_children_for_scope(
                         registry,
@@ -2984,13 +3667,18 @@ fn expanded_process_substitution_body_children(
                         &entry.source_node_id,
                         &entry.history_anchor_node_id,
                         entry.root_command_index,
-                        entry.depth.saturating_add(1),
+                        entry.depth.saturating_add(2),
                         &entry.bindings,
                         &entry.inherited_scope,
                         None,
                         Some(&format!(
                             "procsub-arg:{parameter_index}:{value_index}:{substitution_index}"
                         )),
+                        scope_record_node_id
+                            .as_ref()
+                            .map(AssignmentCwdSource::RecordScope)
+                            .unwrap_or(AssignmentCwdSource::InvocationEntry),
+                        max_nested_parse_depth,
                     ),
                 );
             }
@@ -3018,11 +3706,12 @@ fn expanded_process_substitution_body_children(
         };
 
         for (substitution_index, substitution) in substitutions.iter().enumerate() {
-            let Ok(parsed_substitution) =
-                caushell_parse::parse_command(&substitution.body_text, entry.shell_kind)
-            else {
-                continue;
-            };
+            let (parsed_substitution, unknown_index) = execution_body_scope(
+                &substitution.body_text,
+                entry.shell_kind,
+                entry.depth.saturating_add(1) > max_nested_parse_depth,
+                "process substitution body",
+            );
 
             for (command_index, child_command) in parsed_substitution.commands.iter().enumerate() {
                 let command_bindings = apply_runtime_variable_bindings_before_span(
@@ -3042,18 +3731,24 @@ fn expanded_process_substitution_body_children(
                     command_ref: ParsedCommandRef::new(command_index, child_command.span.clone()),
                     parsed_scope: parsed_substitution.clone(),
                     rendered_command_text: child_command.text.clone(),
-                    result: resolve_invocation_artifact_with_bindings(
-                        registry,
-                        child_command,
-                        runtime_context_for_process_substitution_command(
-                            &parsed_substitution,
-                            command_index,
+                    result: if unknown_index == Some(command_index) {
+                        ResolveInvocationArtifactResult::MissingCommandName {
+                            gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                        }
+                    } else {
+                        resolve_invocation_artifact_with_bindings(
+                            registry,
                             child_command,
-                            substitution.operator
-                                == caushell_parse::ProcessSubstitutionOperator::Output,
-                        ),
-                        &command_bindings,
-                    ),
+                            runtime_context_for_process_substitution_command(
+                                &parsed_substitution,
+                                command_index,
+                                child_command,
+                                substitution.operator
+                                    == caushell_parse::ProcessSubstitutionOperator::Output,
+                            ),
+                            &command_bindings,
+                        )
+                    },
                     shell_kind: entry.shell_kind,
                     root_command_index: entry.root_command_index,
                     depth: entry.depth.saturating_add(1),
@@ -3079,6 +3774,13 @@ fn expanded_process_substitution_body_children(
                 });
             }
 
+            let scope_record_node_id = parsed_substitution.commands.first().map(|_| {
+                expanded_virtual_node_id_with_suffix(
+                    "procsub-body",
+                    &entry.source_node_id,
+                    &format!("redir:{redirection_index}:{substitution_index}:0"),
+                )
+            });
             children.extend(
                 expanded_assignment_command_substitution_body_children_for_scope(
                     registry,
@@ -3088,13 +3790,18 @@ fn expanded_process_substitution_body_children(
                     &entry.source_node_id,
                     &entry.history_anchor_node_id,
                     entry.root_command_index,
-                    entry.depth.saturating_add(1),
+                    entry.depth.saturating_add(2),
                     &entry.bindings,
                     &entry.inherited_scope,
                     None,
                     Some(&format!(
                         "procsub-redir:{redirection_index}:{substitution_index}"
                     )),
+                    scope_record_node_id
+                        .as_ref()
+                        .map(AssignmentCwdSource::RecordScope)
+                        .unwrap_or(AssignmentCwdSource::InvocationEntry),
+                    max_nested_parse_depth,
                 ),
             );
         }
@@ -3121,7 +3828,7 @@ fn expanded_static_xargs_children(
     let Some(candidate) = candidates.pop() else {
         return Vec::new();
     };
-    let config = xargs_static_expansion_config(&resolved.bound);
+    let config = xargs_static_expansion_config(resolved);
     if config.requires_confirmation {
         return Vec::new();
     }
@@ -3141,11 +3848,7 @@ fn expanded_static_xargs_children(
                 &entry.static_payload_scope.scope_base_bindings,
             ),
             request.shell_state_before.cwd(),
-            !entry
-                .inherited_scope
-                .dispatch_working_directory
-                .as_ref()
-                .is_some_and(|cwd| matches!(cwd, EffectiveCwd::Unknown)),
+            !entry.inherited_scope.static_input_cwd_unproven,
             request.home.as_deref(),
             max_nested_parse_depth.saturating_sub(entry.depth),
         )
@@ -3231,45 +3934,76 @@ fn expanded_static_xargs_children(
         if let Some(replace_token) = replace_token {
             let item = group.first();
             let unresolved = matches!(item, Some(XargsItem::UnknownTail));
-            let mut replaced_any = false;
             for argument in &mut child_candidate.argv {
+                if !argument.text.contains(replace_token) {
+                    // Untouched argv keeps its existing shell spelling and
+                    // materialization; do not literalize ~ or other expansions.
+                    continue;
+                }
+                let tilde_unresolved = !argument.runtime_data
+                    && !argument.quoted
+                    && argument.text.starts_with('~')
+                    && match crate::path::expand_home_path_spelling(
+                        &argument.text,
+                        request.home.as_deref(),
+                    ) {
+                        Some(value) => {
+                            argument.text = value;
+                            false
+                        }
+                        None => true,
+                    };
+                // xargs substitutes AFTER the shell's quote removal, without
+                // shell-evaluating captured runtime bytes a second time.
+                if !argument.runtime_data
+                    && argument.implicit_input_source.is_none()
+                    && !tilde_unresolved
+                {
+                    let projected = caushell_profile::ProjectedArg {
+                        text: argument.text.clone(),
+                        quoted: argument.quoted,
+                        node_kind: argument.node_kind.clone(),
+                        span: argument.span.clone(),
+                        implicit_input_source: None,
+                        runtime_argument_domain: None,
+                        runtime_data: false,
+                        substitution_shape: None,
+                        kind: caushell_profile::ProjectedArgKind::Positional,
+                    };
+                    if let Some(value) =
+                        caushell_profile::argument_structure(&projected).exact_value()
+                    {
+                        argument.text = value.to_string();
+                        argument.runtime_data = true;
+                    }
+                }
                 if !argument.text.contains(replace_token) {
                     continue;
                 }
-                replaced_any = true;
                 if unresolved {
-                    let exact_placeholder = argument.text == replace_token;
+                    let domain = (!tilde_unresolved)
+                        .then_some(input_domain.as_ref())
+                        .flatten()
+                        .as_ref()
+                        .map(|domain| domain.substitute_into(&argument.text, replace_token))
+                        .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded);
                     argument.text.clear();
                     argument.runtime_data = false;
                     argument.implicit_input_source =
                         Some(caushell_types::ImplicitInputSource::StdinData);
-                    argument.runtime_argument_domain = Some(if exact_placeholder {
-                        input_domain
-                            .clone()
-                            .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded)
-                    } else {
-                        caushell_types::RuntimeArgumentDomain::Unbounded
-                    });
+                    argument.runtime_argument_domain = Some(domain);
+                    argument.node_kind = "runtime_scalar".into();
+                    argument.quoted = true;
                 } else {
                     let Some(XargsItem::Known(item)) = item else {
                         continue;
                     };
                     argument.text = argument.text.replace(replace_token, item);
-                    argument.runtime_data = true;
+                    argument.runtime_data = !tilde_unresolved;
                 }
             }
-            if !replaced_any && !unresolved {
-                if let Some(XargsItem::Known(item)) = item {
-                    append_xargs_data_argument(
-                        &mut child_candidate,
-                        item.clone(),
-                        None,
-                        None,
-                        next_byte,
-                    );
-                }
-                next_byte = next_byte.saturating_add(1);
-            }
+            // -I replaces occurrences in initial arguments; unlike append
+            // mode, it does not append the input when there is no placeholder.
         } else {
             for item in group {
                 match item {
@@ -3296,11 +4030,12 @@ fn expanded_static_xargs_children(
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
-        let resolved_child = resolve_invocation_artifact_with_bindings(
+        let resolved_child = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
             registry,
             &command,
             InvocationRuntimeContext::new(),
             &child_bindings,
+            &forwarded_substitution_shapes(resolved, &command),
         );
         children.push(ExpandedFrontierEntry {
             source_node_id: expanded_virtual_node_id("xargs", &entry.source_node_id, command_index),
@@ -3352,15 +4087,10 @@ fn xargs_stdin_path_domain(
     {
         return None;
     }
-    let inherited = entry.inherited_scope.dispatch_working_directory.as_ref();
-    let cwds = inherited.map(EffectiveCwd::known_cwds).unwrap_or_default();
-    if inherited.is_some_and(|c| c.has_unknown() || cwds.len() != 1) {
+    if entry.inherited_scope.static_input_cwd_unproven {
         return None;
     }
-    let cwd = cwds
-        .first()
-        .copied()
-        .unwrap_or(request.shell_state_before.cwd());
+    let cwd = request.shell_state_before.cwd();
     let replay = runtime_binding_replay(registry, request, &scope.scope_base_bindings);
     let records = stdin_path_records(
         &scope.parsed_scope,
@@ -3420,11 +4150,7 @@ fn static_arg_file_evidence_for_xargs_scope(
     let materialized_path = materialize_static_token_text(raw_path, &entry.bindings);
     let absolute_path = Path::new(&materialized_path).is_absolute();
     if !absolute_path
-        && (entry
-            .inherited_scope
-            .dispatch_working_directory
-            .as_ref()
-            .is_some_and(|cwd| matches!(cwd, EffectiveCwd::Unknown))
+        && (entry.inherited_scope.static_input_cwd_unproven
             || entry
                 .parsed_scope
                 .commands
@@ -3751,29 +4477,68 @@ fn bind_shell_positional_arguments(
     parsed: &mut caushell_parse::ParsedCommandArtifact,
     positional_args: &[caushell_profile::ProjectedArg],
 ) {
+    let first_variable_width = positional_args.iter().position(|argument| {
+        caushell_profile::argument_structure(argument).fields
+            != caushell_profile::ArgumentFieldCount::ExactlyOne
+    });
+    // Numeric references must not be frozen to startup argv after a positional
+    // mutation. Ordinary ordered binding replay handles set/shift; retain its
+    // uncertainty rather than carrying stale tool-produced path bounds.
+    let initial_frame =
+        shell_payload_session_bindings(&SessionBindings::default(), positional_args);
+    let first_mutation = parsed
+        .commands
+        .iter()
+        .filter_map(|command| {
+            crate::support::positional_parameter_mutation_for_command(command, &initial_frame)
+                .map(|_| command.span.start_byte)
+        })
+        .min();
     for command in &mut parsed.commands {
         for token in &mut command.tokens {
             let Some(position) = exact_shell_positional_reference(&token.text, &token.node_kind)
             else {
                 continue;
             };
-            let Some(argument) = positional_args.get(position) else {
-                let first_unknown = positional_args
-                    .iter()
-                    .position(|argument| argument.implicit_input_source.is_some());
-                if first_unknown.is_some_and(|first_unknown| position >= first_unknown) {
-                    let argument = &positional_args[first_unknown.unwrap()];
-                    let unknown_source = argument.implicit_input_source.unwrap();
+            let after_mutation =
+                position > 0 && first_mutation.is_some_and(|start| command.span.start_byte > start);
+            if after_mutation {
+                continue;
+            }
+            if let Some(first) = first_variable_width.filter(|first| position >= *first) {
+                // A quoted positive index in a final runtime tail, when set,
+                // still originates from that tail. Preserve the typed domain
+                // without asserting list completeness or a precise arity.
+                // $0 also has the shell's default when no argv0 is supplied;
+                // mixed/lexical fields and unquoted splitting have no proof.
+                let argument = &positional_args[first];
+                if position > 0
+                    && token.quoted
+                    && first + 1 == positional_args.len()
+                    && let Some(source) = argument.implicit_input_source
+                {
                     token.text.clear();
-                    token.implicit_input_source = Some(unknown_source);
+                    token.implicit_input_source = Some(source);
                     token.runtime_argument_domain = argument.runtime_argument_domain.clone();
                     token.runtime_data = false;
-                } else {
-                    token.text.clear();
-                    token.implicit_input_source = None;
-                    token.runtime_argument_domain = None;
-                    token.runtime_data = true;
+                    token.node_kind = "runtime_scalar".into();
                 }
+                // Otherwise let the incomplete frame retain the original
+                // reference. Never manufacture a known empty $n here.
+                continue;
+            }
+            let Some(argument) = positional_args.get(position) else {
+                if position == 0 {
+                    // Without an explicit argv0 the interpreter supplies its
+                    // own program name; it is not an unset positional item.
+                    continue;
+                }
+                // The full fixed-width list is known, so this parameter is
+                // genuinely unset (even if another scalar's bytes are unknown).
+                token.text.clear();
+                token.implicit_input_source = None;
+                token.runtime_argument_domain = None;
+                token.runtime_data = true;
                 continue;
             };
 
@@ -3791,6 +4556,36 @@ fn shell_payload_session_bindings(
 ) -> SessionBindings {
     let mut bindings = base.clone();
     bindings.enter_child_shell_environment();
+    // A new shell does not inherit its parent's $0. Keep argv0 separate from
+    // the mutable $1...$n frame, including after set/shift and in functions.
+    bindings.set_shell_program_name(positional_args.first().and_then(|argument| {
+        if caushell_profile::argument_structure(argument).fields
+            != caushell_profile::ArgumentFieldCount::ExactlyOne
+        {
+            return None;
+        }
+        if argument.implicit_input_source.is_some() {
+            return Some(SessionValue::opaque_dynamic("runtime shell program name"));
+        }
+        if argument.runtime_data {
+            return Some(SessionValue::exact_scalar(argument.text.clone()));
+        }
+        caushell_parse::decode_static_shell_argument(
+            &argument.text,
+            argument.quoted,
+            &argument.node_kind,
+        )
+        .map(SessionValue::exact_scalar)
+    }));
+    if positional_args.iter().any(|argument| {
+        caushell_profile::argument_structure(argument).fields
+            != caushell_profile::ArgumentFieldCount::ExactlyOne
+    }) {
+        // The first argv item supplies $0, but an unknown-width first field
+        // can also supply $1...$n. Dropping its marker is NOT proof of empty $@.
+        bindings.forget_positional_parameters();
+        return bindings;
+    }
     let values = positional_args
         .iter()
         .skip(1) // The first argument after SCRIPT becomes $0, not a positional parameter.
@@ -3815,15 +4610,16 @@ fn shell_payload_session_bindings(
 }
 
 fn exact_shell_positional_reference(text: &str, node_kind: &str) -> Option<usize> {
-    if node_kind == "raw_string" {
+    if matches!(node_kind, "raw_string" | "ansi_c_string") {
         return None;
     }
-    let digits = text
-        .strip_prefix("${")
-        .and_then(|body| body.strip_suffix('}'))
-        .or_else(|| text.strip_prefix('$'))?;
-    (!digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit()))
-        .then(|| digits.parse().ok())?
+    // Unbraced references consume ONE digit: $10 is $1 followed by '0',
+    // whereas ${10} is a complete reference. Share the lexical grammar with
+    // ordinary materialization instead of maintaining another digit parser.
+    match caushell_profile::exact_shell_parameter_reference(text)? {
+        caushell_profile::ShellParameterReference::Positional(position) => Some(position),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3852,8 +4648,10 @@ enum XargsDispatchMode {
 }
 
 fn xargs_static_expansion_config(
-    bound: &caushell_profile::BoundInvocation,
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> XargsStaticExpansionConfig {
+    let bound = &resolved.bound;
+    let dispatch_mode = xargs_dispatch_mode(resolved);
     let mut item_mode = XargsItemMode::WhitespaceSeparated;
     for modifier in &bound.applied_modifiers {
         match modifier.as_str() {
@@ -3867,16 +4665,14 @@ fn xargs_static_expansion_config(
                     item_mode = XargsItemMode::Delimited { delimiter: raw };
                 }
             }
-            "replace_token" | "replace_token_optional"
-                if matches!(item_mode, XargsItemMode::WhitespaceSeparated) =>
-            {
-                item_mode = XargsItemMode::NewlineSeparated;
-            }
             _ => {}
         }
     }
-
-    let dispatch_mode = xargs_dispatch_mode(bound);
+    if matches!(dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
+        && matches!(item_mode, XargsItemMode::WhitespaceSeparated)
+    {
+        item_mode = XargsItemMode::NewlineSeparated;
+    }
 
     XargsStaticExpansionConfig {
         item_mode,
@@ -3887,36 +4683,70 @@ fn xargs_static_expansion_config(
     }
 }
 
-fn xargs_dispatch_mode(bound: &caushell_profile::BoundInvocation) -> XargsDispatchMode {
+fn xargs_dispatch_mode(
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+) -> XargsDispatchMode {
+    use caushell_profile::ArgumentBindingSource;
+    let bound = &resolved.bound;
     let mut mode = XargsDispatchMode::AppendAll;
-
-    for modifier in &bound.applied_modifiers {
-        match modifier.as_str() {
+    // Profile declaration order is not argv order. Required/inline operands
+    // retain their owning flag's span; bare optional forms use their already
+    // validated leading-option word, never the child's argv.
+    let mut events = Vec::new();
+    for source in &bound.modifier_parameter_flags {
+        let ArgumentBindingSource::MatchedModifierFlag {
+            modifier_id,
+            flag_span,
+            ..
+        } = source
+        else {
+            continue;
+        };
+        let id = modifier_id.as_str();
+        if !matches!(
+            id,
+            "replace_token"
+                | "replace_token_optional"
+                | "max_args"
+                | "max_lines"
+                | "max_lines_optional"
+        ) {
+            continue;
+        }
+        let operand = bound
+            .bound_parameters
+            .iter()
+            .flat_map(|p| &p.values)
+            .find_map(|v| match v {
+                BoundValue::Argument {
+                    binding_source,
+                    text,
+                    ..
+                } if binding_source == source => Some(text.as_str()),
+                _ => None,
+            });
+        events.push((flag_span.start_byte, id, operand));
+    }
+    events.sort_unstable_by_key(|(position, _, _)| *position);
+    for (_, modifier, operand) in events {
+        match modifier {
             "replace_token" | "replace_token_optional" => {
-                let token = bound_argument_texts_for_slot(bound, "replace_token")
-                    .first()
-                    .copied()
-                    .filter(|token| !token.is_empty())
-                    .unwrap_or("{}");
+                let token = operand.filter(|token| !token.is_empty()).unwrap_or("{}");
                 mode = XargsDispatchMode::ReplaceToken {
                     token: token.to_string(),
                 };
             }
             "max_args" => {
-                if let Some(raw) = bound_argument_texts_for_slot(bound, "max_args")
-                    .first()
-                    .copied()
-                    .and_then(parse_positive_usize)
-                {
-                    mode = XargsDispatchMode::MaxArgs { max_args: raw };
+                if let Some(raw) = operand.and_then(parse_positive_usize) {
+                    // GNU's documented exception: -n1 after -I does not
+                    // cancel replacement. Other conflicting options are last-wins.
+                    if raw != 1 || !matches!(mode, XargsDispatchMode::ReplaceToken { .. }) {
+                        mode = XargsDispatchMode::MaxArgs { max_args: raw };
+                    }
                 }
             }
             "max_lines" | "max_lines_optional" => {
-                let max_lines = bound_argument_texts_for_slot(bound, "max_lines")
-                    .first()
-                    .copied()
-                    .and_then(parse_positive_usize)
-                    .unwrap_or(1);
+                let max_lines = operand.and_then(parse_positive_usize).unwrap_or(1);
                 mode = XargsDispatchMode::MaxLines { max_lines };
             }
             _ => {}
@@ -4416,6 +5246,20 @@ fn project_execution_unit_derived_invocation_mutation(
     record: &ExecutionUnitResolveRecord,
 ) -> Option<PendingMutation> {
     let (origin, relation_from_parent) = match record.origin_kind {
+        ExecutionUnitOriginKind::FunctionExpansion => {
+            let ExecutionUnitOriginLocator::FunctionExpansion { function_name } =
+                &record.origin_locator
+            else {
+                return None;
+            };
+            (
+                DerivedInvocationOrigin::FunctionExpansion {
+                    source_command_index: record.root_command_index,
+                    function_name: function_name.clone(),
+                },
+                caushell_graph::EdgeKind::ExpandsTo,
+            )
+        }
         ExecutionUnitOriginKind::Dispatch => (
             DerivedInvocationOrigin::Dispatch {
                 source_command_index: record.root_command_index,
@@ -6208,6 +7052,31 @@ mod tests {
     };
 
     use super::ResolveInvocationPass;
+
+    #[test]
+    fn exact_positional_prebinding_uses_shared_shell_reference_grammar() {
+        for (text, index) in [("$1", 1), ("${10}", 10), ("${00}", 0)] {
+            assert_eq!(
+                super::exact_shell_positional_reference(text, "string"),
+                Some(index)
+            );
+            assert_eq!(
+                super::exact_shell_positional_reference(text, "raw_string"),
+                None
+            );
+            assert_eq!(
+                super::exact_shell_positional_reference(text, "ansi_c_string"),
+                None
+            );
+        }
+        for text in ["$10", "$00", "$99", "${1}0", "$name", r"\$10"] {
+            assert_eq!(
+                super::exact_shell_positional_reference(text, "string"),
+                None,
+                "{text}"
+            );
+        }
+    }
     use crate::{ParseCommandPass, ProjectTopLevelCommandsPass};
     use caushell_graph::{Edge, EdgeKind, GraphNode};
     use caushell_graph::{NodeId, SessionGraph};
@@ -6285,7 +7154,7 @@ mod tests {
             unknown_environment: false,
             unknown_environment_from: Vec::new(),
             unknown_environment_names: Vec::new(),
-            execution_cwd_unknown: false,
+            working_directory: caushell_profile::DispatchWorkingDirectory::Inherit,
             stdin_from_parent: false,
             stdin_from_tool: false,
             stdout_to_parent: false,
@@ -6610,7 +7479,7 @@ modifiers:
         };
         matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
             if resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
-                .any(|value| matches!(value, BoundValue::ImplicitInput { source: caushell_profile::ImplicitInputSource::DispatchOutput, domain: Some(domain) } if domain == &expected)))
+                .any(|value| matches!(value, BoundValue::ImplicitInput { source: caushell_profile::ImplicitInputSource::DispatchOutput, domain: Some(domain), .. } if domain == &expected)))
     }
 
     fn run_pass(summary: &SessionSummary, shell_kind: ShellKind, command: &str) -> RunnerContext {
@@ -7062,6 +7931,10 @@ modifiers:
         assert_eq!(
             record.origin_locator,
             ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+                assignment_scope_key: None,
+                source_cwd_anchor: caushell_runner::ShellSourceCwdAnchor::RequestPosition {
+                    start_byte: 0
+                },
                 assignment_command_index: 0,
                 assignment_index: 0,
                 substitution_index: 0,
@@ -7140,6 +8013,8 @@ modifiers:
         assert_eq!(
             record.origin_locator,
             ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+                assignment_scope_key: Some("shell-payload".into()),
+                source_cwd_anchor: caushell_runner::ShellSourceCwdAnchor::InvocationEntry,
                 assignment_command_index: 0,
                 assignment_index: 0,
                 substitution_index: 0,
@@ -7185,6 +8060,8 @@ modifiers:
         assert_eq!(
             record.origin_locator,
             ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+                assignment_scope_key: Some("procsub-arg:0:0:0".into()),
+                source_cwd_anchor: caushell_runner::ShellSourceCwdAnchor::InvocationEntry,
                 assignment_command_index: 0,
                 assignment_index: 0,
                 substitution_index: 0,
@@ -8004,7 +8881,7 @@ modifiers:
                     && matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
                         if resolved.normalized_command_name.as_str() == "rm"
                             && resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
-                                .any(|value| matches!(value, BoundValue::ImplicitInput { source: caushell_profile::ImplicitInputSource::StdinData, domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded) })))
+                                .any(|value| matches!(value, BoundValue::ImplicitInput { source: caushell_profile::ImplicitInputSource::StdinData, domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded), .. })))
             }), "partial input must not prove $1: {files}");
         }
     }

@@ -4,7 +4,7 @@ use super::host_target_catalog::{
 use super::metadata_mutation_classifier::{MetadataMutationKind, classify_metadata_mutation};
 use super::resolved_sink::{
     ResolvedHostRiskSemanticClass, ResolvedHostRiskSink, bound_argument_operands_for_slot,
-    each_resolved_host_risk_sink,
+    each_configured_host_risk_sink, each_resolved_host_risk_sink,
 };
 use caushell_profile::{
     BoundInvocation, CatastrophicSemanticClass, Effect, EffectKind, EffectTarget,
@@ -57,14 +57,15 @@ pub(crate) fn collect_command_sink_reason_buckets_with_optional_cwd(
     resolved: &ResolvedInvocationArtifact,
     cwd: Option<&str>,
     home: Option<&str>,
-    bindings: &SessionBindings,
+    record: crate::support::ExecutionResolveRecordRef<'_>,
 ) -> CommandSinkReasonBuckets {
+    let bindings = record.bindings();
     let mut buckets = CommandSinkReasonBuckets::default();
     extend_unique(
         &mut buckets.path_metadata_mutation_reasons,
         collect_path_metadata_mutation_reasons(resolved, cwd, home, bindings),
     );
-    each_resolved_host_risk_sink(resolved, |sink| {
+    let mut visit = |sink: ResolvedHostRiskSink<'_>| {
         let sink_buckets = collect_sink_reasons(sink, cwd, home, bindings);
         extend_unique(&mut buckets.floor_reasons, sink_buckets.floor_reasons);
         extend_unique(
@@ -91,7 +92,9 @@ pub(crate) fn collect_command_sink_reason_buckets_with_optional_cwd(
             &mut buckets.partition_table_state_mutation_reasons,
             sink_buckets.partition_table_state_mutation_reasons,
         );
-    });
+    };
+    each_resolved_host_risk_sink(resolved, &mut visit);
+    each_configured_host_risk_sink(record, cwd, home, &mut visit);
     buckets
 }
 
