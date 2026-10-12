@@ -53,6 +53,8 @@ forms:
         target:
           kind: dispatch
           command: wrapped_command
+          stdin_from_parent: true
+          stdout_to_parent: true
           argv:
             - wrapped_args
           environment: []

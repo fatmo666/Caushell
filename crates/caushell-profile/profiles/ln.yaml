@@ -18,6 +18,34 @@ platform:
   requires_features: []
 
 forms:
+  - id: implicit_destination
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 0
+        - kind: not
+          item:
+            kind: has_positional_at
+            index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+    parameters:
+      - name: link_targets
+        semantic: {kind: path, role: target, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_one
+    effects:
+      - {kind: target_path, target: {kind: slot, name: link_targets}}
+      - kind: write_path
+        target:
+          kind: derived_path
+          source: {kind: slot, name: link_targets}
+          rule: {kind: basename}
+          purpose: generic_operand
+
   - id: target_directory
     selector:
       kind: all

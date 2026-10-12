@@ -92,6 +92,8 @@ fn exact_literals_preserve_shell_quoting_and_placeholder_values() {
         ("'./$dir'", "./$dir"),
         (r"./\*", "./*"),
         ("{}", "{}"),
+        ("{#}", "{#}"),
+        ("{%}", "{%}"),
         ("name{3}", "name{3}"),
         ("'-delete'", "-delete"),
         ("'a b'", "a b"),

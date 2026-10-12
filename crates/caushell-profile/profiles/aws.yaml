@@ -14,6 +14,46 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: ec2_cloud_resource_create
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: ec2
+    - kind: has_positional_at_matching
+      index: 1
+      matcher:
+        kind: regex_pattern
+        pattern: "^(create-launch-template|run-instances)$"
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 1
+    cardinality: required_one
+  - name: cloud_operation_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: state_operation
+    state_operation:
+      domain: cloud_resource
+      operation: mutate
+    target:
+      kind: none
+
 - id: information
   selector:
     kind: has_modifier
@@ -100,6 +140,30 @@ modifiers:
     kind: any_flag
     flags:
     - "--filter"
+- id: file_uri_parameters
+  matcher:
+    kind: any_flag
+    flags:
+    - "--user-data"
+    - "--launch-template-data"
+  parameters:
+  - name: file_or_literal_data
+    semantic: {kind: plain_value}
+    binding: {kind: following_matched_flag, operand_mode: next_arg}
+    cardinality: required_many
+    structured_projection:
+      branches:
+        - {matcher: {kind: prefix, value: 'file://'}, target: {name: local_file_inputs, semantic: {kind: path, role: read, purpose: generic_operand}}}
+        - {matcher: {kind: prefix, value: 'fileb://'}, target: {name: binary_file_inputs, semantic: {kind: path, role: read, purpose: generic_operand}}}
+  effects:
+  - kind: read_path
+    target:
+      kind: slot
+      name: local_file_inputs
+  - {kind: read_path, target: {kind: slot, name: binary_file_inputs}}
+- id: cloud_option_values
+  matcher: {kind: any_flag, flags: [--image-id, --instance-type, --launch-template-name, --profile, --region]}
+  parameters: [{name: cloud_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 subcommands:
 extensions:
   caushell.profile/source_research:

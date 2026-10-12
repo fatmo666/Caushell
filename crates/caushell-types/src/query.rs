@@ -598,6 +598,8 @@ pub struct DerivedInvocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionSemanticsFact {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_operations: Vec<crate::StateOperation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shell_job_operations: Vec<crate::ShellJobOperationKind>,
     #[serde(default, skip_serializing_if = "crate::execution::is_false")]
     pub operation_semantics_unresolved: bool,
@@ -2176,6 +2178,7 @@ mod tests {
                     operation_semantics_unresolved: false,
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
+                    state_operations: Vec::new(),
                     terminal_session_operations: Vec::new(),
                     shell_job_operations: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:2".to_string(),
@@ -2344,6 +2347,7 @@ mod tests {
                         operation_semantics_unresolved: false,
                         network_listeners: Vec::new(),
                         database_operations: Vec::new(),
+                        state_operations: Vec::new(),
                         terminal_session_operations: Vec::new(),
                         shell_job_operations: Vec::new(),
                         node_id: "execution-semantics:command:sess-1:2".to_string(),
@@ -2760,6 +2764,7 @@ mod tests {
                 operation_semantics_unresolved: false,
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
+                state_operations: Vec::new(),
                 terminal_session_operations: Vec::new(),
                 shell_job_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:5".to_string(),

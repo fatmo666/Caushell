@@ -180,12 +180,12 @@ fn bounded_filter_expansion_is_not_blanket_approval_or_a_hidden_mutation() {
         "find . -name [] -print",
         "find . -newer <(cat stamp) -print",
         "find /path/folder{?,[1-4]?,50} -print",
+        r#"find "$HOME/" -name myfile.txt -print"#,
     ] {
         let result = ShellQueryCore::new().check(request(command));
         assert_eq!(result.decision, Decision::Allow, "{command}: {result:?}");
     }
     for command in [
-        r#"find "$HOME/" -name myfile.txt -print"#,
         "find *.py -print",
         "find *.. -delete",
         "find /outside -name report*.log -delete",

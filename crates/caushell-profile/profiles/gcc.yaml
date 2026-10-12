@@ -27,6 +27,11 @@ platform:
   requires_features: []
 
 forms:
+  - id: print_search_directories
+    selector: {kind: has_modifier, modifier: print_search_dirs}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+    extensions: {caushell.form/suppress_modifier_effects: true}
   - id: shell_wrapper_stdin
     selector:
       kind: all
@@ -168,6 +173,7 @@ forms:
     selector:
       kind: all
       items:
+        - {kind: not, item: {kind: has_modifier, modifier: print_search_dirs}}
         - {kind: not, item: {kind: has_modifier, modifier: output_path}}
         - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
         - {kind: not, item: {kind: has_modifier, modifier: wrapper_program}}
@@ -195,6 +201,7 @@ forms:
           purpose: generic_operand
 
 modifiers:
+  - {id: print_search_dirs, matcher: {kind: any_flag, flags: ["-print-search-dirs"]}}
   - id: preprocess_only
     matcher:
       kind: any_flag

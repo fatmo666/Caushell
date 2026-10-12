@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+opaque_on_unresolved: true
 
 identity:
   canonical_name: code
@@ -21,7 +22,14 @@ forms:
   - id: open_workspace
     selector:
       kind: all
-      items: []
+      items:
+        - kind: not
+          item:
+            kind: has_positional_at_matching
+            index: 0
+            matcher:
+              kind: literal
+              value: tunnel
     parameters:
       - name: path_targets
         semantic:
@@ -108,10 +116,107 @@ modifiers:
         target:
           kind: none
 
-subcommands: null
+subcommands:
+  roots:
+    - name: tunnel
+      option_scope: leading_options
+      forms:
+        - &tunnel_help
+          id: tunnel_help
+          selector: {kind: has_modifier, modifier: tunnel_help}
+          parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+          extensions: {caushell.form/suppress_modifier_effects: true}
+        - id: remote_tunnel
+          selector: &no_help {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: tunnel_help}}]}
+          effects: &control [{kind: state_operation, state_operation: {domain: remote_access, operation: control}, target: {kind: none}}]
+      modifiers:
+        - &tunnel_help_modifier {id: tunnel_help, matcher: {kind: any_flag, flags: [-h, --help]}}
+        - &tunnel_name
+          id: tunnel_name
+          matcher: {kind: any_flag, flags: [--name]}
+          parameters: [{name: tunnel_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - {id: tunnel_mode, matcher: {kind: any_flag, flags: [--accept-server-license-terms, --random-name, --no-sleep]}}
+      children:
+        - name: status
+          option_scope: leading_options
+          modifiers: [*tunnel_help_modifier]
+          forms: [&tunnel_query {id: tunnel_inspect, selector: *no_help, stream_contract: *query_stream, effects: [{kind: state_operation, state_operation: {domain: remote_access, operation: inspect}, target: {kind: none}}]}, *tunnel_help]
+          default_behavior: reject_unknown
+        - name: user
+          option_scope: leading_options
+          modifiers: [*tunnel_help_modifier]
+          forms: [*tunnel_help]
+          children:
+            - name: show
+              option_scope: leading_options
+              modifiers: [*tunnel_help_modifier]
+              forms: [*tunnel_query, *tunnel_help]
+              default_behavior: reject_unknown
+            - name: logout
+              option_scope: leading_options
+              modifiers: [*tunnel_help_modifier]
+              forms: [&tunnel_control {id: tunnel_control, selector: *no_help, effects: *control}, *tunnel_help]
+              default_behavior: reject_unknown
+            - name: login
+              option_scope: leading_options
+              forms: [*tunnel_control, *tunnel_help]
+              modifiers:
+                - *tunnel_help_modifier
+                - {id: login_options, matcher: {kind: any_flag, flags: [--provider, --access-token, --refresh-token]}, parameters: [{name: credentials, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]}
+              default_behavior: reject_unknown
+          default_behavior: reject_unknown
+        - name: service
+          option_scope: leading_options
+          modifiers: [*tunnel_help_modifier]
+          forms: [*tunnel_help]
+          children:
+            - name: log
+              option_scope: leading_options
+              modifiers: [*tunnel_help_modifier]
+              forms: [*tunnel_query, *tunnel_help]
+              default_behavior: reject_unknown
+            - name: install
+              option_scope: leading_options
+              forms: [*tunnel_control, *tunnel_help]
+              modifiers: [*tunnel_help_modifier, *tunnel_name, {id: service_consent, matcher: {kind: any_flag, flags: [--accept-server-license-terms]}}]
+              default_behavior: reject_unknown
+            - name: uninstall
+              option_scope: leading_options
+              modifiers: [*tunnel_help_modifier]
+              forms: [*tunnel_control, *tunnel_help]
+              default_behavior: reject_unknown
+            - name: internal-run
+              option_scope: leading_options
+              modifiers: [*tunnel_help_modifier]
+              forms: [*tunnel_control, *tunnel_help]
+              default_behavior: reject_unknown
+          default_behavior: reject_unknown
+        - name: restart
+          aliases: [kill, unregister, prune]
+          option_scope: leading_options
+          modifiers: [*tunnel_help_modifier]
+          forms: [*tunnel_control, *tunnel_help]
+          default_behavior: reject_unknown
+        - name: rename
+          option_scope: leading_options
+          modifiers: [*tunnel_help_modifier]
+          forms:
+            - id: tunnel_rename
+              selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: tunnel_help}}]}
+              remaining_selector: {kind: no_positional_args}
+              parameters: [{name: new_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}]
+              effects: *control
+            - *tunnel_help
+          default_behavior: reject_unknown
+      default_behavior: reject_unknown
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
-    - VS Code remote tunnel and URI forms are modeled as an interactive editor/control surface, not as fully parsed transport endpoints yet.
+    - Tunnel status, user show, service log and help are separated from remote-access state changes. Unmodeled tunnel subcommands/options remain unresolved.
+    - URI editor forms and tunnel transport endpoints are not fully parsed yet; no local CLI files or services are dynamically inspected.
+  caushell.profile/sources:
+    - https://raw.githubusercontent.com/microsoft/vscode/main/cli/src/commands/args.rs
+    - https://raw.githubusercontent.com/microsoft/vscode/main/cli/src/commands/tunnels.rs

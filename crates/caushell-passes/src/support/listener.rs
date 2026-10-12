@@ -96,8 +96,15 @@ fn scalar_value(
         .bound_parameters
         .iter()
         .find(|p| p.name == source.slot)
-        .and_then(|p| p.values.last())
-        .and_then(|value| project_value(&ValueProjection::Identity, value))
+        .and_then(|p| p.semantic_values().last())
+        .and_then(|value| match value {
+            caushell_profile::SemanticValueRef::Original(value) => {
+                project_value(&ValueProjection::Identity, value)
+            }
+            caushell_profile::SemanticValueRef::Projected { value, .. } => {
+                Some(value.resolution.clone())
+            }
+        })
         .or_else(|| {
             source
                 .environment

@@ -176,6 +176,12 @@ forms:
       kind: remaining_positionals
     cardinality: optional_many
 modifiers:
+- id: capture_interface
+  matcher: {kind: any_flag, flags: ["-i", "--interface"]}
+  parameters: [{name: capture_interface, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+- id: capture_count
+  matcher: {kind: any_flag, flags: ["-c"]}
+  parameters: [{name: capture_count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
 - id: extension_option
   matcher:
     kind: any_flag

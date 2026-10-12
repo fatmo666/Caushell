@@ -155,9 +155,64 @@ struct ExecutionUnitInfo {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PayloadInputScope {
+    // Typed code/config loaders have a source boundary distinct from data inputs.
+    code_sources_only: bool,
     slot_names: BTreeSet<String>,
     implicit_input_sources: BTreeSet<RuntimeInputSource>,
     deferred_input_sources: BTreeSet<ImplicitInputSource>,
+}
+
+impl PayloadInputScope {
+    fn is_explicit(&self) -> bool {
+        self.code_sources_only
+            || !self.slot_names.is_empty()
+            || !self.implicit_input_sources.is_empty()
+            || !self.deferred_input_sources.is_empty()
+    }
+
+    fn includes(&self, graph: &dyn GraphRead, edge: &caushell_graph::Edge) -> bool {
+        if !self.is_explicit() {
+            return true;
+        }
+        let Some(caushell_types::ProvenanceEdgeSemantics::Consume {
+            slot_name,
+            consume_kind,
+            ..
+        }) = &edge.semantics
+        else {
+            return true;
+        };
+        if slot_name
+            .as_ref()
+            .is_some_and(|slot| self.slot_names.contains(slot))
+        {
+            return true;
+        }
+        use caushell_types::ProvenanceConsumeKind as Kind;
+        match consume_kind {
+            // Independent code/config entry points must retain their sources.
+            Kind::ScriptSource
+            | Kind::InProcessCodeSource
+            | Kind::StartupConfigSource
+            | Kind::ProjectConfigSource
+            | Kind::ToolConfigSource
+            | Kind::TaskDefinitionSource
+            | Kind::ImportedPackageLogic => true,
+            Kind::RuntimeInput => match runtime_input_artifact_source(graph, &edge.to) {
+                Some(source) => self.implicit_input_sources.contains(&source),
+                None => true,
+            },
+            Kind::StdinExplicit
+            | Kind::StdinImplicit
+            | Kind::PipelineInput
+            | Kind::TransformInput => self
+                .implicit_input_sources
+                .contains(&RuntimeInputSource::StdinPayload),
+            // Untyped legacy input stays conservative. Typed non-code slots
+            // are data inputs, not a reason to taint this execution entrance.
+            _ => slot_name.is_none(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +319,7 @@ fn runtime_input_source_for_nested_payload_source(source: &str) -> Option<Runtim
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SinkSemanticsFlags {
     executes_payload: bool,
+    loads_in_process_code: bool,
     executes_hook: bool,
     loads_startup_config: bool,
     loads_project_config: bool,
@@ -273,6 +329,7 @@ struct SinkSemanticsFlags {
 impl SinkSemanticsFlags {
     fn is_taint_sink(self) -> bool {
         self.executes_payload
+            || self.loads_in_process_code
             || self.executes_hook
             || self.loads_startup_config
             || self.loads_project_config
@@ -284,6 +341,9 @@ impl SinkSemanticsFlags {
 
         if self.executes_payload {
             subtypes.insert(ExecutionRiskSubtype::GenericPayload);
+        }
+        if self.loads_in_process_code {
+            subtypes.insert(ExecutionRiskSubtype::InProcessCodeLoad);
         }
         if self.executes_hook {
             subtypes.insert(ExecutionRiskSubtype::Hook);
@@ -313,6 +373,7 @@ fn sink_semantics_flags(
 
     Some(SinkSemanticsFlags {
         executes_payload: semantics.executes_payload,
+        loads_in_process_code: semantics.loads_in_process_code,
         executes_hook: semantics.executes_hook,
         loads_startup_config: semantics.loads_startup_config,
         loads_project_config: semantics.loads_project_config,
@@ -322,6 +383,19 @@ fn sink_semantics_flags(
 
 fn payload_input_scope(effects: &[caushell_profile::Effect]) -> PayloadInputScope {
     let mut scope = PayloadInputScope::default();
+    // A code/config-loading boundary must not narrow a simultaneous generic
+    // payload/hook execution entrance whose input source was not declared.
+    let has_unscoped_payload = effects.iter().any(|effect| {
+        matches!(
+            effect.kind,
+            EffectKind::ExecutePayload
+                | EffectKind::SourceScriptIntoCurrentShell
+                | EffectKind::ExecuteHook
+        ) && matches!(effect.target, EffectTarget::None)
+    });
+    if has_unscoped_payload {
+        return scope;
+    }
 
     for effect in effects {
         if !matches!(
@@ -329,9 +403,16 @@ fn payload_input_scope(effects: &[caushell_profile::Effect]) -> PayloadInputScop
             EffectKind::ExecutePayload
                 | EffectKind::SourceScriptIntoCurrentShell
                 | EffectKind::ExecuteHook
+                | EffectKind::LoadInProcessCode
+                | EffectKind::LoadConfig
         ) {
             continue;
         }
+
+        scope.code_sources_only |= matches!(
+            effect.kind,
+            EffectKind::LoadInProcessCode | EffectKind::LoadConfig
+        );
 
         match &effect.target {
             EffectTarget::Slot(slot_name) => {
@@ -423,7 +504,9 @@ fn search_tainted_lineage(
             }
         }
 
-        let neighbors = backward_neighbors(graph, &state.current);
+        let root_scope = (state.hop_count == 0 && sink.payload_scope.is_explicit())
+            .then_some(&sink.payload_scope);
+        let neighbors = backward_neighbors(graph, &state.current, root_scope);
         if state.hop_count >= budget.max_hops {
             if !neighbors.is_empty() {
                 outcome.truncated_by_hops = true;
@@ -457,7 +540,11 @@ fn search_tainted_lineage(
     outcome
 }
 
-fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<TraceNodeKey> {
+fn backward_neighbors(
+    graph: &dyn GraphRead,
+    current: &TraceNodeKey,
+    root_scope: Option<&PayloadInputScope>,
+) -> Vec<TraceNodeKey> {
     let mut neighbors = BTreeSet::new();
 
     match current {
@@ -466,8 +553,11 @@ fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<Trac
                 if edge.kind != EdgeKind::Consumes {
                     continue;
                 }
+                if root_scope.is_some_and(|scope| !scope.includes(graph, edge)) {
+                    continue;
+                }
                 if matches!(current, TraceNodeKey::DispatchContext(_))
-                    && caushell_query::DataDependencyQuery::is_dispatch_return_input(graph, edge)
+                    && !caushell_query::DataDependencyQuery::is_dispatch_launch_input(graph, edge)
                 {
                     continue;
                 }
@@ -479,6 +569,27 @@ fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<Trac
 
             let mut projected_expands = false;
             for edge in graph.incoming_edges(node_id) {
+                // Once this sink names its code inputs, structural ancestry
+                // must not reintroduce unrelated stdin. Wrapper launch argv
+                // still carries origins materialized before child binding.
+                // Producer traversal AFTER inputs stays conservative.
+                if root_scope.is_some_and(|scope| {
+                    edge.kind != EdgeKind::Dispatches
+                        && (edge.kind != EdgeKind::FlowsTo
+                            || !scope
+                                .implicit_input_sources
+                                .contains(&RuntimeInputSource::StdinPayload))
+                }) {
+                    continue;
+                }
+                // Launch context is not the wrapper's stdin or its enclosing
+                // shell's stream. Follow dispatch ancestry only; independent
+                // code-source artifacts remain available above.
+                if matches!(current, TraceNodeKey::DispatchContext(_))
+                    && matches!(edge.kind, EdgeKind::FlowsTo | EdgeKind::ExpandsTo)
+                {
+                    continue;
+                }
                 match edge.kind {
                     EdgeKind::FlowsTo => {
                         if !caushell_query::DataDependencyQuery::control_edge_carries_inputs(
@@ -819,6 +930,91 @@ fn runtime_input_source_name(source: RuntimeInputSource) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::TaintedExecutionGuardPass;
+    #[test]
+    fn implicit_loader_boundary_keeps_code_config_and_legacy_inputs_not_typed_data() {
+        use caushell_profile::{Effect, EffectKind};
+        use caushell_types::{ProvenanceConsumeKind as Kind, ProvenanceEdgeSemantics};
+        let scope = super::payload_input_scope(&[Effect::new(EffectKind::LoadInProcessCode)]);
+        assert!(scope.is_explicit());
+        let graph = caushell_graph::SessionGraph::new();
+        for (kind, slot, expected) in [
+            (Kind::NetworkEndpoint, Some("query_data"), false),
+            (Kind::PathRead, Some("data_file"), false),
+            (Kind::PipelineInput, Some("data"), false),
+            (Kind::InProcessCodeSource, Some("module"), true),
+            (Kind::ToolConfigSource, Some("config"), true),
+            (Kind::NetworkEndpoint, None, true),
+        ] {
+            let edge = caushell_graph::Edge::with_semantics(
+                caushell_graph::NodeId::new("arbitrary-loader"),
+                caushell_graph::NodeId::new("input-artifact"),
+                caushell_graph::EdgeKind::Consumes,
+                ProvenanceEdgeSemantics::Consume {
+                    consume_kind: kind,
+                    slot_name: slot.map(str::to_owned),
+                    normalized_command_name: None,
+                    domain_label: None,
+                },
+            );
+            assert_eq!(
+                scope.includes(&graph, &edge),
+                expected,
+                "{kind:?}: {slot:?}"
+            );
+        }
+        let scope = super::payload_input_scope(&[
+            Effect::new(EffectKind::LoadInProcessCode),
+            Effect::new(EffectKind::ExecutePayload),
+        ]);
+        assert!(
+            !scope.is_explicit(),
+            "an unscoped payload retains the legacy conservative boundary"
+        );
+    }
+    #[test]
+    fn configuration_loader_boundary_preserves_its_typed_inputs_and_unscoped_execution() {
+        use caushell_profile::{Effect, EffectKind, EffectTarget, SlotName};
+        use caushell_types::{ProvenanceConsumeKind as Kind, ProvenanceEdgeSemantics};
+        let mut load = Effect::new(EffectKind::LoadConfig);
+        load.target = EffectTarget::Slot(SlotName::new("settings"));
+        let scope = super::payload_input_scope(&[load.clone()]);
+        let graph = caushell_graph::SessionGraph::new();
+        for (kind, slot, expected) in [
+            (Kind::NetworkEndpoint, Some("response_url"), false),
+            (Kind::PathRead, Some("data_file"), false),
+            (Kind::PathRead, Some("settings"), true),
+            (Kind::StartupConfigSource, Some("settings"), true),
+            (Kind::ProjectConfigSource, Some("project_config"), true),
+            (Kind::NetworkEndpoint, None, true),
+        ] {
+            let edge = caushell_graph::Edge::with_semantics(
+                caushell_graph::NodeId::new("config-loader"),
+                caushell_graph::NodeId::new("source"),
+                caushell_graph::EdgeKind::Consumes,
+                ProvenanceEdgeSemantics::Consume {
+                    consume_kind: kind,
+                    slot_name: slot.map(str::to_owned),
+                    normalized_command_name: None,
+                    domain_label: None,
+                },
+            );
+            assert_eq!(
+                scope.includes(&graph, &edge),
+                expected,
+                "{kind:?}: {slot:?}"
+            );
+        }
+        let scope = super::payload_input_scope(&[
+            Effect::new(EffectKind::LoadConfig),
+            Effect::new(EffectKind::ExecutePayload),
+        ]);
+        assert!(!scope.is_explicit());
+        let scope = super::payload_input_scope(&[load, Effect::new(EffectKind::ExecutePayload)]);
+        assert!(
+            !scope.is_explicit(),
+            "a named configuration slot cannot narrow an unscoped payload entrance"
+        );
+    }
     use crate::{
         DecisionAssemblyPass, ExtractEndpointProvenancePass, ExtractExecutionSemanticsPass,
         ExtractImportedPackageProvenancePass, ExtractPathFactsPass, ExtractPipelineFlowPass,

@@ -24,6 +24,7 @@ forms:
       - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
     stream_contract: {stdin_mode: payload_optional, stdout_mode: opaque, stderr_mode: opaque}
 modifiers:
+  - {id: quiet, matcher: {kind: any_flag, flags: [-q, --quiet]}}
   - id: code
     matcher: {kind: any_flag, flags: [--eval, -e]}
     parameters: [{name: raw_code, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]

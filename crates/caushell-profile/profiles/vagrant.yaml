@@ -16,6 +16,15 @@ platform:
   shell_families: []
   requires_features: []
 forms:
+- id: ssh_configuration
+  selector:
+    kind: all
+    items:
+    - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: ssh-config}}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
 - id: show_help
   selector:
     kind: has_modifier
@@ -74,9 +83,10 @@ extensions:
     nonexistent writes. Ruby configuration source cannot be expanded without filesystem
     contents.
 modifiers:
-- id: information
-  matcher:
-    kind: any_flag
-    flags:
-    - "--help"
-  ends_option_scope: true
+  - {id: host, matcher: {kind: any_flag, flags: [--host]}, parameters: [{name: host, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]}
+  - id: information
+    matcher:
+      kind: any_flag
+      flags:
+      - "--help"
+    ends_option_scope: true

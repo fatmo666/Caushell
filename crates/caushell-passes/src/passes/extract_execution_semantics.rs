@@ -58,6 +58,7 @@ fn project_execution_semantics_mutation(
                 matches!(
                     effect.kind,
                     EffectKind::DatabaseOperation
+                        | EffectKind::StateOperation
                         | EffectKind::TerminalSessionOperation
                         | EffectKind::ShellJobOperation
                 )
@@ -85,6 +86,17 @@ fn execution_semantics_for_bound(
     let mut semantics =
         ExecutionSemantics::new(normalized_command_name, invocation.form_id.as_str());
     semantics.operation_semantics_unresolved = invocation.operation_semantics_unresolved;
+
+    for operation in invocation
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == EffectKind::StateOperation)
+        .filter_map(|effect| effect.state_operation)
+    {
+        if !semantics.state_operations.contains(&operation) {
+            semantics.state_operations.push(operation);
+        }
+    }
 
     for operation in invocation
         .effects
@@ -222,6 +234,7 @@ fn execution_semantics_for_bound(
                 semantics = semantics.loading_tool_config();
             }
             Some(PathPurpose::StartupConfig)
+            | Some(PathPurpose::AuxiliaryInput)
             | Some(PathPurpose::IncidentalCache)
             | Some(PathPurpose::GenericOperand)
             | Some(PathPurpose::InProcessCode)
@@ -348,6 +361,7 @@ fn in_process_code_load_kinds_for_invocation(
         .effects
         .iter()
         .filter(|effect| effect.kind == EffectKind::LoadInProcessCode)
+        .filter(|effect| effect_target_is_applicable(invocation, effect))
         .map(|effect| in_process_code_load_kind_for_effect(invocation, effect))
 }
 
@@ -525,6 +539,59 @@ mod tests {
     fn registry_from_yaml(yaml: &str) -> ProfileRegistry {
         let profile = load_command_profile_from_str(yaml).expect("expected profile to load");
         ProfileRegistry::from_profiles(vec![profile]).expect("expected registry to build")
+    }
+
+    #[test]
+    fn projected_load_branches_emit_only_applicable_code_entrances() {
+        let yaml = r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: demo-loader}
+forms:
+  - id: load
+    parameters:
+      - name: operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: list}, target: null}
+            - {matcher: {kind: regex_capture, pattern: '^.*/.*$', group: 0}, target: {name: library, semantic: {kind: in_process_code_load, load_kind: library_path}}}
+          fallback: {name: plugin, semantic: {kind: in_process_code_load, load_kind: plugin_name}}
+    effects: [{kind: load_in_process_code, target: {kind: slot, name: library}}, {kind: load_in_process_code, target: {kind: slot, name: plugin}}]
+"#;
+        for (operand, kinds) in [
+            ("cache/blob", vec![InProcessCodeLoadKind::LibraryPath]),
+            ("named.so", vec![InProcessCodeLoadKind::PluginName]),
+            ("list", vec![]),
+            (
+                "\"$UNKNOWN\"",
+                vec![
+                    InProcessCodeLoadKind::LibraryPath,
+                    InProcessCodeLoadKind::PluginName,
+                ],
+            ),
+        ] {
+            let mut runner = PassRunner::new();
+            runner.register_request_transform_pass(ParseCommandPass);
+            runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+            runner.register_session_transform_pass(ResolveInvocationPass::new(registry_from_yaml(
+                yaml,
+            )));
+            runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
+            let graph = caushell_graph::SessionGraph::new();
+            let summary = SessionSummary::new();
+            let mut ctx = RunnerContext::new(sample_request(&format!("demo-loader {operand}")));
+            runner.run(SessionView::new(&graph, &summary), &mut ctx);
+            let semantics = semantics_mutation_for_node(&ctx, &NodeId::new("command:sess-1:1:0"));
+            assert_eq!(semantics.in_process_code_load_kinds, kinds, "{operand}");
+            assert_eq!(
+                semantics.loads_in_process_code,
+                !kinds.is_empty(),
+                "{operand}"
+            );
+        }
     }
 
     #[test]

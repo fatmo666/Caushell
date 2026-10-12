@@ -119,6 +119,32 @@ fn disabled_and_unknown_first_matches_do_not_fall_through_to_later_values() {
 }
 
 #[test]
+fn absent_optional_values_and_missing_required_flag_operands_are_distinct() {
+    let optional = KEYWORDS.replace(
+        "operand_mode: next_arg",
+        "operand_mode: optional_inline_or_short_attached",
+    );
+    let p = projection(&optional, "keyword-fixture -o");
+    assert!(p.resolved.is_empty() && p.unresolved.is_empty(), "{p:?}");
+
+    let explicit = KEYWORDS
+        .replace("flags: [-o]", "flags: [-o, --other]")
+        .replace(
+            "kind: following_matched_flag",
+            "kind: following_flag, flag: -o",
+        );
+    for command in ["keyword-fixture", "keyword-fixture --other"] {
+        let p = projection(&explicit, command);
+        assert!(
+            p.resolved.is_empty() && p.unresolved.is_empty(),
+            "{command}: {p:?}"
+        );
+    }
+    let p = projection(&explicit, "keyword-fixture -o");
+    assert_eq!(p.unresolved.len(), 1, "{p:?}");
+}
+
+#[test]
 fn first_match_stops_only_after_matching_and_default_keeps_all_values() {
     let c = "keyword-fixture -o 'Other=on' -o 'Runner=printf FIRST' -o 'Runner=printf SECOND'";
     let p = projection(KEYWORDS, c);

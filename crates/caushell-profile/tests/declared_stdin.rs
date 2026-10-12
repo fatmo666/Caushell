@@ -48,9 +48,8 @@ fn resolve(source: &str, command: &str) -> ResolvedInvocationArtifact {
 #[test]
 fn bound_effects_select_input_without_rewriting_the_declared_contract() {
     for (command, mode) in [
-        // This generic optional projection emits possible targets for a
-        // missing value; the emitted stdin effect stays conservative.
-        ("arbitrary_stream_reader", StreamInputMode::DataOptional),
+        // An absent optional operand does not project a fictitious '-' input.
+        ("arbitrary_stream_reader", StreamInputMode::Ignored),
         (
             "arbitrary_stream_reader public.txt",
             StreamInputMode::Ignored,

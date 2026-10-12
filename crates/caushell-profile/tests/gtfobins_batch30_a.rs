@@ -1,7 +1,7 @@
 use caushell_parse::parse_command;
 use caushell_profile::{
-    bind_invocation, load_command_profile_from_str, project_invocation, select_invocation,
-    BoundInvocation, BoundValue, EffectKind, InvocationRuntimeContext,
+    BoundInvocation, BoundValue, EffectKind, InvocationRuntimeContext, bind_invocation,
+    load_command_profile_from_str, project_invocation, select_invocation,
 };
 use caushell_types::ShellKind;
 

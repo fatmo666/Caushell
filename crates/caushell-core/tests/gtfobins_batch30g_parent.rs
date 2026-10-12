@@ -302,12 +302,12 @@ fn metadata_control_does_not_shadow_explicit_program_entry() {
 }
 
 #[test]
-fn php_builtin_server_retains_root_and_router_without_fake_listener_identity() {
+fn php_builtin_server_retains_root_and_router_with_real_listener_scope() {
     let public = "php -S 0.0.0.0:8765 -t ./public";
-    // Existing scalar listener declarations cannot split native HOST:PORT.
-    // This is a characterized partial mechanism, not accepted protection.
     assert!(
-        semantic(public, "php").network_listeners.is_empty(),
+        matches!(semantic(public, "php").network_listeners.as_slice(),
+            [NetworkListener::Internet {host: Some(host), scope: NetworkListenScope::NonLoopback, ..}]
+                if host == "0.0.0.0"),
         "{:#?}",
         check(public)
     );
@@ -317,7 +317,7 @@ fn php_builtin_server_retains_root_and_router_without_fake_listener_identity() {
         graph(public)
     );
     assert!(
-        !rule(public, RuleId::NetworkListenerExposure),
+        rule(public, RuleId::NetworkListenerExposure),
         "{:#?}",
         check(public)
     );

@@ -311,6 +311,18 @@ fn service_inspection_is_separate_from_control_and_startup_registration() {
 }
 
 #[test]
+fn update_keeps_implicit_cache_and_installation_state_mutation() {
+    let b = resolve("brew update");
+    assert!(unknown_mutation(&b, EffectKind::WritePath));
+    assert!(b.effects.iter().any(|e| matches!(&e.target,
+        EffectTarget::ConfiguredPath(p) if p.environment.as_ref().is_some_and(|env| env.name == "HOMEBREW_CACHE"))));
+    assert!(!b.effects.iter().any(|e| matches!(
+        e.kind,
+        EffectKind::ImportPackage | EffectKind::ExecuteImportedPackageLogic
+    )));
+}
+
+#[test]
 fn unknown_options_and_unsupported_setup_or_languages_remain_opaque() {
     for c in [
         "brew info --eval-all",
@@ -325,7 +337,6 @@ fn unknown_options_and_unsupported_setup_or_languages_remain_opaque() {
         "brew ruby -e anything",
         "brew tap owner/repo",
         "brew untap owner/repo",
-        "brew update",
         "brew pin curl",
         "brew install --with-feature curl",
         "brew list --future",

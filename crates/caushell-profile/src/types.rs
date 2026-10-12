@@ -314,6 +314,8 @@ pub enum PathRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathPurpose {
+    /// Used by the operation without being part of its output payload.
+    AuxiliaryInput,
     IncidentalCache,
     GenericOperand,
     ScriptSource,
@@ -428,6 +430,7 @@ pub enum PackageManagerKind {
     Conda,
     Npm,
     Yum,
+    Rpm,
     Brew,
 }
 
@@ -506,6 +509,13 @@ pub enum ValueMatcher {
     RegexPattern(String),
 }
 
+/// Whole-token native operand grammar; its regex is compiled at profile load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionOperandMatcher {
+    pub matcher: ValueMatcher,
+    pub regex: Option<CompiledOperandRegex>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindingSpec {
     ArgumentRegionCommand(String),
@@ -513,6 +523,12 @@ pub enum BindingSpec {
     NextPositional,
     NextPositionalAfterDashDash,
     PositionalAt(usize),
+    /// A member of each fixed-size group in the original scoped positional
+    /// sequence. Earlier member bindings do not renumber the groups.
+    PositionalGroups {
+        group_size: usize,
+        member: usize,
+    },
     RemainingPositionals,
     RemainingPositionalsAfterDashDash,
     RemainingPositionalsBeforeLast,
@@ -541,6 +557,10 @@ pub enum BindingSpec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlagOperandMode {
+    /// A complete declared option word followed immediately by operand bytes.
+    /// Requires scoped exact_names matching; never consumes the next argv word.
+    WordAttached,
+    OptionalWordAttached,
     NextPositional,
     NextArg,
     /// Attached/inline value, otherwise the immediate non-option argv value.
@@ -556,6 +576,9 @@ pub enum FlagOperandMode {
     /// Optional long-inline or short-attached value. A bare occurrence never
     /// owns the following argv token; required cardinality still applies.
     OptionalInlineOrShortAttached,
+    /// Optional attached octal digits, followed by further short options in the
+    /// same token. Never owns the next argv word. Requires scoped short options.
+    OptionalShortOctalPrefix,
     InlineOrShortAttached,
     NextPositionalAfterDashDash,
 }
@@ -641,6 +664,8 @@ pub enum ValueProjection {
 /// A tool-owned operand grammar. Original argv and scalar projections are unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredProjection {
+    pub last_value_only: bool,
+    pub native_syntax: Option<NativeOperandSyntax>,
     pub separator: Option<String>,
     /// Stop after the first matching operand (including disabled or unknown values).
     pub first_match_only: bool,
@@ -648,14 +673,35 @@ pub struct StructuredProjection {
     pub fallback: Option<StructuredProjectionTarget>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeOperandSyntax {
+    PassphraseSource,
+    CurlMultipart,
+    CurlWriteOut,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredProjectionBranch {
     pub matcher: StructuredProjectionMatcher,
+    pub unless_modifier: Option<ModifierId>,
+    pub requires_modifiers: Vec<ModifierId>,
+    pub unless_modifiers: Vec<ModifierId>,
+    pub unless_parameter_matches: Option<ProjectionParameterCondition>,
     pub target: Option<StructuredProjectionTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionParameterCondition {
+    pub name: SlotName,
+    pub matcher: ValueMatcher,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredProjectionMatcher {
+    RegexCapture {
+        regex: CompiledOperandRegex,
+        group: usize,
+    },
     Literal(String),
     /// Matched prefixes are consumed before emitting the semantic value.
     Prefix(String),
@@ -670,10 +716,34 @@ pub enum StructuredProjectionMatcher {
     },
 }
 
+/// Compiled once during Profile loading, shared by invocation clones. Equality
+/// compares the declaration, not allocation identity or engine internals.
+#[derive(Debug, Clone)]
+pub struct CompiledOperandRegex(std::sync::Arc<regex::Regex>);
+
+impl CompiledOperandRegex {
+    pub(crate) fn compile(pattern: &str) -> Result<Self, regex::Error> {
+        regex::Regex::new(pattern).map(|r| Self(std::sync::Arc::new(r)))
+    }
+    pub(crate) fn regex(&self) -> &regex::Regex {
+        &self.0
+    }
+}
+
+impl PartialEq for CompiledOperandRegex {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+impl Eq for CompiledOperandRegex {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuredProjectionTarget {
     pub name: SlotName,
     pub semantic: SemanticType,
+    /// The native operand form is recognized but its semantic value cannot be
+    /// projected by this grammar. Retain an unknown, never the raw operand.
+    pub unresolved: bool,
     /// Prefer the first present source slot, including an unresolved value.
     /// Empty means use this operand's matched value.
     pub sources: Vec<SlotName>,
@@ -935,6 +1005,10 @@ pub enum ModifierConstraint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectKind {
+    ConsumeAuxiliaryValue,
+    /// Named child-environment input, not output payload content.
+    ConsumeAuxiliaryEnvironment,
+    StateOperation,
     ReadPath,
     WritePath,
     DeletePath,
@@ -998,6 +1072,9 @@ pub enum DispatchCommandSource {
 pub enum DispatchStringSyntax {
     PosixShell,
     GnuWordsplit,
+    /// A shell job template plus tool-owned job sources; expanded by the
+    /// existing nested frontier, never as one argv per template fragment.
+    GnuParallel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1015,6 +1092,8 @@ pub struct DispatchTarget {
     pub unset_environment_when: Vec<ConditionalEnvironmentUnset>,
     /// A file/configuration can replace child env values but its body is opaque.
     pub unknown_environment_when: Vec<ModifierId>,
+    /// Manager-owned child environment, independent of caller inheritance.
+    pub unknown_environment: bool,
     pub unknown_environment_from: Vec<EnvironmentValueSource>,
     /// Tool-generated values override inherited bindings, but only these names.
     pub unknown_environment_names: Vec<String>,
@@ -1023,6 +1102,9 @@ pub struct DispatchTarget {
     pub stdin_from_tool: bool,
     /// Opt-in child stdout contribution; dispatch alone does not imply data flow.
     pub stdout_to_parent: bool,
+    /// Tool modes can opt in to routing without creating another dispatch.
+    pub stdin_from_parent_when: Vec<ModifierId>,
+    pub stdout_to_parent_when: Vec<ModifierId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1181,6 +1263,9 @@ pub struct HostRiskEffectMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Effect {
+    /// Optional byte-input contract for this network endpoint only.
+    pub input_scope: Option<EndpointInputScope>,
+    pub state_operation: Option<caushell_types::StateOperation>,
     pub kind: EffectKind,
     pub target: EffectTarget,
     pub path_access: Option<PathAccessKind>,
@@ -1200,6 +1285,7 @@ impl Effect {
     pub fn new(kind: EffectKind) -> Self {
         Self {
             kind,
+            input_scope: None,
             target: EffectTarget::None,
             path_access: None,
             path_scope: None,
@@ -1208,6 +1294,7 @@ impl Effect {
             host_risk: HostRiskEffectMetadata::default(),
             repository_operation: None,
             database_operation: None,
+            state_operation: None,
             terminal_session_operation: None,
             shell_job_operation: None,
             extensions: ExtensionMap::new(),
@@ -1223,6 +1310,15 @@ impl Effect {
         self.interactive_escape_surface = Some(surface);
         self
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndpointInputScope {
+    pub slots: Vec<String>,
+    /// Consider stdin only if a bound consume_stdin effect actually uses it.
+    #[serde(default)]
+    pub stdin: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1317,6 +1413,9 @@ pub enum OptionScopePolicy {
     /// Parse declared options and their operands, then stop at the first
     /// non-option or an option terminator. Never inspect the child argv.
     LeadingOptions,
+    /// Options may straddle one positional operand; a second positional starts
+    /// an opaque command/data tail. `--` still terminates all option parsing.
+    LeadingOptionsWithOperand,
     /// Parse declared options even after non-option data, up to the real
     /// terminator. Preserve original argv ordering and argument ownership.
     PermutedOptions,
@@ -1331,6 +1430,9 @@ pub enum OptionMatchingPolicy {
     /// Match complete declared names; long inline operands remain supported.
     /// Single-dash words are neither split nor guessed as attached operands.
     ExactNames,
+    /// Declared one/two-character short words may be clustered; longest
+    /// declared word wins at each position. Requires scoped option ownership.
+    DeclaredShortWords,
 }
 
 /// Opt-in CLI grammar, applied after shell argv materialization. This never
@@ -1409,6 +1511,7 @@ pub enum PositionalBindingSource {
     NextPositional,
     NextPositionalAfterDashDash,
     PositionalAt(usize),
+    PositionalGroups { group_size: usize, member: usize },
     RemainingPositionals,
     RemainingPositionalsBeforeLast,
     LeadingPositionals,
@@ -1614,6 +1717,31 @@ pub struct BoundInvocation {
 }
 
 impl BoundInvocation {
+    pub fn is_auxiliary_input_slot(&self, slot: &str) -> bool {
+        self.auxiliary_input_slots()
+            .any(|name| name.as_str() == slot)
+    }
+    pub fn auxiliary_input_slots(&self) -> impl Iterator<Item = &SlotName> {
+        self.effects
+            .iter()
+            .filter_map(|effect| match (&effect.kind, &effect.target) {
+                (
+                    EffectKind::ConsumeAuxiliaryValue | EffectKind::ConsumeAuxiliaryEnvironment,
+                    EffectTarget::Slot(name),
+                ) => Some(name),
+                _ => None,
+            })
+            .chain(self.bound_parameters.iter().filter_map(|p| {
+                matches!(
+                    p.semantic,
+                    SemanticType::Path(PathSemantic {
+                        purpose: Some(PathPurpose::AuxiliaryInput),
+                        ..
+                    })
+                )
+                .then_some(&p.name)
+            }))
+    }
     pub fn new(command_name: CommandName, form_id: FormId) -> Self {
         Self {
             command_name,
@@ -1685,6 +1813,9 @@ pub struct CommandProfile {
     pub option_scope: OptionScopePolicy,
     pub option_matching: OptionMatchingPolicy,
     pub option_prefixes: OptionPrefixPolicy,
+    /// Opt-in full-word operand grammar for words beginning with an option
+    /// prefix. Tested before option decoding; it does not rewrite argv.
+    pub option_operand_matcher: Option<OptionOperandMatcher>,
     pub subcommands: Option<SubcommandTree>,
     pub extensions: ExtensionMap,
 }
@@ -1728,6 +1859,7 @@ impl CommandProfile {
             option_scope: OptionScopePolicy::default(),
             option_matching: OptionMatchingPolicy::default(),
             option_prefixes: OptionPrefixPolicy::default(),
+            option_operand_matcher: None,
             subcommands: None,
             extensions: ExtensionMap::new(),
         }

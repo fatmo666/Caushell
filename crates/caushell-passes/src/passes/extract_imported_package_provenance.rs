@@ -283,6 +283,7 @@ fn manager_ambiguous_locator_precedence(
             PackageLocatorKind::RegistryRef,
             PackageLocatorKind::LocalPath,
         ],
+        caushell_profile::PackageManagerKind::Rpm => &[PackageLocatorKind::LocalPath],
     }
 }
 
@@ -404,6 +405,7 @@ fn package_manager_kind(kind: caushell_profile::PackageManagerKind) -> PackageMa
         caushell_profile::PackageManagerKind::Conda => PackageManagerKind::Conda,
         caushell_profile::PackageManagerKind::Npm => PackageManagerKind::Npm,
         caushell_profile::PackageManagerKind::Yum => PackageManagerKind::Yum,
+        caushell_profile::PackageManagerKind::Rpm => PackageManagerKind::Rpm,
         caushell_profile::PackageManagerKind::Brew => PackageManagerKind::Brew,
     }
 }
@@ -430,6 +432,7 @@ fn package_manager_slug(manager: PackageManagerKind) -> &'static str {
         PackageManagerKind::Conda => "conda",
         PackageManagerKind::Npm => "npm",
         PackageManagerKind::Yum => "yum",
+        PackageManagerKind::Rpm => "rpm",
         PackageManagerKind::Brew => "brew",
     }
 }

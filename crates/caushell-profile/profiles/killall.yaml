@@ -100,6 +100,15 @@ forms:
           name: targets
 
 modifiers:
+  - id: user_selector
+    matcher:
+      kind: any_flag
+      flags: ["-u"]
+    parameters:
+      - name: selected_users
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
   - id: nonzero_signal
     matcher:
       kind: any_flag

@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: uniq
@@ -18,75 +20,57 @@ platform:
   requires_features: []
 
 forms:
-  - id: unique_to_file
-    selector:
-      kind: has_positional_at
-      index: 1
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals_before_last
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: last_positional
-        cardinality: required_one
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_path
-      - kind: transform_data
-        target:
-          kind: none
-
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: unique_to_stdout
-    selector:
-      kind: not
-      item:
-        kind: has_positional_at
-        index: 1
-    parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, &stdout {kind: any, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}]}, &file_input {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}]}
+    remaining_selector: &complete {kind: no_positional_args}
+    parameters: &operands
+      - name: input_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
         cardinality: optional_one
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
-      - kind: transform_data
-        target:
-          kind: none
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}
+      - name: output_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}}
+    effects: &effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: independent}
+  - id: unique_stdin_to_stdout
+    selector: {kind: all, items: [*running, *stdout, &stdin {kind: not, item: *file_input}]}
+    remaining_selector: *complete
+    parameters: *operands
+    effects: *effects
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: independent}
+  - id: unique_to_file
+    selector: {kind: all, items: [*running, {kind: not, item: *stdout}, *file_input]}
+    remaining_selector: *complete
+    parameters: *operands
+    effects: *effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+  - id: unique_stdin_to_file
+    selector: {kind: all, items: [*running, {kind: not, item: *stdout}, *stdin]}
+    remaining_selector: *complete
+    parameters: *operands
+    effects: *effects
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
+  - id: grouping
+    matcher: {kind: any_flag, flags: [--all-repeated, --group]}
+    parameters: [{name: group_method, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}]
   - id: mode
     matcher:
       kind: any_flag
@@ -95,6 +79,7 @@ modifiers:
         - "--count"
         - "-d"
         - "--repeated"
+        - "-D"
         - "-u"
         - "--unique"
         - "-i"
@@ -119,7 +104,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_many
+        cardinality: required_many
 
 subcommands: null
 extensions:

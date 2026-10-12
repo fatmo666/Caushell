@@ -2154,15 +2154,25 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_denies_parallel_wrapped_rm_root_in_default_mode() {
+    fn catastrophic_delete_guard_denies_proven_parallel_job_but_not_literal_data() {
         let ctx = run_pass(r#"parallel rm -rf ::: /"#);
 
+        // A complete native source now proves the actual shell job rm -rf /.
         assert_eq!(ctx.final_decision, Some(Decision::Deny));
-        assert!(ctx.findings.iter().any(|finding| {
-            finding.rule_id == RuleId::CatastrophicFileSystemDelete
-                && finding.enforcement_class == FindingEnforcementClass::HardDenyFloor
-                && finding.message.contains("delete target / in command rm")
-        }));
+        assert_has_finding(
+            &ctx,
+            RuleId::CatastrophicFileSystemDelete,
+            FindingEnforcementClass::HardDenyFloor,
+            &["delete target /", "command rm"],
+        );
+        // A replacement used as echo data must not become another shell job.
+        let ctx = run_pass(r#"parallel echo {} ::: 'x; rm -rf /'"#);
+        assert_eq!(ctx.final_decision, Some(Decision::Allow));
+        assert!(
+            !ctx.findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::CatastrophicFileSystemDelete)
+        );
     }
 
     #[test]

@@ -139,6 +139,18 @@ pub struct ExecutionUnitInheritedScope {
     /// Applies only to this direct Dispatch origin, not arbitrary descendant
     /// shell events. Each new dispatch replaces it from its own declaration.
     pub dispatch_stdout_to_parent: bool,
+    /// Static native-template substitutions. Shared through generated shell
+    /// scopes; these are source byte ranges, not runtime observations.
+    pub native_template_input: Option<std::sync::Arc<NativeTemplateInput>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeTemplateInput {
+    pub producer_node_id: NodeId,
+    pub source_text: String,
+    pub data_ranges: Vec<std::ops::Range<usize>>,
+    pub input_slots: Vec<String>,
+    pub stdin: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

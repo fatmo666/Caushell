@@ -47,6 +47,11 @@ modifiers:
       flags:
         - "-n"
         - "--no-verify"
+  - id: configuration_override
+    matcher: {kind: any_flag, flags: ["-c"]}
+    parameters:
+      - {name: configuration_overrides, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - {id: pager, matcher: {kind: any_flag, flags: ["-p", "--paginate"]}}
 
 subcommands:
   roots:
@@ -650,7 +655,7 @@ subcommands:
           - Without an explicit -- separator, git diff positionals are left as plain revision args to avoid misclassifying commit names or blobs as filesystem paths.
 
     - name: log
-      aliases: []
+      aliases: [whatchanged]
       forms:
         - id: inspect_history_pathspecs
           selector:
@@ -696,6 +701,83 @@ subcommands:
               target:
                 kind: none
       modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: grep
+      aliases: []
+      forms:
+        - id: search_repository
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: pattern, semantic: {kind: structured_value, context: regex}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: pathspecs, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects:
+            - {kind: read_path, target: {kind: slot, name: pathspecs}}
+            - {kind: transform_data, target: {kind: none}}
+          stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: symbolic-ref
+      aliases: []
+      option_scope: permuted_options
+      forms:
+        - id: inspect_symbolic_ref
+          selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: delete_ref}}]}
+          parameters: [{name: ref_name, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_one}]
+          effects: [{kind: read_path, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+        - id: delete_symbolic_ref
+          selector: {kind: has_modifier, modifier: delete_ref}
+          parameters: [{name: ref_name, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_one}]
+          effects: [{kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}]
+        - id: update_symbolic_ref
+          selector: {kind: all, items: [{kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_modifier, modifier: delete_ref}}]}
+          parameters: [{name: ref_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}]
+      modifiers:
+        - {id: delete_ref, matcher: {kind: any_flag, flags: [-d, --delete]}}
+        - {id: query_flags, matcher: {kind: any_flag, flags: [-q, --quiet, --short, --no-recurse]}}
+        - {id: reflog_message, matcher: {kind: any_flag, flags: [-m]}, parameters: [{name: reflog_message, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: help
+      aliases: []
+      forms:
+        - id: help_through_pager
+          selector: {kind: has_modifier, modifier: pager}
+          parameters: [{name: help_topics, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+        - id: help_information
+          selector: {kind: not, item: {kind: has_modifier, modifier: pager}}
+          parameters: [{name: help_topics, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: init
+      aliases: []
+      option_scope: permuted_options
+      forms:
+        - id: initialize_repository
+          selector: {kind: all, items: []}
+          parameters: [{name: init_directory, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: optional_one}]
+          effects:
+            - {kind: write_path, target: {kind: configured_path, sources: [{slot: init_directory, projection: {kind: identity}}], default_value: '.', purpose: generic_operand}}
+      modifiers:
+        - {id: bare_or_quiet, matcher: {kind: any_flag, flags: [--bare, -q, --quiet]}}
+        - {id: initial_branch, matcher: {kind: any_flag, flags: [-b, --initial-branch, --object-format, --ref-format]}, parameters: [{name: init_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]}
+        - {id: separate_git_dir, matcher: {kind: any_flag, flags: [--separate-git-dir]}, parameters: [{name: git_dir, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}], effects: [{kind: write_path, target: {kind: slot, name: git_dir}}]}
+        - {id: shared_repository, matcher: {kind: any_flag, flags: [--shared]}, parameters: [{name: shared_permission, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_one}]}
+        - {id: template, matcher: {kind: any_flag, flags: [--template]}, parameters: [{name: template_directory, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}], effects: [{kind: read_path, target: {kind: slot, name: template_directory}}]}
       children: []
       default_behavior: reject_unknown
       extensions: {}

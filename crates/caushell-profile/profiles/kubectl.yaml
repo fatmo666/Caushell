@@ -14,6 +14,88 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: remote_pod_command
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: exec
+    - kind: has_positional_at
+      index: 1
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: pod
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 1
+    cardinality: required_one
+  - name: remote_command
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: required_many
+  effects:
+  - kind: execute_remote_command
+    target:
+      kind: slot
+      name: remote_command
+  - kind: state_operation
+    state_operation:
+      domain: remote_access
+      operation: control
+    target:
+      kind: none
+- id: create_cluster_workload
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: run
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: workload_arguments
+    semantic:
+      kind: plain_value
+    binding:
+      kind: remaining_positionals
+    cardinality: optional_many
+  effects:
+  - kind: state_operation
+    state_operation:
+      domain: cloud_resource
+      operation: mutate
+    target:
+      kind: none
+
 - id: information
   selector:
     kind: has_modifier

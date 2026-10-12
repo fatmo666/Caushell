@@ -64,6 +64,19 @@ fn collect_endpoint_provenance_mutations(
                 &resolved.normalized_command_name,
                 parameter,
                 *endpoint_semantic,
+                effect.input_scope.as_ref().map(|scope| {
+                    // The destination itself is always sent/resolved: URL or
+                    // hostname expansion can carry data even with a fixed body.
+                    let mut slots = scope.slots.clone();
+                    let endpoint_slot = parameter.name.as_str().to_string();
+                    if !slots.contains(&endpoint_slot) {
+                        slots.push(endpoint_slot);
+                    }
+                    caushell_types::ProvenanceDomainLabel::EndpointInputScope {
+                        slots,
+                        stdin: scope.stdin && bound_consumes_stdin(&resolved.bound, &scope.slots),
+                    }
+                }),
             ));
         }
     }
@@ -71,17 +84,61 @@ fn collect_endpoint_provenance_mutations(
     mutations
 }
 
+fn bound_consumes_stdin(
+    bound: &caushell_profile::BoundInvocation,
+    scoped_slots: &[String],
+) -> bool {
+    bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::ConsumeStdin
+            && match &effect.target {
+                EffectTarget::Slot(slot) => bound.bound_parameters.iter().any(|p| {
+                    p.name == *slot
+                        && !p.semantic_values_are_inapplicable()
+                        && p.structured_source.as_ref().is_none_or(|source| {
+                            scoped_slots
+                                .iter()
+                                .any(|name| name == p.name.as_str() || name == source.as_str())
+                        })
+                }),
+                EffectTarget::ImplicitInput(source) => matches!(
+                    source.to_runtime_input_source(),
+                    Some(
+                        caushell_types::RuntimeInputSource::StdinData
+                            | caushell_types::RuntimeInputSource::StdinPayload
+                    )
+                ),
+                _ => false,
+            }
+    })
+}
+
 fn parameter_endpoint_provenance_mutations(
     source_node_id: &NodeId,
     normalized_command_name: &str,
     parameter: &BoundParameter,
     endpoint_semantic: caushell_profile::EndpointSemantic,
+    input_scope: Option<caushell_types::ProvenanceDomainLabel>,
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
 
-    for value in &parameter.values {
-        let BoundValue::Argument { text, .. } = value else {
-            continue;
+    for value in parameter.semantic_values() {
+        let text = match value {
+            caushell_profile::SemanticValueRef::Original(BoundValue::Argument { text, .. }) => {
+                text.clone()
+            }
+            caushell_profile::SemanticValueRef::Projected { value, source } => {
+                match &value.resolution {
+                    caushell_profile::SemanticValueResolution::Known(text) => text.clone(),
+                    // Keep the original unresolved operand expression, as
+                    // legacy endpoint parameters do. Unknown fetch addresses
+                    // must not erase the response's network origin.
+                    _ => match source {
+                        BoundValue::Argument { text, .. } => text.clone(),
+                        _ => continue,
+                    },
+                }
+            }
+            _ => continue,
         };
 
         let endpoint_kind = provenance_endpoint_kind(endpoint_semantic.kind);
@@ -89,7 +146,7 @@ fn parameter_endpoint_provenance_mutations(
 
         mutations.push(PendingMutation::AddProvenanceArtifact {
             source_node_id: source_node_id.clone(),
-            node_id: provenance_endpoint_artifact_node_id(text, endpoint_kind, usage),
+            node_id: provenance_endpoint_artifact_node_id(&text, endpoint_kind, usage),
             artifact: ProvenanceArtifact::NetworkEndpoint {
                 endpoint: text.clone(),
                 endpoint_kind,
@@ -100,7 +157,7 @@ fn parameter_endpoint_provenance_mutations(
                 consume_kind: ProvenanceConsumeKind::NetworkEndpoint,
                 slot_name: Some(parameter.name.as_str().to_string()),
                 normalized_command_name: Some(normalized_command_name.to_string()),
-                domain_label: None,
+                domain_label: input_scope.clone(),
             },
         });
     }
@@ -167,8 +224,8 @@ mod tests {
     use caushell_runner::{PassRunner, PendingMutation, RunnerContext, SessionView};
     use caushell_types::{
         CheckRequest, CommandSequenceNo, ProvenanceArtifact, ProvenanceConsumeKind,
-        ProvenanceEdgeSemantics, ProvenanceEndpointKind, ProvenanceEndpointUsage, RuntimeMetadata,
-        SessionId, SessionSummary, ShellKind,
+        ProvenanceDomainLabel, ProvenanceEdgeSemantics, ProvenanceEndpointKind,
+        ProvenanceEndpointUsage, RuntimeMetadata, SessionId, SessionSummary, ShellKind,
     };
 
     fn sample_request(sequence_no: u64, command: &str) -> CheckRequest {
@@ -191,6 +248,39 @@ mod tests {
 
     fn built_in_registry() -> ProfileRegistry {
         ProfileRegistry::built_in().expect("expected built-in registry to load")
+    }
+
+    fn curl_fetch_request_scope() -> ProvenanceDomainLabel {
+        ProvenanceDomainLabel::EndpointInputScope {
+            slots: [
+                "data_operand",
+                "data_file",
+                "literal_data",
+                "urlencoded_operand",
+                "urlencode_file",
+                "form_operand",
+                "form_file",
+                "upload_payload",
+                "binary_file_source",
+                "upload_literal",
+                "upload_file_operand",
+                "upload_file_source",
+                "cookie_operand",
+                "cookie_file",
+                "cookie_value",
+                "request_header_operand",
+                "request_header_file",
+                "request_value",
+                "query_operand",
+                "query_file",
+                "netrc_file",
+                "endpoint",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            stdin: false,
+        }
     }
 
     fn run_pass(summary: &SessionSummary, sequence_no: u64, command: &str) -> RunnerContext {
@@ -233,7 +323,7 @@ mod tests {
                         consume_kind: ProvenanceConsumeKind::NetworkEndpoint,
                         slot_name: Some("endpoint".to_string()),
                         normalized_command_name: Some("curl".to_string()),
-                        domain_label: None,
+                        domain_label: Some(curl_fetch_request_scope()),
                     },
                 })
         );
@@ -268,7 +358,7 @@ mod tests {
                         consume_kind: ProvenanceConsumeKind::NetworkEndpoint,
                         slot_name: Some("endpoint".to_string()),
                         normalized_command_name: Some("curl".to_string()),
-                        domain_label: None,
+                        domain_label: Some(curl_fetch_request_scope()),
                     },
                 })
         );

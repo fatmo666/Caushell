@@ -229,17 +229,26 @@ pub fn collect_dispatch_command_projection(
                             .clear_environment_when
                             .iter()
                             .any(|m| invocation.applied_modifiers.contains(m)),
-                        unknown_environment: target
-                            .unknown_environment_when
-                            .iter()
-                            .any(|m| invocation.applied_modifiers.contains(m)),
+                        unknown_environment: target.unknown_environment
+                            || target
+                                .unknown_environment_when
+                                .iter()
+                                .any(|m| invocation.applied_modifiers.contains(m)),
                         unknown_environment_from: target.unknown_environment_from.clone(),
                         unknown_environment_names: target.unknown_environment_names.clone(),
                         unset_environment: environment_removals(invocation, target, &mut next_span),
                         working_directory: DispatchWorkingDirectory::Inherit,
-                        stdin_from_parent: target.stdin_from_parent,
+                        stdin_from_parent: target.stdin_from_parent
+                            || target
+                                .stdin_from_parent_when
+                                .iter()
+                                .any(|m| invocation.applied_modifiers.contains(m)),
                         stdin_from_tool: target.stdin_from_tool,
-                        stdout_to_parent: target.stdout_to_parent,
+                        stdout_to_parent: target.stdout_to_parent
+                            || target
+                                .stdout_to_parent_when
+                                .iter()
+                                .any(|m| invocation.applied_modifiers.contains(m)),
                     });
                 }
             }
@@ -313,10 +322,11 @@ pub fn collect_dispatch_command_projection(
                 .clear_environment_when
                 .iter()
                 .any(|modifier| invocation.applied_modifiers.contains(modifier)),
-            unknown_environment: target
-                .unknown_environment_when
-                .iter()
-                .any(|modifier| invocation.applied_modifiers.contains(modifier)),
+            unknown_environment: target.unknown_environment
+                || target
+                    .unknown_environment_when
+                    .iter()
+                    .any(|modifier| invocation.applied_modifiers.contains(modifier)),
             unknown_environment_from: target.unknown_environment_from.clone(),
             unknown_environment_names: target.unknown_environment_names.clone(),
             unset_environment: environment_removals(
@@ -324,9 +334,17 @@ pub fn collect_dispatch_command_projection(
                 target,
                 &mut next_synthetic_span_byte,
             ),
-            stdin_from_parent: target.stdin_from_parent,
+            stdin_from_parent: target.stdin_from_parent
+                || target
+                    .stdin_from_parent_when
+                    .iter()
+                    .any(|m| invocation.applied_modifiers.contains(m)),
             stdin_from_tool: target.stdin_from_tool,
-            stdout_to_parent: target.stdout_to_parent,
+            stdout_to_parent: target.stdout_to_parent
+                || target
+                    .stdout_to_parent_when
+                    .iter()
+                    .any(|m| invocation.applied_modifiers.contains(m)),
         });
     }
 
@@ -633,6 +651,7 @@ mod tests {
 
     fn dispatch_effect(command: &str, argv: &[&str], environment: &[&str]) -> Effect {
         Effect {
+            input_scope: None,
             kind: EffectKind::DispatchCommand,
             path_access: None,
             path_scope: None,
@@ -647,17 +666,21 @@ mod tests {
                 unset_environment: Vec::new(),
                 unset_environment_when: Vec::new(),
                 unknown_environment_when: Vec::new(),
+                unknown_environment: false,
                 unknown_environment_from: Vec::new(),
                 unknown_environment_names: Vec::new(),
                 stdin_from_parent: false,
                 stdin_from_tool: false,
                 stdout_to_parent: false,
+                stdin_from_parent_when: Vec::new(),
+                stdout_to_parent_when: Vec::new(),
             }),
             interactive_escape_surface: None,
             catastrophic: Default::default(),
             host_risk: Default::default(),
             repository_operation: None,
             database_operation: None,
+            state_operation: None,
             terminal_session_operation: None,
             shell_job_operation: None,
             extensions: Default::default(),

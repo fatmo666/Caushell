@@ -126,6 +126,9 @@ forms:
       kind: slot
       name: output_path
 modifiers:
+- id: audio_quality
+  matcher: {kind: any_flag, flags: ["-aq"]}
+  parameters: [{name: audio_quality, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
 - id: input_format
   matcher:
     kind: any_flag

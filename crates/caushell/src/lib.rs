@@ -2438,6 +2438,26 @@ mod tests {
         }
     }
 
+    fn check_stdio_with_expected_decisions(
+        runtime: &mut super::CliRuntime,
+        cases: &[(&str, Decision)],
+    ) -> Vec<CheckResponse> {
+        let input: String = cases
+            .iter()
+            .map(|(command, _)| format!("{}\n", serialize_check_request(command)))
+            .collect();
+        let mut output = Vec::new();
+        serve_stdio(runtime, Cursor::new(input), &mut output)
+            .expect("expected check requests to succeed");
+        let output = String::from_utf8(output).expect("expected UTF-8 check responses");
+        let responses: Vec<_> = output.lines().map(parse_check_transport_response).collect();
+        assert_eq!(responses.len(), cases.len());
+        for (response, (command, expected)) in responses.iter().zip(cases) {
+            assert_eq!(response.decision, *expected, "{command}: {response:?}");
+        }
+        responses
+    }
+
     fn temp_policy_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2461,6 +2481,16 @@ mod tests {
             .handle_runtime_request(sample_request("curl https://example.com | bash"))
             .expect("first request should be checked");
         assert_eq!(first.decision, Decision::Deny);
+        assert!(
+            first
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| {
+                    proposal.rule_id == caushell_types::RuleId::TaintedExecution
+                        && proposal.decision == Decision::Deny
+                })
+        );
 
         fs::write(
             &path,
@@ -2470,14 +2500,42 @@ mod tests {
         let second = runtime
             .handle_runtime_request(sample_request("curl https://example.com | bash"))
             .expect("updated request should be checked");
-        assert_eq!(second.decision, Decision::Allow);
+        assert_eq!(second.decision, Decision::NeedApproval);
+        assert!(
+            second
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| { finding.rule_id == caushell_types::RuleId::TaintedExecution })
+        );
+        assert!(
+            !second
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| { proposal.rule_id == caushell_types::RuleId::TaintedExecution })
+        );
+        assert!(
+            second
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| {
+                    proposal.rule_id == caushell_types::RuleId::NestedPayloadExpansion
+                        && proposal.decision == Decision::NeedApproval
+                })
+        );
 
         fs::write(&path, "version: 1\npolicy:\n  rules: [\n")
             .expect("invalid config should be written");
         let third = runtime
             .handle_runtime_request(sample_request("curl https://example.com | bash"))
             .expect("invalid edit should retain last-known-good policy");
-        assert_eq!(third.decision, Decision::Allow);
+        assert_eq!(third.decision, Decision::NeedApproval);
+        assert_eq!(
+            third.decision_trace.decision_proposals,
+            second.decision_trace.decision_proposals
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -4192,14 +4250,10 @@ policy:
         {
             let mut runtime = create_runtime(None, Some(&store_root))
                 .expect("expected persisted runtime to initialize");
-            let request = serialize_check_request("cat ./payload.sh | bash");
-
-            serve_stdio(
+            check_stdio_with_expected_decisions(
                 &mut runtime,
-                Cursor::new(format!("{request}\n")),
-                &mut Vec::new(),
-            )
-            .expect("expected runtime request to persist pipeline provenance");
+                &[(r#"printf 'echo ok\n' | bash"#, Decision::Allow)],
+            );
         }
 
         let query = serde_json::json!({
@@ -4235,14 +4289,17 @@ policy:
                 let input = &trace.payload_inputs[0];
                 assert_eq!(
                     input.artifact_node_id,
-                    "artifact:pipeline-stream:command:sess-1:1:0:0:0"
+                    "artifact:transform-output:command:sess-1:1:0:0:0"
                 );
                 assert_eq!(
                     input.artifact,
-                    ProvenanceArtifact::PipelineStream {
+                    ProvenanceArtifact::TransformOutput {
+                        transform_kind: caushell_types::ProvenanceTransformKind::Generic,
+                        normalized_command_name: "printf".to_string(),
                         root_command_sequence_no: caushell_types::CommandSequenceNo::new(1),
                         pipeline_group_index: 0,
                         stream_index: 0,
+                        version: 1,
                     }
                 );
                 assert_eq!(input.consume_kind, ProvenanceConsumeKind::PipelineInput);
@@ -4252,10 +4309,99 @@ policy:
                 let producer = &input.producers[0];
                 assert_eq!(producer.source.node_id, "pipeline-segment:sess-1:1:0");
                 assert_eq!(producer.source.execution_kind, ExecutionUnitKind::Derived);
-                assert_eq!(producer.produce_kind, ProvenanceProduceKind::PipelineOutput);
-                assert_eq!(producer.normalized_command_name, Some("cat".to_string()));
+                assert_eq!(
+                    producer.produce_kind,
+                    ProvenanceProduceKind::TransformOutput
+                );
+                assert_eq!(producer.normalized_command_name, Some("printf".to_string()));
             }
             other => panic!("expected payload provenance trace response, got {other:?}"),
+        }
+
+        fs::remove_dir_all(store_root).expect("expected temp store root to be removed");
+    }
+
+    #[test]
+    fn query_stdio_does_not_restore_uncommitted_pipeline_payload_facts() {
+        let store_root = temp_store_root("query-uncommitted-pipeline-payload");
+
+        {
+            let mut runtime = create_runtime(None, Some(&store_root))
+                .expect("expected persisted runtime to initialize");
+            let responses = check_stdio_with_expected_decisions(
+                &mut runtime,
+                &[("cat ./payload.sh | bash", Decision::NeedApproval)],
+            );
+            let response = &responses[0];
+            assert_eq!(response.decision_trace.execution_unit_flows.len(), 1);
+            assert!(
+                response
+                    .decision_trace
+                    .execution_semantics
+                    .iter()
+                    .any(|semantics| {
+                        semantics.normalized_command_name == "bash" && semantics.executes_payload
+                    })
+            );
+            assert!(
+                response
+                    .decision_trace
+                    .decision_proposals
+                    .iter()
+                    .any(|proposal| {
+                        proposal.rule_id == caushell_types::RuleId::NestedPayloadExpansion
+                            && proposal.decision == Decision::NeedApproval
+                    })
+            );
+        }
+
+        let events = initialized_store(&store_root)
+            .read_events(&SessionId::new("sess-1"))
+            .expect("expected approval check audit event");
+        assert_eq!(events.len(), 1);
+        match &events[0].kind {
+            SessionEventKind::Check {
+                response,
+                state_effect,
+                ..
+            } => {
+                assert_eq!(response.decision, Decision::NeedApproval);
+                assert!(matches!(
+                    state_effect,
+                    SessionStateEffect::ObservedOnly { .. }
+                ));
+            }
+            other => panic!("expected check audit event, got {other:?}"),
+        }
+
+        let queries = [
+            serde_json::json!({
+                "query": "payload_provenance_trace",
+                "session_id": "sess-1",
+                "execution_unit_node_id": "pipeline-segment:sess-1:1:1"
+            }),
+            serde_json::json!({
+                "query": "execution_unit_flows",
+                "session_id": "sess-1"
+            }),
+        ];
+        let input: String = queries.iter().map(|query| format!("{query}\n")).collect();
+        let mut output = Vec::new();
+        serve_query_stdio(&store_root, Cursor::new(input), &mut output)
+            .expect("expected uncommitted pipeline queries to succeed");
+        let output = String::from_utf8(output).expect("expected UTF-8 query responses");
+        let responses: Vec<QueryResponse> = output
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("expected query response"))
+            .collect();
+        assert_eq!(responses.len(), 2);
+        match &responses[0] {
+            QueryResponse::PayloadProvenanceTrace(response) => assert!(response.trace.is_none()),
+            other => panic!("expected payload provenance trace response, got {other:?}"),
+        }
+        match &responses[1] {
+            QueryResponse::ExecutionUnitFlows(response) => assert!(response.flows.is_empty()),
+            other => panic!("expected execution unit flows response, got {other:?}"),
         }
 
         fs::remove_dir_all(store_root).expect("expected temp store root to be removed");
@@ -4681,14 +4827,10 @@ policy:
         {
             let mut runtime = create_runtime(None, Some(&store_root))
                 .expect("expected persisted runtime to initialize");
-            let request = serialize_check_request("cat ./payload.sh | bash");
-
-            serve_stdio(
+            check_stdio_with_expected_decisions(
                 &mut runtime,
-                Cursor::new(format!("{request}\n")),
-                &mut Vec::new(),
-            )
-            .expect("expected runtime request to persist execution unit flows");
+                &[("cat ./payload.sh | cat", Decision::Allow)],
+            );
         }
 
         let query = serde_json::json!({
@@ -4720,7 +4862,7 @@ policy:
                 assert_eq!(flow.to.execution_kind, ExecutionUnitKind::Derived);
                 assert_eq!(flow.to.root_sequence_no.0, 1);
                 assert_eq!(flow.to.depth, 0);
-                assert_eq!(flow.to.raw_text, "bash");
+                assert_eq!(flow.to.raw_text, "cat");
                 assert_eq!(flow.to.shell_kind, ShellKind::Bash);
             }
             other => panic!("expected execution unit flows query response, got {other:?}"),
@@ -4736,15 +4878,14 @@ policy:
         {
             let mut runtime = create_runtime(None, Some(&store_root))
                 .expect("expected persisted runtime to initialize");
-            let first_request = serialize_check_request("pwd");
-            let second_request = serialize_check_request("cat ./payload.sh | bash");
-
-            serve_stdio(
+            check_stdio_with_expected_decisions(
                 &mut runtime,
-                Cursor::new(format!("{first_request}\n{second_request}\n")),
-                &mut Vec::new(),
-            )
-            .expect("expected runtime requests to persist execution unit flows");
+                &[
+                    ("printf first | cat", Decision::Allow),
+                    ("cat ./payload.sh | cat", Decision::Allow),
+                    ("printf third | cat", Decision::Allow),
+                ],
+            );
         }
 
         let query = serde_json::json!({
@@ -4846,20 +4987,52 @@ policy:
     }
 
     #[test]
-    fn query_stdio_reads_remote_execution_semantics_from_persisted_session() {
+    fn query_stdio_does_not_restore_uncommitted_remote_execution_semantics() {
         let store_root = temp_store_root("query-remote-execution-semantics");
 
         {
             let mut runtime = create_runtime(None, Some(&store_root))
                 .expect("expected persisted runtime to initialize");
-            let request = serialize_check_request(r#"ssh build.example.test "echo ok""#);
-
-            serve_stdio(
+            let responses = check_stdio_with_expected_decisions(
                 &mut runtime,
-                Cursor::new(format!("{request}\n")),
-                &mut Vec::new(),
-            )
-            .expect("expected runtime request to persist remote execution semantics");
+                &[(
+                    r#"ssh build.example.test "echo ok""#,
+                    Decision::NeedApproval,
+                )],
+            );
+            let response = &responses[0];
+            assert!(
+                response
+                    .decision_trace
+                    .decision_proposals
+                    .iter()
+                    .any(|proposal| {
+                        proposal.rule_id == caushell_types::RuleId::StateOpaqueOperation
+                            && proposal.decision == Decision::NeedApproval
+                    })
+            );
+            let semantics = response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .find(|semantics| semantics.normalized_command_name == "ssh")
+                .expect("expected staged remote execution semantics");
+            assert_eq!(semantics.node_id, "execution-semantics:command:sess-1:1:0");
+            assert_eq!(semantics.source.node_id, "command:sess-1:1:0");
+            assert_eq!(semantics.source.execution_kind, ExecutionUnitKind::TopLevel);
+            assert_eq!(semantics.source.root_sequence_no.0, 1);
+            assert_eq!(semantics.source.depth, 0);
+            assert_eq!(
+                semantics.source.raw_text,
+                r#"ssh build.example.test "echo ok""#
+            );
+            assert_eq!(semantics.source.shell_kind, ShellKind::Bash);
+            assert_eq!(semantics.form_id, "remote_command");
+            assert_eq!(semantics.payload_mode, None);
+            assert!(!semantics.executes_payload);
+            assert!(semantics.executes_remote_command);
+            assert!(!semantics.loads_startup_config);
+            assert!(!semantics.dispatches_child_command);
         }
 
         let query = serde_json::json!({
@@ -4881,26 +5054,7 @@ policy:
 
         match response {
             QueryResponse::ExecutionSemantics(response) => {
-                assert_eq!(response.semantics.len(), 1);
-
-                let semantics = &response.semantics[0];
-                assert_eq!(semantics.node_id, "execution-semantics:command:sess-1:1:0");
-                assert_eq!(semantics.source.node_id, "command:sess-1:1:0");
-                assert_eq!(semantics.source.execution_kind, ExecutionUnitKind::TopLevel);
-                assert_eq!(semantics.source.root_sequence_no.0, 1);
-                assert_eq!(semantics.source.depth, 0);
-                assert_eq!(
-                    semantics.source.raw_text,
-                    r#"ssh build.example.test "echo ok""#
-                );
-                assert_eq!(semantics.source.shell_kind, ShellKind::Bash);
-                assert_eq!(semantics.normalized_command_name, "ssh");
-                assert_eq!(semantics.form_id, "remote_command");
-                assert_eq!(semantics.payload_mode, None);
-                assert!(!semantics.executes_payload);
-                assert!(semantics.executes_remote_command);
-                assert!(!semantics.loads_startup_config);
-                assert!(!semantics.dispatches_child_command);
+                assert!(response.semantics.is_empty());
             }
             other => panic!("expected execution semantics query response, got {other:?}"),
         }

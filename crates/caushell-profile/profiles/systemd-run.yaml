@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+opaque_on_unresolved: true
+option_scope: leading_options
 
 identity:
   canonical_name: systemd-run
@@ -16,13 +18,13 @@ platform:
   requires_features: []
 
 forms:
-  - id: wrapped_command
+  - id: service_command
     selector:
       kind: all
       items:
-        - kind: has_positional_at
-          index: 0
-        - kind: not
+        - &has_command {kind: has_positional_at, index: 0}
+        - &not_help
+          kind: not
           item:
             kind: any
             items:
@@ -32,7 +34,14 @@ forms:
                 flag: "--help"
               - kind: has_flag
                 flag: "--version"
-    parameters:
+        - {kind: not, item: {kind: has_modifier, modifier: scope}}
+        - {kind: not, item: {kind: has_modifier, modifier: same_dir}}
+        - &no_directory_conflict
+          kind: not
+          item:
+            kind: all
+            items: [{kind: has_modifier, modifier: directory}, {kind: has_modifier, modifier: property}]
+    parameters: &command_parameters
       - name: wrapped_command
         semantic:
           kind: command_ref
@@ -46,33 +55,130 @@ forms:
         binding:
           kind: remaining_args
         cardinality: optional_many
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '(?s)^.*\$.*$', group: 0}
+              unless_parameter_matches: {name: expansion_mode, matcher: {kind: regex_pattern, pattern: '^(0|n|no|f|false|off)$'}}
+              target:
+                name: tool_expansion
+                semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+                unresolved: true
     effects:
+      - kind: set_execution_working_directory
+        target: &service_directory
+          kind: configured_path
+          sources:
+            - {slot: service_directory_option, projection: {kind: identity}}
+            - {slot: service_directory_property, projection: {kind: identity}}
+          missing: unknown
       - kind: dispatch_command
-        target:
+        target: &service_dispatch
           kind: dispatch
           command: wrapped_command
           argv:
             - wrapped_args
-          environment: []
+          environment: [scoped_environment]
+          unknown_environment: true
+          stdin_from_parent_when: [pipe, pty]
+          stdout_to_parent_when: [pipe, pty]
+      - &unresolved_property {kind: execute_payload, target: {kind: slot, name: unresolved_property}}
+      - &unresolved_tool_expansion {kind: execute_payload, target: {kind: slot, name: tool_expansion}}
+
+  - id: service_same_directory
+    selector:
+      kind: all
+      items:
+        - *has_command
+        - *not_help
+        - {kind: not, item: {kind: has_modifier, modifier: scope}}
+        - {kind: has_modifier, modifier: same_dir}
+        # Both spellings share a native last-option-wins state. Do not choose
+        # a static precedence that loses argv ordering.
+        - {kind: not, item: {kind: has_modifier, modifier: directory}}
+        - {kind: not, item: {kind: has_modifier, modifier: property}}
+    parameters: *command_parameters
+    effects:
+      - {kind: dispatch_command, target: *service_dispatch}
+      - *unresolved_tool_expansion
+
+  - id: scope_command
+    selector:
+      kind: all
+      items:
+        - *has_command
+        - *not_help
+        - {kind: has_modifier, modifier: scope}
+        - {kind: not, item: {kind: has_modifier, modifier: pipe}}
+        - {kind: not, item: {kind: has_modifier, modifier: pty}}
+        - *no_directory_conflict
+        - {kind: not, item: {kind: all, items: [{kind: has_modifier, modifier: same_dir}, {kind: has_modifier, modifier: directory}]}}
+    parameters: *command_parameters
+    effects:
+      - kind: set_execution_working_directory
+        target: {kind: configured_path, sources: [{slot: service_directory_option, projection: {kind: identity}}], missing: skip}
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: wrapped_command
+          argv: [wrapped_args]
+          environment: [scoped_environment]
+          stdin_from_parent: true
+          stdout_to_parent: true
+      - *unresolved_property
+      - *unresolved_tool_expansion
+
+  - id: help_or_version
+    selector: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
 
 modifiers:
   - id: mode
     matcher:
       kind: any_flag
       flags:
-        - "--scope"
         - "--user"
         - "--system"
         - "--wait"
-        - "--pty"
-        - "--pipe"
         - "--collect"
         - "--remain-after-exit"
         - "--send-sighup"
         - "--quiet"
         - "--no-block"
         - "--no-ask-password"
-        - "--same-dir"
+
+  - id: scope
+    matcher: {kind: any_flag, flags: ["--scope"]}
+  - id: same_dir
+    matcher: {kind: any_flag, flags: ["--same-dir", "-d"]}
+  - id: pipe
+    matcher: {kind: any_flag, flags: ["--pipe", "-P"]}
+  - id: pty
+    matcher: {kind: any_flag, flags: ["--pty", "-t", "--pty-late", "-T"]}
+  - id: expansion
+    matcher: {kind: any_flag, flags: ["--expand-environment"]}
+    parameters:
+      - {name: expansion_mode, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+
+  - id: directory
+    matcher: {kind: any_flag, flags: ["--working-directory"]}
+    parameters:
+      - name: working_directory
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '^([^%$~]*)$', group: 1}
+              target: {name: service_directory_option, semantic: {kind: plain_value}}
+          fallback: {name: service_directory_option, semantic: {kind: plain_value}, unresolved: true}
+
+  - id: environment
+    matcher: {kind: any_flag, flags: ["-E", "--setenv"]}
+    parameters:
+      - name: scoped_environment
+        semantic: {kind: structured_value, context: env_assignment}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
 
   - id: unit
     matcher:
@@ -85,7 +191,6 @@ modifiers:
         - "--uid"
         - "--gid"
         - "--nice"
-        - "--working-directory"
     parameters:
       - name: option_value
         semantic:
@@ -101,17 +206,29 @@ modifiers:
       flags:
         - "-p"
         - "--property"
-        - "--timer-property"
-        - "-E"
-        - "--setenv"
     parameters:
-      - name: option_value
+      - name: property_values
         semantic:
           kind: plain_value
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '^WorkingDirectory=(-.*)$', group: 1}
+              target: {name: service_directory_property, semantic: {kind: plain_value}, unresolved: true}
+            - matcher: {kind: keyword_value, keyword: WorkingDirectory, unresolved_markers: ['~', '%', '$']}
+              target: {name: service_directory_property, semantic: {kind: plain_value}}
+          fallback:
+            name: unresolved_property
+            semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+            unresolved: true
+
+  - id: timer_property
+    matcher: {kind: any_flag, flags: ["--timer-property"]}
+    parameters:
+      - {name: timer_property, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
 
   - id: timer
     matcher:
@@ -148,4 +265,6 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - This profile models transient-unit command launch and common options that shift the command position; unit file side effects are not expanded beyond child command dispatch.
+    - Service defaults are manager-owned; unspecified working directory and inherited service environment remain unknown without dynamic probing.
+    - Only WorkingDirectory unit properties are decoded; other property-driven execution changes remain unresolved. Mixed cwd declarations are not assigned invented precedence.
+    - Bare -E NAME forwarding remains unknown in service mode. Native argv environment expansion is not shell syntax; dollar-bearing tool arguments remain unresolved unless the last explicit expansion control is known disabled.

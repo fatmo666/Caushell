@@ -62,7 +62,14 @@ fn declarations(
                 && name != "++"
                 && !name.contains('=')
                 && !name.chars().any(char::is_whitespace);
-            if !short && !long && !exact_word {
+            let declared_word = matching == OptionMatchingPolicy::DeclaredShortWords
+                && name.starts_with('-')
+                && !name.starts_with("--")
+                && (1..=2).contains(&(name.len() - 1))
+                && name[1..]
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"@!$".contains(&c));
+            if !short && !long && !exact_word && !declared_word {
                 return Err(format!(
                     "leading_options: unsupported option spelling {name:?}; declare one-character short or long options"
                 ));
@@ -71,6 +78,22 @@ fn declarations(
         }
     }
     let mut add = |flag: &str, mode| -> Result<(), String> {
+        if matches!(
+            mode,
+            FlagOperandMode::WordAttached | FlagOperandMode::OptionalWordAttached
+        ) && (matching != OptionMatchingPolicy::ExactNames || flag.starts_with("--"))
+        {
+            return Err(
+                "word_attached requires scoped exact_names single-prefix option words".into(),
+            );
+        }
+        if mode == FlagOperandMode::OptionalShortOctalPrefix
+            && (matching != OptionMatchingPolicy::ShortClusters
+                || flag.len() != 2
+                || !flag.starts_with('-'))
+        {
+            return Err("optional_short_octal_prefix requires a one-character short option and short_clusters matching".into());
+        }
         let Some(existing) = flags.get_mut(flag) else {
             return Err(format!(
                 "leading_options: option {flag:?} must be declared by a modifier"
@@ -135,6 +158,8 @@ pub(crate) fn scan_leading_options(
     matching: OptionMatchingPolicy,
     prefixes: OptionPrefixPolicy,
     permuted: bool,
+    positional_prefix: Option<usize>,
+    operand_matcher: Option<&crate::OptionOperandMatcher>,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: false,
@@ -163,14 +188,31 @@ pub(crate) fn scan_leading_options(
         .map(|flag| flag.as_str())
         .collect();
     while index < scope.end_index {
+        if positional_prefix.is_some() {
+            let structure = crate::argument_structure(&projection.args[index]);
+            // This grammar's boundary is counted in actual argv fields, not
+            // source words. Dynamic option words/field width cannot certify it.
+            result.ownership_unresolved |= !structure.exact;
+        }
         let token = projection.args[index].text.as_str();
         if prefixes.is_terminator(token) {
             result.terminator = Some(index);
             result.scope.end_index = index + 1;
             return result;
         }
-        if !prefixes.is_option(token) {
+        if !prefixes.is_option(token)
+            || operand_matcher.is_some_and(|grammar| match &grammar.regex {
+                Some(regex) => regex
+                    .regex()
+                    .find(token)
+                    .is_some_and(|m| m.start() == 0 && m.end() == token.len()),
+                None => crate::bind::argument_matches_value_matcher(token, &grammar.matcher),
+            })
+        {
             if let Some(positionals) = &mut result.positionals {
+                if positional_prefix.is_some_and(|limit| positionals.len() >= limit) {
+                    break;
+                }
                 positionals.push(index);
                 index += 1;
                 result.scope.end_index = index;
@@ -196,25 +238,80 @@ pub(crate) fn scan_leading_options(
                     token_flags.push(FlagName::new(token));
                     Ok((*mode, false, true))
                 }
-                None => Err(format!("unknown leading option {token:?}")),
+                None => {
+                    // An explicit attached grammar may extend only its own
+                    // declared word. Exact flag-only names win above; among
+                    // attached words the longest declaration owns the suffix.
+                    let matched = declarations
+                        .iter()
+                        .filter(|(name, mode)| {
+                            matches!(
+                                mode,
+                                Some(
+                                    FlagOperandMode::WordAttached
+                                        | FlagOperandMode::OptionalWordAttached
+                                )
+                            ) && token.starts_with(name.as_str())
+                                && token.len() > name.len()
+                        })
+                        .max_by_key(|(name, _)| name.len());
+                    match matched {
+                        Some((name, mode)) => {
+                            token_flags.push(FlagName::new(name));
+                            Ok((*mode, true, true))
+                        }
+                        None => Err(format!("unknown leading option {token:?}")),
+                    }
+                }
             }
         } else {
             let mut mode = None;
             let mut inline = false;
             let mut error = None;
-            for (offset, ch) in token[1..].char_indices() {
-                let name = format!("{}{ch}", &token[..1]);
+            let mut offset = 1;
+            while offset < token.len() {
+                let ch = token[offset..]
+                    .chars()
+                    .next()
+                    .expect("nonempty short option suffix");
+                let name = if matching == OptionMatchingPolicy::DeclaredShortWords {
+                    declarations
+                        .keys()
+                        .filter(|name| {
+                            !name.starts_with("--")
+                                && name.starts_with(&token[..1])
+                                && token[offset..].starts_with(&name[1..])
+                        })
+                        .max_by_key(|name| name.len())
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}{ch}", &token[..1]))
+                } else {
+                    format!("{}{ch}", &token[..1])
+                };
                 let Some(flag_mode) = declarations.get(&name) else {
                     error = Some(format!("unknown leading option {name:?} in {token:?}"));
                     break;
                 };
+                if *flag_mode == Some(FlagOperandMode::OptionalShortOctalPrefix)
+                    && token_flags.contains(&FlagName::new(&name))
+                {
+                    error = Some(format!(
+                        "repeated numeric-prefix option {name:?} in one short token is unresolved"
+                    ));
+                    break;
+                }
                 token_flags.push(FlagName::new(&name));
+                offset += name.len() - 1;
                 if ends_scope.contains(name.as_str()) && flag_mode.is_none() {
                     break;
                 }
                 if flag_mode.is_some() {
+                    if *flag_mode == Some(FlagOperandMode::OptionalShortOctalPrefix) {
+                        offset += octal_prefix_len(&token[offset..]);
+                        continue;
+                    }
                     mode = *flag_mode;
-                    inline = offset + ch.len_utf8() < token.len() - 1;
+                    inline = offset < token.len();
                     break;
                 }
             }
@@ -243,6 +340,8 @@ pub(crate) fn scan_leading_options(
                         mode,
                         Some(
                             FlagOperandMode::NextArg
+                                | FlagOperandMode::WordAttached
+                                | FlagOperandMode::OptionalWordAttached
                                 | FlagOperandMode::OptionalNextArg
                                 | FlagOperandMode::InlineOrShortAttached
                                 | FlagOperandMode::OptionalInlineOrShortAttached
@@ -289,6 +388,13 @@ pub(crate) fn scan_leading_options(
             result.error = Some(format!("missing operand for {token:?}"));
             return result;
         }
+        if positional_prefix.is_some() {
+            result.ownership_unresolved |= projection.args[index + 1..index + 1 + extra]
+                .iter()
+                .any(|arg| {
+                    crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne
+                });
+        }
         index += 1 + extra;
         result.scope.end_index = index;
         if ends {
@@ -296,4 +402,11 @@ pub(crate) fn scan_leading_options(
         }
     }
     result
+}
+
+pub(crate) fn octal_prefix_len(value: &str) -> usize {
+    value
+        .bytes()
+        .take_while(|ch| matches!(ch, b'0'..=b'7'))
+        .count()
 }

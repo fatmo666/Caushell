@@ -256,6 +256,7 @@ fn scoped_options(
     forms: &[Form],
     regions: &[crate::ArgumentRegion],
     vocabulary: Option<&crate::ArgumentControlVocabulary>,
+    operand_matcher: Option<&crate::OptionOperandMatcher>,
 ) -> Option<crate::ScopedOptions> {
     if !regions.is_empty() {
         return Some(crate::argument_regions::scan(
@@ -264,7 +265,9 @@ fn scoped_options(
     }
     match policy {
         crate::OptionScopePolicy::AllArguments => None,
-        crate::OptionScopePolicy::LeadingOptions | crate::OptionScopePolicy::PermutedOptions => {
+        crate::OptionScopePolicy::LeadingOptions
+        | crate::OptionScopePolicy::LeadingOptionsWithOperand
+        | crate::OptionScopePolicy::PermutedOptions => {
             Some(crate::option_scope::scan_leading_options(
                 projection,
                 scope,
@@ -272,7 +275,9 @@ fn scoped_options(
                 forms,
                 matching,
                 prefixes,
-                policy == crate::OptionScopePolicy::PermutedOptions,
+                policy != crate::OptionScopePolicy::LeadingOptions,
+                (policy == crate::OptionScopePolicy::LeadingOptionsWithOperand).then_some(1),
+                operand_matcher,
             ))
         }
     }
@@ -361,6 +366,7 @@ pub fn select_invocation<'a>(
         &profile.forms,
         &profile.argument_regions,
         profile.argument_control_vocabulary.as_ref(),
+        profile.option_operand_matcher.as_ref(),
     );
     ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
     let modifiers = if let Some(options) = &option_scope {
@@ -494,7 +500,7 @@ pub fn bind_invocation(
         targets
             .iter()
             .filter(|t| t.modifier.is_none() || !form_suppresses_modifier_effects(selection.form))
-            .map(|t| t.parameter),
+            .map(|t| projection_parameter_context(t, &state)),
     );
     bound.payload_projections = selection.form.payload_projections.clone();
     crate::refresh_payload_projections(&mut bound, None);
@@ -571,8 +577,9 @@ pub fn bind_invocation(
         bound.effects.extend(defaults);
     }
     bound.residuals = residuals;
-    bound.operation_semantics_unresolved =
+    bound.operation_semantics_unresolved |=
         profile.opaque_on_unresolved && !bound.residuals.is_empty();
+    bound.operation_semantics_unresolved |= state.group_binding_unresolved;
     bound
 }
 
@@ -647,7 +654,10 @@ fn collect_unresolved_arguments(
         }
         let positional = state.is_positional(index);
         let unconsumed = !state.consumed[index];
-        let partial_cluster = !positional
+        // Scoped decoding already proved the complete token or retained its
+        // scan error. Do not redo a different lexical grammar on owned words.
+        let partial_cluster = state.option_flag_names.is_none()
+            && !positional
             && selection.option_matching == OptionMatchingPolicy::ShortClusters
             && arg.text.starts_with(['-', '+'])
             && !arg.text.starts_with("--")
@@ -727,6 +737,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 &profile.forms,
                 &profile.argument_regions,
                 profile.argument_control_vocabulary.as_ref(),
+                profile.option_operand_matcher.as_ref(),
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -792,7 +803,9 @@ pub(crate) fn bind_modifier_only_invocation(
     bind_runtime_argument_sources(&mut bound, projection);
     crate::structured_projection::project_parameters(
         &mut bound,
-        targets.iter().map(|t| t.parameter),
+        targets
+            .iter()
+            .map(|t| projection_parameter_context(t, &state)),
     );
 
     let bound_slots: BTreeSet<_> = bound
@@ -910,6 +923,7 @@ fn scan_subcommand_path<'p, 'a>(
         &profile.forms,
         &profile.argument_regions,
         profile.argument_control_vocabulary.as_ref(),
+        profile.option_operand_matcher.as_ref(),
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -970,6 +984,7 @@ fn scan_subcommand_path<'p, 'a>(
             &node.modifiers,
             &node.forms,
             &[],
+            None,
             None,
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
@@ -1701,6 +1716,21 @@ struct ParameterTarget<'a> {
     scope: ArgumentScope,
 }
 
+fn projection_parameter_context<'a>(
+    target: &ParameterTarget<'a>,
+    state: &BindingState<'_, '_>,
+) -> (&'a Parameter, bool) {
+    let flag_present = match &target.parameter.binding {
+        BindingSpec::FollowingMatchedFlag { .. } => target.modifier.is_some(),
+        BindingSpec::FollowingFlag { flag_name, .. } => state
+            .bound_option_occurrences
+            .iter()
+            .any(|(_, name)| name == flag_name),
+        _ => false,
+    };
+    (target.parameter, flag_present)
+}
+
 struct FormConsumptionPreview<'a> {
     form: &'a Form,
     consumed: Vec<bool>,
@@ -1876,6 +1906,19 @@ fn bind_parameter_target(
     state: &mut BindingState<'_, '_>,
     residuals: &mut Vec<Residual>,
 ) -> Option<BoundParameter> {
+    if let BindingSpec::PositionalGroups { group_size, .. } = &target.parameter.binding {
+        if let Some(problem) = state.positional_group_problem(target.scope, *group_size) {
+            state.group_binding_unresolved = true;
+            residuals.push(
+                Residual::new(
+                    ResidualKind::AmbiguousBinding,
+                    residual_surface_for_semantic(&target.parameter.semantic),
+                    problem,
+                )
+                .for_slot(target.parameter.name.as_str()),
+            );
+        }
+    }
     let values = state.bind_parameter_values(target);
 
     if values.is_empty() {
@@ -1964,6 +2007,9 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
         BindingSpec::PositionalAt(index) => {
             format!("unconsumed positional argument at index {index}")
         }
+        BindingSpec::PositionalGroups { group_size, member } => {
+            format!("member {member} of each {group_size}-argument positional group")
+        }
         BindingSpec::RemainingPositionals => {
             "remaining unconsumed positional arguments".to_string()
         }
@@ -2017,11 +2063,13 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
 }
 
 struct BindingState<'p, 'm> {
+    group_binding_unresolved: bool,
     exact_option_words: bool,
     argument_regions: Vec<crate::BoundArgumentRegion>,
     audit_operation_semantics: bool,
     unbound_flag_operands: Vec<usize>,
     modifier_parameter_flags: Vec<ArgumentBindingSource>,
+    bound_option_occurrences: Vec<(usize, FlagName)>,
     flag_operand_indices: Vec<bool>,
     projection: &'p ProjectedInvocation,
     consumed: Vec<bool>,
@@ -2039,12 +2087,14 @@ struct BindingState<'p, 'm> {
 impl<'p, 'm> BindingState<'p, 'm> {
     fn new(projection: &'p ProjectedInvocation) -> Self {
         Self {
+            group_binding_unresolved: false,
             exact_option_words: false,
             argument_regions: Vec::new(),
             projection,
             audit_operation_semantics: false,
             unbound_flag_operands: Vec::new(),
             modifier_parameter_flags: Vec::new(),
+            bound_option_occurrences: Vec::new(),
             flag_operand_indices: Vec::new(),
             consumed: vec![false; projection.args.len()],
             declared_short_flags: BTreeSet::new(),
@@ -2065,12 +2115,14 @@ impl<'p, 'm> BindingState<'p, 'm> {
         modifiers: &[SelectedModifier<'m>],
     ) -> Self {
         let mut state = Self {
+            group_binding_unresolved: false,
             exact_option_words: false,
             argument_regions: Vec::new(),
             projection,
             audit_operation_semantics: false,
             unbound_flag_operands: Vec::new(),
             modifier_parameter_flags: Vec::new(),
+            bound_option_occurrences: Vec::new(),
             flag_operand_indices: Vec::new(),
             consumed: consumed.to_vec(),
             declared_short_flags: BTreeSet::new(),
@@ -2215,6 +2267,12 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 .consume_positional_at(target.scope, *index, value_constraints)
                 .into_iter()
                 .collect(),
+            BindingSpec::PositionalGroups { group_size, member } => self.consume_positional_groups(
+                target.scope,
+                *group_size,
+                *member,
+                value_constraints,
+            ),
             BindingSpec::RemainingPositionals => {
                 self.consume_remaining_positionals(target.scope, value_constraints)
             }
@@ -2374,8 +2432,31 @@ impl<'p, 'm> BindingState<'p, 'm> {
             .map(|modifier| declared_short_modifier_flags(std::slice::from_ref(modifier)))
             .unwrap_or_default();
         let mut saw_positional = false;
-        for index in scope.start_index..scope.end_index {
-            if self.consumed[index] {
+        let owned = owned_occurrences
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter(|(index, name)| {
+                *index >= scope.start_index && *index < scope.end_index && flag_names.contains(name)
+            })
+            .map(|(index, name)| (*index, Some(name)));
+        let legacy_end = if owned_occurrences.is_none() {
+            scope.end_index
+        } else {
+            scope.start_index
+        };
+        let legacy = (scope.start_index..legacy_end).map(|index| (index, None));
+        for (index, occurrence_name) in owned.chain(legacy) {
+            // Independent operand-taking flags can share a proved short token.
+            // Only reuse an occurrence certified by the scoped scanner, once.
+            let unbound_owned = owned_occurrences.as_ref().is_some_and(|occurrences| {
+                occurrences.iter().any(|(i, name)| {
+                    *i == index
+                        && flag_names.contains(name)
+                        && !self.bound_option_occurrences.contains(&(*i, name.clone()))
+                })
+            });
+            if self.consumed[index] && !unbound_owned {
                 continue;
             }
 
@@ -2403,11 +2484,29 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 continue;
             };
             let Some((matched_flag_name, flag_match)) = flag_names.iter().find_map(|flag_name| {
+                if occurrence_name.is_some_and(|name| name != flag_name) {
+                    return None;
+                }
+                if self
+                    .bound_option_occurrences
+                    .contains(&(index, flag_name.clone()))
+                {
+                    return None;
+                }
                 let flag_match = if let Some(occurrences) = &owned_occurrences {
                     occurrences
                         .iter()
                         .any(|(i, name)| *i == index && name == flag_name)
-                        .then(|| owned_flag_token_binding_match(&flag_text, flag_name.as_str()))
+                        .then(|| {
+                            owned_flag_token_binding_match(
+                                &flag_text,
+                                flag_name.as_str(),
+                                operand_mode,
+                                matching,
+                                index,
+                                self.option_flag_names.as_deref().unwrap_or(occurrences),
+                            )
+                        })
                         .flatten()
                 } else {
                     flag_token_binding_match(
@@ -2459,6 +2558,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 self.modifier_parameter_flags.push(binding_source.clone());
             }
             self.consumed[index] = true;
+            self.bound_option_occurrences
+                .push((index, matched_flag_name.clone()));
 
             let value_count = values.len();
             match flag_match {
@@ -2469,7 +2570,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     if matches!(
                         operand_mode,
                         FlagOperandMode::OptionalInlineOnly
+                            | FlagOperandMode::OptionalWordAttached
                             | FlagOperandMode::OptionalInlineOrShortAttached
+                            | FlagOperandMode::OptionalShortOctalPrefix
                     ) {
                         continue;
                     }
@@ -2483,7 +2586,9 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     }
                     if matches!(
                         operand_mode,
-                        FlagOperandMode::InlineOnly | FlagOperandMode::InlineOrShortAttached
+                        FlagOperandMode::InlineOnly
+                            | FlagOperandMode::InlineOrShortAttached
+                            | FlagOperandMode::WordAttached
                     ) {
                         if self.audit_operation_semantics {
                             self.unbound_flag_operands.push(index);
@@ -2598,8 +2703,11 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 Some(value)
             }
             FlagOperandMode::InlineOnly
+            | FlagOperandMode::WordAttached
+            | FlagOperandMode::OptionalWordAttached
             | FlagOperandMode::OptionalInlineOnly
             | FlagOperandMode::OptionalInlineOrShortAttached
+            | FlagOperandMode::OptionalShortOctalPrefix
             | FlagOperandMode::InlineOrShortAttached => None,
             FlagOperandMode::NextPositionalAfterDashDash => self
                 .consume_positional_after_optional_dashdash(
@@ -2844,6 +2952,92 @@ impl<'p, 'm> BindingState<'p, 'm> {
         }
 
         None
+    }
+
+    fn grouped_positional_indices(&self, scope: ArgumentScope) -> Vec<usize> {
+        (scope.start_index..scope.end_index)
+            .filter(|&index| {
+                self.is_positional(index)
+                    && self.projection.args[index].kind != ProjectedArgKind::DashDash
+                    && !self
+                        .flag_operand_indices
+                        .get(index)
+                        .copied()
+                        .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    fn group_member_has_one_field(&self, scope: ArgumentScope, index: usize) -> bool {
+        let arg = &self.projection.args[index];
+        let structure = crate::argument_structure(arg);
+        structure.fields == crate::ArgumentFieldCount::ExactlyOne
+            && (!structure.may_start_with("-")
+                || structure.exact_value() == Some("-")
+                || self
+                    .positional_separator(scope)
+                    .is_some_and(|separator| index > separator))
+    }
+
+    fn positional_group_problem(&self, scope: ArgumentScope, group_size: usize) -> Option<String> {
+        if !(2..=256).contains(&group_size) {
+            return Some("invalid positional group size".into());
+        }
+        let indices = self.grouped_positional_indices(scope);
+        if indices
+            .iter()
+            .any(|&index| !self.group_member_has_one_field(scope, index))
+        {
+            return Some("positional group membership is unresolved: variable-width argv or option-like tail operand".into());
+        }
+        (indices.len() % group_size != 0).then(|| {
+            format!(
+                "incomplete positional group: {} operands for groups of {group_size}",
+                indices.len()
+            )
+        })
+    }
+
+    fn consume_positional_groups(
+        &mut self,
+        scope: ArgumentScope,
+        group_size: usize,
+        member: usize,
+        value_constraints: &[ValueConstraint],
+    ) -> Vec<BoundValue> {
+        if !(2..=256).contains(&group_size) || member >= group_size {
+            return Vec::new();
+        }
+        let mut values = Vec::new();
+        for (ordinal, index) in self
+            .grouped_positional_indices(scope)
+            .into_iter()
+            .enumerate()
+        {
+            // An expansion can shift every later group's roles. Preserve only
+            // facts before that uncertainty, never invent pair ownership.
+            if !self.group_member_has_one_field(scope, index) {
+                break;
+            }
+            if ordinal % group_size != member || self.consumed[index] {
+                continue;
+            }
+            let arg = &self.projection.args[index];
+            if !argument_satisfies_value_constraints(&arg.text, value_constraints) {
+                continue;
+            }
+            values.push(BoundValue::argument_with_node_kind(
+                arg.text.clone(),
+                arg.quoted,
+                arg.node_kind.clone(),
+                arg.span.clone(),
+                ArgumentBindingSource::Positional {
+                    kind: PositionalBindingSource::PositionalGroups { group_size, member },
+                },
+            ));
+            self.consumed[index] = true;
+        }
+        values
     }
 
     fn consume_remaining_positionals(
@@ -3750,7 +3944,7 @@ fn leading_positional_prefix_len(shape: &InvocationShape, matcher: &ValueMatcher
         .count()
 }
 
-fn argument_matches_value_matcher(text: &str, matcher: &ValueMatcher) -> bool {
+pub(crate) fn argument_matches_value_matcher(text: &str, matcher: &ValueMatcher) -> bool {
     match matcher {
         ValueMatcher::StructuredValueContext(StructuredValueContext::Regex) => regex_matches(text),
         ValueMatcher::StructuredValueContext(StructuredValueContext::EnvAssignment) => {
@@ -3972,19 +4166,53 @@ fn flag_token_binding_match<'a>(
 /// Once the declaration-driven scan has proved an occurrence, its suffix is
 /// operand data even when it resembles another declared flag. Do not rerun
 /// the legacy lexical ambiguity heuristic or inspect another flag's value.
-fn owned_flag_token_binding_match<'a>(token: &'a str, flag: &str) -> Option<FlagTokenMatch<'a>> {
+fn owned_flag_token_binding_match<'a>(
+    token: &'a str,
+    flag: &str,
+    mode: FlagOperandMode,
+    matching: OptionMatchingPolicy,
+    index: usize,
+    occurrences: &[(usize, FlagName)],
+) -> Option<FlagTokenMatch<'a>> {
     if token == flag {
         return Some(FlagTokenMatch::Exact);
     }
     if let Some(value) = inline_long_flag_operand(token, flag) {
         return Some(FlagTokenMatch::LongInlineOperand(value));
     }
+    if matching == OptionMatchingPolicy::DeclaredShortWords {
+        let mut offset = 1;
+        for (_, name) in occurrences.iter().filter(|(i, _)| *i == index) {
+            offset += name.as_str().len() - 1;
+            if name.as_str() == flag {
+                let suffix = token.get(offset..)?;
+                let value = suffix.strip_prefix('=').unwrap_or(suffix);
+                return Some(if suffix.is_empty() {
+                    FlagTokenMatch::Exact
+                } else {
+                    FlagTokenMatch::ShortAttachedOperand(value)
+                });
+            }
+        }
+        return None;
+    }
+    if matches!(
+        mode,
+        FlagOperandMode::WordAttached | FlagOperandMode::OptionalWordAttached
+    ) {
+        return token
+            .strip_prefix(flag)
+            .map(FlagTokenMatch::ShortAttachedOperand);
+    }
     let ch = short_flag_char(flag)?;
     let tail = same_prefix_short_cluster(token, flag)?;
     let (offset, _) = tail
         .char_indices()
         .find(|(_, candidate)| *candidate == ch)?;
-    let value = &tail[offset + ch.len_utf8()..];
+    let mut value = &tail[offset + ch.len_utf8()..];
+    if mode == FlagOperandMode::OptionalShortOctalPrefix {
+        value = &value[..crate::option_scope::octal_prefix_len(value)];
+    }
     Some(if value.is_empty() {
         FlagTokenMatch::Exact
     } else {
@@ -4624,15 +4852,22 @@ mod tests {
 
         let command = artifact.commands.first().expect("expected one command");
         let projection = project_invocation(command, InvocationRuntimeContext::new());
-        let error =
-            select_invocation(&profile, &projection).expect_err("expected no matching form");
-
-        match error {
-            BindError::NoFormMatched { command_name } => {
-                assert_eq!(command_name, "bash");
-            }
-            other => panic!("unexpected bind error: {other:?}"),
-        }
+        let selected =
+            select_invocation(&profile, &projection).expect("expected unknown shell input form");
+        assert_eq!(selected.form.id.as_str(), "shell_input_source_unknown");
+        let bound = bind_invocation(&profile, &projection, &selected);
+        assert!(
+            bound
+                .bound_parameters
+                .iter()
+                .all(|p| p.name.as_str() != "script_path")
+        );
+        assert!(
+            bound
+                .effects
+                .iter()
+                .any(|e| e.kind == EffectKind::LoadConfig)
+        );
     }
 
     #[test]
@@ -4672,18 +4907,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_bash_shape_returns_no_match() {
+    fn empty_bash_shape_retains_an_unknown_executable_input() {
         let profile = built_in_profile("bash");
 
-        let error =
-            select_form(&profile, &InvocationShape::new()).expect_err("expected no matching form");
-
-        match error {
-            BindError::NoFormMatched { command_name } => {
-                assert_eq!(command_name, "bash");
-            }
-            other => panic!("unexpected bind error: {other:?}"),
-        }
+        let form =
+            select_form(&profile, &InvocationShape::new()).expect("unknown shell input form");
+        assert_eq!(form.id.as_str(), "shell_input_source_unknown");
+        assert!(
+            form.effects
+                .iter()
+                .any(|e| e.kind == EffectKind::ExecutePayload)
+        );
     }
 
     #[test]
@@ -4844,7 +5078,7 @@ mod tests {
 
         assert_eq!(selection.form.id.as_str(), "fetch_to_stdout");
         assert_eq!(
-            first_argument_text(find_bound_parameter(&invocation, "output_path")),
+            first_argument_text(find_bound_parameter(&invocation, "output_operand")),
             "-"
         );
         assert_eq!(

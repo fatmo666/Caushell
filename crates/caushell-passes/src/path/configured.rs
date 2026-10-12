@@ -23,8 +23,8 @@ fn last_value(
         .bound_parameters
         .iter()
         .filter(|parameter| parameter.name.as_str() == slot)
-        .flat_map(|parameter| &parameter.values)
-        .filter_map(|value| project_value(projection, value))
+        .flat_map(|parameter| parameter.semantic_values())
+        .filter_map(|value| caushell_profile::project_semantic_value(projection, value))
         .last()
 }
 
@@ -403,6 +403,43 @@ modifiers:
         let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
         assert_eq!(path.resolution.concrete_path(), Some("/work/cache"));
         assert_eq!(bound, original);
+    }
+
+    #[test]
+    fn configured_paths_consume_projected_semantics_not_original_encoded_argv() {
+        let (mut bound, target) =
+            bound("configured-tool --output 'encoded:/wrong' --ini path=/fallback");
+        let parameter = bound
+            .bound_parameters
+            .iter_mut()
+            .find(|p| p.name.as_str() == "output")
+            .unwrap();
+        parameter.projected_values = Some(vec![caushell_profile::ProjectedSemanticValue {
+            source_index: 0,
+            resolution: SemanticValueResolution::Known("/outside/a'$VAR".into()),
+        }]);
+        let original = bound.clone();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
+        assert_eq!(path.resolution.concrete_path(), Some("/outside/a'$VAR"));
+        assert_eq!(bound, original);
+        bound
+            .bound_parameters
+            .iter_mut()
+            .find(|p| p.name.as_str() == "output")
+            .unwrap()
+            .projected_values
+            .as_mut()
+            .unwrap()[0]
+            .resolution = SemanticValueResolution::Unknown(
+            caushell_profile::ProjectionUnknownReason::DynamicArgument,
+        );
+        assert!(
+            resolve_configured_path(&bound, &target, "/work", None, None)
+                .unwrap()
+                .resolution
+                .concrete_path()
+                .is_none()
+        );
     }
 
     #[test]

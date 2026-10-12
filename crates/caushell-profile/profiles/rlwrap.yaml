@@ -129,6 +129,22 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+    effects:
+      - {kind: read_path, target: {kind: slot, name: history_path}}
+      - {kind: write_path, target: {kind: slot, name: history_path}}
+
+  - id: logfile
+    matcher: {kind: any_flag, flags: ["-l", "--logfile"]}
+    parameters:
+      - {name: log_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: write_path, target: {kind: slot, name: log_path}}]
+
+  - id: filter
+    matcher: {kind: any_flag, flags: ["-z", "--filter"]}
+    parameters:
+      - {name: filter_program, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: filter_program}}
 
   - id: command_name
     matcher:
@@ -176,8 +192,6 @@ modifiers:
         - "--set-term-name"
         - "-w"
         - "--wait-before-prompt"
-        - "-z"
-        - "--filter"
     parameters:
       - name: option_value
         semantic:
@@ -202,4 +216,8 @@ modifiers:
         - "--version"
 
 subcommands: null
-extensions: {}
+extensions:
+  caushell.profile/known_limitations:
+    - Filter execution has native directory-prefix and metacharacter-dependent shell rules. Its code source is retained as opaque rather than falsely dispatched as GNU wordsplit argv; wrapped-command argv remains independently modeled.
+  caushell.profile/source_research:
+    - https://github.com/hanslub42/rlwrap/blob/master/src/filter.c

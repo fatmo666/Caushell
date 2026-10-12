@@ -972,8 +972,9 @@ fn collect_top_level_dispatch_derived_commands(
 fn should_skip_generic_dispatch_projection(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> bool {
-    resolved.normalized_command_name.as_str() == "xargs"
-        && resolved.bound.form_id.as_str() == "dispatch_from_stdin"
+    (resolved.normalized_command_name.as_str() == "xargs"
+        && resolved.bound.form_id.as_str() == "dispatch_from_stdin")
+        || parallel_template_slot(&resolved.bound).is_some()
 }
 
 fn materialized_dispatch_child_command_fact(
@@ -2101,6 +2102,98 @@ fn collect_execution_unit_resolve_records(
             max_nested_parse_depth,
         );
 
+        // Native list input is not proof of the launched program's FD 0.
+        // Until that routing is declared, keep an inherited stdin consumer
+        // unresolved. Explicit job redirections and intra-job pipes retain
+        // their ordinary stream analysis. This is semantic uncertainty, not
+        // a command-name risk exception.
+        if entry.inherited_scope.native_template_input.is_some()
+            && crate::support::effective_stdin_source(
+                &entry.parsed_scope,
+                entry.command_ref.command_index,
+            ) == crate::support::EffectiveStdinSource::Inherited
+            && entry
+                .parsed_scope
+                .commands
+                .get(entry.command_ref.command_index)
+                .is_none_or(|command| {
+                    command.pipeline_position.is_none_or(|position| {
+                        matches!(
+                            position,
+                            caushell_parse::PipelinePosition::First
+                                | caushell_parse::PipelinePosition::Only
+                        )
+                    })
+                })
+            && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
+            && resolved.bound.effects.iter().any(|effect| {
+                effect.kind == EffectKind::ConsumeStdin
+                    && match &effect.target {
+                        EffectTarget::Slot(slot) => {
+                            resolved.bound.bound_parameters.iter().any(|p| {
+                                p.name == *slot
+                                    && !p.semantic_values_are_inapplicable()
+                                    && p.semantic_values().next().is_some()
+                            })
+                        }
+                        EffectTarget::ImplicitInput(_) => true,
+                        _ => false,
+                    }
+            })
+        {
+            resolved.bound.operation_semantics_unresolved = true;
+        }
+
+        // Byte recovery is not proof that input provenance survives a shell
+        // variable assignment. Keep known job effects, but do not silently
+        // turn replacement-derived assignments into untainted exact scalars.
+        // Constant assignments, and unrelated commands, do not enter here.
+        if let Some(origin) = &entry.inherited_scope.native_template_input
+            && entry.parsed_scope.raw_command == origin.source_text
+            && entry
+                .parsed_scope
+                .assignment_commands
+                .iter()
+                .flat_map(|command| command.assignments.iter())
+                .chain(
+                    entry
+                        .parsed_scope
+                        .declaration_commands
+                        .iter()
+                        .flat_map(|command| command.assignments.iter()),
+                )
+                .chain(
+                    entry
+                        .parsed_scope
+                        .commands
+                        .iter()
+                        .flat_map(|command| command.prefix_assignments.iter()),
+                )
+                .any(|assignment| {
+                    origin.data_ranges.iter().any(|range| {
+                        assignment.value.span.start_byte < range.end
+                            && range.start < assignment.value.span.end_byte
+                    })
+                })
+            && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
+        {
+            resolved.bound.operation_semantics_unresolved = true;
+        }
+
+        if let Some(origin) = &entry.inherited_scope.native_template_input
+            // Synthetic launcher quoting has a different byte coordinate
+            // system. Only the rendered scope or span-preserving dispatch
+            // descendants can be matched to replacement ranges.
+            && (entry.parsed_scope.raw_command == origin.source_text
+                || (entry.origin_kind == ExecutionUnitOriginKind::Dispatch
+                    && entry.parent_execution_node_id != origin.producer_node_id))
+            && let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result
+            && native_template_frame_input_unresolved(resolved, &entry.bindings, origin)
+            && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
+        {
+            resolved.bound.operation_semantics_unresolved = true;
+        }
+
         // Known shell functions are execution payloads, not external commands
         // lacking a Profile (or an executable sharing the function's name).
         // Top-level calls already enter as FunctionExpansion seeds. Derived
@@ -2108,13 +2201,48 @@ fn collect_execution_unit_resolve_records(
         let function_children =
             expanded_function_body_children(registry, request, &entry, max_nested_parse_depth);
         if let Some((name, _, incomplete)) = &function_children {
-            entry.result = if let Some(reason) = incomplete {
+            let native_scope_unresolved = entry
+                .inherited_scope
+                .native_template_input
+                .as_ref()
+                .is_some_and(|origin| {
+                    entry.parsed_scope.raw_command == origin.source_text
+                        && (entry
+                            .parsed_scope
+                            .function_definitions
+                            .iter()
+                            .any(|definition| {
+                                definition.name == *name
+                                    && origin.data_ranges.iter().any(|range| {
+                                        definition.span.start_byte < range.end
+                                            && range.start < definition.span.end_byte
+                                    })
+                            })
+                            || entry
+                                .parsed_scope
+                                .commands
+                                .get(entry.command_ref.command_index)
+                                .is_some_and(|command| {
+                                    command.tokens.iter().any(|token| {
+                                        origin.data_ranges.iter().any(|range| {
+                                            token.span.start_byte < range.end
+                                                && range.start < token.span.end_byte
+                                        })
+                                    })
+                                }))
+                });
+            let reason = incomplete.as_deref().or_else(|| {
+                native_scope_unresolved.then_some(
+                "native replacement input crosses a function scope without proven data provenance"
+            )
+            });
+            entry.result = if let Some(reason) = reason {
                 ResolveInvocationArtifactResult::SelectionError {
                     normalized_command_name: name.clone(),
                     gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
                     error: caushell_profile::BindError::UncertainFunctionBinding {
                         command_name: name.clone(),
-                        reason: reason.clone(),
+                        reason: reason.to_owned(),
                     },
                     partial_bound: None,
                 }
@@ -2228,6 +2356,14 @@ fn collect_execution_unit_resolve_records(
                 resolved,
                 max_nested_parse_depth,
             ));
+            children.extend(expanded_native_parallel_children(
+                registry,
+                session,
+                request,
+                &entry,
+                resolved,
+                max_nested_parse_depth,
+            ));
         }
 
         if frontier_depth < max_nested_parse_depth {
@@ -2259,6 +2395,51 @@ fn collect_execution_unit_resolve_records(
     }
 
     (records, expansion_limit_evidence)
+}
+
+/// Native replacement inputs passed into another shell frame currently lack
+/// scoped variable/positional lineage. This is an explicit modeling boundary,
+/// not a risk decision or a command-name exception. Ordinary wrapper argv keep
+/// their spans and continue through the existing source-slot propagation.
+fn native_template_frame_input_unresolved(
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    bindings: &SessionBindings,
+    origin: &caushell_runner::NativeTemplateInput,
+) -> bool {
+    let overlaps = |span: &caushell_parse::SourceSpan| {
+        origin
+            .data_ranges
+            .iter()
+            .any(|range| span.start_byte < range.end && range.start < span.end_byte)
+    };
+    let parameter_uses_input = |parameter: &BoundParameter| {
+        parameter.values.iter().any(|value| {
+            matches!(
+                value, BoundValue::Argument { span, .. } if overlaps(span)
+            )
+        })
+    };
+    resolved
+        .bound
+        .effects
+        .iter()
+        .any(|effect| match &effect.target {
+            EffectTarget::Dispatch(target) => target.environment.iter().any(|slot| {
+                resolved
+                    .bound
+                    .bound_parameters
+                    .iter()
+                    .any(|parameter| parameter.name == *slot && parameter_uses_input(parameter))
+            }),
+            EffectTarget::Slot(slot) if effect.kind == EffectKind::ExecutePayload => resolved
+                .bound
+                .bound_parameters
+                .iter()
+                .any(|parameter| parameter.name == *slot && parameter_uses_input(parameter)),
+            _ => false,
+        })
+        || shell_payload_from_bound_invocation(resolved, bindings)
+            .is_some_and(|(_, _, arguments)| arguments.iter().any(|arg| overlaps(&arg.span)))
 }
 
 fn expanded_function_body_children(
@@ -3810,6 +3991,380 @@ fn expanded_process_substitution_body_children(
     children
 }
 
+fn exact_bound_slot_values(
+    bound: &caushell_profile::BoundInvocation,
+    slot: &str,
+) -> Option<Vec<String>> {
+    let Some(parameter) = bound
+        .bound_parameters
+        .iter()
+        .find(|p| p.name.as_str() == slot)
+    else {
+        return Some(Vec::new());
+    };
+    parameter
+        .semantic_values()
+        .map(|value| {
+            let resolution = match value {
+                caushell_profile::SemanticValueRef::Original(
+                    caushell_profile::BoundValue::Argument {
+                        text,
+                        quoted,
+                        node_kind,
+                        materialization,
+                        ..
+                    },
+                ) => {
+                    let value = if matches!(
+                        materialization,
+                        caushell_profile::BoundArgumentMaterialization::Literal
+                    ) {
+                        caushell_profile::shell_word_structure(text, *quoted, node_kind)
+                            .exact_value()?
+                            .to_owned()
+                    } else {
+                        text.clone()
+                    };
+                    caushell_profile::SemanticValueResolution::Known(value)
+                }
+                caushell_profile::SemanticValueRef::Original(_) => return None,
+                caushell_profile::SemanticValueRef::Projected { value, .. } => {
+                    value.resolution.clone()
+                }
+            };
+            match resolution {
+                caushell_profile::SemanticValueResolution::Known(value) => Some(value),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn dispatch_argument_scalar(argument: &caushell_profile::DispatchArgument) -> Option<String> {
+    if argument.implicit_input_source.is_some() {
+        return None;
+    }
+    let projected = caushell_profile::ProjectedArg {
+        text: argument.text.clone(),
+        quoted: argument.quoted,
+        node_kind: argument.node_kind.clone(),
+        span: argument.span.clone(),
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: argument.runtime_data,
+        substitution_shape: None,
+        kind: caushell_profile::ProjectedArgKind::Positional,
+    };
+    caushell_profile::argument_structure(&projected)
+        .exact_value()
+        .map(str::to_owned)
+}
+
+fn parallel_template_slot(bound: &caushell_profile::BoundInvocation) -> Option<&str> {
+    bound
+        .effects
+        .iter()
+        .find_map(|effect| match &effect.target {
+            EffectTarget::Dispatch(target) if effect.kind == EffectKind::DispatchCommand => {
+                match &target.command {
+                    caushell_profile::DispatchCommandSource::CommandString {
+                        slot,
+                        syntax: caushell_profile::DispatchStringSyntax::GnuParallel,
+                    } => Some(slot.as_str()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+}
+
+// This uses the same shell-body parser and frontier admission gate as sh -c.
+// It is invoked only by an explicit Profile grammar, not by an argv scan.
+#[allow(clippy::too_many_arguments)]
+fn native_shell_job_children(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    prefix: &str,
+    job_index: usize,
+    source: &str,
+    opaque: bool,
+    max_depth: u8,
+) -> Vec<ExpandedFrontierEntry> {
+    // Parallel actually executes a generated shell -c invocation. Route that
+    // child through the existing interpreter machinery, including assignment
+    // substitutions, cwd replay, positional/environment frames and budgets.
+    let opaque = opaque
+        || !matches!(
+            entry.shell_kind,
+            caushell_types::ShellKind::Bash | caushell_types::ShellKind::Sh
+        );
+    let invocation = if opaque {
+        source.to_owned()
+    } else {
+        let shell = match entry.shell_kind {
+            caushell_types::ShellKind::Bash => "/bin/bash",
+            caushell_types::ShellKind::Sh => "/bin/sh",
+            _ => unreachable!("unsupported native shell is opaque"),
+        };
+        format!(
+            "{shell} -c {}",
+            crate::support::parallel_jobs::quote(source)
+        )
+    };
+    let (mut parsed, unknown_index) = execution_body_scope(
+        &invocation,
+        entry.shell_kind,
+        opaque || entry.depth.saturating_add(1) > max_depth,
+        "native shell job",
+    );
+    if opaque {
+        for diagnostic in &mut parsed.diagnostics {
+            if diagnostic.node_kind == "execution_body" {
+                diagnostic.text = format!("native shell job unresolved: {source}");
+            }
+        }
+    }
+    let parent = crate::support::command_environment_bindings(
+        &entry.bindings,
+        &entry.parsed_scope,
+        &entry.command_ref,
+    );
+    let bindings = parent;
+    let parent_id = expanded_virtual_node_id(prefix, &entry.source_node_id, job_index);
+    parsed
+        .commands
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            let command_bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
+                bindings.clone(),
+                &parsed,
+                command.span.start_byte,
+                request.sequence_no,
+            );
+            ExpandedFrontierEntry {
+                source_node_id: expanded_virtual_node_id("native-shell", &parent_id, index),
+                command_ref: ParsedCommandRef::new(index, command.span.clone()),
+                parsed_scope: parsed.clone(),
+                rendered_command_text: command.text.clone(),
+                result: if unknown_index == Some(index) {
+                    ResolveInvocationArtifactResult::MissingCommandName {
+                        gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                    }
+                } else {
+                    resolve_invocation_artifact_with_bindings(
+                        registry,
+                        command,
+                        runtime_context_for_parsed_command(&parsed, index, command),
+                        &command_bindings,
+                    )
+                },
+                shell_kind: entry.shell_kind,
+                root_command_index: entry.root_command_index,
+                depth: entry.depth.saturating_add(1),
+                parent_execution_node_id: entry.source_node_id.clone(),
+                bindings: command_bindings.clone(),
+                static_payload_scope: StaticPayloadLookupScope {
+                    parsed_scope: parsed.clone(),
+                    command_index: index,
+                    bindings: command_bindings,
+                    scope_base_bindings: bindings.clone(),
+                    stdin_is_parent_output: false,
+                },
+                history_anchor_node_id: entry.history_anchor_node_id.clone(),
+                origin_kind: ExecutionUnitOriginKind::Dispatch,
+                origin_index: index,
+                origin_locator: ExecutionUnitOriginLocator::None,
+                inherited_scope: entry.inherited_scope.clone(),
+            }
+        })
+        .collect()
+}
+
+fn expanded_native_parallel_children(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    max_depth: u8,
+) -> Vec<ExpandedFrontierEntry> {
+    let Some(slot) = parallel_template_slot(&resolved.bound) else {
+        return Vec::new();
+    };
+    let opaque = |reason: &str| {
+        native_shell_job_children(
+            registry, request, entry, "parallel", 0, reason, true, max_depth,
+        )
+    };
+    let Some(mut words) = exact_bound_slot_values(&resolved.bound, slot) else {
+        return opaque("dynamic native job template or source");
+    };
+    if words.iter().any(|w| w.contains('\0'))
+        || words.iter().map(String::len).sum::<usize>() > 64 * 1024
+    {
+        return opaque("native template size budget exceeded");
+    }
+    let parent = crate::support::command_environment_bindings(
+        &entry.bindings,
+        &entry.parsed_scope,
+        &entry.command_ref,
+    );
+    // Known overrides cannot silently be analyzed using the caller shell or
+    // default options. No reading host config files or probing parent processes.
+    for name in ["PARALLEL", "PARALLEL_SHELL"] {
+        if let caushell_profile::EnvironmentValueRef::Present(value) =
+            parent.environment_value(name)
+        {
+            if !matches!(value, SessionValue::ExactScalar(value) if value.is_empty()) {
+                return opaque("native job environment override is unresolved");
+            }
+        }
+    }
+    let delimiter = if has_applied_modifier(&resolved.bound, "null_delimited") {
+        '\0'
+    } else {
+        '\n'
+    };
+    let separator = words.iter().position(|w| w == ":::" || w == "::::");
+    let mut direct_items = None;
+    let evidence = if let Some(position) = separator {
+        if has_applied_modifier(&resolved.bound, "arg_file") {
+            return opaque("multiple native job sources");
+        }
+        let source = words.split_off(position);
+        if source[1..]
+            .iter()
+            .any(|w| matches!(w.as_str(), ":::" | "::::" | ":::+" | "::::+"))
+        {
+            return opaque("multiple native job sources");
+        }
+        if source[0] == ":::" {
+            // ::: is an argv list, not a delimited byte stream. An item
+            // containing a newline remains one native input record.
+            direct_items = Some(source[1..].to_vec());
+            StaticInputEvidence {
+                known_fragments: Vec::new(),
+                complete: true,
+            }
+        } else {
+            return opaque("native :::: argument-file source unresolved; use declared -a input");
+        }
+    } else if has_applied_modifier(&resolved.bound, "arg_file") {
+        static_arg_file_evidence_for_xargs_scope(request, session, entry, &resolved.bound)
+    } else {
+        static_stdin_evidence_for_scoped_command(
+            caushell_query::QuerySession::from_session(&session),
+            &entry.static_payload_scope.parsed_scope,
+            entry.static_payload_scope.command_index,
+            request.sequence_no,
+            &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
+            &runtime_binding_replay(
+                registry,
+                request,
+                &entry.static_payload_scope.scope_base_bindings,
+            ),
+            request.shell_state_before.cwd(),
+            !entry.inherited_scope.static_input_cwd_unproven,
+            request.home.as_deref(),
+            max_depth.saturating_sub(entry.depth),
+        )
+    };
+    // Do not treat partial byte fragments as independently complete records.
+    if !evidence.complete {
+        return opaque("native job input is incomplete");
+    }
+    let payload = evidence.known_fragments.concat();
+    let items = direct_items.unwrap_or_else(|| {
+        payload
+            .split_terminator(delimiter)
+            .map(str::to_owned)
+            .collect()
+    });
+    if items.len() > 128 || items.iter().map(String::len).sum::<usize>() > 64 * 1024 {
+        return opaque("native job expansion budget exceeded");
+    }
+    let quoted = has_applied_modifier(&resolved.bound, "quote_template");
+    let grouped = has_applied_modifier(&resolved.bound, "context_grouping");
+    let mut candidates = Vec::new();
+    if grouped {
+        // Native batching consumes consecutive source records. Enumerate
+        // possible batches instead of guessing CPU count or ARG_MAX.
+        let numbered = words.iter().any(|w| w.contains("{#}"));
+        for start in 0..items.len() {
+            for end in start + 1..=items.len() {
+                for job in 1..=if numbered { start + 1 } else { 1 } {
+                    candidates.push((start, end, job));
+                    if candidates.len() > 128 {
+                        return opaque("native grouped job expansion budget exceeded");
+                    }
+                }
+            }
+        }
+    } else {
+        candidates.extend((0..items.len()).map(|i| (i, i + 1, i + 1)));
+    }
+    let mut children = Vec::new();
+    let mut total_bytes = 0usize;
+    for (index, (start, end, job)) in candidates.into_iter().enumerate() {
+        let Some(rendered) = (if grouped {
+            crate::support::parallel_jobs::render_group_tracked(
+                &words,
+                &items[start..end],
+                quoted,
+                job,
+            )
+        } else {
+            crate::support::parallel_jobs::render_tracked(&words, &items[start], quoted, job)
+        }) else {
+            return opaque("native replacement grammar or quoting unresolved");
+        };
+        total_bytes = total_bytes.saturating_add(rendered.source.len());
+        if total_bytes > 256 * 1024 {
+            return opaque("native expanded source budget exceeded");
+        }
+        let mut jobs = native_shell_job_children(
+            registry,
+            request,
+            entry,
+            "parallel",
+            index,
+            &rendered.source,
+            false,
+            max_depth,
+        );
+        {
+            // Even a {#}-only job needs the native stdin-routing boundary.
+            // Empty ranges simply mean no replacement consumes input bytes.
+            let origin = std::sync::Arc::new(caushell_runner::NativeTemplateInput {
+                producer_node_id: entry.source_node_id.clone(),
+                source_text: rendered.source,
+                data_ranges: rendered.data_ranges,
+                input_slots: vec![
+                    if has_applied_modifier(&resolved.bound, "arg_file") {
+                        "arg_file"
+                    } else {
+                        slot
+                    }
+                    .into(),
+                ],
+                stdin: separator.is_none() && !has_applied_modifier(&resolved.bound, "arg_file"),
+            });
+            for job in &mut jobs {
+                job.inherited_scope.native_template_input = Some(origin.clone());
+            }
+        }
+        for job in &mut jobs {
+            job.inherited_scope.dispatch_stdout_to_parent = true;
+        }
+        children.extend(jobs);
+    }
+    children
+}
+
 fn expanded_static_xargs_children(
     registry: &ProfileRegistry,
     session: SessionView<'_>,
@@ -3832,6 +4387,39 @@ fn expanded_static_xargs_children(
     if config.requires_confirmation {
         return Vec::new();
     }
+    let insertion_index = if has_applied_modifier(&resolved.bound, "insert_batch") {
+        let Some(token) = config.insert_batch_token.as_deref() else {
+            return native_shell_job_children(
+                registry,
+                request,
+                entry,
+                "xargs-insert",
+                0,
+                "unknown xargs insertion marker",
+                true,
+                max_nested_parse_depth,
+            );
+        };
+        let initial = std::iter::once(&candidate.command).chain(candidate.argv.iter());
+        let Some(values) = initial
+            .map(dispatch_argument_scalar)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return native_shell_job_children(
+                registry,
+                request,
+                entry,
+                "xargs-insert",
+                0,
+                "unknown xargs initial argv",
+                true,
+                max_nested_parse_depth,
+            );
+        };
+        values.iter().position(|value| value == token)
+    } else {
+        None
+    };
 
     let evidence = if has_applied_modifier(&resolved.bound, "arg_file") {
         static_arg_file_evidence_for_xargs_scope(request, session, entry, &resolved.bound)
@@ -3904,15 +4492,20 @@ fn expanded_static_xargs_children(
         groups.push(Vec::new());
     }
     if !evidence.complete {
-        if groups.is_empty() {
-            groups.push(Vec::new());
-        }
         // The unresolved portion may contain any number of argv items.
         // One typed tail marker keeps the child incomplete without claiming a
         // precise arity or turning input bytes into shell source.
         if matches!(config.dispatch_mode, XargsDispatchMode::AppendAll) {
+            if groups.is_empty() {
+                groups.push(Vec::new());
+            }
             groups[0].push(XargsItem::UnknownTail);
         } else {
+            // Default xargs can invoke the fixed argv on zero input. -r
+            // suppresses only that call, not the nonempty unknown-input job.
+            if groups.is_empty() && config.run_if_empty {
+                groups.push(Vec::new());
+            }
             groups.push(vec![XargsItem::UnknownTail]);
         }
     }
@@ -4005,6 +4598,17 @@ fn expanded_static_xargs_children(
             // -I replaces occurrences in initial arguments; unlike append
             // mode, it does not append the input when there is no placeholder.
         } else {
+            // BSD -J removes only the first exact argv marker. Keep the suffix
+            // after the entire input batch, not after each input item.
+            let suffix = insertion_index.map(|index| {
+                if index == 0 {
+                    std::mem::take(&mut child_candidate.argv)
+                } else {
+                    let suffix = child_candidate.argv.split_off(index);
+                    child_candidate.argv.pop();
+                    suffix
+                }
+            });
             for item in group {
                 match item {
                     XargsItem::Known(item) => append_xargs_data_argument(
@@ -4023,6 +4627,16 @@ fn expanded_static_xargs_children(
                     ),
                 }
                 next_byte = next_byte.saturating_add(1);
+            }
+            if let Some(suffix) = suffix {
+                child_candidate.argv.extend(suffix);
+                if insertion_index == Some(0) {
+                    if child_candidate.argv.is_empty() {
+                        // No utility remains: do not invent an executable.
+                        continue;
+                    }
+                    child_candidate.command = child_candidate.argv.remove(0);
+                }
             }
         }
 
@@ -4629,6 +5243,7 @@ struct XargsStaticExpansionConfig {
     run_if_empty: bool,
     requires_confirmation: bool,
     eof_marker: Option<String>,
+    insert_batch_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4680,6 +5295,9 @@ fn xargs_static_expansion_config(
         run_if_empty: !has_applied_modifier(bound, "no_run_if_empty"),
         requires_confirmation: has_applied_modifier(bound, "interactive_prompt"),
         eof_marker: xargs_eof_marker(bound),
+        insert_batch_token: exact_bound_slot_values(bound, "insert_batch_token")
+            .and_then(|values| values.last().cloned())
+            .filter(|text| !text.is_empty()),
     }
 }
 
@@ -5484,7 +6102,13 @@ fn project_nested_payload_evidence_with_runtime_state(
             }),
         _ => false,
     };
-    project_nested_payload_evidence_inner(record, parsed_request, !runtime_unknown)
+    project_nested_payload_evidence_inner(
+        record,
+        parsed_request,
+        !runtime_unknown,
+        request.shell_state_before.cwd(),
+        request.home.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -5492,17 +6116,24 @@ fn project_nested_payload_evidence(
     record: &NestedPayloadRecord,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
 ) -> Option<Evidence> {
-    project_nested_payload_evidence_inner(record, parsed_request, true)
+    project_nested_payload_evidence_inner(record, parsed_request, true, "/tmp/project", None)
 }
 
 fn project_nested_payload_evidence_inner(
     record: &NestedPayloadRecord,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
     allow_local_stdin_suppression: bool,
+    cwd: &str,
+    home: Option<&str>,
 ) -> Option<Evidence> {
     if allow_local_stdin_suppression
         && record.candidate.candidate.language != caushell_profile::PayloadLanguage::Opaque
-        && suppress_local_stdin_nested_payload_unresolved_evidence(record, parsed_request)
+        && suppress_local_stdin_nested_payload_unresolved_evidence(
+            record,
+            parsed_request,
+            cwd,
+            home,
+        )
     {
         return None;
     }
@@ -5573,6 +6204,8 @@ fn project_nested_payload_evidence_inner(
 fn suppress_local_stdin_nested_payload_unresolved_evidence(
     record: &NestedPayloadRecord,
     parsed_request: &caushell_parse::ParsedCommandArtifact,
+    cwd: &str,
+    home: Option<&str>,
 ) -> bool {
     if !matches!(
         record.resolution,
@@ -5594,12 +6227,28 @@ fn suppress_local_stdin_nested_payload_unresolved_evidence(
         return false;
     };
 
-    let Some(command) = parsed_request.commands.get(command_index) else {
+    let Some(_) = parsed_request.commands.get(command_index) else {
         return false;
     };
 
-    explicit_stdin_payload_available(parsed_request, command_index)
-        || pipeline_upstream_exists(parsed_request, command_index, command)
+    // An explicit local source has its own script-source policy. Merely
+    // having a producer in a pipeline proves neither the bytes nor that they
+    // were parsed. Parsed literal pipelines never reach this runtime case.
+    match crate::support::effective_stdin_source(parsed_request, command_index) {
+        crate::support::EffectiveStdinSource::Closed => true,
+        crate::support::EffectiveStdinSource::Redirect(index) => {
+            let redirection = &parsed_request.redirections[index];
+            redirection.kind == caushell_parse::RedirectionKind::File
+                && redirection.target.as_ref().is_some_and(|target| {
+                    // Only certify a concrete filename here; actual effective
+                    // cwd, trust scope and provenance are checked downstream.
+                    resolve_path_operand(&target.text, target.quoted, &target.node_kind, cwd, home)
+                        .is_some()
+                })
+        }
+        crate::support::EffectiveStdinSource::Inherited
+        | crate::support::EffectiveStdinSource::UnknownDescriptor(_) => false,
+    }
 }
 
 fn nested_parent_evidence(parent_ref: &NestedPayloadParentRef) -> NestedPayloadParentEvidence {

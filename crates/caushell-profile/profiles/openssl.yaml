@@ -25,7 +25,7 @@ subcommands:
   roots:
     - name: enc
       aliases: []
-      forms:
+      forms: &enc_forms
         - id: decrypt_stream_to_stdout
           selector:
             kind: all
@@ -217,7 +217,7 @@ subcommands:
                 kind: none
               extensions:
                 transform.kind: encrypt
-      modifiers:
+      modifiers: &enc_modifiers
         - id: decode
           matcher:
             kind: any_flag
@@ -241,6 +241,7 @@ subcommands:
               cardinality: required_one
           effects:
             - kind: read_path
+              path_access: content_open
               target:
                 kind: slot
                 name: input_path
@@ -262,13 +263,222 @@ subcommands:
               cardinality: required_one
           effects:
             - kind: write_path
+              path_access: content_open
               target:
                 kind: slot
                 name: output_path
+        - id: cipher
+          matcher:
+            kind: any_flag
+            flags: ["-aes-128-cbc", "-aes-192-cbc", "-aes-256-cbc", "-des", "-des3", "-bf", "-camellia-128-cbc", "-camellia-192-cbc", "-camellia-256-cbc", "-salt", "-nosalt", "-pbkdf2", "-a", "-base64", "-A", "-nopad", "-p", "-P"]
+        - id: crypto_parameters
+          matcher: {kind: any_flag, flags: [-iter, -K, -iv]}
+          parameters:
+            - {name: passphrase_option, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+        - id: passphrase_source
+          matcher: {kind: any_flag, flags: [-pass]}
+          parameters:
+            - name: passphrase_source
+              semantic: {kind: plain_value}
+              binding: {kind: following_matched_flag, operand_mode: next_arg}
+              cardinality: required_many
+              structured_projection:
+                native_syntax: passphrase_source
+                last_value_only: true
+                branches:
+                  - {matcher: {kind: prefix, value: 'file:'}, target: {name: credential_file, semantic: {kind: path, role: read, purpose: auxiliary_input}}}
+                  - {matcher: {kind: prefix, value: 'env:'}, target: {name: credential_environment, semantic: {kind: plain_value}}}
+          effects:
+            - {kind: consume_auxiliary_value, target: {kind: slot, name: passphrase_source}}
+            - {kind: read_path, target: {kind: slot, name: credential_file}, path_access: content_open}
+            - {kind: consume_auxiliary_environment, target: {kind: slot, name: credential_environment}}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: des3
+      aliases: []
+      forms: *enc_forms
+      modifiers: *enc_modifiers
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: version
+      aliases: []
+      forms:
+        - id: show_version
+          selector:
+            kind: any
+            items:
+              - {kind: no_positional_args}
+              - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -a}}
+          parameters:
+            - {name: version_options, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+      modifiers:
+        - id: version_options
+          matcher: {kind: any_flag, flags: [-a, -v, -help]}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: dgst
+      aliases: []
+      forms:
+        - id: digest_files
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: [{kind: read_path, target: {kind: slot, name: files}}]
+          stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+        - id: digest_stdin
+          selector: {kind: no_positional_args}
+          stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - id: output_file
+          matcher: {kind: any_flag, flags: [-out]}
+          parameters:
+            - {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: write_path, target: {kind: slot, name: output_path}}]
+        - id: algorithm
+          matcher: {kind: any_flag, flags: [-md5, -md4, -md2, -sha1, -sha224, -sha256, -sha384, -sha512, -sha3-256, -sha3-512, -ripemd160, -blake2b512, -blake2s256]}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: passwd
+      aliases: []
+      forms:
+        - id: generate_password_hash
+          selector:
+            kind: any
+            items:
+              - {kind: no_positional_args}
+              - {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: password_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - id: hash_mode
+          matcher: {kind: any_flag, flags: ["-1", -apr1, "-5", "-6", -a, -scrypt]}
+        - id: input_file
+          matcher: {kind: any_flag, flags: [-in]}
+          parameters:
+            - {name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: read_path, target: {kind: slot, name: input_path}}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: req
+      aliases: []
+      forms:
+        - id: create_or_process_request
+          selector:
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: private_key}
+              - {kind: has_modifier, modifier: input_request}
+              - {kind: has_modifier, modifier: output_file}
+              - {kind: has_modifier, modifier: key_output_file}
+              - {kind: has_modifier, modifier: engine_library}
+              - {kind: has_modifier, modifier: request_options}
+              - {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: request_inputs, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: [{kind: read_path, target: {kind: slot, name: request_inputs}}]
+          stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+      modifiers:
+        - id: private_key
+          matcher: {kind: any_flag, flags: [-key]}
+          parameters:
+            - {name: private_key_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: read_path, target: {kind: slot, name: private_key_path}}]
+        - id: input_request
+          matcher: {kind: any_flag, flags: [-in]}
+          parameters:
+            - {name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: read_path, target: {kind: slot, name: input_path}}]
+        - id: output_file
+          matcher: {kind: any_flag, flags: [-out]}
+          parameters:
+            - {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: write_path, target: {kind: slot, name: output_path}}]
+        - id: key_output_file
+          matcher: {kind: any_flag, flags: [-keyout]}
+          parameters:
+            - {name: key_output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: write_path, target: {kind: slot, name: key_output_path}}]
+        - id: engine_library
+          matcher: {kind: any_flag, flags: [-engine]}
+          parameters:
+            - {name: engine_path, semantic: {kind: in_process_code_load, load_kind: library_path}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: load_in_process_code, target: {kind: slot, name: engine_path}}]
+        - id: request_options
+          matcher: {kind: any_flag, flags: [-new, -x509, -nodes, -noenc, -text, -verify, -noout]}
+        - id: key_format
+          matcher: {kind: any_flag, flags: [-keyform]}
+          parameters:
+            - {name: key_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: genrsa
+      aliases: []
+      forms:
+        - id: generate_rsa_key
+          selector: {kind: all, items: []}
+          parameters:
+            - {name: key_size, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - id: output_file
+          matcher: {kind: any_flag, flags: [-out]}
+          parameters:
+            - {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: write_path, target: {kind: slot, name: output_path}}]
+        - id: key_options
+          matcher: {kind: any_flag, flags: ["-3", -F4, -traditional, -f4]}
+        - id: primes
+          matcher: {kind: any_flag, flags: [-primes]}
+          parameters: [{name: prime_count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+    - name: s_client
+      aliases: []
+      forms:
+        - id: connect_tls_client
+          selector: {kind: all, items: [{kind: has_modifier, modifier: connect}, {kind: no_positional_args}]}
+          # Connected s_client sends application input to the peer. Identity
+          # files are local TLS inputs, not a substitute for this stdin flow.
+          implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+          effects:
+            - {kind: network_endpoint, target: {kind: slot, name: server}}
+            - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+          stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - id: connect
+          matcher: {kind: any_flag, flags: [-connect]}
+          parameters:
+            - {name: server, semantic: {kind: endpoint, endpoint_kind: host_port, usage: upload_target}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+        - id: client_identity_files
+          matcher: {kind: any_flag, flags: [-key, -cert, -cert_chain, -CAfile, -CApath]}
+          parameters:
+            - {name: client_identity_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+          effects: [{kind: read_path, target: {kind: slot, name: client_identity_path}}]
+        - id: client_option_values
+          matcher: {kind: any_flag, flags: [-starttls, -servername, -verify]}
+          parameters:
+            - {name: client_option_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+        - id: proxy
+          matcher: {kind: any_flag, flags: [-proxy]}
+          parameters:
+            - {name: proxy_server, semantic: {kind: endpoint, endpoint_kind: host_port, usage: control_plane}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: network_endpoint, target: {kind: slot, name: proxy_server}}]
+        - id: client_options
+          matcher: {kind: any_flag, flags: [-quiet, -debug, -showcerts, -status, -ign_eof, -no_ign_eof, -brief, -crlf, -verify_return_error]}
       children: []
       default_behavior: reject_unknown
       extensions: {}
 extensions:
   caushell.profile/known_limitations:
-    - Current coverage is intentionally scoped to the enc subcommand and its local stream/file transform semantics.
+    - Coverage includes enc and audited information, digest, password, key/request and explicit s_client entries, not every OpenSSL form or option.
+    - s_client positional/default server selection, extended TLS options and sink-specific credential dependency are not yet fully modeled.
     - Cipher selection flags such as -aes-256-cbc are carried as inert modifiers for form selection purposes and are not typed beyond the enclosing encrypt/decrypt transform.

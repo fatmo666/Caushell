@@ -197,6 +197,7 @@ pub enum PackageManagerKind {
     Conda,
     Npm,
     Yum,
+    Rpm,
     Brew,
 }
 
@@ -298,6 +299,8 @@ pub enum ProvenanceArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceConsumeKind {
+    /// An operational dependency, not evidence that its bytes are in output.
+    AuxiliaryInput,
     PathRead,
     ScriptSource,
     InProcessCodeSource,
@@ -336,6 +339,8 @@ pub enum ProvenanceProduceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProvenanceDomainLabel {
+    /// Inputs to ONE network sink, not a global barrier for a path or command.
+    EndpointInputScope { slots: Vec<String>, stdin: bool },
     Path {
         role: ResolvedPathRole,
         #[serde(default, skip_serializing_if = "Option::is_none")]

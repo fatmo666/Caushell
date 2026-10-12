@@ -862,18 +862,29 @@ fn collect_effect_target_path_facts(
                 purpose: target.purpose,
                 metadata_mutation: None,
             }),
-            EffectTarget::DerivedPath(target) => collect_derived_target_path_facts(
-                record,
-                normalized_command_name,
-                invocation,
-                resolved,
-                effect_index,
-                target,
-                role,
-                cwd,
-                home,
-                out,
-            ),
+            EffectTarget::DerivedPath(target) => {
+                let start = out.len();
+                collect_derived_target_path_facts(
+                    record,
+                    normalized_command_name,
+                    invocation,
+                    resolved,
+                    effect_index,
+                    target,
+                    role,
+                    cwd,
+                    home,
+                    out,
+                );
+                // Classify content I/O only after all path transformations.
+                // A source spelling such as /dev/null may cease to be a
+                // device when prefixed with an output directory.
+                if effect.path_access == Some(caushell_profile::PathAccessKind::ContentOpen) {
+                    for candidate in &mut out[start..] {
+                        candidate.semantic_slot = Some(SlotName::new(candidate.slot_name.clone()));
+                    }
+                }
+            }
             EffectTarget::Slot(slot) => {
                 let Some(parameter) = bound_parameter(invocation, slot.as_str()) else {
                     continue;
@@ -954,6 +965,49 @@ fn collect_derived_target_path_facts(
             }
 
             for value in parameter.semantic_values() {
+                if target.rule == DerivedPathRule::PrefixDirectory {
+                    let spelling = match value {
+                        SemanticValueRef::Projected { value, .. } => Some(value.resolution.clone()),
+                        SemanticValueRef::Original(value) => caushell_profile::project_value(
+                            &caushell_profile::ValueProjection::Identity,
+                            value,
+                        ),
+                    };
+                    for root in &root_paths {
+                        let resolution = match (root.concrete_path(), &spelling) {
+                            (Some(root), Some(SemanticValueResolution::Known(spelling)))
+                                if !spelling.is_empty() && !spelling.contains('\0') =>
+                            {
+                                PathResolution::DerivedConcrete {
+                                    path: normalize_shell_path(&format!("{root}/{spelling}")),
+                                    basis: DerivedPathBasis::PathOperand {
+                                        raw: spelling.clone(),
+                                        resolved_input_path: None,
+                                        slot_name: source_slot_name.as_str().to_string(),
+                                    },
+                                    rule: target.rule.clone(),
+                                }
+                            }
+                            _ => PathResolution::UnsupportedDynamicText {
+                                text: "directory-prefixed output has an unresolved component"
+                                    .into(),
+                            },
+                        };
+                        out.push(PathFactCandidate {
+                            source_node_id: record.source_node_id().clone(),
+                            command_index: record.command_index(),
+                            slot_name: derived_path_slot_name(effect_index),
+                            semantic_slot: None,
+                            normalized_command_name: normalized_command_name.to_string(),
+                            resolution,
+                            cwd_dependent,
+                            role,
+                            purpose: target.purpose,
+                            metadata_mutation: None,
+                        });
+                    }
+                    continue;
+                }
                 let Some(child_resolution) = derive_semantic_slot_path_resolution(
                     parameter,
                     value,
@@ -1087,22 +1141,7 @@ fn resolve_derived_root_paths(
 
             parameter
                 .semantic_values()
-                .filter_map(|value| match value {
-                    SemanticValueRef::Projected { .. } => {
-                        Some(semantic_path_resolution(value, None, cwd, home).0)
-                    }
-                    SemanticValueRef::Original(BoundValue::Argument {
-                        text,
-                        quoted,
-                        node_kind,
-                        ..
-                    }) => {
-                        let resolution =
-                            resolve_path_resolution(text, *quoted, node_kind, cwd, home, None);
-                        resolution.concrete_path().is_some().then_some(resolution)
-                    }
-                    SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
-                })
+                .map(|value| semantic_path_resolution(value, None, cwd, home).0)
                 .collect()
         }
         DerivedPathSource::ToolConventionRoot { convention } => {
@@ -1390,6 +1429,30 @@ fn derive_path_resolution_from_spelling(
             },
         };
     }
+    if *rule == DerivedPathRule::Basename {
+        // Normalizing a source such as `a/..` before extracting its name
+        // destroys tool-owned lexical semantics. Only a complete original
+        // operand supplies a name; unresolved/bounded input stays unknown.
+        let basename = source_resolution
+            .concrete_path()
+            .and(spelling)
+            .filter(|s| !s.contains('\0'))
+            .map(|s| s.trim_end_matches('/'))
+            .and_then(|s| s.rsplit('/').next())
+            .filter(|name| !matches!(*name, "" | "." | ".."));
+        return match basename {
+            Some(name) => PathResolution::DerivedConcrete {
+                path: join_shell_path(cwd, name),
+                basis,
+                rule: rule.clone(),
+            },
+            None => PathResolution::DerivedUnresolved {
+                basis,
+                rule: rule.clone(),
+                reason: DerivedPathUnresolvedReason::UnsupportedOperandShape,
+            },
+        };
+    }
     derive_path_resolution_from_concrete_source(source_resolution, basis, rule)
 }
 
@@ -1492,6 +1555,11 @@ fn derive_path_resolution_from_concrete_source(
         DerivedPathRule::LexicalAncestors => {
             ancestor_path_bounds(&[source_path.to_string()], false, "/")
         }
+        DerivedPathRule::PrefixDirectory => PathResolution::DerivedUnresolved {
+            basis,
+            rule: rule.clone(),
+            reason: DerivedPathUnresolvedReason::UnsupportedOperandShape,
+        },
         DerivedPathRule::SiblingFiles => sibling_file_resolution(source_path, false),
         DerivedPathRule::AppendSuffix { suffix } => PathResolution::DerivedConcrete {
             path: format!("{source_path}{suffix}"),
@@ -1530,11 +1598,13 @@ fn derive_path_resolution_from_concrete_source(
         DerivedPathRule::ChildUnder { relative_path } => {
             derive_path_resolution_under_root(source_path, relative_path, basis, rule)
         }
-        DerivedPathRule::UrlBasename => PathResolution::DerivedUnresolved {
-            basis,
-            rule: rule.clone(),
-            reason: DerivedPathUnresolvedReason::UnsupportedRuntimeRule,
-        },
+        DerivedPathRule::UrlBasename | DerivedPathRule::Basename => {
+            PathResolution::DerivedUnresolved {
+                basis,
+                rule: rule.clone(),
+                reason: DerivedPathUnresolvedReason::UnsupportedRuntimeRule,
+            }
+        }
     }
 }
 
@@ -1846,6 +1916,8 @@ fn metadata_mutation_kinds(
         | EffectKind::ExecuteConfigDefinedTask
         | EffectKind::DispatchCommand
         | EffectKind::ConsumeStdin
+        | EffectKind::ConsumeAuxiliaryValue
+        | EffectKind::ConsumeAuxiliaryEnvironment
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::TerminateCurrentShell
         | EffectKind::ShellJobOperation
@@ -1860,6 +1932,7 @@ fn metadata_mutation_kinds(
         | EffectKind::ControlProcess
         | EffectKind::RepositoryOperation
         | EffectKind::DatabaseOperation
+        | EffectKind::StateOperation
         | EffectKind::TerminalSessionOperation => None,
     }
 }
@@ -2038,6 +2111,8 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::ExecuteConfigDefinedTask
         | EffectKind::DispatchCommand
         | EffectKind::ConsumeStdin
+        | EffectKind::ConsumeAuxiliaryValue
+        | EffectKind::ConsumeAuxiliaryEnvironment
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::TerminateCurrentShell
         | EffectKind::ShellJobOperation
@@ -2052,6 +2127,7 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::ControlProcess
         | EffectKind::RepositoryOperation
         | EffectKind::DatabaseOperation
+        | EffectKind::StateOperation
         | EffectKind::TerminalSessionOperation => None,
     }
 }
@@ -2077,6 +2153,8 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::ExecuteConfigDefinedTask
         | EffectKind::DispatchCommand
         | EffectKind::ConsumeStdin
+        | EffectKind::ConsumeAuxiliaryValue
+        | EffectKind::ConsumeAuxiliaryEnvironment
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::TerminateCurrentShell
         | EffectKind::ShellJobOperation
@@ -2091,6 +2169,7 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::ControlProcess
         | EffectKind::RepositoryOperation
         | EffectKind::DatabaseOperation
+        | EffectKind::StateOperation
         | EffectKind::TerminalSessionOperation => None,
     }
 }
@@ -2104,7 +2183,7 @@ fn tool_convention_slot_name(effect_index: usize, convention: &str) -> String {
     format!("tool_convention_path_{effect_index}_{sanitized}")
 }
 
-fn derived_path_slot_name(effect_index: usize) -> String {
+pub(crate) fn derived_path_slot_name(effect_index: usize) -> String {
     format!("derived_path_{effect_index}")
 }
 
@@ -2212,6 +2291,7 @@ pub(crate) fn resolved_path_purpose_for_profile_purpose(
     match purpose {
         PathPurpose::IncidentalCache => ResolvedPathPurpose::IncidentalCache,
         PathPurpose::GenericOperand => ResolvedPathPurpose::GenericOperand,
+        PathPurpose::AuxiliaryInput => ResolvedPathPurpose::AuxiliaryInput,
         PathPurpose::ScriptSource => ResolvedPathPurpose::ScriptSource,
         PathPurpose::InProcessCode => ResolvedPathPurpose::InProcessCode,
         PathPurpose::StartupConfig => ResolvedPathPurpose::StartupConfig,
@@ -2368,6 +2448,8 @@ fn derived_path_rule_id_suffix(rule: &DerivedPathRule) -> String {
             format!("replace-suffix:{from}:{to}")
         }
         DerivedPathRule::UrlBasename => "url-basename".to_string(),
+        DerivedPathRule::Basename => "basename".to_string(),
+        DerivedPathRule::PrefixDirectory => "prefix-directory".to_string(),
         DerivedPathRule::ArchiveMembers => "archive-members".to_string(),
         DerivedPathRule::LexicalAncestors => "lexical-ancestors".to_string(),
         DerivedPathRule::SiblingFiles => "sibling-files".to_string(),
@@ -2440,6 +2522,7 @@ fn provenance_consume_kind_for_path_fact(
 ) -> Option<ProvenanceConsumeKind> {
     match role {
         PathRole::Read => Some(match purpose {
+            Some(PathPurpose::AuxiliaryInput) => ProvenanceConsumeKind::AuxiliaryInput,
             Some(PathPurpose::ScriptSource) => ProvenanceConsumeKind::ScriptSource,
             Some(PathPurpose::InProcessCode) => ProvenanceConsumeKind::InProcessCodeSource,
             Some(PathPurpose::StartupConfig) => ProvenanceConsumeKind::StartupConfigSource,
@@ -2449,6 +2532,7 @@ fn provenance_consume_kind_for_path_fact(
             _ => ProvenanceConsumeKind::PathRead,
         }),
         PathRole::Config => Some(match purpose {
+            Some(PathPurpose::AuxiliaryInput) => ProvenanceConsumeKind::AuxiliaryInput,
             Some(PathPurpose::ProjectConfig) => ProvenanceConsumeKind::ProjectConfigSource,
             Some(PathPurpose::ToolConfig) => ProvenanceConsumeKind::ToolConfigSource,
             Some(PathPurpose::TaskConfig) => ProvenanceConsumeKind::TaskDefinitionSource,
@@ -2492,6 +2576,55 @@ mod tests {
             resolved_input_path: None,
             slot_name: "inputs".into(),
         }
+    }
+
+    #[test]
+    fn basename_relocates_only_a_complete_lexical_component_to_execution_cwd() {
+        use caushell_types::DerivedPathRule;
+        for (raw, expected) in [
+            ("../config/start", "/workspace/start"),
+            ("/etc/start/", "/workspace/start"),
+            ("sub/$HOME", "/workspace/$HOME"),
+            ("sub/中文", "/workspace/中文"),
+            ("sub/line\nname", "/workspace/line\nname"),
+        ] {
+            let output = super::derive_path_resolution_from_spelling(
+                PathResolution::Concrete {
+                    path: super::lexical_path_from_argv(raw, "/workspace"),
+                },
+                derived_basis(),
+                &DerivedPathRule::Basename,
+                Some(raw),
+                "/workspace",
+            );
+            assert_eq!(output.concrete_path(), Some(expected));
+        }
+        for raw in ["", "/", ".", "a/..", "a/./", "a\0bad"] {
+            let output = super::derive_path_resolution_from_spelling(
+                PathResolution::Concrete {
+                    path: "/workspace".into(),
+                },
+                derived_basis(),
+                &DerivedPathRule::Basename,
+                Some(raw),
+                "/workspace",
+            );
+            assert!(
+                matches!(output, PathResolution::DerivedUnresolved { .. }),
+                "{raw}"
+            );
+        }
+        let output = super::derive_path_resolution_from_spelling(
+            PathResolution::BoundedPathSet {
+                roots: vec!["/elsewhere".into()],
+                may_escape: false,
+            },
+            derived_basis(),
+            &DerivedPathRule::Basename,
+            Some("file"),
+            "/workspace",
+        );
+        assert!(matches!(output, PathResolution::DerivedUnresolved { .. }));
     }
 
     #[test]

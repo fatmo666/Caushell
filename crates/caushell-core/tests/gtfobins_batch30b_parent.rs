@@ -123,7 +123,7 @@ fn canonical_file_uris_keep_real_source_paths_and_explicit_write_destinations() 
 #[test]
 fn conversion_pairs_and_monitoring_state_keep_read_write_roles_distinct() {
     inspect(
-        "dos2unix -fn /tmp/project/input /opt/shared/result",
+        "dos2unix -f -n /tmp/project/input /opt/shared/result",
         |graph| {
             assert!(has(graph, "/tmp/project/input", ResolvedPathRole::Read));
             assert!(has(graph, "/opt/shared/result", ResolvedPathRole::Write));

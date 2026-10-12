@@ -19,6 +19,10 @@ platform:
   requires_features: []
 
 forms:
+  - id: search_default_directory
+    selector: {kind: no_arguments}
+    parameters: []
+    effects: [{kind: read_path, target: {kind: none}}]
   - id: search_paths
     selector:
       kind: all

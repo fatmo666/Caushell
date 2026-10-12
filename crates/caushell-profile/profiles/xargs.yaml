@@ -84,6 +84,19 @@ forms:
           name: arg_file
 
 modifiers:
+  # BSD -J inserts one input batch at the first whole argv marker. Unlike -I,
+  # it neither replaces substrings nor changes the input to one line per job.
+  - id: insert_batch
+    matcher: {kind: any_flag, flags: ["-J"]}
+    constraints:
+      - {kind: mutually_exclusive_with, modifier: replace_token}
+      - {kind: mutually_exclusive_with, modifier: replace_token_optional}
+    parameters:
+      - name: insert_batch_token
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
   - id: null_delimited
     matcher:
       kind: any_flag

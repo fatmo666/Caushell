@@ -16,6 +16,9 @@ pub(crate) fn project_command_string(
         return None;
     }
     match syntax {
+        // Needs a whole template and scoped stdin/file facts. The stateless
+        // scalar projector must not invent literal child argv for it.
+        DispatchStringSyntax::GnuParallel => None,
         DispatchStringSyntax::PosixShell => {
             Some(("/bin/sh".into(), vec!["-c".into(), text.into()]))
         }

@@ -93,7 +93,7 @@ fn dos2unix_distinguishes_stdout_paired_output_and_in_place_modes() {
         caushell_profile::StreamOutputMode::Data
     );
 
-    let pair = bind("dos2unix -fn /tmp/project/source /tmp/project/converted");
+    let pair = bind("dos2unix -f -n /tmp/project/source /tmp/project/converted");
     assert_eq!(pair.form_id.as_str(), "convert_newfile_pair");
     assert_eq!(values(&pair, "input_file"), ["/tmp/project/source"]);
     assert_eq!(values(&pair, "output_file"), ["/tmp/project/converted"]);

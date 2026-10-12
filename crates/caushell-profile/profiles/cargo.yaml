@@ -114,6 +114,19 @@ subcommands:
       children: []
       default_behavior: reject_unknown
       extensions: {}
+
+    - name: help
+      aliases: []
+      forms:
+        - id: help_subcommand
+          selector: {kind: all, items: []}
+          parameters:
+            - {name: help_topic, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
 extensions:
   caushell.profile/known_limitations:
     - Cargo build-script execution is not parsed yet; the profile currently models the manifest/config load and project-defined task surfaces.

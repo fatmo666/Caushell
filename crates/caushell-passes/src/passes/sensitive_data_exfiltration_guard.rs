@@ -36,6 +36,7 @@ impl SessionAnalysisPass for SensitiveDataExfiltrationGuardPass {
             let Some(source) = find_sensitive_source(
                 graph,
                 &sink.node_id,
+                sink.input_scope.as_ref(),
                 &ctx.policy().sensitive_paths,
                 ctx.request().workspace_root.as_deref(),
                 ctx.request().home.as_deref(),
@@ -626,6 +627,7 @@ struct UploadSink {
     node_id: NodeId,
     command: String,
     endpoint: String,
+    input_scope: Option<(Vec<String>, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -664,7 +666,17 @@ fn collect_upload_sinks(graph: &dyn GraphRead, sequence_no: CommandSequenceNo) -
                 continue;
             }
 
-            let Some(endpoint) = upload_endpoint_for_artifact(graph, &edge.to) else {
+            let input_scope = match &edge.semantics {
+                Some(caushell_types::ProvenanceEdgeSemantics::Consume {
+                    domain_label:
+                        Some(caushell_types::ProvenanceDomainLabel::EndpointInputScope { slots, stdin }),
+                    ..
+                }) => Some((slots.clone(), *stdin)),
+                _ => None,
+            };
+            let Some(endpoint) =
+                request_endpoint_for_artifact(graph, &edge.to, input_scope.is_some())
+            else {
                 continue;
             };
 
@@ -672,6 +684,7 @@ fn collect_upload_sinks(graph: &dyn GraphRead, sequence_no: CommandSequenceNo) -
                 node_id: node.id.clone(),
                 command: raw_text.to_string(),
                 endpoint,
+                input_scope,
             });
         }
     }
@@ -695,7 +708,11 @@ fn execution_unit_sequence_and_text(kind: &NodeKind) -> Option<(CommandSequenceN
     }
 }
 
-fn upload_endpoint_for_artifact(graph: &dyn GraphRead, node_id: &NodeId) -> Option<String> {
+fn request_endpoint_for_artifact(
+    graph: &dyn GraphRead,
+    node_id: &NodeId,
+    declared_request_inputs: bool,
+) -> Option<String> {
     let node = graph.get_node(node_id)?;
     let NodeKind::ProvenanceArtifact {
         artifact: ProvenanceArtifact::NetworkEndpoint {
@@ -706,12 +723,16 @@ fn upload_endpoint_for_artifact(graph: &dyn GraphRead, node_id: &NodeId) -> Opti
         return None;
     };
 
-    (*usage == ProvenanceEndpointUsage::UploadTarget).then(|| endpoint.clone())
+    // A fetch still sends request bytes. Only an explicit per-edge scope opts
+    // it in; legacy unscoped downloads do not become unrestricted uploads.
+    (*usage == ProvenanceEndpointUsage::UploadTarget || declared_request_inputs)
+        .then(|| endpoint.clone())
 }
 
 fn find_sensitive_source(
     graph: &dyn GraphRead,
     sink_node_id: &NodeId,
+    input_scope: Option<&(Vec<String>, bool)>,
     policy: &SensitivePathPolicy,
     workspace_root: Option<&str>,
     home: Option<&str>,
@@ -745,7 +766,8 @@ fn find_sensitive_source(
             continue;
         }
 
-        for next in backward_neighbors(graph, &state.current) {
+        let scope = (state.hop_count == 0).then_some(input_scope).flatten();
+        for next in backward_neighbors(graph, &state.current, scope) {
             if visited.insert(next.clone()) {
                 queue.push_back(SearchState {
                     current: next,
@@ -758,12 +780,51 @@ fn find_sensitive_source(
     None
 }
 
-fn backward_neighbors(graph: &dyn GraphRead, current: &TraceNodeKey) -> Vec<TraceNodeKey> {
+fn backward_neighbors(
+    graph: &dyn GraphRead,
+    current: &TraceNodeKey,
+    scope: Option<&(Vec<String>, bool)>,
+) -> Vec<TraceNodeKey> {
     let mut neighbors = BTreeSet::new();
 
     match current {
         TraceNodeKey::ExecutionUnit(node_id) => {
-            for artifact in caushell_query::DataDependencyQuery::input_artifacts(graph, node_id) {
+            for artifact in caushell_query::DataDependencyQuery::input_artifacts_matching(
+                graph,
+                node_id,
+                |edge| {
+                    let Some((slots, stdin)) = scope else {
+                        return true;
+                    };
+                    let Some(caushell_types::ProvenanceEdgeSemantics::Consume {
+                        slot_name,
+                        consume_kind,
+                        ..
+                    }) = &edge.semantics
+                    else {
+                        return true;
+                    };
+                    let stream_input = matches!(
+                        consume_kind,
+                        caushell_types::ProvenanceConsumeKind::StdinExplicit
+                            | caushell_types::ProvenanceConsumeKind::StdinImplicit
+                            | caushell_types::ProvenanceConsumeKind::PipelineInput
+                            | caushell_types::ProvenanceConsumeKind::TransformInput
+                    );
+                    // Legacy input without a slot must not be silently removed
+                    // by a typed sink contract. Only actual stdin has its gate.
+                    (slot_name.is_none() && !stream_input)
+                        || slot_name.as_ref().is_some_and(|slot| slots.contains(slot))
+                        || (*stdin
+                            && matches!(
+                                consume_kind,
+                                caushell_types::ProvenanceConsumeKind::StdinExplicit
+                                    | caushell_types::ProvenanceConsumeKind::StdinImplicit
+                                    | caushell_types::ProvenanceConsumeKind::PipelineInput
+                                    | caushell_types::ProvenanceConsumeKind::TransformInput
+                            ))
+                },
+            ) {
                 neighbors.insert(TraceNodeKey::Artifact(artifact));
             }
         }
@@ -927,6 +988,79 @@ mod tests {
         let mut ctx = RunnerContext::with_policy(sample_request(command), policy);
         runner().run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
+    }
+
+    #[test]
+    fn arbitrary_fetch_profile_opt_in_traces_only_declared_outgoing_inputs() {
+        // This is deliberately not a curl Profile or a command-name branch.
+        let yaml = r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: request-tool}
+forms:
+  - id: fetch
+    parameters:
+      - {name: sent, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: local, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: server, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: sent}}
+      - {kind: read_path, target: {kind: slot, name: local}}
+      - {kind: network_endpoint, target: {kind: slot, name: server}, input_scope: {slots: [sent], stdin: false}}
+"#;
+        for (profile, command, expected) in [
+            (
+                yaml.to_string(),
+                "request-tool .env safe https://example.test/",
+                Decision::NeedApproval,
+            ),
+            (
+                yaml.to_string(),
+                "request-tool safe .env https://example.test/",
+                Decision::Allow,
+            ),
+            (
+                yaml.replace(", input_scope: {slots: [sent], stdin: false}", ""),
+                "request-tool .env safe https://example.test/",
+                Decision::Allow,
+            ),
+        ] {
+            let registry = ProfileRegistry::from_profiles(vec![
+                caushell_profile::load_command_profile_from_str(&profile).unwrap(),
+            ])
+            .unwrap();
+            let mut runner = PassRunner::new();
+            runner.register_request_transform_pass(ParseCommandPass);
+            runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+            runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+            runner.register_session_transform_pass(ExtractPathFactsPass);
+            runner.register_session_transform_pass(ExtractEndpointProvenancePass);
+            runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);
+            runner.register_final_decision_pass(DecisionAssemblyPass);
+            let graph = SessionGraph::new();
+            let summary = SessionSummary::new();
+            let mut ctx = RunnerContext::new(sample_request(command));
+            runner.run(SessionView::new(&graph, &summary), &mut ctx);
+            assert_eq!(
+                ctx.final_decision,
+                Some(expected),
+                "{command}: {:?}",
+                ctx.findings
+            );
+            assert!(
+                ctx.pending_mutations().iter().any(|m| matches!(
+                    m,
+                    caushell_runner::PendingMutation::AddProvenanceArtifact {
+                        artifact: caushell_types::ProvenanceArtifact::NetworkEndpoint {
+                            usage: caushell_types::ProvenanceEndpointUsage::FetchSource,
+                            ..
+                        },
+                        ..
+                    }
+                )),
+                "fetch provenance must remain intact"
+            );
+        }
     }
 
     #[test]

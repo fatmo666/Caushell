@@ -600,6 +600,7 @@ fn process_substitution_path_consume_kind(
 ) -> ProvenanceConsumeKind {
     match role {
         PathRole::Config => match purpose {
+            Some(PathPurpose::AuxiliaryInput) => ProvenanceConsumeKind::AuxiliaryInput,
             Some(PathPurpose::ProjectConfig) => ProvenanceConsumeKind::ProjectConfigSource,
             Some(PathPurpose::ToolConfig) => ProvenanceConsumeKind::ToolConfigSource,
             Some(PathPurpose::TaskConfig) => ProvenanceConsumeKind::TaskDefinitionSource,
@@ -613,6 +614,7 @@ fn process_substitution_path_consume_kind(
         },
         PathRole::Read | PathRole::Write | PathRole::Target | PathRole::CwdAnchor => {
             match purpose {
+                Some(PathPurpose::AuxiliaryInput) => ProvenanceConsumeKind::AuxiliaryInput,
                 Some(PathPurpose::ScriptSource) => ProvenanceConsumeKind::ScriptSource,
                 Some(PathPurpose::InProcessCode) => ProvenanceConsumeKind::InProcessCodeSource,
                 Some(PathPurpose::StartupConfig) => ProvenanceConsumeKind::StartupConfigSource,
@@ -642,6 +644,7 @@ fn resolved_path_role_for_process_substitution(role: PathRole) -> ResolvedPathRo
 
 fn resolved_path_purpose_for_process_substitution(purpose: PathPurpose) -> ResolvedPathPurpose {
     match purpose {
+        PathPurpose::AuxiliaryInput => ResolvedPathPurpose::AuxiliaryInput,
         PathPurpose::IncidentalCache => ResolvedPathPurpose::IncidentalCache,
         PathPurpose::GenericOperand => ResolvedPathPurpose::GenericOperand,
         PathPurpose::ScriptSource => ResolvedPathPurpose::ScriptSource,

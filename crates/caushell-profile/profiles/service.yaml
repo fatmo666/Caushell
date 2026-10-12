@@ -25,6 +25,63 @@ forms:
     binding:
       kind: remaining_args
     cardinality: optional_many
+- id: linux_list_all_status
+  selector:
+    kind: has_flag
+    flag: --status-all
+  parameters:
+  - {name: ignored_list_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
+- id: freebsd_list_enabled_services
+  selector:
+    kind: has_flag
+    flag: -e
+  parameters:
+  - {name: ignored_list_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
+- id: service_status
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: has_positional_at_matching
+      index: 1
+      matcher: {kind: regex_pattern, pattern: "^(status|show)$"}
+    - kind: not
+      item: {kind: has_modifier, modifier: information}
+  parameters:
+  - {name: service_name, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: action, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: required_one}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
+- id: service_control
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at
+      index: 0
+    - kind: has_positional_at_matching
+      index: 1
+      matcher: {kind: regex_pattern, pattern: "^(start|stop|restart|reload|force-reload)$"}
+    - kind: not
+      item: {kind: has_modifier, modifier: information}
+  parameters:
+  - {name: service_name, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: action, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: required_one}
+  - {name: service_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: control}
+    target: {kind: none}
 - id: service_name_path_execution
   selector:
     kind: all
@@ -35,6 +92,11 @@ forms:
       item:
         kind: has_modifier
         modifier: information
+    - kind: not
+      item:
+        kind: has_positional_at_matching
+        index: 1
+        matcher: {kind: regex_pattern, pattern: "^(status|show|start|stop|restart|reload|force-reload)$"}
   parameters:
   - name: service_operand
     semantic:

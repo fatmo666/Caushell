@@ -144,6 +144,32 @@ subcommands:
       default_behavior: reject_unknown
       extensions: {}
 
+    - name: config
+      aliases: []
+      forms: []
+      modifiers:
+        - id: editor
+          matcher: {kind: any_flag, flags: [--editor]}
+          parameters:
+            - {name: editor_command, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+      children:
+        - name: edit
+          aliases: []
+          forms:
+            - id: edit_configuration
+              selector: {kind: all, items: []}
+              effects:
+                - {kind: write_path, target: {kind: none}}
+                # pip invokes the editor string using shell=True. The config
+                # filename is runtime-selected; do not invent a local path.
+                - {kind: dispatch_command, target: {kind: dispatch, command_string: {slot: editor_command, syntax: posix_shell}}}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+      default_behavior: reject_unknown
+      extensions: {}
+
 extensions:
   caushell.profile/known_limitations:
     - This first slice models `pip install <package_specs...>`, `pip install -r/--requirement <file>`, editable installs, and explicit --target writes.

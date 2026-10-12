@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: leading_options
+option_matching: short_clusters
 opaque_on_unresolved: true
 
 identity:
@@ -137,7 +138,13 @@ modifiers:
     parameters:
       - {name: backup_suffix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
 
-  - {id: loop_and_runtime_flags, matcher: {kind: any_flag, flags: ["-p", "-n", "-a", "-l", "-T", "-t", "-w", "-W", "-X", "-s", "-f", "-U"]}}
+  - id: record_separator
+    matcher: {kind: any_flag, flags: ["-0"]}
+    parameters: [{name: record_separator_octal, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_short_octal_prefix}, cardinality: optional_one}]
+  - id: line_ending
+    matcher: {kind: any_flag, flags: ["-l"]}
+    parameters: [{name: line_ending_octal, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_short_octal_prefix}, cardinality: optional_one}]
+  - {id: loop_and_runtime_flags, matcher: {kind: any_flag, flags: ["-p", "-n", "-a", "-T", "-t", "-w", "-W", "-X", "-s", "-f", "-U"]}}
   - {id: compile_only, matcher: {kind: any_flag, flags: ["-c"]}}
   - {id: information, matcher: {kind: any_flag, flags: ["-h", "-v"]}}
   - id: configuration_information

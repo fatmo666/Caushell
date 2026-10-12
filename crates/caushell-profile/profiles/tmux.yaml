@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
 
 identity:
   canonical_name: tmux
@@ -18,10 +19,33 @@ platform:
   requires_features: []
 
 forms:
+  - id: global_shell_command
+    selector:
+      kind: has_modifier
+      modifier: global_command
+    parameters: []
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: global_shell_command
+
   - id: terminal_multiplexer_control
     selector:
       kind: all
-      items: []
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: global_command
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: new-session}}
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: new-window}}
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: new}}
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: neww}}
     parameters:
       - name: arguments
         semantic:
@@ -47,6 +71,42 @@ forms:
             - run_command
 
 modifiers:
+  - id: global_command
+    matcher:
+      kind: any_flag
+      flags:
+        - "-c"
+    parameters:
+      - name: global_shell_command
+        semantic:
+          kind: payload
+          language: opaque
+          source: inline_string
+          recursive: true
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+    effects:
+      - kind: execute_payload
+        target:
+          kind: slot
+          name: global_shell_command
+
+  - id: socket_name
+    matcher:
+      kind: any_flag
+      flags:
+        - "-S"
+    parameters:
+      - name: socket_name
+        semantic:
+          kind: plain_value
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
   - id: command
     matcher:
       kind: any_flag
@@ -68,7 +128,74 @@ modifiers:
           kind: slot
           name: config_path
 
-subcommands: null
+subcommands:
+  roots:
+    - name: new-session
+      aliases: [new]
+      option_scope: leading_options
+      forms:
+        - id: explicit_shell_command
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - name: shell_command
+              semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}
+              binding: {kind: positional_at, index: 0}
+              cardinality: required_one
+            - {name: program_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - {kind: execute_payload, target: {kind: slot, name: shell_command}}
+            - kind: open_interactive_escape_surface
+              target: {kind: none}
+              surface: {kind: terminal_ui, requires_tty: false, capabilities: [spawn_shell, run_command]}
+        - id: default_shell
+          selector: {kind: no_positional_args}
+          effects:
+            - kind: open_interactive_escape_surface
+              target: {kind: none}
+              surface: {kind: terminal_ui, requires_tty: false, capabilities: [spawn_shell, run_command]}
+      modifiers:
+        - {id: session_name, matcher: {kind: any_flag, flags: ["-s"]}, parameters: [{name: session_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: target_session, matcher: {kind: any_flag, flags: ["-t"]}, parameters: [{name: target_session, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: window_name, matcher: {kind: any_flag, flags: ["-n"]}, parameters: [{name: window_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: start_directory, matcher: {kind: any_flag, flags: ["-c"]}, parameters: [{name: start_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: detached, matcher: {kind: any_flag, flags: ["-d"]}}
+        - {id: print_output, matcher: {kind: any_flag, flags: ["-P"]}}
+        - {id: format, matcher: {kind: any_flag, flags: ["-F"]}, parameters: [{name: format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+      children: []
+      default_behavior: reject_unknown
+
+    - name: new-window
+      aliases: [neww]
+      option_scope: leading_options
+      forms:
+        - id: explicit_shell_command
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - name: shell_command
+              semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}
+              binding: {kind: positional_at, index: 0}
+              cardinality: required_one
+            - {name: program_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - {kind: execute_payload, target: {kind: slot, name: shell_command}}
+            - kind: open_interactive_escape_surface
+              target: {kind: none}
+              surface: {kind: terminal_ui, requires_tty: false, capabilities: [spawn_shell, run_command]}
+        - id: default_shell
+          selector: {kind: no_positional_args}
+          effects:
+            - kind: open_interactive_escape_surface
+              target: {kind: none}
+              surface: {kind: terminal_ui, requires_tty: false, capabilities: [spawn_shell, run_command]}
+      modifiers:
+        - {id: target_window, matcher: {kind: any_flag, flags: ["-t"]}, parameters: [{name: target_window, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: window_name, matcher: {kind: any_flag, flags: ["-n"]}, parameters: [{name: window_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: start_directory, matcher: {kind: any_flag, flags: ["-c"]}, parameters: [{name: start_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+        - {id: detached, matcher: {kind: any_flag, flags: ["-d"]}}
+        - {id: print_output, matcher: {kind: any_flag, flags: ["-P"]}}
+        - {id: format, matcher: {kind: any_flag, flags: ["-F"]}, parameters: [{name: format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
+      children: []
+      default_behavior: reject_unknown
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

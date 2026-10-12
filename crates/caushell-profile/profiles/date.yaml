@@ -18,10 +18,26 @@ platform:
   requires_features: []
 
 forms:
+  - id: set_system_clock
+    selector:
+      kind: has_modifier
+      modifier: set_date
+    effects:
+      - kind: state_operation
+        state_operation:
+          domain: system_clock
+          operation: mutate
+        target:
+          kind: none
+
   - id: print_or_parse_date
     selector:
       kind: all
-      items: []
+      items:
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: set_date
     parameters:
       - name: format_or_dates
         semantic:
@@ -40,6 +56,22 @@ forms:
           kind: none
 
 modifiers:
+  - id: set_date
+    matcher:
+      kind: any_flag
+      flags:
+        - "-s"
+        - "--set"
+    parameters:
+      - name: date_expression
+        semantic:
+          kind: structured_value
+          context: date_expression
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_many
+
   - id: date_file
     matcher:
       kind: any_flag

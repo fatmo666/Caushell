@@ -18,10 +18,14 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: read_inputs
     selector:
-      kind: all
-      items: []
+      kind: not
+      item: {kind: has_modifier, modifier: information}
     parameters:
       - name: input_paths
         semantic:
@@ -45,6 +49,7 @@ forms:
           name: input_paths
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
   - id: bytes
     matcher:
       kind: any_flag

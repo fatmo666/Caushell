@@ -3,6 +3,7 @@ mod path;
 mod support;
 
 pub use passes::NetworkListenerGuardPass;
+pub use passes::StateOperationGuardPass;
 pub use passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, ComputeEffectiveCwdPass,
     CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass, DecisionAssemblyPass,

@@ -136,26 +136,40 @@ fn line_continuation_is_removed_but_other_quoted_backslashes_are_preserved() {
 #[test]
 fn dynamic_or_uncompleted_argv_does_not_accept_a_static_prefix() {
     let bindings = SessionBindings::new().with_exact_scalar("KNOWN", "suffix");
-    for argument in [
-        r#""echo $UNKNOWN""#,
-        r#""echo $KNOWN""#,
-        "prefix*.sh",
-        "~user/script",
-    ] {
+    for argument in [r#""echo $UNKNOWN""#, "prefix*.sh", "~user/script"] {
         let raw = candidate(argument, &bindings);
         let value = fragments(&raw)[0].text.clone();
         let decoded = materialize_recursive_payload_candidate(&raw, &bindings);
-        assert!(matches!(
-            decoded.resolution,
-            ValueMaterialization::UnsupportedDynamicText { .. }
-                | ValueMaterialization::MissingBinding { .. }
-        ));
+        assert!(
+            matches!(
+                decoded.resolution,
+                ValueMaterialization::UnsupportedDynamicText { .. }
+                    | ValueMaterialization::MissingBinding { .. }
+            ),
+            "{argument}: {decoded:?}"
+        );
         assert_eq!(text(&decoded), value);
         assert_eq!(
             fragments(&decoded.candidate)[0].materialization,
             RecursivePayloadFragmentMaterialization::Literal
         );
     }
+}
+
+#[test]
+fn exact_scalar_concatenation_is_complete_argv_not_a_static_prefix() {
+    let bindings = SessionBindings::new().with_exact_scalar("KNOWN", "suffix");
+    let raw = candidate(r#""echo $KNOWN""#, &bindings);
+    let decoded = materialize_recursive_payload_candidate(&raw, &bindings);
+    assert_eq!(text(&decoded), "echo suffix");
+    assert!(matches!(
+        decoded.resolution,
+        ValueMaterialization::ResolvedExactScalar { .. }
+    ));
+    assert_eq!(
+        decoded,
+        materialize_recursive_payload_candidate(&decoded.candidate, &bindings)
+    );
 }
 
 #[test]

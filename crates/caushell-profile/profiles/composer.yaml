@@ -16,6 +16,18 @@ platform:
   shell_families: []
   requires_features: []
 forms:
+- id: validate_file
+  selector:
+    kind: all
+    items:
+    - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: validate}}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: config_files, semantic: {kind: path, role: read, purpose: tool_config}, binding: {kind: next_positional}, cardinality: optional_many}
+  effects:
+  - {kind: read_path, path_access: content_open, target: {kind: slot, name: config_files}}
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
 - id: show_help
   selector:
     kind: has_modifier

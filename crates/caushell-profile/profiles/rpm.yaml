@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
 identity:
   canonical_name: rpm
   aliases: []
@@ -13,6 +14,14 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: upgrade_from_remote_package
+  selector: {kind: all, items: [{kind: has_modifier, modifier: upgrade}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: query}}]}
+  parameters:
+  - {name: package_sources, semantic: {kind: package_locator, manager: rpm, locator_kinds: [direct_url, local_path, unknown_dynamic]}, binding: {kind: remaining_positionals}, cardinality: required_many}
+  effects:
+  - {kind: import_package, target: {kind: slot, name: package_sources}}
+  - {kind: execute_imported_package_logic, target: {kind: slot, name: package_sources}}
+  - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
 - id: query_installed_packages
   selector:
     kind: has_modifier
@@ -87,6 +96,8 @@ forms:
     stdout_mode: data
     stderr_mode: data
 modifiers:
+- {id: upgrade, matcher: {kind: any_flag, flags: ["-U"]}}
+- {id: progress, matcher: {kind: any_flag, flags: ["-v", "-h", "--verbose", "--hash"]}}
 - id: query
   matcher:
     kind: any_flag

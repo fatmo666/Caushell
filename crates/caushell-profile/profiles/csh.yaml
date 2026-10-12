@@ -23,8 +23,6 @@ forms:
     items:
     - kind: has_modifier
       modifier: code
-    - &3
-      kind: no_positional_args
     - &1
       kind: not
       item:
@@ -93,7 +91,7 @@ forms:
   selector:
     kind: all
     items:
-    - *3
+    - kind: no_positional_args
     - kind: not
       item:
         kind: has_modifier

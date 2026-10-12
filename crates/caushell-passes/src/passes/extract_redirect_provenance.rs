@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_parse::RedirectionKind;
@@ -26,10 +26,18 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
 
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
         let mut mutations = Vec::new();
+        let mut stdin_code_consumers = BTreeSet::new();
         let cwd = ctx.request().shell_state_before.cwd();
         let home = ctx.request().home.as_deref();
 
         for record in graph_backed_execution_resolve_records(ctx) {
+            if matches!(record.result(), ResolveInvocationArtifactResult::Resolved(resolved)
+                if resolved.bound.effects.iter().any(|effect|
+                    matches!(effect.kind, caushell_profile::EffectKind::ExecutePayload | caushell_profile::EffectKind::SourceScriptIntoCurrentShell)
+                    && matches!(effect.target, caushell_profile::EffectTarget::ImplicitInput(caushell_profile::ImplicitInputSource::StdinPayload))))
+            {
+                stdin_code_consumers.insert(record.source_node_id().clone());
+            }
             if matches!(record.result(), ResolveInvocationArtifactResult::Resolved(resolved)
                 if resolved.proven_stream_contract().is_some_and(|contract| contract.stdin_mode == caushell_profile::StreamInputMode::Ignored))
             {
@@ -185,6 +193,54 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
             }
         }
 
+        // Preserve the ordinary stdin edge and add the independent execution
+        // role only for actual file-backed code. No filename suffix guessing,
+        // command-name whitelist, or host/file inspection is involved.
+        let mut script_sources = Vec::new();
+        for mutation in &mutations {
+            if let PendingMutation::AddProvenanceArtifact {
+                source_node_id,
+                artifact: ProvenanceArtifact::PathContent { path, .. },
+                semantics:
+                    ProvenanceEdgeSemantics::Consume {
+                        consume_kind: ProvenanceConsumeKind::StdinExplicit,
+                        ..
+                    },
+                ..
+            } = mutation
+            {
+                if !stdin_code_consumers.contains(source_node_id) {
+                    continue;
+                }
+                let target = caushell_query::IoTargetQuery::content_path(
+                    &caushell_types::PathResolution::Concrete { path: path.clone() },
+                    false,
+                    &BTreeMap::new(),
+                );
+                if !matches!(target, caushell_query::IoTarget::Path { .. }) {
+                    continue;
+                }
+                let mut script_source = mutation.clone();
+                if let PendingMutation::AddProvenanceArtifact {
+                    semantics:
+                        ProvenanceEdgeSemantics::Consume {
+                            consume_kind,
+                            domain_label,
+                            ..
+                        },
+                    ..
+                } = &mut script_source
+                {
+                    *consume_kind = ProvenanceConsumeKind::ScriptSource;
+                    *domain_label = Some(caushell_types::ProvenanceDomainLabel::Path {
+                        role: caushell_types::ResolvedPathRole::Read,
+                        purpose: Some(caushell_types::ResolvedPathPurpose::ScriptSource),
+                    });
+                }
+                script_sources.push(script_source);
+            }
+        }
+        mutations.extend(script_sources);
         for mutation in mutations {
             ctx.stage_mutation(mutation);
         }

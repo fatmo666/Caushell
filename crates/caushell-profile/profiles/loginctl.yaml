@@ -14,6 +14,40 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: enable_user_linger
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher:
+        kind: literal
+        value: enable-linger
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: operation
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  - name: user
+    semantic:
+      kind: plain_value
+    binding:
+      kind: next_positional
+    cardinality: required_one
+  effects:
+  - kind: state_operation
+    state_operation:
+      domain: service_manager
+      operation: mutate
+    target:
+      kind: none
 - id: information
   selector:
     kind: has_modifier

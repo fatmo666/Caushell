@@ -16,6 +16,15 @@ platform:
   shell_families: []
   requires_features: []
 forms:
+- id: cleanup_auxiliary_files
+  selector: {kind: has_modifier, modifier: cleanup}
+  parameters:
+  - {name: cleanup_inputs, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+  effects:
+  - {kind: read_path, target: {kind: slot, name: cleanup_inputs}}
+  # -c cleans derived build artifacts, not the input .tex itself. Configuration
+  # and output-directory facts are unavailable here; do not invent filenames.
+  - {kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
 - id: show_help
   selector:
     kind: has_modifier
@@ -114,6 +123,7 @@ forms:
       kind: slot
       name: driver
 modifiers:
+- {id: cleanup, matcher: {kind: any_flag, flags: ["-c"]}}
 - id: eval
   matcher:
     kind: any_flag

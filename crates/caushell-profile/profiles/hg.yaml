@@ -14,6 +14,18 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: native_status_alias
+  selector:
+    kind: all
+    items:
+    - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(status|st)$'}}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: status_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+  effects:
+  - {kind: read_path, target: {kind: none}}
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
 - id: information
   selector:
     kind: has_modifier
@@ -76,6 +88,11 @@ forms:
     cardinality: optional_many
   effects: []
 modifiers:
+- id: repository
+  matcher: {kind: any_flag, flags: [-R, --repository]}
+  parameters:
+  - {name: repository, semantic: {kind: path, role: cwd_anchor, purpose: working_directory}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  effects: [{kind: target_path, target: {kind: slot, name: repository}}]
 - id: information
   matcher:
     kind: any_flag

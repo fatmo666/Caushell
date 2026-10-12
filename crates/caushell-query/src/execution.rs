@@ -786,6 +786,9 @@ pub struct ExecutionSemanticsRef<'a> {
 }
 
 impl<'a> ExecutionSemanticsRef<'a> {
+    pub fn state_operations(&self) -> &[caushell_types::StateOperation] {
+        &self.semantics.state_operations
+    }
     pub fn shell_job_operations(&self) -> &[caushell_types::ShellJobOperationKind] {
         &self.semantics.shell_job_operations
     }
@@ -933,6 +936,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
             operation_semantics_unresolved: self.operation_semantics_unresolved(),
             terminal_session_operations: self.semantics.terminal_session_operations.clone(),
             database_operations: self.semantics.database_operations.clone(),
+            state_operations: self.state_operations().to_vec(),
             network_listeners: self.semantics.network_listeners.clone(),
             node_id: self.node_id.0.clone(),
             source: self.source.to_execution_unit(),
@@ -1652,6 +1656,7 @@ mod tests {
                 operation_semantics_unresolved: false,
                 network_listeners: Vec::new(),
                 database_operations: Vec::new(),
+                state_operations: Vec::new(),
                 terminal_session_operations: Vec::new(),
                 shell_job_operations: Vec::new(),
                 node_id: "execution-semantics:command:sess-1:2".to_string(),

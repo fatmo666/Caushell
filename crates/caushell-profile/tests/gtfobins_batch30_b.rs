@@ -1,8 +1,8 @@
 use caushell_parse::parse_command;
 use caushell_profile::{
-    bind_invocation, load_command_profile_from_str, project_invocation, select_invocation,
     BoundInvocation, BoundValue, EffectKind, InvocationRuntimeContext, ProfileRegistry,
-    StreamInputMode,
+    StreamInputMode, bind_invocation, load_command_profile_from_str, project_invocation,
+    select_invocation,
 };
 use caushell_types::{ShellKind, StreamDataDependency};
 
@@ -102,10 +102,11 @@ fn source_operands_are_bound_by_role_not_by_position_name_or_option_spelling() {
     assert_resolved(&b, "uuencode /path/to/input /dev/stdout");
     assert_eq!(text_values(&b, "input_path"), ["/path/to/input"]);
     assert_eq!(text_values(&b, "output_name"), ["/dev/stdout"]);
-    assert!(!b
-        .bound_parameters
-        .iter()
-        .any(|p| p.name.as_str().contains("output_path")));
+    assert!(
+        !b.bound_parameters
+            .iter()
+            .any(|p| p.name.as_str().contains("output_path"))
+    );
     assert_eq!(
         b.effects
             .iter()
@@ -113,10 +114,11 @@ fn source_operands_are_bound_by_role_not_by_position_name_or_option_spelling() {
             .count(),
         1
     );
-    assert!(!b
-        .effects
-        .iter()
-        .any(|e| matches!(e.kind, EffectKind::WritePath | EffectKind::DeletePath)));
+    assert!(
+        !b.effects
+            .iter()
+            .any(|e| matches!(e.kind, EffectKind::WritePath | EffectKind::DeletePath))
+    );
 
     let b = bind(NM, "nm -C /path/to/object");
     assert_resolved(&b, "nm -C /path/to/object");
@@ -149,10 +151,11 @@ fn encoding_profiles_preserve_file_stdin_and_non_sanitizing_transform_contracts(
         assert_resolved(&b, command);
         assert_eq!(b.form_id.as_str(), expected_form, "{command}: {b:#?}");
         assert!(b.effects.iter().any(|e| e.kind == EffectKind::ReadPath));
-        assert!(b
-            .effects
-            .iter()
-            .any(|e| e.kind == EffectKind::TransformData));
+        assert!(
+            b.effects
+                .iter()
+                .any(|e| e.kind == EffectKind::TransformData)
+        );
         assert!(!b.effects.iter().any(|e| matches!(
             e.kind,
             EffectKind::WritePath | EffectKind::DeletePath | EffectKind::ExecutePayload

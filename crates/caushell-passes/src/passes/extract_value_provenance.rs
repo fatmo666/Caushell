@@ -32,6 +32,10 @@ impl SessionTransformPass for ExtractValueProvenancePass {
         let records = graph_backed_execution_resolve_records(ctx);
         let explicit_stdin_payload_sources = explicit_stdin_payload_sources(ctx);
         let mut mutations = collect_variable_binding_provenance_mutations(ctx);
+        mutations.extend(collect_auxiliary_environment_inputs(
+            &records,
+            ctx.request().sequence_no,
+        ));
         mutations.extend(collect_variable_expansion_provenance_mutations(
             session.summary(),
             &records,
@@ -47,10 +51,236 @@ impl SessionTransformPass for ExtractValueProvenancePass {
             &explicit_stdin_payload_sources,
         ));
 
+        let auxiliary_records: std::collections::BTreeMap<_, _> = records
+            .iter()
+            .filter_map(|r| {
+                crate::support::bound_invocation(r.result()).map(|b| (r.source_node_id(), b))
+            })
+            .filter(|(_, bound)| bound.auxiliary_input_slots().next().is_some())
+            .collect();
+        if !auxiliary_records.is_empty() {
+            for mutation in &mut mutations {
+                if let PendingMutation::AddProvenanceArtifact {
+                    source_node_id,
+                    semantics:
+                        ProvenanceEdgeSemantics::Consume {
+                            consume_kind,
+                            slot_name: Some(slot),
+                            ..
+                        },
+                    ..
+                } = mutation
+                {
+                    if auxiliary_records
+                        .get(source_node_id)
+                        .is_some_and(|b| b.is_auxiliary_input_slot(slot))
+                    {
+                        *consume_kind = ProvenanceConsumeKind::AuxiliaryInput;
+                    }
+                }
+            }
+        }
         for mutation in mutations {
             ctx.stage_mutation(mutation);
         }
     }
+}
+
+/// Connect replacements to actual parameter slots, not a blanket dispatcher
+/// control edge. Native decoding must not erase known bytes' data origins.
+pub(crate) fn collect_native_template_input_mutations(
+    session: SessionView<'_>,
+    ctx: &RunnerContext,
+) -> Vec<PendingMutation> {
+    use caushell_graph::{NodeKind, SessionRead};
+    use caushell_runner::StagedSession;
+    if !ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .any(|r| r.inherited_scope.native_template_input.is_some())
+    {
+        return Vec::new();
+    }
+    let staged = StagedSession::new(
+        session.graph(),
+        ctx.request(),
+        session.summary(),
+        ctx.pending_mutations(),
+    );
+    let graph = staged.graph();
+    let mut mutations = Vec::new();
+    for record in ctx.execution_unit_resolve_records() {
+        let Some(origin) = &record.inherited_scope.native_template_input else {
+            continue;
+        };
+        if record.parsed_scope.raw_command != origin.source_text
+            && !(record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
+                && record.parent_execution_node_id != origin.producer_node_id)
+        {
+            continue;
+        }
+        let Some(bound) = crate::support::bound_invocation(&record.result) else {
+            continue;
+        };
+        for parameter in &bound.bound_parameters {
+            if !parameter.values.iter().any(|value| {
+                matches!(value,
+                BoundValue::Argument {span, ..} if origin.data_ranges.iter().any(|range|
+                    span.start_byte < range.end && range.start < span.end_byte))
+            }) {
+                continue;
+            }
+            // Copy only actual replacement inputs. Returned child stdout is
+            // not the source of jobs that were already generated from a list.
+            for edge in graph.outgoing_edges(&origin.producer_node_id) {
+                if edge.kind != EdgeKind::Consumes {
+                    continue;
+                }
+                let Some(ProvenanceEdgeSemantics::Consume {
+                    slot_name,
+                    consume_kind,
+                    ..
+                }) = &edge.semantics
+                else {
+                    continue;
+                };
+                let stream = matches!(
+                    consume_kind,
+                    ProvenanceConsumeKind::StdinExplicit
+                        | ProvenanceConsumeKind::StdinImplicit
+                        | ProvenanceConsumeKind::PipelineInput
+                );
+                let Some(node) = graph.get_node(&edge.to) else {
+                    continue;
+                };
+                let NodeKind::ProvenanceArtifact { artifact } = &node.kind else {
+                    continue;
+                };
+                let runtime_stdin = matches!(
+                    artifact,
+                    ProvenanceArtifact::RuntimeInput {
+                        source: RuntimeInputSource::StdinData | RuntimeInputSource::StdinPayload,
+                        ..
+                    }
+                );
+                if !(slot_name
+                    .as_ref()
+                    .is_some_and(|slot| origin.input_slots.contains(slot))
+                    || (origin.stdin && (stream || runtime_stdin)))
+                {
+                    continue;
+                }
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: record.source_node_id.clone(),
+                    node_id: edge.to.clone(),
+                    artifact: artifact.clone(),
+                    relation: EdgeKind::Consumes,
+                    semantics: ProvenanceEdgeSemantics::Consume {
+                        consume_kind: if bound.is_auxiliary_input_slot(parameter.name.as_str()) {
+                            ProvenanceConsumeKind::AuxiliaryInput
+                        } else {
+                            ProvenanceConsumeKind::RuntimeInput
+                        },
+                        slot_name: Some(parameter.name.as_str().into()),
+                        normalized_command_name: None,
+                        domain_label: None,
+                    },
+                });
+            }
+        }
+    }
+    mutations
+}
+
+fn collect_auxiliary_environment_inputs(
+    records: &[ExecutionResolveRecordRef<'_>],
+    sequence: CommandSequenceNo,
+) -> Vec<PendingMutation> {
+    use caushell_profile::{
+        EffectTarget, EnvironmentValueRef, SemanticValueRef, SemanticValueResolution,
+    };
+    let mut mutations = Vec::new();
+    for &record in records {
+        let Some(bound) = crate::support::bound_invocation(record.result()) else {
+            continue;
+        };
+        for effect in bound
+            .effects
+            .iter()
+            .filter(|e| e.kind == EffectKind::ConsumeAuxiliaryEnvironment)
+        {
+            let environment = record.command().map(|command| {
+                crate::support::command_environment_bindings(
+                    record.bindings(),
+                    record.parsed_scope(),
+                    &caushell_runner::ParsedCommandRef::new(
+                        record.command_index(),
+                        command.span.clone(),
+                    ),
+                )
+            });
+            let EffectTarget::Slot(slot) = &effect.target else {
+                continue;
+            };
+            let Some(parameter) = bound.bound_parameters.iter().find(|p| p.name == *slot) else {
+                continue;
+            };
+            for value in parameter.semantic_values() {
+                let name = match value {
+                    SemanticValueRef::Projected { value, .. } => match &value.resolution {
+                        SemanticValueResolution::Known(name) => name.as_str(),
+                        _ => continue,
+                    },
+                    SemanticValueRef::Original(BoundValue::Argument {
+                        text,
+                        materialization:
+                            caushell_profile::BoundArgumentMaterialization::Literal
+                            | caushell_profile::BoundArgumentMaterialization::RuntimeData,
+                        ..
+                    }) => text,
+                    _ => continue,
+                };
+                let state = match environment
+                    .as_ref()
+                    .unwrap_or(record.bindings())
+                    .environment_value(name)
+                {
+                    EnvironmentValueRef::Present(value) => {
+                        variable_value_state(&value.to_session_variable_value())
+                    }
+                    EnvironmentValueRef::Absent => ProvenanceVariableValueState::OpaqueDynamic {
+                        repr: "environment variable absent".into(),
+                    },
+                    EnvironmentValueRef::Unknown => ProvenanceVariableValueState::OpaqueDynamic {
+                        repr: "environment value unavailable".into(),
+                    },
+                };
+                // Scope the artifact to this process: prefix assignments may
+                // give the same name different values in one shell action.
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: record.source_node_id().clone(),
+                    node_id: NodeId::new(format!(
+                        "artifact:auxiliary-env:{}:{name}:{}",
+                        record.source_node_id().0,
+                        sequence.0
+                    )),
+                    artifact: ProvenanceArtifact::InheritedEnvValue {
+                        name: name.into(),
+                        state,
+                        version: sequence.0,
+                    },
+                    relation: EdgeKind::Consumes,
+                    semantics: ProvenanceEdgeSemantics::Consume {
+                        consume_kind: ProvenanceConsumeKind::AuxiliaryInput,
+                        slot_name: Some(slot.as_str().into()),
+                        normalized_command_name: None,
+                        domain_label: None,
+                    },
+                });
+            }
+        }
+    }
+    mutations
 }
 
 fn collect_variable_binding_provenance_mutations(ctx: &RunnerContext) -> Vec<PendingMutation> {

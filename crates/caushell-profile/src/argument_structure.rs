@@ -673,7 +673,10 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                             break;
                         }
                         if !c.is_ascii_alphanumeric()
-                            && !matches!(c, '.' | '_' | '-' | ',' | '*' | '?' | '[' | ']' | '/')
+                            && !matches!(
+                                c,
+                                '.' | '_' | '-' | ',' | '*' | '?' | '[' | ']' | '/' | '#' | '%'
+                            )
                         {
                             return ArgumentStructure::unknown();
                         }

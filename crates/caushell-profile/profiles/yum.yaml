@@ -135,6 +135,15 @@ forms:
     # are not available statically. No fictitious downloaded-package provenance.
     effects: [*cache_write, *modify_installation]
     stream_contract: *streams
+  - id: group_install_transaction
+    selector: {kind: all, items: [*running, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: groupinstall}}, {kind: not, item: {kind: has_modifier, modifier: download_only}}]}
+    parameters:
+      - *operation
+      - {name: package_groups, semantic: {kind: plain_value}, binding: *remaining, cardinality: required_many}
+    # Group names select repository-defined package sets. They are not package
+    # locators or evidence of which individual packages were downloaded.
+    effects: [*cache_write, *modify_installation]
+    stream_contract: *streams
 
 modifiers:
   - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}

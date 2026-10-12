@@ -931,10 +931,10 @@ mod tests {
     };
     use crate::{
         BindError, BindingOrigin, BoundInvocation, BoundValue, CatastrophicSemanticClass,
-        EffectKind, EndpointUsage, HostRiskSemanticClass, InvocationRuntimeContext,
-        ProcessTargetKind, ProfileRegistry, ResidualKind, SemanticType, SessionBindings,
-        StructuredValueContext, StructuredValueSemantic, ValueMaterialization,
-        collect_dispatch_command_candidates,
+        DispatchCommandSource, DispatchStringSyntax, EffectKind, EffectTarget, EndpointSemantic,
+        EndpointUsage, HostRiskSemanticClass, InvocationRuntimeContext, ProcessTargetKind,
+        ProfileRegistry, ResidualKind, SemanticType, SessionBindings, StructuredValueContext,
+        StructuredValueSemantic, ValueMaterialization, collect_dispatch_command_candidates,
     };
 
     fn built_in_registry() -> ProfileRegistry {
@@ -7581,14 +7581,14 @@ mod tests {
             "cpio -F archive.cpio -i",
             "cpio",
             "extract_archive",
-            &[EffectKind::ReadPath],
+            &[EffectKind::ReadPath, EffectKind::WritePath],
         );
         assert_resolves_command_without_catastrophic_semantic(
             &registry,
             "cpio -I archive.cpio -i",
             "cpio",
             "extract_archive",
-            &[EffectKind::ReadPath],
+            &[EffectKind::ReadPath, EffectKind::WritePath],
         );
         assert_resolves_command_without_catastrophic_semantic(
             &registry,
@@ -8069,7 +8069,10 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "install");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_install");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "strip_file_or_directory"
+                );
                 assert!(modifier_ids.contains(&"strip"));
                 assert!(modifier_ids.contains(&"strip_program"));
                 assert_eq!(
@@ -11553,7 +11556,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_invocation_resolves_parallel_wrapped_rm_arguments() {
+    fn resolve_invocation_declares_native_parallel_without_inventing_literal_argv() {
         let registry = built_in_registry();
         let artifact =
             parse_command("parallel rm -rf ::: /", ShellKind::Bash).expect("expected parse");
@@ -11564,30 +11567,15 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "parallel");
-                assert_eq!(
-                    resolved.selection.form.id.as_str(),
-                    "dispatch_wrapped_command"
-                );
-                assert_eq!(
-                    first_argument_text(&resolved.bound, "wrapped_command"),
-                    "rm"
-                );
-                assert_eq!(
-                    argument_texts(&resolved.bound, "wrapped_args"),
-                    vec!["-rf", "/"]
-                );
-
-                let dispatch = collect_dispatch_command_candidates(&resolved.bound);
-                assert_eq!(dispatch.len(), 1);
-                assert_eq!(dispatch[0].command.text, "rm");
-                assert_eq!(
-                    dispatch[0]
-                        .argv
-                        .iter()
-                        .map(|argument| argument.text.as_str())
-                        .collect::<Vec<_>>(),
-                    vec!["-rf", "/"]
-                );
+                assert!(!resolved.bound.operation_semantics_unresolved);
+                assert!(collect_dispatch_command_candidates(&resolved.bound).is_empty());
+                assert!(resolved.bound.effects.iter().any(|effect| matches!(
+                    &effect.target,
+                    EffectTarget::Dispatch(target) if matches!(
+                        &target.command,
+                        DispatchCommandSource::CommandString { syntax: DispatchStringSyntax::GnuParallel, .. }
+                    )
+                )));
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -12060,10 +12048,14 @@ mod tests {
                     argument_texts(&resolved.bound, "endpoints"),
                     vec!["https://example.test/payload.sh"]
                 );
-                assert_eq!(first_argument_text(&resolved.bound, "output_path"), "-");
+                assert_eq!(first_argument_text(&resolved.bound, "output_operand"), "-");
                 assert_eq!(
                     argument_texts(&resolved.bound, "option_value"),
-                    vec!["1", "1", "Accept: text/plain"]
+                    vec!["1", "1"]
+                );
+                assert_eq!(
+                    argument_texts(&resolved.bound, "request_values"),
+                    vec!["Accept: text/plain"]
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
@@ -12091,7 +12083,7 @@ mod tests {
                     argument_texts(&resolved.bound, "endpoints"),
                     vec!["https://example.test/payload.sh"]
                 );
-                assert_eq!(first_argument_text(&resolved.bound, "output_path"), "-");
+                assert_eq!(first_argument_text(&resolved.bound, "output_operand"), "-");
                 assert_eq!(
                     effect_kinds(&resolved.bound),
                     vec![EffectKind::NetworkEndpoint]
@@ -12162,11 +12154,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::NetworkEndpoint,
-                        EffectKind::WritePath,
-                        EffectKind::WritePath
-                    ]
+                    vec![EffectKind::NetworkEndpoint, EffectKind::WritePath]
                 );
                 assert!(resolved.bound.effects.iter().any(|effect| matches!(
                     effect.target,
@@ -12240,7 +12228,25 @@ mod tests {
                 );
                 assert_eq!(
                     argument_texts(&resolved.bound, "option_value"),
-                    vec!["1", "2", "Accept: text/plain", "agent"]
+                    vec!["1", "2"]
+                );
+                assert_eq!(
+                    argument_texts(&resolved.bound, "request_header_operand"),
+                    vec!["Accept: text/plain"]
+                );
+                assert_eq!(
+                    argument_texts(&resolved.bound, "request_value"),
+                    vec!["agent"]
+                );
+                assert!(
+                    resolved
+                        .bound
+                        .effects
+                        .iter()
+                        .find(|e| e.kind == EffectKind::NetworkEndpoint)
+                        .unwrap()
+                        .input_scope
+                        .is_some()
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
@@ -12277,7 +12283,21 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::NetworkEndpoint]
+                    vec![
+                        EffectKind::NetworkEndpoint,
+                        EffectKind::NetworkEndpoint,
+                        EffectKind::ConsumeStdin
+                    ]
+                );
+                assert!(
+                    resolved.bound.bound_parameters.iter().any(|p| matches!(
+                        p.semantic,
+                        SemanticType::Endpoint(EndpointSemantic {
+                            usage: EndpointUsage::FetchSource,
+                            ..
+                        })
+                    )),
+                    "POST still returns network-derived response bytes"
                 );
                 let endpoint = resolved
                     .bound
@@ -12355,7 +12375,8 @@ mod tests {
                     effect_kinds(&resolved.bound),
                     vec![
                         EffectKind::NetworkEndpoint,
-                        EffectKind::ExecuteRemoteCommand
+                        EffectKind::ExecuteRemoteCommand,
+                        EffectKind::StateOperation
                     ]
                 );
             }
@@ -12455,7 +12476,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::NetworkEndpoint, EffectKind::WritePath]
+                    vec![
+                        EffectKind::DispatchCommand,
+                        EffectKind::NetworkEndpoint,
+                        EffectKind::WritePath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -13832,6 +13857,7 @@ mod tests {
                     EffectKind::TargetPath,
                     EffectKind::WritePath,
                     EffectKind::MetadataMutation,
+                    EffectKind::StateOperation,
                 ],
             ),
             (
@@ -13940,7 +13966,7 @@ mod tests {
                 "cpio -F archive.cpio -i",
                 "cpio",
                 "extract_archive",
-                &[EffectKind::ReadPath],
+                &[EffectKind::ReadPath, EffectKind::WritePath],
             ),
             ("cal", "cal", "print_calendar", &[EffectKind::TransformData]),
             (
@@ -14221,7 +14247,7 @@ mod tests {
             (
                 "tmux -f tmux.conf new-session",
                 "tmux",
-                "terminal_multiplexer_control",
+                "default_shell",
                 &[
                     EffectKind::LoadConfig,
                     EffectKind::OpenInteractiveEscapeSurface,
@@ -15269,7 +15295,14 @@ mod tests {
 
     #[test]
     fn resolve_invocation_keeps_modifier_only_binding_on_selection_error() {
-        let registry = built_in_registry();
+        // Keep testing the generic partial-binding path with a deliberately
+        // unmatched fixture; built-in Bash now has an explicit stdin fallback.
+        let mut profile =
+            crate::load_command_profile_from_str(include_str!("../profiles/bash.yaml")).unwrap();
+        profile
+            .forms
+            .retain(|f| f.id.as_str() != "shell_input_source_unknown");
+        let registry = ProfileRegistry::from_profiles(vec![profile]).unwrap();
         let artifact = parse_command(r#"bash --rcfile ~/team.rc"#, ShellKind::Bash)
             .expect("expected parse to succeed");
 

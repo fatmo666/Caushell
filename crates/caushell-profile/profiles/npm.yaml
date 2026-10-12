@@ -18,8 +18,12 @@ platform:
   requires_features: []
 
 forms: []
-
-modifiers: []
+modifiers:
+  - id: working_directory
+    matcher: {kind: any_flag, flags: ["-C"]}
+    parameters:
+      - {name: working_directory, semantic: {kind: path, role: cwd_anchor, purpose: working_directory}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: target_path, target: {kind: slot, name: working_directory}}]
 subcommands:
   roots:
     - name: install
@@ -104,6 +108,28 @@ subcommands:
                 operand_mode: next_arg
               cardinality: required_many
       children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: config
+      aliases: []
+      forms: []
+      modifiers: []
+      children:
+        - name: get
+          aliases: []
+          forms:
+            - id: get_configuration
+              selector: {kind: all, items: []}
+              parameters:
+                - {name: config_key, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+              effects:
+                - {kind: load_config, target: {kind: none}}
+              stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
       default_behavior: reject_unknown
       extensions: {}
 

@@ -58,6 +58,29 @@ pub fn project_value(
             ProjectionUnknownReason::DynamicArgument,
         ));
     }
+    project_text(projection, &value, complete)
+}
+
+/// Compose a declared projection over already-decoded semantic data. Never
+/// re-read the source argv spelling or interpret shell quotes a second time.
+pub fn project_semantic_value(
+    projection: &ValueProjection,
+    source: crate::SemanticValueRef<'_>,
+) -> Option<SemanticValueResolution> {
+    match source {
+        crate::SemanticValueRef::Original(source) => project_value(projection, source),
+        crate::SemanticValueRef::Projected { value, .. } => match &value.resolution {
+            SemanticValueResolution::Known(text) => project_text(projection, text, true),
+            unknown @ SemanticValueResolution::Unknown(_) => Some(unknown.clone()),
+        },
+    }
+}
+
+fn project_text(
+    projection: &ValueProjection,
+    value: &str,
+    complete: bool,
+) -> Option<SemanticValueResolution> {
     let selected = match projection {
         ValueProjection::TomlString { key } => {
             if !complete {
@@ -88,7 +111,7 @@ pub fn project_value(
                     ProjectionUnknownReason::DynamicArgument,
                 ));
             }
-            value.as_str()
+            value
         }
         ValueProjection::PrefixBefore {
             delimiter,
@@ -97,7 +120,7 @@ pub fn project_value(
             if let Some((prefix, _)) = value.split_once(delimiter.as_str()) {
                 prefix
             } else if complete && *if_absent == ProjectionAbsentPolicy::Original {
-                value.as_str()
+                value
             } else {
                 return Some(SemanticValueResolution::Unknown(if complete {
                     ProjectionUnknownReason::MissingDelimiter

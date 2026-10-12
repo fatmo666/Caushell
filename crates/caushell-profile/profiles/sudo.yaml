@@ -23,6 +23,11 @@ platform:
   requires_features: []
 
 forms:
+  - id: list_privileges
+    selector: {kind: has_modifier, modifier: list_privileges}
+    parameters:
+      - {name: list_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
   - id: wrapped_command
     selector:
       kind: all
@@ -109,6 +114,7 @@ forms:
             - scoped_env
 
 modifiers:
+  - {id: list_privileges, matcher: {kind: any_flag, flags: ["-l", "--list"]}}
   - id: askpass
     matcher:
       kind: any_flag

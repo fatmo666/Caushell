@@ -307,6 +307,9 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::DatabaseStateMutation
         | RuleId::DatabaseAdministration
         | RuleId::DatabaseOpaqueExecution => RuleAction::NeedApproval,
+        RuleId::StateMutation | RuleId::StateControl | RuleId::StateOpaqueOperation => {
+            RuleAction::NeedApproval
+        }
         RuleId::OutsideWorkspaceScriptSource => RuleAction::Observe,
         RuleId::OutsideWorkspaceStartupConfig => RuleAction::Observe,
         RuleId::MissingCommandName => RuleAction::NeedApproval,

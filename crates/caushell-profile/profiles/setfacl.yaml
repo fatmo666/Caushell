@@ -17,7 +17,7 @@ forms:
 modifiers:
   - id: modify
     matcher: {kind: any_flag, flags: ['-m', '--modify']}
-    parameters: [{name: acl_spec, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    parameters: [{name: acl_spec, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
   - {id: remove, matcher: {kind: any_flag, flags: ['-x', '--remove']}}
   - {id: set, matcher: {kind: any_flag, flags: ['-b', '--remove-all', '--set']}}
   - {id: recursive, matcher: {kind: any_flag, flags: ['-R', '--recursive']}}

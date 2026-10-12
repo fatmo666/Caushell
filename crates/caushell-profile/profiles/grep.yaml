@@ -20,6 +20,10 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
   - id: explicit_pattern_search
     selector:
       kind: any
@@ -94,6 +98,7 @@ forms:
           name: input_paths
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help]}}
   - id: inline_pattern
     matcher:
       kind: any_flag

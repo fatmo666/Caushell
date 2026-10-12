@@ -13,6 +13,7 @@ pub(crate) use io_target::{
 pub(crate) use listener::{environment_default, network_listeners, shell_variable_default};
 mod node_ids;
 mod outside_workspace;
+pub(crate) mod parallel_jobs;
 mod payload_hard_deny;
 mod pipeline;
 mod redirection;

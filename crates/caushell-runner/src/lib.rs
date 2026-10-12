@@ -9,7 +9,7 @@ mod staged;
 pub use context::{
     BlockDeviceSearchScope, CatastrophicSearchRootScope, CwdPathContext, DecisionProposal,
     EffectiveCwd, ExecutionUnitInheritedScope, ExecutionUnitOriginKind, ExecutionUnitOriginLocator,
-    ExecutionUnitResolveRecord, ParsedCommandRef, ParsedCommandScope,
+    ExecutionUnitResolveRecord, NativeTemplateInput, ParsedCommandRef, ParsedCommandScope,
     ProcessSubstitutionLocationKind, ProcessSubstitutionOuterRelation, RunnerContext,
     ShellSourceCwdAnchor, UnresolvedDispatchRecord,
 };

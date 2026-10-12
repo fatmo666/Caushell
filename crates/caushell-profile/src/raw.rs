@@ -21,6 +21,7 @@ pub struct RawCommandProfile {
     pub option_scope: RawOptionScopePolicy,
     pub option_matching: RawOptionMatchingPolicy,
     pub option_prefixes: RawOptionPrefixPolicy,
+    pub option_operand_matcher: Option<RawValueMatcher>,
     pub subcommands: Option<RawSubcommandTree>,
     pub extensions: BTreeMap<String, JsonValue>,
 }
@@ -64,6 +65,7 @@ pub enum RawOptionScopePolicy {
     #[default]
     AllArguments,
     LeadingOptions,
+    LeadingOptionsWithOperand,
     PermutedOptions,
 }
 
@@ -73,6 +75,7 @@ pub enum RawOptionMatchingPolicy {
     #[default]
     ShortClusters,
     ExactNames,
+    DeclaredShortWords,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -431,6 +434,10 @@ pub enum RawValueProjection {
 #[serde(deny_unknown_fields)]
 pub struct RawStructuredProjection {
     #[serde(default)]
+    pub last_value_only: bool,
+    #[serde(default)]
+    pub native_syntax: Option<RawNativeOperandSyntax>,
+    #[serde(default)]
     pub separator: Option<String>,
     #[serde(default)]
     pub first_match_only: bool,
@@ -439,17 +446,48 @@ pub struct RawStructuredProjection {
     pub fallback: Option<RawStructuredProjectionTarget>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawNativeOperandSyntax {
+    PassphraseSource,
+    CurlMultipart,
+    CurlWriteOut,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawStructuredProjectionBranch {
     pub matcher: RawStructuredProjectionMatcher,
+    /// Native option context can change an operand's interpretation.
+    #[serde(default)]
+    pub unless_modifier: Option<String>,
+    #[serde(default)]
+    pub requires_modifiers: Vec<String>,
+    #[serde(default)]
+    pub unless_modifiers: Vec<String>,
+    /// Suppress a branch only when a known, last control value matches.
+    #[serde(default)]
+    pub unless_parameter_matches: Option<RawProjectionParameterCondition>,
     #[serde(default)]
     pub target: Option<RawStructuredProjectionTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawProjectionParameterCondition {
+    pub name: String,
+    pub matcher: RawValueMatcher,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawStructuredProjectionMatcher {
+    /// Match a complete tool-owned operand and project one capture, without
+    /// interpreting the captured bytes as shell syntax.
+    RegexCapture {
+        pattern: String,
+        group: usize,
+    },
     Literal {
         value: String,
     },
@@ -474,6 +512,8 @@ pub enum RawStructuredProjectionMatcher {
 pub struct RawStructuredProjectionTarget {
     pub name: String,
     pub semantic: RawSemanticType,
+    #[serde(default)]
+    pub unresolved: bool,
     #[serde(default)]
     pub sources: Vec<String>,
 }
@@ -504,6 +544,8 @@ pub enum RawCardinality {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawFlagOperandMode {
+    WordAttached,
+    OptionalWordAttached,
     NextPositional,
     NextArg,
     OptionalNextArg,
@@ -512,6 +554,7 @@ pub enum RawFlagOperandMode {
     InlineOnly,
     OptionalInlineOnly,
     OptionalInlineOrShortAttached,
+    OptionalShortOctalPrefix,
     InlineOrShortAttached,
     #[serde(rename = "next_positional_after_dashdash")]
     NextPositionalAfterDashDash,
@@ -531,6 +574,10 @@ pub enum RawBindingSpec {
     NextPositionalAfterDashDash,
     PositionalAt {
         index: usize,
+    },
+    PositionalGroups {
+        group_size: usize,
+        member: usize,
     },
     RemainingPositionals,
     RemainingPositionalsAfterDashDash,
@@ -644,6 +691,7 @@ pub enum RawPathRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawPathPurpose {
+    AuxiliaryInput,
     IncidentalCache,
     GenericOperand,
     ScriptSource,
@@ -732,6 +780,7 @@ pub enum RawPackageManagerKind {
     Conda,
     Npm,
     Yum,
+    Rpm,
     Brew,
 }
 
@@ -770,6 +819,10 @@ pub enum RawProcessTargetKind {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawEffect {
+    #[serde(default)]
+    pub input_scope: Option<crate::EndpointInputScope>,
+    #[serde(default)]
+    pub state_operation: Option<caushell_types::StateOperation>,
     pub kind: RawEffectKind,
     pub target: RawEffectTarget,
     /// Opt-in content opens; namespace replacement is deliberately not inferred.
@@ -852,6 +905,9 @@ pub enum RawRepositoryOperationKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawEffectKind {
+    ConsumeAuxiliaryValue,
+    ConsumeAuxiliaryEnvironment,
+    StateOperation,
     ReadPath,
     WritePath,
     DeletePath,
@@ -931,6 +987,8 @@ pub enum RawDerivedPathRule {
     StripSuffix { suffix: String },
     ReplaceSuffix { from: String, to: String },
     UrlBasename,
+    Basename,
+    PrefixDirectory,
     ArchiveMembers,
     ChildUnder { relative_path: String },
     SiblingFiles,
@@ -1052,6 +1110,8 @@ pub enum RawEffectTarget {
         #[serde(default)]
         unknown_environment_when: Vec<String>,
         #[serde(default)]
+        unknown_environment: bool,
+        #[serde(default)]
         unknown_environment_from: Vec<RawEnvironmentValueSource>,
         #[serde(default)]
         unknown_environment_names: Vec<String>,
@@ -1061,6 +1121,10 @@ pub enum RawEffectTarget {
         stdin_from_tool: bool,
         #[serde(default)]
         stdout_to_parent: bool,
+        #[serde(default)]
+        stdin_from_parent_when: Vec<String>,
+        #[serde(default)]
+        stdout_to_parent_when: Vec<String>,
     },
     None,
 }
@@ -1077,6 +1141,7 @@ pub struct RawDispatchCommandString {
 pub enum RawDispatchStringSyntax {
     PosixShell,
     GnuWordsplit,
+    GnuParallel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

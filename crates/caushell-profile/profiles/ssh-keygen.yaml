@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: ssh-keygen
@@ -28,14 +30,21 @@ forms:
           flag: "-R"
     effects:
       - kind: write_path
-        target:
-          kind: slot
-          name: key_path
+        target: {kind: configured_path, sources: [{slot: key_path, projection: {kind: identity}}], default_value: "~/.ssh/known_hosts", expand_user: true}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: key_path}, rule: {kind: append_suffix, suffix: ".old"}, purpose: generic_operand}}
 
   - id: load_pkcs11_provider
     selector:
       kind: has_modifier
       modifier: pkcs11_provider
+
+  - id: change_key_passphrase
+    selector:
+      kind: has_flag
+      flag: "-p"
+    effects:
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: key_path, projection: {kind: identity}}], missing: unknown}}
+      - {kind: write_path, target: {kind: configured_path, sources: [{slot: key_path, projection: {kind: identity}}], missing: unknown}}
 
   - id: read_key_material
     selector:
@@ -72,6 +81,8 @@ forms:
         kind: any
         items:
           - kind: has_flag
+            flag: "-p"
+          - kind: has_flag
             flag: "-H"
           - kind: has_flag
             flag: "-R"
@@ -97,11 +108,16 @@ forms:
             flag: "-r"
     effects:
       - kind: write_path
-        target:
-          kind: slot
-          name: key_path
+        target: {kind: configured_path, sources: [{slot: key_path, projection: {kind: identity}}], missing: unknown}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: key_path}, rule: {kind: append_suffix, suffix: ".pub"}, purpose: generic_operand}}
 
 modifiers:
+  - {id: hash_hosts, matcher: {kind: any_flag, flags: ["-H"]}}
+  - {id: passphrase, matcher: {kind: any_flag, flags: ["-p"]}}
+  - id: host_lookup
+    matcher: {kind: any_flag, flags: ["-R", "-F"]}
+    parameters: [{name: lookup_host, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: key_queries, matcher: {kind: any_flag, flags: ["-y", "-e", "-i", "-l", "-B", "-L", "-Q"]}}
   - id: key_file
     matcher:
       kind: any_flag
@@ -126,6 +142,7 @@ modifiers:
         - "-b"
         - "-C"
         - "-N"
+        - "-E"
     parameters:
       - name: key_option
         semantic:

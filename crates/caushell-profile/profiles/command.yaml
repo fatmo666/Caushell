@@ -22,6 +22,22 @@ platform:
   requires_features: []
 
 forms:
+  - id: no_command_noop
+    selector:
+      kind: all
+      items:
+        - kind: no_positional_args
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_flag, flag: "-v"}
+              - {kind: has_flag, flag: "-V"}
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+
   - id: wrapped_command
     selector:
       kind: all

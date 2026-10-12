@@ -12,6 +12,7 @@ pub enum RuleFamily {
     NetworkSafety,
     RepositorySafety,
     DatabaseSafety,
+    StateSafety,
     Taint,
 }
 
@@ -51,6 +52,9 @@ pub enum RuleId {
     DatabaseStateMutation,
     DatabaseAdministration,
     DatabaseOpaqueExecution,
+    StateMutation,
+    StateControl,
+    StateOpaqueOperation,
     TaintedExecution,
     SensitiveDataExfiltration,
     ImportedPackageExecution,
@@ -93,6 +97,9 @@ impl RuleId {
             Self::DatabaseStateMutation
             | Self::DatabaseAdministration
             | Self::DatabaseOpaqueExecution => RuleFamily::DatabaseSafety,
+            Self::StateMutation | Self::StateControl | Self::StateOpaqueOperation => {
+                RuleFamily::StateSafety
+            }
             Self::TaintedExecution | Self::SensitiveDataExfiltration => RuleFamily::Taint,
             Self::ImportedPackageExecution => RuleFamily::Taint,
         }

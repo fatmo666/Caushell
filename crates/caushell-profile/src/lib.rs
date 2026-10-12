@@ -8,6 +8,7 @@ mod dispatch_string;
 mod loader;
 mod lookup;
 mod materialize;
+mod native_operand;
 mod normalize;
 mod option_scope;
 mod patch_payload;
@@ -85,12 +86,12 @@ pub use raw::{
     RawSubcommandTree, RawValueConstraint, RawValueMatcher, RawValueProjection,
 };
 pub use raw::{RawArgumentRegion, RawArgumentRegionTerminator};
+pub use raw::{
+    RawNativeOperandSyntax, RawStructuredProjection, RawStructuredProjectionBranch,
+    RawStructuredProjectionMatcher, RawStructuredProjectionTarget,
+};
 pub use raw::{RawPayloadFormat, RawPayloadInputSource, RawPayloadProjection};
 pub use raw::{RawStdoutRecordContract, RawStdoutRecordProjection, RawStreamRecordSeparator};
-pub use raw::{
-    RawStructuredProjection, RawStructuredProjectionBranch, RawStructuredProjectionMatcher,
-    RawStructuredProjectionTarget,
-};
 pub use recursive::{
     ParsedRecursivePayload, RecursivePayloadArgumentFragment, RecursivePayloadCandidate,
     RecursivePayloadFragmentMaterialization, RecursivePayloadInput, RecursivePayloadOrigin,
@@ -109,6 +110,9 @@ pub use resolve::{
 };
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
 pub use types::ArgumentControlVocabulary;
+pub use types::CompiledOperandRegex;
+pub use types::EndpointInputScope;
+pub use types::OptionOperandMatcher;
 pub use types::PathAccessKind;
 pub use types::PathScope;
 pub use types::StdoutScalarShape;
@@ -137,10 +141,12 @@ pub use types::{
     ValueConstraint, ValueMatcher, ValueProjection,
 };
 pub use types::{ModuleEntrypoint, PayloadFormat, PayloadInputSource, PayloadProjection};
-pub use types::{StdoutRecordContract, StdoutRecordProjection, StreamRecordSeparator};
 pub use types::{
-    StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher,
-    StructuredProjectionTarget,
+    NativeOperandSyntax, StructuredProjection, StructuredProjectionBranch,
+    StructuredProjectionMatcher, StructuredProjectionTarget,
 };
-pub use value_projection::{project_value, refresh_parameter_semantic_values};
+pub use types::{StdoutRecordContract, StdoutRecordProjection, StreamRecordSeparator};
+pub use value_projection::{
+    project_semantic_value, project_value, refresh_parameter_semantic_values,
+};
 pub use value_shape::parse_owner_group_spec;

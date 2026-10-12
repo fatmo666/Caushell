@@ -1,8 +1,8 @@
 use caushell_parse::parse_command;
 use caushell_profile::{
-    load_command_profile_from_str, resolve_invocation, BoundInvocation, BoundValue, EffectKind,
-    EffectTarget, InvocationRuntimeContext, ProfileRegistry, ResolveInvocationResult,
-    StreamOutputMode,
+    BoundInvocation, BoundValue, EffectKind, EffectTarget, InvocationRuntimeContext,
+    ProfileRegistry, ResolveInvocationResult, StreamOutputMode, load_command_profile_from_str,
+    resolve_invocation,
 };
 use caushell_types::{ShellKind, StreamDataDependency};
 
@@ -132,10 +132,11 @@ fn groff_preprocessors_read_input_and_emit_transformed_text() {
         let b = bind(command);
         assert_eq!(values(&b, slot), ["/opt/secret"]);
         assert!(effect_targets(&b, EffectKind::ReadPath, slot));
-        assert!(b
-            .effects
-            .iter()
-            .any(|e| e.kind == EffectKind::TransformData));
+        assert!(
+            b.effects
+                .iter()
+                .any(|e| e.kind == EffectKind::TransformData)
+        );
         let stream = b.stream_contract.unwrap();
         assert_eq!(stream.stdout_mode, StreamOutputMode::Data);
         assert_eq!(stream.stdout_dependency, StreamDataDependency::Inputs);
@@ -146,10 +147,12 @@ fn groff_preprocessors_read_input_and_emit_transformed_text() {
         ["/opt/includes"],
         "{soelim:?}"
     );
-    assert!(soelim
-        .effects
-        .iter()
-        .any(|e| e.kind == EffectKind::ReadPath && e.target == EffectTarget::None));
+    assert!(
+        soelim
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::ReadPath && e.target == EffectTarget::None)
+    );
 }
 
 #[test]
@@ -166,17 +169,21 @@ fn xz_known_suffix_outputs_keep_and_file_stream_boundaries() {
         unknown_name.form_id.as_str(),
         "decompress_file_other_suffix_unresolved"
     );
-    assert!(unknown_name
-        .effects
-        .iter()
-        .any(|e| e.kind == EffectKind::WritePath && e.target == EffectTarget::None));
+    assert!(
+        unknown_name
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::WritePath && e.target == EffectTarget::None)
+    );
 
     let keep = bind("xz -k /workspace/input");
     assert_eq!(keep.form_id.as_str(), "compress_file_keep");
-    assert!(!keep
-        .effects
-        .iter()
-        .any(|e| e.kind == EffectKind::DeletePath));
+    assert!(
+        !keep
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::DeletePath)
+    );
 
     let decoded_stdout = bind("xz -dc /workspace/archive.xz");
     assert_eq!(decoded_stdout.form_id.as_str(), "decompress_stdout_files");

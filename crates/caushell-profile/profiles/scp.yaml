@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: scp
@@ -18,6 +20,24 @@ platform:
   requires_features: []
 
 forms:
+  - id: remote_to_remote
+    selector:
+      kind: all
+      items:
+        - kind: has_positional_at
+          index: 1
+        - kind: has_positional_at_matching
+          index: 0
+          matcher: {kind: structured_value_context, context: remote_spec}
+        - kind: last_positional_matches
+          matcher: {kind: structured_value_context, context: remote_spec}
+    parameters:
+      - {name: remote_sources, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - {name: remote_destination, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: upload_target}, binding: {kind: last_positional}, cardinality: required_one}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: remote_sources}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_destination}}
+
   - id: import_from_remote
     selector:
       kind: all
@@ -141,6 +161,44 @@ modifiers:
         target:
           kind: slot
           name: identity_file
+
+  - id: cipher
+    matcher: {kind: any_flag, flags: [-c]}
+    parameters:
+      - {name: cipher, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+
+  - id: legacy_ssh_program
+    matcher: {kind: any_flag, flags: [-S]}
+    parameters:
+      - {name: transport_program, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command: transport_program, environment: []}
+
+  - id: ssh_option
+    matcher: {kind: any_flag, flags: [-o]}
+    parameters:
+      - name: ssh_option
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          first_match_only: true
+          branches:
+            - matcher:
+                kind: keyword_value
+                keyword: ProxyCommand
+                case_insensitive: true
+                allow_quoted_keyword: true
+                disabled_values: [none]
+                unresolved_markers: ['%']
+              target: {name: proxy_command, semantic: {kind: plain_value}}
+    effects:
+      - kind: dispatch_command
+        target: {kind: dispatch, command_string: {slot: proxy_command, syntax: posix_shell}, stdout_to_parent: false}
+
+  - id: through_local_host
+    matcher: {kind: any_flag, flags: ["-3"]}
 
   - id: config_file
     matcher:

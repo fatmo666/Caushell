@@ -58,12 +58,15 @@ pub enum NormalizeError {
     MissingRepositoryOperation,
     UnexpectedRepositoryOperation,
     InvalidDatabaseOperation(String),
+    InvalidStateOperation(String),
+    InvalidEndpointInputScope(String),
     InvalidTerminalSessionOperation(String),
     InvalidShellJobOperation(String),
     InvalidSelectionFailureEffects(String),
     InvalidExtensionKey(String),
     InvalidOptionScope(String),
     InvalidArgumentRegion(String),
+    InvalidPositionalGroup(String),
     InvalidValueProjection(String),
     InvalidConfiguredPath(String),
     InvalidPathAccess(String),
@@ -133,6 +136,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         ));
     }
     let modifiers = normalize_modifiers(raw.modifiers)?;
+    validate_endpoint_input_scopes(&forms, &modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
     validate_stdout_scalars(&forms)?;
     let option_matching = normalize_option_matching(raw.option_matching);
@@ -145,6 +149,32 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .map(|tree| normalize_subcommand_tree(tree, option_matching))
         .transpose()?;
     let option_scope = normalize_option_scope(raw.option_scope);
+    let option_operand_matcher = raw
+        .option_operand_matcher
+        .map(
+            |raw| -> Result<crate::OptionOperandMatcher, NormalizeError> {
+                let matcher = normalize_value_matcher(raw)?;
+                let regex = match &matcher {
+                    ValueMatcher::RegexPattern(pattern) => Some(
+                        crate::CompiledOperandRegex::compile(pattern)
+                            .map_err(|e| NormalizeError::InvalidOptionScope(e.to_string()))?,
+                    ),
+                    _ => None,
+                };
+                Ok(crate::OptionOperandMatcher { matcher, regex })
+            },
+        )
+        .transpose()?;
+    if option_operand_matcher.is_some()
+        && (option_scope == OptionScopePolicy::AllArguments
+            || !raw.argument_regions.is_empty()
+            || subcommands.is_some())
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "option_operand_matcher requires a flat leading_options or permuted_options grammar"
+                .into(),
+        ));
+    }
     validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
     let argument_regions = raw
         .argument_regions
@@ -243,6 +273,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         option_scope,
         option_matching,
         option_prefixes,
+        option_operand_matcher,
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
     })
@@ -389,7 +420,7 @@ fn validate_configured_path_references(
 ) -> Result<(), NormalizeError> {
     // Validate declarations once at load time, not during each guard check.
     let names = declared_parameter_names(forms, modifiers, inherited);
-    validate_structured_projection_references(forms, modifiers, inherited)?;
+    validate_structured_projection_references(forms, modifiers, inherited, inherited_modifiers)?;
     validate_payload_projection_references(forms, modifiers, inherited)?;
     let mut modifier_names = inherited_modifiers.clone();
     modifier_names.extend(
@@ -402,6 +433,20 @@ fn validate_configured_path_references(
         .flat_map(|form| &form.effects)
         .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
     {
+        if let EffectTarget::DerivedPath(target) = &effect.target
+            && target.rule == caushell_types::DerivedPathRule::PrefixDirectory
+        {
+            for source in std::iter::once(&target.source).chain(target.root.iter()) {
+                if let DerivedPathSource::Slot(slot) = source
+                    && !names.contains(slot.as_str())
+                {
+                    return Err(NormalizeError::InvalidConfiguredPath(format!(
+                        "undeclared directory-prefix source slot: {}",
+                        slot.as_str()
+                    )));
+                }
+            }
+        }
         if let Some(crate::PathScope::Subtree { escape_modifiers }) = &effect.path_scope {
             for modifier in escape_modifiers {
                 if !modifier_names.contains(modifier.as_str()) {
@@ -435,6 +480,8 @@ fn validate_configured_path_references(
                 .clear_environment_when
                 .iter()
                 .chain(&target.unknown_environment_when)
+                .chain(&target.stdin_from_parent_when)
+                .chain(&target.stdout_to_parent_when)
                 .chain(
                     target
                         .unset_environment_when
@@ -560,6 +607,9 @@ fn normalize_option_scope(raw: RawOptionScopePolicy) -> OptionScopePolicy {
     match raw {
         RawOptionScopePolicy::AllArguments => OptionScopePolicy::AllArguments,
         RawOptionScopePolicy::LeadingOptions => OptionScopePolicy::LeadingOptions,
+        RawOptionScopePolicy::LeadingOptionsWithOperand => {
+            OptionScopePolicy::LeadingOptionsWithOperand
+        }
         RawOptionScopePolicy::PermutedOptions => OptionScopePolicy::PermutedOptions,
     }
 }
@@ -570,9 +620,52 @@ fn validate_option_scope(
     modifiers: &[Modifier],
     forms: &[Form],
 ) -> Result<(), NormalizeError> {
+    if policy == OptionScopePolicy::AllArguments
+        && matching == OptionMatchingPolicy::DeclaredShortWords
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "declared_short_words requires scoped option ownership".into(),
+        ));
+    }
+    if policy == OptionScopePolicy::AllArguments
+        && modifiers
+            .iter()
+            .flat_map(|m| &m.parameters)
+            .chain(forms.iter().flat_map(|f| &f.parameters))
+            .any(|p| matches!(p.binding, BindingSpec::PositionalGroups { .. }))
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "positional_groups requires scoped option ownership".into(),
+        ));
+    }
     if policy == OptionScopePolicy::AllArguments && modifiers.iter().any(|m| m.ends_option_scope) {
         return Err(NormalizeError::InvalidOptionScope(
             "ends_option_scope requires scoped option parsing".into(),
+        ));
+    }
+    if policy == OptionScopePolicy::AllArguments
+        && modifiers
+            .iter()
+            .flat_map(|m| &m.parameters)
+            .chain(forms.iter().flat_map(|f| &f.parameters))
+            .any(|p| {
+                matches!(
+                    p.binding,
+                    BindingSpec::FollowingMatchedFlag {
+                        operand_mode: FlagOperandMode::OptionalShortOctalPrefix
+                            | FlagOperandMode::WordAttached
+                            | FlagOperandMode::OptionalWordAttached
+                    } | BindingSpec::FollowingFlag {
+                        operand_mode: FlagOperandMode::OptionalShortOctalPrefix
+                            | FlagOperandMode::WordAttached
+                            | FlagOperandMode::OptionalWordAttached,
+                        ..
+                    }
+                )
+            })
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "native attached operand grammars require scoped option ownership".into(),
         ));
     }
     if policy != OptionScopePolicy::AllArguments {
@@ -586,6 +679,7 @@ fn normalize_option_matching(raw: RawOptionMatchingPolicy) -> OptionMatchingPoli
     match raw {
         RawOptionMatchingPolicy::ShortClusters => OptionMatchingPolicy::ShortClusters,
         RawOptionMatchingPolicy::ExactNames => OptionMatchingPolicy::ExactNames,
+        RawOptionMatchingPolicy::DeclaredShortWords => OptionMatchingPolicy::DeclaredShortWords,
     }
 }
 
@@ -1061,6 +1155,16 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
     ensure_non_empty(&raw.name, "parameters.name")?;
 
     let semantic = normalize_semantic(raw.semantic)?;
+    if matches!(raw.binding, RawBindingSpec::PositionalGroups { .. })
+        && !matches!(
+            raw.cardinality,
+            Some(RawCardinality::RequiredMany | RawCardinality::OptionalMany)
+        )
+    {
+        return Err(NormalizeError::InvalidPositionalGroup(
+            "positional_groups requires a variadic cardinality".into(),
+        ));
+    }
     let value_projection = raw
         .value_projection
         .map(normalize_value_projection)
@@ -1074,6 +1178,11 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
             || !matches!(
                 semantic,
                 SemanticType::PlainValue
+                    | SemanticType::Path(crate::PathSemantic {
+                        role: PathRole::Read | PathRole::Write | PathRole::Target,
+                        ..
+                    })
+                    | SemanticType::Endpoint(_)
                     | SemanticType::Payload(crate::PayloadSemantic {
                         source: PayloadSource::ScriptFileRef,
                         ..
@@ -1081,7 +1190,7 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
             ))
     {
         return Err(NormalizeError::InvalidStructuredProjection(
-            "structured_projection requires an unprojected plain_value or script_file_ref source"
+            "structured_projection requires an unprojected plain_value, filesystem path, endpoint or script_file_ref source"
                 .into(),
         ));
     }
@@ -1119,8 +1228,18 @@ fn normalize_structured_projection(
     raw: crate::RawStructuredProjection,
 ) -> Result<crate::StructuredProjection, NormalizeError> {
     use crate::{StructuredProjection, StructuredProjectionBranch, StructuredProjectionMatcher};
+    if raw.last_value_only && raw.first_match_only {
+        return Err(NormalizeError::InvalidStructuredProjection(
+            "last_value_only and first_match_only are mutually exclusive".into(),
+        ));
+    }
     if let Some(separator) = &raw.separator {
         ensure_non_empty(separator, "structured_projection.separator")?;
+    }
+    if raw.native_syntax.is_some() && (raw.separator.is_some() || raw.first_match_only) {
+        return Err(NormalizeError::InvalidStructuredProjection(
+            "native operand syntax cannot be truncated by separator or first_match_only".into(),
+        ));
     }
     let mut seen = BTreeSet::new();
     let branches = raw
@@ -1128,6 +1247,26 @@ fn normalize_structured_projection(
         .into_iter()
         .map(|branch| {
             let matcher = match branch.matcher {
+                crate::RawStructuredProjectionMatcher::RegexCapture { pattern, group } => {
+                    ensure_non_empty(&pattern, "structured_projection.matcher.regex_capture")?;
+                    let regex =
+                        crate::CompiledOperandRegex::compile(&pattern).map_err(|error| {
+                            NormalizeError::InvalidStructuredProjection(format!(
+                                "invalid operand regex: {error}"
+                            ))
+                        })?;
+                    if group >= regex.regex().captures_len() {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "capture group does not exist".into(),
+                        ));
+                    }
+                    if !seen.insert(("regex_capture", format!("{group}:{pattern}"))) {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "duplicate regex branch".into(),
+                        ));
+                    }
+                    StructuredProjectionMatcher::RegexCapture { regex, group }
+                }
                 crate::RawStructuredProjectionMatcher::Literal { value } => {
                     ensure_non_empty(&value, "structured_projection.matcher.literal")?;
                     if !seen.insert(("literal", value.clone())) {
@@ -1196,11 +1335,59 @@ fn normalize_structured_projection(
             };
             Ok(StructuredProjectionBranch {
                 matcher,
+                requires_modifiers: branch
+                    .requires_modifiers
+                    .into_iter()
+                    .map(|name| {
+                        ensure_non_empty(&name, "structured_projection.requires_modifiers")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
+                unless_modifiers: branch
+                    .unless_modifiers
+                    .into_iter()
+                    .map(|name| {
+                        ensure_non_empty(&name, "structured_projection.unless_modifiers")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
+                unless_modifier: branch
+                    .unless_modifier
+                    .map(|name| {
+                        ensure_non_empty(&name, "structured_projection.unless_modifier")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .transpose()?,
                 target: branch.target.map(normalize_structured_target).transpose()?,
+                unless_parameter_matches: branch
+                    .unless_parameter_matches
+                    .map(|condition| {
+                        ensure_non_empty(
+                            &condition.name,
+                            "structured_projection.unless_parameter_matches.name",
+                        )?;
+                        Ok(crate::types::ProjectionParameterCondition {
+                            name: SlotName::new(condition.name),
+                            matcher: normalize_value_matcher(condition.matcher)?,
+                        })
+                    })
+                    .transpose()?,
             })
         })
         .collect::<Result<Vec<_>, NormalizeError>>()?;
     Ok(StructuredProjection {
+        last_value_only: raw.last_value_only,
+        native_syntax: raw.native_syntax.map(|syntax| match syntax {
+            crate::raw::RawNativeOperandSyntax::PassphraseSource => {
+                crate::types::NativeOperandSyntax::PassphraseSource
+            }
+            crate::raw::RawNativeOperandSyntax::CurlMultipart => {
+                crate::types::NativeOperandSyntax::CurlMultipart
+            }
+            crate::raw::RawNativeOperandSyntax::CurlWriteOut => {
+                crate::types::NativeOperandSyntax::CurlWriteOut
+            }
+        }),
         separator: raw.separator,
         first_match_only: raw.first_match_only,
         branches,
@@ -1211,25 +1398,33 @@ fn normalize_structured_projection(
 fn normalize_structured_target(
     raw: crate::RawStructuredProjectionTarget,
 ) -> Result<crate::StructuredProjectionTarget, NormalizeError> {
+    if raw.unresolved && !raw.sources.is_empty() {
+        return Err(NormalizeError::InvalidStructuredProjection(
+            "an unresolved target cannot also project a preferred source".into(),
+        ));
+    }
     ensure_non_empty(&raw.name, "structured_projection.target.name")?;
     let semantic = normalize_semantic(raw.semantic)?;
     if !matches!(
         &semantic,
         SemanticType::PlainValue
             | SemanticType::Path(_)
+            | SemanticType::Endpoint(_)
             | SemanticType::CommandRef(_)
+            | SemanticType::InProcessCodeLoad(_)
             | SemanticType::Payload(crate::PayloadSemantic {
                 source: PayloadSource::DynamicReference,
                 ..
             })
     ) {
         return Err(NormalizeError::InvalidStructuredProjection(
-            "target must be plain_value, path, command_ref or a dynamic payload reference".into(),
+            "target must be plain_value, path, endpoint, command_ref, in_process_code_load or a dynamic payload reference".into(),
         ));
     }
     Ok(crate::StructuredProjectionTarget {
         name: SlotName::new(raw.name),
         semantic,
+        unresolved: raw.unresolved,
         sources: normalize_slot_names(raw.sources, "structured_projection.target.sources")?,
     })
 }
@@ -1238,6 +1433,7 @@ fn validate_structured_projection_references(
     forms: &[Form],
     modifiers: &[Modifier],
     inherited: &BTreeSet<String>,
+    inherited_modifiers: &BTreeSet<String>,
 ) -> Result<(), NormalizeError> {
     let mut available_sources = inherited.clone();
     available_sources.extend(
@@ -1260,11 +1456,60 @@ fn validate_structured_projection_references(
             .collect();
         let mut source_names = inherited.clone();
         source_names.extend(parameters.iter().map(|p| p.name.as_str().to_string()));
-        let mut targets = BTreeSet::new();
-        for parameter in &parameters {
+        let mut targets: BTreeMap<&str, (usize, &SemanticType)> = BTreeMap::new();
+        for (source_index, parameter) in parameters.iter().enumerate() {
             let Some(projection) = &parameter.structured_projection else {
                 continue;
             };
+            for branch in &projection.branches {
+                if let Some(condition) = &branch.unless_parameter_matches {
+                    // Only a raw control slot is eligible for a negative proof;
+                    // projected targets can depend on this same grammar.
+                    if !parameters.iter().any(|p| {
+                        p.name == condition.name
+                            && p.semantic == SemanticType::PlainValue
+                            && p.value_projection.is_none()
+                            && p.structured_projection.is_none()
+                    }) {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "unless_parameter_matches must name an unprojected plain-value parameter".into(),
+                        ));
+                    }
+                }
+                if branch
+                    .requires_modifiers
+                    .iter()
+                    .chain(branch.unless_modifiers.iter())
+                    .any(|id| {
+                        !inherited_modifiers.contains(id.as_str())
+                            && !modifiers.iter().any(|m| m.id == *id)
+                    })
+                {
+                    return Err(NormalizeError::InvalidStructuredProjection(
+                        "projection modifier conditions must name declared modifiers".into(),
+                    ));
+                }
+                let mut conditions = std::collections::BTreeSet::new();
+                if branch
+                    .requires_modifiers
+                    .iter()
+                    .chain(branch.unless_modifiers.iter())
+                    .chain(branch.unless_modifier.iter())
+                    .any(|id| !conditions.insert(id))
+                {
+                    return Err(NormalizeError::InvalidStructuredProjection(
+                        "projection modifier conditions must be unique and noncontradictory".into(),
+                    ));
+                }
+                if branch.unless_modifier.as_ref().is_some_and(|id| {
+                    !inherited_modifiers.contains(id.as_str())
+                        && !modifiers.iter().any(|m| m.id == *id)
+                }) {
+                    return Err(NormalizeError::InvalidStructuredProjection(
+                        "unless_modifier must name a declared modifier".into(),
+                    ));
+                }
+            }
             for target in projection
                 .branches
                 .iter()
@@ -1272,13 +1517,21 @@ fn validate_structured_projection_references(
                 .chain(projection.fallback.iter())
             {
                 if source_names.contains(target.name.as_str())
-                    || !targets.insert(target.name.as_str())
+                    || targets
+                        .get(target.name.as_str())
+                        .is_some_and(|(owner, semantic)| {
+                            *owner != source_index || *semantic != &target.semantic
+                        })
                 {
                     return Err(NormalizeError::InvalidStructuredProjection(format!(
                         "projected slot collision: {}",
                         target.name.as_str()
                     )));
                 }
+                // Mutually exclusive branches of ONE operand may name the
+                // same semantic slot. Different operands or semantic types
+                // still collide; branch-local unknowns never change its type.
+                targets.insert(target.name.as_str(), (source_index, &target.semantic));
                 for source in &target.sources {
                     if !available_sources.contains(source.as_str()) || source == &parameter.name {
                         return Err(NormalizeError::InvalidStructuredProjection(format!(
@@ -1507,6 +1760,14 @@ fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError>
         RawBindingSpec::NextPositional => Ok(BindingSpec::NextPositional),
         RawBindingSpec::NextPositionalAfterDashDash => Ok(BindingSpec::NextPositionalAfterDashDash),
         RawBindingSpec::PositionalAt { index } => Ok(BindingSpec::PositionalAt(index)),
+        RawBindingSpec::PositionalGroups { group_size, member } => {
+            if !(2..=256).contains(&group_size) || member >= group_size {
+                return Err(NormalizeError::InvalidPositionalGroup(
+                    "group_size must be 2..=256 and member must be smaller than group_size".into(),
+                ));
+            }
+            Ok(BindingSpec::PositionalGroups { group_size, member })
+        }
         RawBindingSpec::RemainingPositionals => Ok(BindingSpec::RemainingPositionals),
         RawBindingSpec::RemainingPositionalsAfterDashDash => {
             Ok(BindingSpec::RemainingPositionalsAfterDashDash)
@@ -1567,6 +1828,8 @@ fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError>
 
 fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
     match raw {
+        RawFlagOperandMode::WordAttached => FlagOperandMode::WordAttached,
+        RawFlagOperandMode::OptionalWordAttached => FlagOperandMode::OptionalWordAttached,
         RawFlagOperandMode::NextPositional => FlagOperandMode::NextPositional,
         RawFlagOperandMode::NextArg => FlagOperandMode::NextArg,
         RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
@@ -1577,6 +1840,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
         RawFlagOperandMode::OptionalInlineOrShortAttached => {
             FlagOperandMode::OptionalInlineOrShortAttached
         }
+        RawFlagOperandMode::OptionalShortOctalPrefix => FlagOperandMode::OptionalShortOctalPrefix,
         RawFlagOperandMode::InlineOrShortAttached => FlagOperandMode::InlineOrShortAttached,
         RawFlagOperandMode::NextPositionalAfterDashDash => {
             FlagOperandMode::NextPositionalAfterDashDash
@@ -1706,6 +1970,7 @@ fn normalize_path_purpose(raw: RawPathPurpose) -> PathPurpose {
     match raw {
         RawPathPurpose::IncidentalCache => PathPurpose::IncidentalCache,
         RawPathPurpose::GenericOperand => PathPurpose::GenericOperand,
+        RawPathPurpose::AuxiliaryInput => PathPurpose::AuxiliaryInput,
         RawPathPurpose::ScriptSource => PathPurpose::ScriptSource,
         RawPathPurpose::InProcessCode => PathPurpose::InProcessCode,
         RawPathPurpose::StartupConfig => PathPurpose::StartupConfig,
@@ -1792,6 +2057,7 @@ fn normalize_package_manager_kind(raw: RawPackageManagerKind) -> PackageManagerK
         RawPackageManagerKind::Conda => PackageManagerKind::Conda,
         RawPackageManagerKind::Npm => PackageManagerKind::Npm,
         RawPackageManagerKind::Yum => PackageManagerKind::Yum,
+        RawPackageManagerKind::Rpm => PackageManagerKind::Rpm,
         RawPackageManagerKind::Brew => PackageManagerKind::Brew,
     }
 }
@@ -1833,6 +2099,21 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if let Some(scope) = &raw.input_scope {
+        if kind != EffectKind::NetworkEndpoint || !matches!(target, EffectTarget::Slot(_)) {
+            return Err(NormalizeError::InvalidEndpointInputScope(
+                "input_scope is exclusive to a slotted network_endpoint effect".into(),
+            ));
+        }
+        let mut slots = std::collections::BTreeSet::new();
+        for slot in &scope.slots {
+            if slot.trim().is_empty() || !slots.insert(slot) {
+                return Err(NormalizeError::InvalidEndpointInputScope(
+                    "input_scope slots must be nonempty and unique".into(),
+                ));
+            }
+        }
+    }
     if raw.path_scope.is_some()
         && (!matches!(
             kind,
@@ -1861,12 +2142,21 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
             "variable_name targets are exclusive to bind_variable_from_runtime_input".into(),
         ));
     }
+    if matches!(
+        kind,
+        EffectKind::ConsumeAuxiliaryValue | EffectKind::ConsumeAuxiliaryEnvironment
+    ) && !matches!(target, EffectTarget::Slot(_))
+    {
+        return Err(NormalizeError::InvalidVariableTarget(
+            "auxiliary input effects require a declared slot target".into(),
+        ));
+    }
     if raw.path_access.is_some()
         && (!matches!(kind, EffectKind::ReadPath | EffectKind::WritePath)
-            || !matches!(target, EffectTarget::Slot(_)))
+            || !matches!(target, EffectTarget::Slot(_) | EffectTarget::DerivedPath(_)))
     {
         return Err(NormalizeError::InvalidPathAccess(
-            "content_open requires a read_path/write_path effect with an explicit slot target"
+            "content_open requires a read_path/write_path effect with a slot or derived path target"
                 .into(),
         ));
     }
@@ -1909,6 +2199,14 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     }
     let surface = normalize_effect_surface(kind, raw.surface)?;
     let repository_operation = normalize_repository_operation(kind, raw.repository_operation)?;
+    let state_operation = match (kind, raw.state_operation) {
+        (EffectKind::StateOperation, Some(operation)) if matches!(target, EffectTarget::None) => Some(operation),
+        (EffectKind::StateOperation, _) => return Err(NormalizeError::InvalidStateOperation(
+            "state_operation requires a domain, operation class and target none; external state is not a filesystem path".into())),
+        (_, Some(_)) => return Err(NormalizeError::InvalidStateOperation(
+            "state_operation metadata is exclusive to state_operation effects".into())),
+        (_, None) => None,
+    };
     let database_operation = match (kind, raw.database_operation) {
         (EffectKind::DatabaseOperation, Some(operation)) if matches!(target, EffectTarget::None) => Some(operation),
         (EffectKind::DatabaseOperation, _) => return Err(NormalizeError::InvalidDatabaseOperation(
@@ -1936,6 +2234,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     };
 
     Ok(Effect {
+        input_scope: raw.input_scope,
         kind,
         target,
         path_access: raw.path_access,
@@ -1948,11 +2247,64 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         catastrophic: normalize_catastrophic_effect_metadata(raw.catastrophic)?,
         host_risk: normalize_host_risk_effect_metadata(raw.host_risk)?,
         repository_operation,
+        state_operation,
         database_operation,
         terminal_session_operation,
         shell_job_operation,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+/// A mistyped input slot must not silently narrow the data reaching a sink.
+/// Optional modifier slots are legal, but each name must be declared in this
+/// invocation grammar (including tool-owned structured projections).
+fn validate_endpoint_input_scopes(
+    forms: &[Form],
+    modifiers: &[Modifier],
+) -> Result<(), NormalizeError> {
+    fn slots<'a>(parameters: impl Iterator<Item = &'a Parameter>) -> BTreeSet<String> {
+        let mut result = BTreeSet::new();
+        for parameter in parameters {
+            result.insert(parameter.name.as_str().to_string());
+            if let Some(projection) = &parameter.structured_projection {
+                for target in projection
+                    .branches
+                    .iter()
+                    .filter_map(|b| b.target.as_ref())
+                    .chain(projection.fallback.iter())
+                {
+                    result.insert(target.name.as_str().to_string());
+                }
+            }
+        }
+        result
+    }
+    let modifier_slots = slots(modifiers.iter().flat_map(|m| &m.parameters));
+    let validate = |effects: &[Effect], available: &BTreeSet<String>| {
+        for effect in effects {
+            if let Some(scope) = &effect.input_scope {
+                for name in &scope.slots {
+                    if !available.contains(name) {
+                        return Err(NormalizeError::InvalidEndpointInputScope(format!(
+                            "undeclared input slot {name:?}"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+    for form in forms {
+        let mut available = modifier_slots.clone();
+        available.extend(slots(form.parameters.iter()));
+        validate(&form.effects, &available)?;
+    }
+    let mut all_slots = modifier_slots;
+    all_slots.extend(slots(forms.iter().flat_map(|f| &f.parameters)));
+    for modifier in modifiers {
+        validate(&modifier.effects, &all_slots)?;
+    }
+    Ok(())
 }
 
 fn normalize_repository_operation(
@@ -2083,6 +2435,8 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::ExecuteConfigDefinedTask => EffectKind::ExecuteConfigDefinedTask,
         RawEffectKind::DispatchCommand => EffectKind::DispatchCommand,
         RawEffectKind::ConsumeStdin => EffectKind::ConsumeStdin,
+        RawEffectKind::ConsumeAuxiliaryEnvironment => EffectKind::ConsumeAuxiliaryEnvironment,
+        RawEffectKind::ConsumeAuxiliaryValue => EffectKind::ConsumeAuxiliaryValue,
         RawEffectKind::BindVariableFromRuntimeInput => EffectKind::BindVariableFromRuntimeInput,
         RawEffectKind::TerminateCurrentShell => EffectKind::TerminateCurrentShell,
         RawEffectKind::ShellJobOperation => EffectKind::ShellJobOperation,
@@ -2097,6 +2451,7 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::ControlProcess => EffectKind::ControlProcess,
         RawEffectKind::RepositoryOperation => EffectKind::RepositoryOperation,
         RawEffectKind::DatabaseOperation => EffectKind::DatabaseOperation,
+        RawEffectKind::StateOperation => EffectKind::StateOperation,
         RawEffectKind::TerminalSessionOperation => EffectKind::TerminalSessionOperation,
     }
 }
@@ -2373,12 +2728,21 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             root,
             rule,
             purpose,
-        } => Ok(EffectTarget::DerivedPath(DerivedPathTarget {
-            source: normalize_derived_path_source(source)?,
-            root: root.map(normalize_derived_path_source).transpose()?,
-            rule: normalize_derived_path_rule(rule)?,
-            purpose: purpose.map(normalize_path_purpose),
-        })),
+        } => {
+            if rule == RawDerivedPathRule::PrefixDirectory
+                && (root.is_none() || !matches!(source, RawDerivedPathSource::Slot { .. }))
+            {
+                return Err(NormalizeError::InvalidConfiguredPath(
+                    "prefix_directory requires a slot source and explicit root".into(),
+                ));
+            }
+            Ok(EffectTarget::DerivedPath(DerivedPathTarget {
+                source: normalize_derived_path_source(source)?,
+                root: root.map(normalize_derived_path_source).transpose()?,
+                rule: normalize_derived_path_rule(rule)?,
+                purpose: purpose.map(normalize_path_purpose),
+            }))
+        }
         RawEffectTarget::MutationScope {
             scope_kind,
             root,
@@ -2418,11 +2782,14 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             unset_environment,
             unset_environment_when,
             unknown_environment_when,
+            unknown_environment,
             unknown_environment_from,
             unknown_environment_names,
             stdin_from_parent,
             stdin_from_tool,
             stdout_to_parent,
+            stdin_from_parent_when,
+            stdout_to_parent_when,
         } => {
             let command = match (
                 command,
@@ -2463,6 +2830,9 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                             crate::raw::RawDispatchStringSyntax::GnuWordsplit => {
                                 crate::DispatchStringSyntax::GnuWordsplit
                             }
+                            crate::raw::RawDispatchStringSyntax::GnuParallel => {
+                                crate::DispatchStringSyntax::GnuParallel
+                            }
                         },
                     }
                 }
@@ -2472,7 +2842,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     ));
                 }
             };
-            if stdin_from_parent && stdin_from_tool {
+            if (stdin_from_parent || !stdin_from_parent_when.is_empty()) && stdin_from_tool {
                 return Err(NormalizeError::InvalidConfiguredPath(
                     "dispatch stdin cannot be both inherited and tool-produced".into(),
                 ));
@@ -2561,6 +2931,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                         Ok(ModifierId::new(name))
                     })
                     .collect::<Result<Vec<_>, NormalizeError>>()?,
+                unknown_environment,
                 unknown_environment_from: unknown_environment_from
                     .into_iter()
                     .map(normalize_environment_source)
@@ -2569,6 +2940,20 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 stdin_from_parent,
                 stdin_from_tool,
                 stdout_to_parent,
+                stdin_from_parent_when: stdin_from_parent_when
+                    .into_iter()
+                    .map(|name| {
+                        ensure_non_empty(&name, "effects.target.stdin_from_parent_when")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
+                stdout_to_parent_when: stdout_to_parent_when
+                    .into_iter()
+                    .map(|name| {
+                        ensure_non_empty(&name, "effects.target.stdout_to_parent_when")?;
+                        Ok(ModifierId::new(name))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?,
             }))
         }
         RawEffectTarget::None => Ok(EffectTarget::None),
@@ -2627,6 +3012,8 @@ fn normalize_derived_path_rule(
             Ok(caushell_types::DerivedPathRule::ReplaceSuffix { from, to })
         }
         RawDerivedPathRule::UrlBasename => Ok(caushell_types::DerivedPathRule::UrlBasename),
+        RawDerivedPathRule::Basename => Ok(caushell_types::DerivedPathRule::Basename),
+        RawDerivedPathRule::PrefixDirectory => Ok(caushell_types::DerivedPathRule::PrefixDirectory),
         RawDerivedPathRule::ArchiveMembers => Ok(caushell_types::DerivedPathRule::ArchiveMembers),
         RawDerivedPathRule::LexicalAncestors => {
             Ok(caushell_types::DerivedPathRule::LexicalAncestors)
@@ -2677,6 +3064,7 @@ fn normalize_subcommand_node(
     ensure_non_empty(&raw.name, "subcommands.name")?;
     let forms = normalize_forms(raw.forms)?;
     let modifiers = normalize_modifiers(raw.modifiers)?;
+    validate_endpoint_input_scopes(&forms, &modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
     validate_stdout_scalars(&forms)?;
     let option_scope = normalize_option_scope(raw.option_scope);
@@ -2832,6 +3220,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
+            option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -2874,6 +3263,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    input_scope: None,
                     kind: RawEffectKind::ExecutePayload,
                     target: RawEffectTarget::Slot {
                         name: "payload".to_string(),
@@ -2883,6 +3273,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    state_operation: None,
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
@@ -2916,6 +3307,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 effects: vec![RawEffect {
+                    input_scope: None,
                     kind: RawEffectKind::LoadConfig,
                     target: RawEffectTarget::Slot {
                         name: "startup_config".to_string(),
@@ -2925,6 +3317,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    state_operation: None,
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
@@ -3011,6 +3404,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
+            option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3045,6 +3439,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    input_scope: None,
                     kind: RawEffectKind::WritePath,
                     target: RawEffectTarget::Slot {
                         name: "destination".to_string(),
@@ -3054,6 +3449,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    state_operation: None,
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
@@ -3112,6 +3508,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
+            option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3146,6 +3543,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    input_scope: None,
                     kind: RawEffectKind::WritePath,
                     target: RawEffectTarget::Slot {
                         name: "target".to_string(),
@@ -3155,6 +3553,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    state_operation: None,
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
@@ -3213,6 +3612,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
+            option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3312,6 +3712,7 @@ mod tests {
                 ],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    input_scope: None,
                     kind: RawEffectKind::ChangeMode,
                     target: RawEffectTarget::Slot {
                         name: "path_targets".to_string(),
@@ -3321,6 +3722,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    state_operation: None,
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
@@ -3418,6 +3820,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
+            option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3451,6 +3854,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    input_scope: None,
                     kind: RawEffectKind::LoadInProcessCode,
                     target: RawEffectTarget::Slot {
                         name: "require_target".to_string(),
@@ -3460,6 +3864,7 @@ mod tests {
                     host_risk: None,
                     repository_operation: None,
                     database_operation: None,
+                    state_operation: None,
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,

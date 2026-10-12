@@ -593,6 +593,7 @@ pub struct ImportedPackageExecutionEvidence {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionRiskSubtype {
     GenericPayload,
+    InProcessCodeLoad,
     Hook,
     StartupConfig,
     ProjectConfig,
@@ -831,6 +832,7 @@ fn taint_source_kind_name(kind: TaintSourceKindEvidence) -> &'static str {
 fn execution_risk_subtype_name(kind: ExecutionRiskSubtype) -> &'static str {
     match kind {
         ExecutionRiskSubtype::GenericPayload => "generic_payload",
+        ExecutionRiskSubtype::InProcessCodeLoad => "in_process_code_load",
         ExecutionRiskSubtype::Hook => "hook",
         ExecutionRiskSubtype::StartupConfig => "startup_config",
         ExecutionRiskSubtype::ProjectConfig => "project_config",

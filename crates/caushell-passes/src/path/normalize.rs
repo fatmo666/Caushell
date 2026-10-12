@@ -32,6 +32,17 @@ pub(crate) fn resolve_path_operand(
         return None;
     }
 
+    // A brace-generated argv set is not one literal filename. Reuse the
+    // shared lexical width proof; do not expand alternatives or inspect disk.
+    // Non-expanding/escaped braces and already decoded raw strings stay data.
+    if !quoted
+        && contains_unescaped_chars(text, &['{'])
+        && caushell_profile::shell_word_structure(text, quoted, node_kind).fields
+            != caushell_profile::ArgumentFieldCount::ExactlyOne
+    {
+        return None;
+    }
+
     if !quoted {
         if text == "~" {
             return home.map(normalize_shell_path);
@@ -184,4 +195,26 @@ fn has_unescaped_bracket_glob(text: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod brace_tests {
+    use super::resolve_path_operand;
+
+    #[test]
+    fn brace_generated_paths_are_not_literal_local_filenames() {
+        for text in ["./{..,cache}", "file{1..20}", "{a,{b,c}}"] {
+            assert_eq!(
+                resolve_path_operand(text, false, "word", "/workspace", None),
+                None,
+                "{text}"
+            );
+        }
+        for (text, kind) in [("./{cache}", "word"), ("./{..,cache}", "raw_string")] {
+            assert!(
+                resolve_path_operand(text, false, kind, "/workspace", None).is_some(),
+                "{text}"
+            );
+        }
+    }
 }

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     BoundInvocation, BoundParameter, BoundValue, Parameter, ProjectedSemanticValue,
@@ -9,9 +9,9 @@ use crate::{
 /// Decode only parameters with a declared tool grammar. No global scan or shell reparse.
 pub(crate) fn project_parameters<'a>(
     invocation: &mut BoundInvocation,
-    parameters: impl Iterator<Item = &'a Parameter>,
+    parameters: impl Iterator<Item = (&'a Parameter, bool)>,
 ) {
-    for parameter in parameters {
+    for (parameter, flag_present) in parameters {
         let Some(grammar) = &parameter.structured_projection else {
             continue;
         };
@@ -22,6 +22,21 @@ pub(crate) fn project_parameters<'a>(
         {
             source.structured_projection = Some(grammar.clone());
         } else {
+            let missing_flag_operand = flag_present
+                && matches!(
+                    parameter.binding,
+                    crate::BindingSpec::FollowingMatchedFlag { operand_mode }
+                        | crate::BindingSpec::FollowingFlag { operand_mode, .. }
+                        if !matches!(operand_mode,
+                            crate::FlagOperandMode::OptionalWordAttached
+                                | crate::FlagOperandMode::OptionalNextArg
+                                | crate::FlagOperandMode::OptionalInlineOnly
+                                | crate::FlagOperandMode::OptionalInlineOrShortAttached
+                                | crate::FlagOperandMode::OptionalShortOctalPrefix)
+                );
+            if parameter.cardinality.is_optional() && !missing_flag_operand {
+                continue;
+            }
             let mut source =
                 BoundParameter::new(parameter.name.clone(), parameter.semantic.clone());
             source.structured_projection = Some(grammar.clone());
@@ -36,6 +51,7 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
         .bound_parameters
         .retain(|p| p.structured_source.is_none());
     let mut generated = BTreeMap::new();
+    let mut native_unresolved = false;
     for parameter in &invocation.bound_parameters {
         let Some(grammar) = &parameter.structured_projection else {
             continue;
@@ -58,7 +74,8 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
                 },
                 crate::ArgumentBindingSource::RemainingArg,
             );
-            emit_unknown(grammar, &missing, &mut generated);
+            emit_unknown(invocation, grammar, &missing, &mut generated);
+            native_unresolved |= grammar.native_syntax.is_some();
             for target in grammar
                 .branches
                 .iter()
@@ -71,10 +88,39 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
             }
             continue;
         }
-        'operands: for value in &source.values {
+        let values = if grammar.last_value_only {
+            &source.values[source.values.len() - 1..]
+        } else {
+            &source.values[..]
+        };
+        'operands: for value in values {
             let matched = match project_value(&ValueProjection::Identity, value) {
                 Some(SemanticValueResolution::Known(text)) => {
-                    if let Some(separator) = &grammar.separator {
+                    if let Some(syntax) = grammar.native_syntax {
+                        let inputs = match syntax {
+                            crate::NativeOperandSyntax::CurlMultipart => {
+                                crate::native_operand::multipart_inputs(&text)
+                            }
+                            crate::NativeOperandSyntax::PassphraseSource => {
+                                crate::native_operand::passphrase_inputs(&text)
+                            }
+                            crate::NativeOperandSyntax::CurlWriteOut => {
+                                crate::native_operand::write_out_paths(&text)
+                            }
+                        };
+                        match inputs {
+                            Some(items) => {
+                                for item in items {
+                                    project_item(invocation, grammar, value, &item, &mut generated);
+                                }
+                            }
+                            None => {
+                                emit_unknown(invocation, grammar, value, &mut generated);
+                                native_unresolved = true;
+                            }
+                        }
+                        false
+                    } else if let Some(separator) = &grammar.separator {
                         for item in text.split(separator.as_str()) {
                             let matched =
                                 project_item(invocation, grammar, value, item, &mut generated);
@@ -88,7 +134,8 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
                     }
                 }
                 _ => {
-                    emit_unknown(grammar, value, &mut generated);
+                    emit_unknown(invocation, grammar, value, &mut generated);
+                    native_unresolved |= grammar.native_syntax.is_some();
                     true
                 }
             };
@@ -108,6 +155,7 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
         }
     }
     invocation.bound_parameters.extend(generated.into_values());
+    invocation.operation_semantics_unresolved |= native_unresolved;
 }
 
 fn project_item(
@@ -118,7 +166,7 @@ fn project_item(
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
 ) -> bool {
     if item.is_empty() {
-        emit_unknown(grammar, source, generated);
+        emit_unknown(invocation, grammar, source, generated);
         return true;
     }
     let mut selected = grammar.fallback.as_ref();
@@ -126,7 +174,28 @@ fn project_item(
     let mut selected_unknown = false;
     let mut matched_item = grammar.fallback.is_some();
     for branch in &grammar.branches {
+        if branch_disabled(invocation, branch) {
+            continue;
+        }
         let matched = match &branch.matcher {
+            StructuredProjectionMatcher::RegexCapture { regex, group } => {
+                let Some(captures) = regex.regex().captures(item) else {
+                    continue;
+                };
+                let entire = captures.get(0).expect("regex match has group zero");
+                if entire.start() != 0 || entire.end() != item.len() {
+                    continue;
+                }
+                match captures.get(*group) {
+                    Some(value) => Some(value.as_str()),
+                    None => {
+                        // A matched optional capture missing its value is unknown,
+                        // not permission to fall back to a different operand kind.
+                        selected_unknown = true;
+                        Some(item)
+                    }
+                }
+            }
             StructuredProjectionMatcher::Literal(literal) => (item == literal).then_some(item),
             StructuredProjectionMatcher::Prefix(prefix) => item.strip_prefix(prefix),
             StructuredProjectionMatcher::KeywordValue {
@@ -167,7 +236,7 @@ fn project_item(
     let Some(target) = selected else {
         return matched_item;
     };
-    if selected_unknown {
+    if selected_unknown || target.unresolved {
         emit(target, source, unknown(), generated);
         return true;
     }
@@ -254,18 +323,58 @@ fn unknown() -> SemanticValueResolution {
     SemanticValueResolution::Unknown(ProjectionUnknownReason::DynamicArgument)
 }
 
+fn branch_disabled(
+    invocation: &BoundInvocation,
+    branch: &crate::types::StructuredProjectionBranch,
+) -> bool {
+    if branch
+        .requires_modifiers
+        .iter()
+        .any(|id| !invocation.applied_modifiers.contains(id))
+        || branch
+            .unless_modifiers
+            .iter()
+            .any(|id| invocation.applied_modifiers.contains(id))
+    {
+        return true;
+    }
+    if branch
+        .unless_modifier
+        .as_ref()
+        .is_some_and(|id| invocation.applied_modifiers.contains(id))
+    {
+        return true;
+    }
+    let Some(condition) = &branch.unless_parameter_matches else {
+        return false;
+    };
+    let last = invocation
+        .bound_parameters
+        .iter()
+        .filter(|p| p.name == condition.name)
+        .flat_map(|p| p.semantic_values())
+        .filter_map(|v| crate::project_semantic_value(&ValueProjection::Identity, v))
+        .last();
+    matches!(last, Some(SemanticValueResolution::Known(text)) if crate::bind::argument_matches_value_matcher(&text, &condition.matcher))
+}
+
 fn emit_unknown(
+    invocation: &BoundInvocation,
     grammar: &StructuredProjection,
     source: &BoundValue,
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
 ) {
+    let mut emitted = BTreeSet::new();
     for target in grammar
         .branches
         .iter()
+        .filter(|b| !branch_disabled(invocation, b))
         .filter_map(|b| b.target.as_ref())
         .chain(grammar.fallback.iter())
     {
-        emit(target, source, unknown(), generated);
+        if emitted.insert(target.name.as_str()) {
+            emit(target, source, unknown(), generated);
+        }
     }
 }
 

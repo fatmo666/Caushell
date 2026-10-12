@@ -88,7 +88,7 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
         "extract_pipeline_stream_provenance"
     }
 
-    fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
+    fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
         let Some(parsed) = ctx.parsed_command() else {
             return;
         };
@@ -144,6 +144,11 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
             ctx.stage_mutation(mutation);
         }
         for mutation in collect_shell_io_scope_mutations(ctx, &streams) {
+            ctx.stage_mutation(mutation);
+        }
+        for mutation in
+            super::extract_value_provenance::collect_native_template_input_mutations(session, ctx)
+        {
             ctx.stage_mutation(mutation);
         }
     }

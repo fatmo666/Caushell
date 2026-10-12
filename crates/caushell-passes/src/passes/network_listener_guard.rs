@@ -77,12 +77,19 @@ forms:
   - id: run
     effects:
       - kind: listen_network
-        target: {kind: network_listener, host: {slot: bind, default_value: '127.0.0.1'}}
+        target: {kind: network_listener, host: {slot: decoded_bind, default_value: '127.0.0.1'}}
 modifiers:
   - id: bind
     matcher: {kind: any_flag, flags: ['--bind']}
     parameters:
-      - {name: bind, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}
+      - name: bind
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: optional_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^(?:ADDR=)?(.*)$', group: 1}, target: {name: decoded_bind, semantic: {kind: plain_value}}}
+          fallback: {name: decoded_bind, unresolved: true, semantic: {kind: plain_value}}
 "#;
         let mut runner = PassRunner::new();
         runner.register_request_transform_pass(crate::ParseCommandPass);
@@ -97,6 +104,9 @@ modifiers:
         for (command, expected) in [
             ("demo-listener", Decision::Allow),
             ("demo-listener --bind=0.0.0.0", Decision::NeedApproval),
+            ("demo-listener --bind=ADDR=127.0.0.1", Decision::Allow),
+            ("demo-listener --bind=ADDR=0.0.0.0", Decision::NeedApproval),
+            ("demo-listener --bind=\"$UNKNOWN\"", Decision::NeedApproval),
         ] {
             let request = CheckRequest {
                 session_id: SessionId::new("generic-listener"),

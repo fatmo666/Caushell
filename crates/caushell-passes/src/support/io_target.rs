@@ -8,7 +8,7 @@ use caushell_query::{IoTarget, IoTargetQuery};
 use caushell_types::PathResolution;
 
 use super::redirection_parent_command_index;
-use crate::path::{path_operand_depends_on_cwd, resolve_path_operand};
+use crate::path::{derived_path_slot_name, path_operand_depends_on_cwd, resolve_path_operand};
 
 pub(crate) fn bound_invocation(
     result: &ResolveInvocationArtifactResult,
@@ -31,10 +31,13 @@ pub(crate) fn slot_uses_content_open(
     kind: EffectKind,
 ) -> bool {
     let mut found = false;
-    for effect in &bound.effects {
-        if effect.kind != kind
-            || !matches!(&effect.target, EffectTarget::Slot(name) if name.as_str() == slot)
-        {
+    for (index, effect) in bound.effects.iter().enumerate() {
+        let matches_slot = match &effect.target {
+            EffectTarget::Slot(name) => name.as_str() == slot,
+            EffectTarget::DerivedPath(_) => derived_path_slot_name(index) == slot,
+            _ => false,
+        };
+        if effect.kind != kind || !matches_slot {
             continue;
         }
         if effect.path_access != Some(PathAccessKind::ContentOpen) {

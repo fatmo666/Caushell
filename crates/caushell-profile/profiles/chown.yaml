@@ -18,6 +18,29 @@ platform:
   requires_features: []
 
 forms:
+  - id: change_owner_from_reference
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: reference
+        - kind: has_positional_at
+          index: 0
+    parameters:
+      - name: path_targets
+        semantic:
+          kind: path
+          role: metadata_mutation
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals
+        cardinality: required_many
+    effects:
+      - kind: read_path
+        target: {kind: slot, name: reference_path}
+      - kind: metadata_mutation
+        target: {kind: slot, name: path_targets}
+
   - id: change_owner_or_group
     selector:
       kind: all
@@ -54,6 +77,21 @@ forms:
           metadata_mutation.raw_operand_slot: owner_spec
 
 modifiers:
+  - id: reference
+    matcher:
+      kind: any_flag
+      flags: ["--reference"]
+    parameters:
+      - name: reference_path
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: following_matched_flag
+          operand_mode: next_arg
+        cardinality: required_one
+
   - id: recursive
     matcher:
       kind: any_flag

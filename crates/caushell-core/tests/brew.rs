@@ -378,7 +378,6 @@ fn unsupported_forms_and_option_gaps_require_approval() {
     for c in [
         "brew tap owner/repo",
         "brew untap owner/repo",
-        "brew update",
         "brew pin curl",
         "brew install --with-feature curl",
         "brew list --future",
@@ -421,6 +420,20 @@ fn known_effects_survive_a_future_option_without_scope_or_source_suppression() {
             .iter()
             .any(|s| s.operation_semantics_unresolved && s.executes_imported_package_logic)
     );
+}
+
+#[test]
+fn explicit_update_has_known_operation_and_unknown_mutation_scope() {
+    let r = check("brew update", Decision::NeedApproval);
+    assert!(
+        r.decision_trace
+            .execution_semantics
+            .iter()
+            .any(|s| s.normalized_command_name == "brew"
+                && s.form_id == "update_homebrew_metadata"
+                && !s.operation_semantics_unresolved)
+    );
+    assert!(proposed(&r, RuleId::OutsideWorkspaceMutation));
 }
 
 #[test]

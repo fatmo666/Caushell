@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use caushell_config::{LoadConfigError, load_config_from_path};
 use caushell_graph::SessionGraph;
+use caushell_passes::StateOperationGuardPass;
 use caushell_passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, ComputeEffectiveCwdPass,
     CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass, DecisionAssemblyPass,
@@ -479,6 +480,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(DatabaseOperationGuardPass);
+    runner.register_session_analysis_pass(StateOperationGuardPass);
     runner.register_session_analysis_pass(ProcessControlGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
     runner.register_session_analysis_pass(caushell_passes::NetworkListenerGuardPass);
@@ -4662,16 +4664,34 @@ policy:
 
     #[test]
     fn core_default_runner_commits_pipeline_flow_into_session_graph() {
-        let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-pipeline");
 
-        let response = core.check(sample_request(
-            "sess-pipeline",
-            1,
-            "cat ./payload.sh | bash",
-        ));
+        let request = sample_request("sess-pipeline", 1, "cat ./payload.sh | bash");
+        let response = ShellQueryCore::new().check(request.clone());
 
-        assert_eq!(response.decision, Decision::Allow);
+        // A known upstream file path is not a parsed pipeline script.
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::NestedPayloadExpansion)
+        );
+
+        // NeedApproval does not commit planned effects. Inspect the same graph
+        // with a fixture-only Observe policy; the default gate is asserted above.
+        let mut policy = PolicyConfig::default();
+        policy
+            .rule_policy
+            .resolve_gap
+            .unresolved_execution_payload_subtypes
+            .insert(
+                caushell_types::UnresolvedExecutionPayloadSubtype::RuntimeInputPayload,
+                RuleAction::Observe,
+            );
+        let mut core = ShellQueryCore::with_policy(policy);
+        assert_eq!(core.check(request).decision, Decision::Allow);
 
         let graph = core
             .session_graph(&session_id)
@@ -5238,9 +5258,12 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
                         consume_kind: caushell_types::ProvenanceConsumeKind::NetworkEndpoint,
                         slot_name,
                         normalized_command_name,
-                        domain_label: None,
+                        domain_label: Some(caushell_types::ProvenanceDomainLabel::EndpointInputScope { slots, stdin }),
                     }) if slot_name.as_deref() == Some("endpoint")
                         && normalized_command_name.as_deref() == Some("curl")
+                        && slots.iter().any(|slot| slot == "endpoint")
+                        && !slots.iter().any(|slot| slot == "tls_resource")
+                        && !stdin
                 )
         }));
         assert!(graph.edges().iter().any(|edge| {
@@ -5300,16 +5323,12 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
     #[test]
     fn core_default_runner_surfaces_ssh_remote_execution_without_local_payload_sink() {
-        let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-ssh");
 
-        let response = core.check(sample_request(
-            "sess-ssh",
-            1,
-            r#"ssh build.example.test "echo ok""#,
-        ));
+        let request = sample_request("sess-ssh", 1, r#"ssh build.example.test "echo ok""#);
+        let response = ShellQueryCore::new().check(request.clone());
 
-        assert_eq!(response.decision, Decision::Allow);
+        assert_eq!(response.decision, Decision::NeedApproval);
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert_eq!(
             response.decision_trace.execution_semantics[0].normalized_command_name,
@@ -5317,6 +5336,15 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         );
         assert!(response.decision_trace.execution_semantics[0].executes_remote_command);
         assert!(!response.decision_trace.execution_semantics[0].executes_payload);
+
+        // A separate fixture core allows graph inspection, not default admission.
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            RuleId::StateOpaqueOperation,
+            RulePolicyEntry::new(RuleAction::Observe),
+        );
+        let mut core = ShellQueryCore::with_policy(policy);
+        assert_eq!(core.check(request).decision, Decision::Allow);
 
         let session = core
             .sessions
@@ -5964,18 +5992,27 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             .execute(QuerySession::from_session(session));
         let payload_trace = trace.trace().expect("expected payload trace to exist");
 
-        assert_eq!(payload_trace.payload_inputs().len(), 1);
-        assert_eq!(
-            payload_trace.payload_inputs()[0].artifact(),
-            &caushell_types::ProvenanceArtifact::PathContent {
-                path: "/tmp/project/payload.sh".to_string(),
-                version: None,
-            }
-        );
-        assert_eq!(
-            payload_trace.payload_inputs()[0].consume_kind(),
-            caushell_types::ProvenanceConsumeKind::StdinExplicit
-        );
+        assert_eq!(payload_trace.payload_inputs().len(), 2);
+        for input in payload_trace.payload_inputs() {
+            assert_eq!(
+                input.artifact(),
+                &caushell_types::ProvenanceArtifact::PathContent {
+                    path: "/tmp/project/payload.sh".to_string(),
+                    version: None,
+                }
+            );
+        }
+        for kind in [
+            caushell_types::ProvenanceConsumeKind::StdinExplicit,
+            caushell_types::ProvenanceConsumeKind::ScriptSource,
+        ] {
+            assert!(
+                payload_trace
+                    .payload_inputs()
+                    .iter()
+                    .any(|i| i.consume_kind() == kind)
+            );
+        }
     }
 
     #[test]

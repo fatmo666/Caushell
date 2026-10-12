@@ -4,35 +4,79 @@ identity: {canonical_name: dos2unix, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 opaque_on_unresolved: true
+# Native options are full words, and files are processed as encountered.
+# A trailing --help/-i must not erase earlier conversion effects.
+option_scope: leading_options
+option_matching: exact_names
 forms:
+  - id: information_exit
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    extensions: {caushell.form/suppress_modifier_effects: true}
+  - id: inspect_files
+    selector:
+      kind: all
+      items:
+        - &inspect {kind: any, items: [{kind: has_modifier, modifier: info_short}, {kind: has_modifier, modifier: info_long}]}
+        - &not_information {kind: not, item: *information}
+        - {kind: not, item: {kind: has_modifier, modifier: newfile}}
+        - {kind: not, item: {kind: has_modifier, modifier: oldfile}}
+        - {kind: not, item: {kind: has_modifier, modifier: to_stdout}}
+        - {kind: has_positional_at, index: 0}
+    parameters: &files
+      - {name: input_files, semantic: &read_path {kind: path, role: read, purpose: generic_operand}, binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^([^-].*|-)$'}}, cardinality: optional_many}
+      - {name: literal_files, semantic: *read_path, binding: {kind: remaining_positionals_after_dash_dash}, cardinality: optional_many}
+    effects: &reads [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: literal_files}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: &file_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: inspect_standard_input
+    selector: {kind: all, items: [*inspect, *not_information, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: newfile}}, {kind: not, item: {kind: has_modifier, modifier: oldfile}}, {kind: not, item: {kind: has_modifier, modifier: to_stdout}}]}
+    effects: &stdin_effects [{kind: consume_stdin, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
+    stream_contract: &stdin_stream {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: convert_files_to_stdout
-    selector: {kind: all, items: [{kind: has_modifier, modifier: to_stdout}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}]}
-    parameters: [{name: input_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: transform_data, target: {kind: none}}]
-    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    selector: {kind: all, items: [*not_information, &not_inspect {kind: not, item: *inspect}, {kind: has_modifier, modifier: to_stdout}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}, {kind: not, item: {kind: has_modifier, modifier: oldfile}}]}
+    parameters: *files
+    effects: *reads
+    stream_contract: *file_stream
   - id: convert_newfile_pair
-    selector: {kind: all, items: [{kind: has_modifier, modifier: newfile}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at, index: 2}}]}
+    selector: {kind: all, items: [*not_information, *not_inspect, {kind: has_modifier, modifier: newfile}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: to_stdout}}, {kind: not, item: {kind: has_modifier, modifier: oldfile}}]}
     parameters:
-      - {name: input_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
-      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: input_file, semantic: *read_path, binding: {kind: positional_groups, group_size: 2, member: 0}, cardinality: required_many}
+      - {name: output_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: positional_groups, group_size: 2, member: 1}, cardinality: required_many}
     effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_file}}, {kind: write_path, target: {kind: slot, name: output_file}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: convert_in_place
-    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}, {kind: not, item: {kind: has_modifier, modifier: to_stdout}}]}
-    parameters: [{name: input_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: write_path, target: {kind: slot, name: input_files}}]
+    selector: {kind: all, items: [*not_information, *not_inspect, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}, {kind: not, item: {kind: has_modifier, modifier: to_stdout}}]}
+    parameters: *files
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: literal_files}}, {kind: write_path, target: {kind: slot, name: input_files}}, {kind: write_path, target: {kind: slot, name: literal_files}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: convert_standard_input
-    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: newfile}}]}
-    effects: [{kind: consume_stdin, target: {kind: none}}, {kind: transform_data, target: {kind: none}}]
-    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    selector: {kind: all, items: [*not_information, *not_inspect, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: newfile}}]}
+    effects: *stdin_effects
+    stream_contract: *stdin_stream
 modifiers:
-  - {id: force, matcher: {kind: any_flag, flags: ['-f', '--force']}}
-  - {id: to_stdout, matcher: {kind: any_flag, flags: ['-O', '--to-stdout']}, constraints: [{kind: mutually_exclusive_with, modifier: newfile}]}
-  - id: newfile
-    matcher: {kind: any_flag, flags: ['-n', '--newfile']}
-    constraints: [{kind: mutually_exclusive_with, modifier: to_stdout}]
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, -V, --version, -L, --license]}}
+  - id: info_short
+    matcher: {kind: any_flag, flags: [-i]}
+    parameters: [{name: info_short_flags, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_word_attached}, cardinality: optional_many}]
+  - id: info_long
+    matcher: {kind: any_flag, flags: [--info]}
+    parameters: [{name: info_long_flags, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}]
+  - {id: force, matcher: {kind: any_flag, flags: [-f, --force, -s, --safe, --error-binary, --no-error-binary]}}
+  - {id: keepdate, matcher: {kind: any_flag, flags: [-k, --keepdate]}}
+  - {id: messages, matcher: {kind: any_flag, flags: [-q, --quiet, -v, --verbose]}}
+  - {id: newline, matcher: {kind: any_flag, flags: [-e, --add-eol, --no-add-eol, -l, --newline]}}
+  - {id: encoding, matcher: {kind: any_flag, flags: [-b, --keep-bom, -m, --add-bom, -r, --remove-bom, -u, --keep-utf16, -ul, --assume-utf16le, -ub, --assume-utf16be, -ascii, -iso, '-7', '-1252', '-437', '-850', '-860', '-863', '-865']}}
+  - {id: ownership, matcher: {kind: any_flag, flags: [--allow-chown, --no-allow-chown]}}
+  - id: conversion
+    matcher: {kind: any_flag, flags: [-c, --convmode]}
+    parameters: [{name: conversion_mode, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: to_stdout, matcher: {kind: any_flag, flags: [-O, --to-stdout]}}
+  - {id: newfile, matcher: {kind: any_flag, flags: [-n, --newfile]}}
+  - {id: oldfile, matcher: {kind: any_flag, flags: [-o, --oldfile]}}
 extensions:
-  caushell.profile/source_research: [https://dos2unix.sourceforge.io/dos2unix/man1/dos2unix.htm]
+  caushell.profile/source_research: [https://dos2unix.sourceforge.io/dos2unix/man1/dos2unix.htm, https://downloads.sourceforge.net/project/dos2unix/dos2unix/7.5.7/dos2unix-7.5.7.tar.gz]
   caushell.profile/known_limitations:
-    - In-place conversion models both read and write against each input; -n is modeled only for exactly one INFILE OUTFILE pair.
+    - Options before file operands define a stable mode. Interspersed mode/help options and mixed conversion modes remain unresolved rather than erasing earlier file effects.
+    - Paired mode preserves each input/output member. Incomplete groups and variable-width shell expansion remain unresolved; quoted single-field unknown paths retain their role only with a proven non-option prefix or after the owned -- marker.
+    - Symlink-follow/replace modes and Windows-only display/GB18030 options remain unresolved without assuming filesystem topology or a Windows build.

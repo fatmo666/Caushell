@@ -71,21 +71,25 @@ forms:
     selector:
       kind: all
       items:
-        - *actual_transfer
-        - kind: has_positional_at
-          index: 1
-        - kind: has_positional_at_matching
-          index: 0
-          matcher:
-            kind: structured_value_context
-            context: remote_spec
-        - kind: not
-          item:
-            kind: last_positional_matches
-            matcher:
-              kind: structured_value_context
-              context: remote_spec
-    parameters:
+        - &without_custom_remote_program
+          kind: not
+          item: &custom_remote_program
+            kind: all
+            items:
+              - {kind: has_modifier, modifier: remote_helper}
+              - kind: any
+                items:
+                  - {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: &shell_peer {kind: regex_pattern, pattern: '^(?:[^/@]+@)?(?:\[[^\]]+\]|[^:/]+):(?:[^:]|$).*'}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: &daemon_url {kind: regex_pattern, pattern: '^rsync://'}}}]}
+                  - {kind: all, items: [{kind: last_positional_matches, matcher: *shell_peer}, {kind: not, item: {kind: last_positional_matches, matcher: *daemon_url}}]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: remote_shell}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *daemon_url}}, {kind: not, item: {kind: last_positional_matches, matcher: *daemon_url}}]}
+        - &remote_import_selector
+          kind: all
+          items:
+            - *actual_transfer
+            - {kind: has_positional_at, index: 1}
+            - {kind: has_positional_at_matching, index: 0, matcher: {kind: structured_value_context, context: remote_spec}}
+            - {kind: not, item: {kind: last_positional_matches, matcher: {kind: structured_value_context, context: remote_spec}}}
+    parameters: &remote_import_parameters
       - name: remote_sources
         semantic:
           kind: endpoint
@@ -103,6 +107,9 @@ forms:
           kind: last_positional
         cardinality: required_one
     effects:
+      - &local_transport_dispatch
+        kind: dispatch_command
+        target: {kind: dispatch, command_string: {slot: remote_shell, syntax: gnu_wordsplit}}
       - kind: network_endpoint
         target:
           kind: slot
@@ -116,21 +123,15 @@ forms:
     selector:
       kind: all
       items:
-        - *actual_transfer
-        - kind: has_positional_at
-          index: 1
-        - kind: not
-          item:
-            kind: has_positional_at_matching
-            index: 0
-            matcher:
-              kind: structured_value_context
-              context: remote_spec
-        - kind: last_positional_matches
-          matcher:
-            kind: structured_value_context
-            context: remote_spec
-    parameters:
+        - *without_custom_remote_program
+        - &remote_export_selector
+          kind: all
+          items:
+            - *actual_transfer
+            - {kind: has_positional_at, index: 1}
+            - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: structured_value_context, context: remote_spec}}}
+            - {kind: last_positional_matches, matcher: {kind: structured_value_context, context: remote_spec}}
+    parameters: &remote_export_parameters
       - name: source_paths
         semantic:
           kind: path
@@ -148,6 +149,7 @@ forms:
           kind: last_positional
         cardinality: required_one
     effects:
+      - *local_transport_dispatch
       - kind: read_path
         target:
           kind: slot
@@ -174,27 +176,35 @@ forms:
     selector:
       kind: all
       items:
-        - *preview
-        - {kind: has_positional_at, index: 1}
-        - {kind: has_positional_at_matching, index: 0, matcher: *remote}
-        - {kind: not, item: {kind: last_positional_matches, matcher: *remote}}
-    parameters:
+        - *without_custom_remote_program
+        - &preview_remote_import_selector
+          kind: all
+          items:
+            - *preview
+            - {kind: has_positional_at, index: 1}
+            - {kind: has_positional_at_matching, index: 0, matcher: *remote}
+            - {kind: not, item: {kind: last_positional_matches, matcher: *remote}}
+    parameters: &preview_remote_import_parameters
       - {name: remote_sources, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
       - {name: destination_path, semantic: *read_path, binding: {kind: last_positional}, cardinality: required_one}
-    effects: [{kind: network_endpoint, target: {kind: slot, name: remote_sources}}]
+    effects: [*local_transport_dispatch, {kind: network_endpoint, target: {kind: slot, name: remote_sources}}]
 
   - id: preview_export_to_remote
     selector:
       kind: all
       items:
-        - *preview
-        - {kind: has_positional_at, index: 1}
-        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *remote}}
-        - {kind: last_positional_matches, matcher: *remote}
-    parameters:
+        - *without_custom_remote_program
+        - &preview_remote_export_selector
+          kind: all
+          items:
+            - *preview
+            - {kind: has_positional_at, index: 1}
+            - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *remote}}
+            - {kind: last_positional_matches, matcher: *remote}
+    parameters: &preview_remote_export_parameters
       - {name: source_paths, semantic: *read_path, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
       - {name: remote_destination, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: control_plane}, binding: {kind: last_positional}, cardinality: required_one}
-    effects: [{kind: read_path, target: {kind: slot, name: source_paths}}, {kind: network_endpoint, target: {kind: slot, name: remote_destination}}]
+    effects: [*local_transport_dispatch, {kind: read_path, target: {kind: slot, name: source_paths}}, {kind: network_endpoint, target: {kind: slot, name: remote_destination}}]
 
   - id: list_single_source_local
     selector: {kind: all, items: [&single_source {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}]}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *remote}}]}
@@ -206,9 +216,39 @@ forms:
     effects: [{kind: read_path, target: {kind: slot, name: local_list_source}}]
 
   - id: list_single_source_remote
-    selector: {kind: all, items: [*single_source, {kind: has_positional_at_matching, index: 0, matcher: *remote}]}
-    parameters: [{name: remote_list_source, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}]
-    effects: [{kind: network_endpoint, target: {kind: slot, name: remote_list_source}}]
+    selector: {kind: all, items: [*without_custom_remote_program, &remote_list_selector {kind: all, items: [*single_source, {kind: has_positional_at_matching, index: 0, matcher: *remote}]}]}
+    parameters: &remote_list_parameters [{name: remote_list_source, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}]
+    effects: [*local_transport_dispatch, {kind: network_endpoint, target: {kind: slot, name: remote_list_source}}]
+
+  # --rsync-path is executed by the REMOTE shell, including during dry-run.
+  # A direct daemon transfer ignores it unless -e selects a shell transport.
+  # These variants inherit transfer operands, not local shell effects for the
+  # remote command text. Ordinary copies do not acquire this opaque entrance.
+  - id: import_with_custom_remote_program
+    selector: {kind: all, items: [*remote_import_selector, *custom_remote_program]}
+    parameters: *remote_import_parameters
+    effects:
+      - *local_transport_dispatch
+      - &remote_helper_execution {kind: execute_remote_command, target: {kind: slot, name: remote_helper}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_sources}}
+      - {kind: write_path, target: {kind: slot, name: destination_path}}
+      - &opaque_remote_program {kind: state_operation, state_operation: {domain: remote_access, operation: opaque}, target: {kind: none}}
+  - id: export_with_custom_remote_program
+    selector: {kind: all, items: [*remote_export_selector, *custom_remote_program]}
+    parameters: *remote_export_parameters
+    effects: [*local_transport_dispatch, *remote_helper_execution, {kind: read_path, target: {kind: slot, name: source_paths}}, {kind: network_endpoint, target: {kind: slot, name: remote_destination}}, *opaque_remote_program]
+  - id: preview_import_with_custom_remote_program
+    selector: {kind: all, items: [*preview_remote_import_selector, *custom_remote_program]}
+    parameters: *preview_remote_import_parameters
+    effects: [*local_transport_dispatch, *remote_helper_execution, {kind: network_endpoint, target: {kind: slot, name: remote_sources}}, *opaque_remote_program]
+  - id: preview_export_with_custom_remote_program
+    selector: {kind: all, items: [*preview_remote_export_selector, *custom_remote_program]}
+    parameters: *preview_remote_export_parameters
+    effects: [*local_transport_dispatch, *remote_helper_execution, {kind: read_path, target: {kind: slot, name: source_paths}}, {kind: network_endpoint, target: {kind: slot, name: remote_destination}}, *opaque_remote_program]
+  - id: list_with_custom_remote_program
+    selector: {kind: all, items: [*remote_list_selector, *custom_remote_program]}
+    parameters: *remote_list_parameters
+    effects: [*local_transport_dispatch, *remote_helper_execution, {kind: network_endpoint, target: {kind: slot, name: remote_list_source}}, *opaque_remote_program]
 
 modifiers:
   - {id: preview, matcher: {kind: any_flag, flags: ["-n", "--dry-run", "--list-only"]}}
@@ -296,6 +336,7 @@ subcommands: null
 extensions:
   caushell.profile/source_research: [https://download.samba.org/pub/rsync/rsync.1]
   caushell.profile/known_limitations:
+    - An explicit --rsync-path used by a shell transport is remote opaque execution and uses the existing state-operation approval rule, even in preview/list modes. It is not parsed as local Bash. Local transfers and direct daemon connections do not execute this remote shell string. Ordinary remote transfers retain their existing network policy.
     - This profile covers the core local-vs-remote transfer boundary and does not expand rsync include/exclude rule files or daemon-side module configuration.
     - Directory sync writes are represented at the explicit destination operand rather than at each implicit member path.
     - Dry-run and list-only suppress destination writes/deletes and source-file removal, not explicit client-side log writes or network/process activity. A single source is a listing only when static argv proves one operand; uncertain or multiple operands are not guessed into a read-only form.

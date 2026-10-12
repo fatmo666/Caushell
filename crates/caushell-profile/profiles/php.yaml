@@ -56,6 +56,7 @@ forms:
       - {kind: read_path, target: {kind: slot, name: document_root}}
       - {kind: read_path, target: {kind: slot, name: router_path}}
       - {kind: execute_payload, target: {kind: slot, name: router_script}}
+      - {kind: listen_network, target: {kind: network_listener, host: {slot: listener_host}}}
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
 modifiers:
   - id: code
@@ -69,8 +70,17 @@ modifiers:
     effects: [{kind: read_path, target: {kind: slot, name: script_file_option_path}}, {kind: execute_payload, target: {kind: slot, name: script}}]
   - id: server
     matcher: {kind: any_flag, flags: ['-S']}
-    parameters: [{name: server_address, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
-    effects: [{kind: network_endpoint, target: {kind: slot, name: server_address}}]
+    parameters:
+      - name: server_address
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^([^:\[\]]+):[0-9]+$', group: 1}, target: {name: listener_host, semantic: {kind: plain_value}}}
+            - {matcher: {kind: regex_capture, pattern: '^\[([^\[\]]+)\]:[0-9]+$', group: 1}, target: {name: listener_host, semantic: {kind: plain_value}}}
+          fallback: {name: listener_host, unresolved: true, semantic: {kind: plain_value}}
+    effects: []
   - id: document_root
     matcher: {kind: any_flag, flags: ['-t']}
     parameters: [{name: document_root, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
@@ -81,9 +91,9 @@ modifiers:
   - {id: no_ini, matcher: {kind: any_flag, flags: ['-n', '--no-php-ini']}}
   - {id: ini_definition, matcher: {kind: any_flag, flags: ['-d', '-c']}, parameters: [{name: ini_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]}
 extensions:
-  caushell.profile/source_research: [https://www.php.net/manual/en/features.commandline.options.php]
+  caushell.profile/source_research: [https://www.php.net/manual/en/features.commandline.options.php, https://www.php.net/manual/en/features.commandline.webserver.php]
   caushell.profile/known_limitations:
     - PHP code and PHP files are opaque; no PHP syntax or included file behavior is interpreted.
-    - -S is modeled as a host_port endpoint, and -t as its document-root read path; this DSL cannot split addr:port into a safe listener host and port, so no Listener fact is emitted. The optional URI router is an opaque PHP file when explicitly provided.
+    - -S retains the complete native bind operand and projects a listener host using the existing operand grammar. Bracketed IPv6 and host:decimal-port spellings are supported; unresolved address syntax stays unknown. The listener port is not separately projected. A bind address is a listener, not a network code source. -t remains a document-root read, and an explicitly supplied router remains opaque PHP code.
     - Request-driven PHP file execution is not inferred for arbitrary files in the document root.
     - Lint records file reads (or possible stdin) without executing PHP code. Positional script arguments remain governed by the native leading-option boundary; a -l after a script path does not turn execution into lint. Explicit configuration/INI directives or conflicting execution modes with lint remain unresolved rather than suppressing possible native loading behavior.

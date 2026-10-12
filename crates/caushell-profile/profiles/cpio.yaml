@@ -21,17 +21,108 @@ option_scope: permuted_options
 opaque_on_unresolved: true
 
 forms:
-  - id: extract_archive
-    selector:
-      kind: has_modifier
-      modifier: extract_mode
-    parameters:
+  - id: remote_archive
+    selector: &remote_archive_selector
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: force_local}}
+        - kind: any
+          items:
+            - {kind: has_modifier_parameter_matching, modifier: archive_file, parameter: archive_operand, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+            - {kind: has_modifier_parameter_matching, modifier: list_archive_file, parameter: list_archive_operand, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+            - {kind: has_modifier_parameter_matching, modifier: create_archive_file, parameter: create_archive_operand, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+            - {kind: has_modifier_parameter_matching, modifier: input_archive_file, parameter: input_archive_operand, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+            - {kind: has_modifier_parameter_matching, modifier: output_archive_file, parameter: output_archive_operand, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+    parameters: [{name: remote_members, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: remote_archive_read}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_archive_list}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_archive_create}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_archive_input}}
+      - {kind: network_endpoint, target: {kind: slot, name: remote_archive_output}}
+      - {kind: execute_remote_command, target: {kind: none}}
+      - {kind: state_operation, state_operation: {domain: remote_access, operation: opaque}, target: {kind: none}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: list_archive
+    remaining_selector: &local_archive {kind: not, item: *remote_archive_selector}
+    selector: {kind: has_modifier, modifier: list_mode}
+    parameters: &member_patterns
       - name: member_patterns
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: path_list, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: archive_path}}
+      - {kind: read_path, target: {kind: slot, name: input_archive_path}}
+      - {kind: read_path, target: {kind: slot, name: list_archive_path}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+
+  - id: extract_to_stdout
+    remaining_selector: *local_archive
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: extract_mode}
+        - {kind: has_modifier, modifier: to_stdout}
+        - {kind: not, item: {kind: has_modifier, modifier: list_mode}}
+    parameters: *member_patterns
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: archive_path}}
+      - {kind: read_path, target: {kind: slot, name: input_archive_path}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+
+  - id: verify_archive_only
+    remaining_selector: *local_archive
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: extract_mode}
+        - {kind: has_modifier, modifier: verify_only}
+        - {kind: not, item: {kind: has_modifier, modifier: list_mode}}
+    parameters: *member_patterns
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: archive_path}}
+      - {kind: read_path, target: {kind: slot, name: input_archive_path}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+
+  - id: extract_archive_from_stdin
+    remaining_selector: *local_archive
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: extract_mode}
+        - {kind: not, item: {kind: has_modifier, modifier: archive_file}}
+        - {kind: not, item: {kind: has_modifier, modifier: input_archive_file}}
+        - {kind: not, item: {kind: has_modifier, modifier: list_mode}}
+        - {kind: not, item: {kind: has_modifier, modifier: to_stdout}}
+        - {kind: not, item: {kind: has_modifier, modifier: verify_only}}
+    parameters: *member_patterns
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+
+  - id: extract_archive
+    remaining_selector: *local_archive
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: extract_mode}
+        - kind: any
+          items:
+            - {kind: has_modifier, modifier: archive_file}
+            - {kind: has_modifier, modifier: input_archive_file}
+        - {kind: not, item: {kind: has_modifier, modifier: list_mode}}
+        - {kind: not, item: {kind: has_modifier, modifier: to_stdout}}
+        - {kind: not, item: {kind: has_modifier, modifier: verify_only}}
+    parameters: *member_patterns
     implicit_inputs:
       - {source: stdin_data, semantic: {kind: plain_value}}
     stream_contract:
@@ -47,8 +138,11 @@ forms:
         target:
           kind: slot
           name: input_archive_path
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: archive_path}, rule: {kind: archive_members}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: input_archive_path}, rule: {kind: archive_members}, purpose: generic_operand}}
 
   - id: create_archive
+    remaining_selector: *local_archive
     selector:
       kind: has_modifier
       modifier: create_mode
@@ -75,13 +169,14 @@ forms:
       - kind: write_path
         target:
           kind: slot
-          name: archive_path
+          name: create_archive_path
       - kind: write_path
         target:
           kind: slot
           name: output_archive_path
 
   - id: pass_through_archive
+    remaining_selector: *local_archive
     selector:
       kind: all
       items:
@@ -115,12 +210,25 @@ forms:
           name: destination_path
 
 modifiers:
+  - {id: force_local, matcher: {kind: any_flag, flags: [--force-local]}}
+  - id: remote_transport_program
+    matcher: {kind: any_flag, flags: [--rsh-command]}
+    parameters: [{name: remote_transport_program, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
   - id: extract_mode
     matcher:
       kind: any_flag
       flags:
         - "-i"
         - "--extract"
+
+  - id: list_mode
+    matcher: {kind: any_flag, flags: ["-t", "--list"]}
+
+  - id: to_stdout
+    matcher: {kind: any_flag, flags: [--to-stdout]}
+
+  - id: verify_only
+    matcher: {kind: any_flag, flags: [--only-verify-crc]}
 
   - id: create_mode
     matcher:
@@ -168,7 +276,7 @@ modifiers:
     matcher: {kind: any_flag, flags: ["-v", "--verbose", "-V", "--dot", "--quiet"]}
 
   - id: archive_options
-    matcher: {kind: any_flag, flags: ["-B", "-b", "--swap", "-s", "--swap-bytes", "-S", "--swap-halfwords", "-c", "-k", "-n", "--numeric-uid-gid", "-f", "--nonmatching", "--force-local", "--no-absolute-filenames", "--absolute-filenames"]}
+    matcher: {kind: any_flag, flags: ["-B", "-b", "--swap", "-s", "--swap-bytes", "-S", "--swap-halfwords", "-c", "-k", "-n", "--numeric-uid-gid", "-f", "--nonmatching", "--no-absolute-filenames", "--absolute-filenames"]}
 
   - id: archive_format
     matcher: {kind: any_flag, flags: ["-H", "--format"]}
@@ -187,16 +295,32 @@ modifiers:
     constraints:
       - kind: requires_modifier
         modifier: extract_mode
+      - kind: mutually_exclusive_with
+        modifier: list_mode
     parameters:
-      - name: archive_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
+      - name: archive_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: &remote_match {kind: regex_capture, pattern: '^.*:.*$', group: 0}, unless_modifier: force_local, target: {name: remote_archive_read, semantic: &remote_endpoint {kind: endpoint, endpoint_kind: remote_spec, usage: generic_endpoint}}}
+          fallback: {name: archive_path, semantic: {kind: path, role: read, purpose: generic_operand}}
+
+  - id: list_archive_file
+    matcher: {kind: any_flag, flags: ["-F", "--file"]}
+    constraints: [{kind: requires_modifier, modifier: list_mode}]
+    parameters:
+      - name: list_archive_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: *remote_match, unless_modifier: force_local, target: {name: remote_archive_list, semantic: *remote_endpoint}}]
+          fallback: {name: list_archive_path, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects: [{kind: read_path, target: {kind: slot, name: list_archive_path}}]
 
   - id: create_archive_file
     matcher:
@@ -208,15 +332,15 @@ modifiers:
       - kind: requires_modifier
         modifier: create_mode
     parameters:
-      - name: archive_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+      - name: create_archive_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: *remote_match, unless_modifier: force_local, target: {name: remote_archive_create, semantic: *remote_endpoint}}]
+          fallback: {name: create_archive_path, semantic: {kind: path, role: write, purpose: generic_operand}}
 
   - id: input_archive_file
     matcher:
@@ -224,15 +348,15 @@ modifiers:
       flags:
         - "-I"
     parameters:
-      - name: input_archive_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
+      - name: input_archive_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: *remote_match, unless_modifier: force_local, target: {name: remote_archive_input, semantic: *remote_endpoint}}]
+          fallback: {name: input_archive_path, semantic: {kind: path, role: read, purpose: generic_operand}}
 
   - id: output_archive_file
     matcher:
@@ -240,20 +364,21 @@ modifiers:
       flags:
         - "-O"
     parameters:
-      - name: output_archive_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+      - name: output_archive_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
+        structured_projection:
+          branches: [{matcher: *remote_match, unless_modifier: force_local, target: {name: remote_archive_output, semantic: *remote_endpoint}}]
+          fallback: {name: output_archive_path, semantic: {kind: path, role: write, purpose: generic_operand}}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
   caushell.profile/known_limitations:
+    - GNU colon archive operands are remote unless --force-local. rmt transport and custom --rsh-command execution remain explicitly opaque and require approval, without inventing local archive or helper shell effects.
     - Cpio mode-specific archive file surfaces are split, but extraction outputs into the working tree and stdin-provided file lists remain implicit.
     - Reset-access-time keeps an unresolved source metadata target until the stdin name-list format and path domain are modeled; a local destination alone cannot certify source mutations.

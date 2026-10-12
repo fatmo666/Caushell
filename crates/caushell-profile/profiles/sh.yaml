@@ -170,6 +170,23 @@ forms:
           kind: implicit_input
           source: interactive_session
 
+  - id: shell_input_source_unknown
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_flag, flag: "-c"}}
+        - {kind: not, item: {kind: has_flag, flag: "-s"}}
+        - {kind: no_positional_args}
+        - {kind: not, item: {kind: stdin_payload_available}}
+        - {kind: not, item: {kind: interactive_session}}
+    implicit_inputs:
+      - source: stdin_payload
+        semantic: {kind: payload, language: sh, source: stdin, recursive: true}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+
 modifiers: []
 subcommands: null
 extensions: {}

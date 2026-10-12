@@ -321,6 +321,27 @@ subcommands:
       # All run/start/stop/restart/kill/cleanup/custom service operations are
       # unresolved operations. No PID, signal or Bash child is fabricated.
       default_behavior: reject_unknown
+    - name: doctor
+      aliases: []
+      option_scope: all_arguments
+      forms:
+        - id: diagnose_installation
+          selector: {kind: all, items: [*running, {kind: no_positional_args}]}
+          effects: [*implicit_config, *cache_write]
+          stream_contract: *streams
+      modifiers: [*help, *logging]
+      default_behavior: reject_unknown
+    - name: update
+      aliases: []
+      option_scope: all_arguments
+      forms:
+        - *show_help
+        - id: update_homebrew_metadata
+          selector: *running
+          effects: [*implicit_config, *cache_write, *modify_state]
+          stream_contract: *streams
+      modifiers: [*help, *logging]
+      default_behavior: reject_unknown
 extensions:
   caushell.profile/sources:
     - https://docs.brew.sh/Manpage

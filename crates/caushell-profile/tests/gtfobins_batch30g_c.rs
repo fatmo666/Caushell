@@ -176,7 +176,7 @@ fn explicit_script_paths_and_php_server_document_root_remain_distinct() {
         server
             .effects
             .iter()
-            .any(|effect| effect.kind == EffectKind::NetworkEndpoint)
+            .any(|effect| effect.kind == EffectKind::ListenNetwork)
     );
     assert!(
         server

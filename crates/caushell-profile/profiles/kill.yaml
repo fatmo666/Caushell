@@ -203,6 +203,7 @@ modifiers:
         - "-TTIN"
         - "-TTOU"
         - "-SIGTERM"
+        - "-SIGINT"
         - "-SIGKILL"
         - "-SIGSTOP"
         - "-SIGCONT"

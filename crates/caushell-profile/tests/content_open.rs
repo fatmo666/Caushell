@@ -38,6 +38,22 @@ fn invalid_access_annotations_are_rejected_instead_of_ignored() {
 }
 
 #[test]
+fn derived_content_open_is_explicit_and_rejects_namespace_mutations() {
+    for kind in ["read_path", "write_path"] {
+        let parsed = load_command_profile_from_str(&profile(&format!(
+            "kind: {kind}\n        path_access: content_open\n        target: {{kind: derived_path, source: {{kind: slot, name: file}}, rule: {{kind: basename}}}}"
+        ))).unwrap();
+        assert_eq!(
+            parsed.forms[0].effects[0].path_access,
+            Some(PathAccessKind::ContentOpen)
+        );
+    }
+    assert!(load_command_profile_from_str(&profile(
+        "kind: delete_path\n        path_access: content_open\n        target: {kind: derived_path, source: {kind: slot, name: file}, rule: {kind: basename}}"
+    )).is_err());
+}
+
+#[test]
 fn reviewed_profiles_annotate_only_actual_content_open_slots() {
     let tee = load_command_profile_from_str(include_str!("../profiles/tee.yaml")).unwrap();
     assert_eq!(
@@ -50,10 +66,27 @@ fn reviewed_profiles_annotate_only_actual_content_open_slots() {
         Some(PathAccessKind::ContentOpen)
     );
     let sed = load_command_profile_from_str(include_str!("../profiles/sed.yaml")).unwrap();
+    // Script files are opened; in-place edits are pathname replacement, not
+    // direct stream writes (notably when the target is a special device).
+    assert_eq!(
+        sed.modifiers
+            .iter()
+            .find(|m| m.id.as_str() == "script_file")
+            .unwrap()
+            .effects
+            .iter()
+            .find(|e| e.kind == EffectKind::ReadPath)
+            .unwrap()
+            .path_access,
+        Some(PathAccessKind::ContentOpen)
+    );
     assert!(
         sed.modifiers
             .iter()
-            .flat_map(|m| &m.effects)
+            .find(|m| m.id.as_str() == "in_place")
+            .unwrap()
+            .effects
+            .iter()
             .all(|e| e.path_access.is_none())
     );
     let tar = load_command_profile_from_str(include_str!("../profiles/tar.yaml")).unwrap();

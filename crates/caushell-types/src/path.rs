@@ -44,6 +44,7 @@ pub struct PathMetadataMutation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolvedPathPurpose {
+    AuxiliaryInput,
     IncidentalCache,
     GenericOperand,
     ScriptSource,
@@ -104,6 +105,12 @@ pub enum DerivedPathRule {
         to: String,
     },
     UrlBasename,
+    /// The final lexical path component, relocated to the execution cwd.
+    /// Operates on complete argv data, never on normalized source spelling.
+    Basename,
+    /// Prefix the declared root to the entire argv spelling before lexical
+    /// normalization. An absolute-looking source does NOT reset that prefix.
+    PrefixDirectory,
     ArchiveMembers,
     ChildUnder {
         relative_path: String,

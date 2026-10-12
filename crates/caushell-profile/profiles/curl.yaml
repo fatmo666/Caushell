@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: curl
@@ -18,22 +20,44 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+
+  - id: list_engines
+    selector: {kind: has_modifier_parameter_matching, modifier: engine_library, parameter: engine_operand, matcher: {kind: literal, value: list}}
+    parameters: [{name: engine_list_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
+
+  - id: upload_explicit_url
+    selector: {kind: all, items: [{kind: has_modifier, modifier: explicit_url}, {kind: any, items: [{kind: has_modifier, modifier: upload_data}, {kind: has_modifier, modifier: upload_binary}, {kind: has_modifier, modifier: upload_file}, {kind: has_modifier, modifier: upload_literal}, {kind: has_modifier, modifier: upload_form}, {kind: has_modifier, modifier: upload_urlencode}]}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: upload_endpoints, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: following_flag, flag: '--url', operand_mode: next_arg}, cardinality: required_many}
+    effects:
+      - kind: network_endpoint
+        target: {kind: slot, name: upload_endpoints}
+        input_scope: &request_inputs
+          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, query_operand, query_file, netrc_file]
+          stdin: true
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+
   - id: upload_to_url
     selector:
       kind: all
       items:
-        - kind: has_modifier
-          modifier: upload_data
+        - &uploading
+          kind: any
+          items:
+            - {kind: has_modifier, modifier: upload_data}
+            - {kind: has_modifier, modifier: upload_binary}
+            - {kind: has_modifier, modifier: upload_file}
+            - {kind: has_modifier, modifier: upload_literal}
+            - {kind: has_modifier, modifier: upload_form}
+            - {kind: has_modifier, modifier: upload_urlencode}
         - kind: has_positional_at
           index: 0
-        - kind: not
-          item:
-            kind: any
-            items:
-              - kind: has_modifier
-                modifier: output
-              - kind: has_modifier
-                modifier: remote_name
     remaining_selector:
       kind: no_positional_args
     parameters:
@@ -45,6 +69,9 @@ forms:
         binding:
           kind: next_positional
         cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, target: {name: response_endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}}}
     stream_contract:
       stdin_mode: data_optional
       stdout_mode: data
@@ -55,12 +82,14 @@ forms:
           kind: slot
           name: endpoint
 
+        input_scope: *request_inputs
+      - {kind: network_endpoint, target: {kind: slot, name: response_endpoint}, input_scope: *request_inputs}
+
   - id: fetch_explicit_url_to_file
     selector:
       kind: all
       items:
-        - kind: has_modifier
-          modifier: output
+        - &has_output {kind: any, items: [{kind: has_modifier, modifier: output}, {kind: has_modifier, modifier: output_in_directory}]}
         - kind: has_modifier
           modifier: explicit_url
     remaining_selector:
@@ -70,22 +99,11 @@ forms:
     selector:
       kind: all
       items:
-        - kind: has_modifier
-          modifier: remote_name
+        - &has_remote_name {kind: any, items: [{kind: has_modifier, modifier: remote_name}, {kind: has_modifier, modifier: remote_name_in_directory}]}
         - kind: has_modifier
           modifier: explicit_url
     remaining_selector:
       kind: no_positional_args
-    effects:
-      - kind: write_path
-        target:
-          kind: derived_path
-          source:
-            kind: slot
-            name: endpoint
-          rule:
-            kind: url_basename
-          purpose: generic_operand
 
   - id: fetch_explicit_url_to_stdout
     selector:
@@ -97,16 +115,21 @@ forms:
           item:
             kind: any
             items:
-              - kind: has_modifier
-                modifier: output
-              - kind: has_modifier
-                modifier: remote_name
+              - *has_output
+              - *has_remote_name
               - kind: has_modifier
                 modifier: upload_data
+              - kind: has_modifier
+                modifier: upload_binary
+              - kind: has_modifier
+                modifier: upload_file
+              - {kind: has_modifier, modifier: upload_literal}
+              - {kind: has_modifier, modifier: upload_form}
+              - {kind: has_modifier, modifier: upload_urlencode}
     remaining_selector:
       kind: no_positional_args
     stream_contract:
-      stdin_mode: ignored
+      stdin_mode: declared_effects
       stdout_mode: data
       stderr_mode: opaque
 
@@ -114,8 +137,8 @@ forms:
     selector:
       kind: all
       items:
-        - kind: has_modifier
-          modifier: output
+        - {kind: not, item: *uploading}
+        - *has_output
         - kind: not
           item:
             kind: has_modifier
@@ -136,13 +159,14 @@ forms:
         target:
           kind: slot
           name: endpoint
+        input_scope: *request_inputs
 
   - id: fetch_to_remote_name
     selector:
       kind: all
       items:
-        - kind: has_modifier
-          modifier: remote_name
+        - {kind: not, item: *uploading}
+        - *has_remote_name
         - kind: not
           item:
             kind: has_modifier
@@ -163,15 +187,7 @@ forms:
         target:
           kind: slot
           name: endpoint
-      - kind: write_path
-        target:
-          kind: derived_path
-          source:
-            kind: slot
-            name: endpoint
-          rule:
-            kind: url_basename
-          purpose: generic_operand
+        input_scope: *request_inputs
 
   - id: fetch_to_stdout
     selector:
@@ -183,12 +199,17 @@ forms:
           item:
             kind: any
             items:
-              - kind: has_modifier
-                modifier: output
-              - kind: has_modifier
-                modifier: remote_name
+              - *has_output
+              - *has_remote_name
               - kind: has_modifier
                 modifier: upload_data
+              - kind: has_modifier
+                modifier: upload_binary
+              - kind: has_modifier
+                modifier: upload_file
+              - {kind: has_modifier, modifier: upload_literal}
+              - {kind: has_modifier, modifier: upload_form}
+              - {kind: has_modifier, modifier: upload_urlencode}
     remaining_selector:
       kind: no_positional_args
     parameters:
@@ -201,7 +222,7 @@ forms:
           kind: next_positional
         cardinality: required_one
     stream_contract:
-      stdin_mode: ignored
+      stdin_mode: declared_effects
       stdout_mode: data
       stderr_mode: opaque
     effects:
@@ -209,30 +230,162 @@ forms:
         target:
           kind: slot
           name: endpoint
+        input_scope: *request_inputs
 
 modifiers:
+  # -G changes where -d payload bytes are sent, not whether they are sent.
+  - {id: get_query, matcher: {kind: any_flag, flags: [-G, --get]}}
+  - id: information
+    matcher: {kind: any_flag, flags: [-h, --help, -V, --version, -M, --manual]}
+    parameters: [{name: help_category, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_next_arg}, cardinality: optional_many}]
+
+  # Flag-only declarations are required by scoped ownership: do not infer
+  # arity or discard unknown flags merely to make a download match.
+  - id: common_flag_option
+    matcher: {kind: any_flag, flags: [-f, --fail, --fail-with-body, -s, --silent, -S, --show-error, -L, --location, -k, --insecure, -I, --head, -i, --show-headers, --include, -v, --verbose, -g, --globoff, -N, --no-buffer, '-4', --ipv4, '-6', --ipv6, --compressed, --compressed-ssh, --path-as-is, --http1.0, --http1.1, --http2, --http2-prior-knowledge, --http3, --http3-only, --retry-all-errors, --retry-connrefused, --no-progress-meter, --tcp-nodelay, --tcp-fastopen, --netrc, -n, --netrc-optional, --anyauth, --basic, --digest, --ntlm, --negotiate, --sasl-ir, --tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3]}
+
   - id: output
     matcher:
       kind: any_flag
       flags:
         - "-o"
         - "--output"
-    parameters:
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+    parameters: &output_parameters
+      - name: output_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: null}
+            - {unless_modifier: output_directory, matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, target: {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}}}
+          fallback: {name: output_relative, semantic: {kind: plain_value}}
+  - id: output_direct_file
+    matcher: {kind: any_flag, flags: [-o, --output]}
+    constraints: [{kind: mutually_exclusive_with, modifier: output_directory}]
     effects:
       - kind: write_path
         path_access: content_open
         target:
           kind: slot
           name: output_path
+
+  - id: output_in_directory
+    matcher: {kind: any_flag, flags: [-o, --output]}
+    constraints: [{kind: requires_modifier, modifier: output_directory}]
+    effects:
+      - {kind: write_path, path_access: content_open, target: {kind: derived_path, source: {kind: slot, name: output_relative}, root: {kind: slot, name: output_directory}, rule: {kind: prefix_directory}, purpose: generic_operand}}
+
+  - id: cookie_jar
+    matcher: {kind: any_flag, flags: [-c, --cookie-jar]}
+    parameters:
+      - {name: cookie_jar_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: write_path, target: {kind: slot, name: cookie_jar_path}}]
+
+  - id: output_auxiliary_file
+    matcher: {kind: any_flag, flags: [-D, --dump-header, --libcurl]}
+    parameters:
+      - {name: auxiliary_output_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, structured_projection: {branches: [{matcher: {kind: literal, value: '-'}, target: null}], fallback: {name: auxiliary_output_path, semantic: {kind: path, role: write, purpose: generic_operand}}}}
+    effects: [{kind: write_path, target: {kind: slot, name: auxiliary_output_path}}]
+
+  - id: trace_file
+    matcher: {kind: any_flag, flags: [--trace, --trace-ascii]}
+    parameters:
+      - {name: trace_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, structured_projection: {branches: [{matcher: {kind: literal, value: '-'}, target: null}, {matcher: {kind: literal, value: '%'}, target: null}], fallback: {name: trace_path, semantic: {kind: path, role: write, purpose: generic_operand}}}}
+    effects: [{kind: write_path, target: {kind: slot, name: trace_path}}]
+
+  - id: etag_save
+    matcher: {kind: any_flag, flags: [--etag-save]}
+    parameters: [{name: etag_output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: write_path, target: {kind: slot, name: etag_output_path}}]
+
+  - id: stderr_file
+    matcher: {kind: any_flag, flags: [--stderr]}
+    parameters:
+      - {name: stderr_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one, structured_projection: {branches: [{matcher: {kind: literal, value: '-'}, target: null}], fallback: {name: stderr_path, semantic: {kind: path, role: write, purpose: generic_operand}}}}
+    effects: [{kind: write_path, target: {kind: slot, name: stderr_path}}]
+
+  - id: config_input
+    matcher: {kind: any_flag, flags: [-K, --config]}
+    parameters:
+      - {name: config_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, structured_projection: {branches: [{matcher: {kind: literal, value: '-'}, target: {name: config_stdin, semantic: {kind: plain_value}}}], fallback: {name: config_path, semantic: {kind: path, role: read, purpose: tool_config}}}}
+    effects:
+      - {kind: load_config, target: {kind: slot, name: config_path}}
+      - {kind: consume_stdin, target: {kind: slot, name: config_stdin}}
+
+  - id: cookie_input
+    matcher: {kind: any_flag, flags: [-b, --cookie]}
+    parameters:
+      - {name: cookie_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, structured_projection: {branches: [{matcher: {kind: regex_capture, pattern: '^[^=]+$', group: 0}, target: {name: cookie_file, semantic: {kind: path, role: read, purpose: generic_operand}}}], fallback: {name: cookie_value, semantic: {kind: plain_value}}}}
+    effects: [{kind: read_path, target: {kind: slot, name: cookie_file}}]
+
+  - id: credential_and_ca_files
+    matcher: {kind: any_flag, flags: [--cacert, --capath, --crlfile, --egd-file, --pubkey, --proxy-cacert, --proxy-capath, --proxy-crlfile, --random-file]}
+    parameters:
+      - {name: credential_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: read_path, target: {kind: slot, name: credential_file}}]
+
+  - id: netrc_credentials
+    matcher: {kind: any_flag, flags: [--netrc-file]}
+    parameters: [{name: netrc_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: netrc_file}}]
+
+  - id: private_key_authentication
+    matcher: {kind: any_flag, flags: [--key, --proxy-key]}
+    parameters:
+      - {name: authentication_key, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: read_path, target: {kind: slot, name: authentication_key}}]
+
+  - id: certificate
+    matcher: {kind: any_flag, flags: [-E, --cert, --proxy-cert]}
+    parameters:
+      - name: certificate_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^(pkcs11:.*)$', group: 1}, target: {name: certificate_unknown, unresolved: true, semantic: {kind: path, role: read, purpose: generic_operand}}}
+            - {matcher: {kind: regex_capture, pattern: '^([^:\\]+)(?::[^\\]*)?$', group: 1}, target: {name: certificate_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+          fallback: {name: certificate_unknown_fallback, unresolved: true, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: certificate_file}}
+      - {kind: read_path, target: {kind: slot, name: certificate_unknown}}
+      - {kind: read_path, target: {kind: slot, name: certificate_unknown_fallback}}
+
+  - id: engine_library
+    matcher: {kind: any_flag, flags: [--engine]}
+    parameters:
+      - name: engine_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: list}, target: null}
+            - {matcher: {kind: regex_capture, pattern: '^.*/.*$', group: 0}, target: {name: engine_path, semantic: {kind: in_process_code_load, load_kind: library_path}}}
+          fallback: {name: engine_name, semantic: {kind: in_process_code_load, load_kind: plugin_name}}
+    effects: [{kind: load_in_process_code, target: {kind: slot, name: engine_path}}, {kind: load_in_process_code, target: {kind: slot, name: engine_name}}]
+
+  - id: state_file
+    matcher: {kind: any_flag, flags: [--alt-svc, --hsts]}
+    parameters:
+      - {name: state_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: state_path}}
+      - {kind: write_path, target: {kind: slot, name: state_path}}
+
+  - id: etag_compare
+    matcher: {kind: any_flag, flags: [--etag-compare]}
+    parameters:
+      - {name: etag_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: read_path, target: {kind: slot, name: etag_path}}]
+
+  - id: output_directory
+    matcher: {kind: any_flag, flags: [--output-dir]}
+    parameters: [{name: output_directory, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
 
   - id: explicit_url
     matcher:
@@ -254,6 +407,7 @@ modifiers:
         target:
           kind: slot
           name: endpoint
+        input_scope: *request_inputs
 
   - id: remote_name
     matcher:
@@ -261,6 +415,18 @@ modifiers:
       flags:
         - "-O"
         - "--remote-name"
+  - id: remote_name_direct
+    matcher: {kind: any_flag, flags: [-O, --remote-name]}
+    constraints: [{kind: mutually_exclusive_with, modifier: output_directory}]
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: endpoint}, rule: {kind: url_basename}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: upload_endpoints}, rule: {kind: url_basename}, purpose: generic_operand}}
+  - id: remote_name_in_directory
+    matcher: {kind: any_flag, flags: [-O, --remote-name]}
+    constraints: [{kind: requires_modifier, modifier: output_directory}]
+    effects:
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: endpoint}, root: {kind: slot, name: output_directory}, rule: {kind: url_basename}, purpose: generic_operand}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: upload_endpoints}, root: {kind: slot, name: output_directory}, rule: {kind: url_basename}, purpose: generic_operand}}
 
   - id: upload_data
     matcher:
@@ -269,109 +435,185 @@ modifiers:
         - "-d"
         - "--data"
         - "--data-ascii"
-        - "--data-binary"
-        - "--data-raw"
-        - "--data-urlencode"
-        - "-F"
-        - "--form"
-        - "--form-string"
-        - "-T"
-        - "--upload-file"
         - "--json"
     parameters:
-      - name: upload_payload
+      - name: data_operand
         semantic:
           kind: plain_value
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '@-'}, target: {name: data_stdin, semantic: {kind: plain_value}}}
+            - {matcher: {kind: prefix, value: '@'}, target: {name: data_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: data_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: data_stdin}}
+
+  - id: upload_literal
+    matcher: {kind: any_flag, flags: [--data-raw, --form-string]}
+    parameters: [{name: literal_data, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+  - id: upload_urlencode
+    matcher: {kind: any_flag, flags: [--data-urlencode]}
+    parameters:
+      - name: urlencoded_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^[^=@]*@-$', group: 0}, target: {name: urlencode_stdin, semantic: {kind: plain_value}}}
+            - {matcher: {kind: regex_capture, pattern: '^[^=@]*@(.*)$', group: 1}, target: {name: urlencode_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: urlencode_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: urlencode_stdin}}
+
+  - id: upload_form
+    matcher: {kind: any_flag, flags: [-F, --form]}
+    parameters:
+      - name: form_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          native_syntax: curl_multipart
+          branches:
+            - {matcher: {kind: literal, value: 'stdin:'}, target: {name: form_stdin, semantic: {kind: plain_value}}}
+            - {matcher: {kind: prefix, value: 'file:'}, target: {name: form_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: form_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: form_stdin}}
+
+  - id: upload_binary
+    matcher: {kind: any_flag, flags: [--data-binary]}
+    parameters:
+      - name: upload_payload
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '@-'}, target: {name: binary_stdin_source, semantic: {kind: plain_value}}}
+            - {matcher: {kind: prefix, value: '@'}, target: {name: binary_file_source, semantic: {kind: path, role: read, purpose: generic_operand}}}
+          fallback: {name: upload_literal, semantic: {kind: plain_value}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: binary_file_source}}
+      - {kind: consume_stdin, target: {kind: slot, name: binary_stdin_source}}
+
+  - id: upload_file
+    matcher: {kind: any_flag, flags: [-T, --upload-file]}
+    parameters:
+      - name: upload_file_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: upload_stdin_source, semantic: {kind: plain_value}}}
+          fallback: {name: upload_file_source, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: upload_file_source}}
+      - {kind: consume_stdin, target: {kind: slot, name: upload_stdin_source}}
+
+  # Request bytes exist for GET/HEAD too. These operands are sent, unlike
+  # TLS trust files, private keys, config files, and local --write-out formats.
+  - id: request_headers
+    matcher: {kind: any_flag, flags: [-H, --header]}
+    parameters:
+      - name: request_header_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '@-'}, target: {name: request_header_stdin, semantic: {kind: plain_value}}}
+            - {matcher: {kind: prefix, value: '@'}, target: {name: request_header_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: request_header_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: request_header_stdin}}
+
+  - id: request_values
+    matcher: {kind: any_flag, flags: [-u, --user, --oauth2-bearer, -A, --user-agent, -e, --referer, -X, --request, --request-target, -r, --range, --mail-auth, --mail-from, --mail-rcpt, --ftp-account, --login-options, --haproxy-clientip, -Q, --quote, -t, --telnet-option, --ftp-alternative-to-user, --proxy-header, -U, --proxy-user]}
+    parameters: [{name: request_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+  - id: url_query
+    matcher: {kind: any_flag, flags: [--url-query]}
+    parameters:
+      - name: query_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: prefix, value: '+'}, target: null}
+            - {matcher: {kind: regex_capture, pattern: '^[^=@]*@-$', group: 0}, target: {name: query_stdin, semantic: {kind: plain_value}}}
+            - {matcher: {kind: regex_capture, pattern: '^[^=@]*@(.*)$', group: 1}, target: {name: query_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: query_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: query_stdin}}
+
+  - id: write_out
+    matcher: {kind: any_flag, flags: [-w, --write-out]}
+    parameters:
+      - name: write_out_format
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          native_syntax: curl_write_out
+          last_value_only: true
+          branches:
+            - {matcher: {kind: prefix, value: 'write:'}, unless_modifier: information, target: {name: write_out_paths, semantic: {kind: path, role: write, purpose: generic_operand}}}
+            - {matcher: {kind: prefix, value: 'read:'}, unless_modifier: information, target: {name: write_out_format_file, semantic: {kind: path, role: read, purpose: tool_config}}}
+            - {matcher: {kind: prefix, value: 'opaque:'}, unless_modifier: information, target: {name: write_out_unknown_paths, semantic: {kind: path, role: write, purpose: generic_operand}, unresolved: true}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: write_out_format_file}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: write_out_paths}}
+      - {kind: write_path, target: {kind: slot, name: write_out_unknown_paths}}
 
   - id: common_value_option
     matcher:
       kind: any_flag
       flags:
         - "--abstract-unix-socket"
-        - "--alt-svc"
         - "--aws-sigv4"
-        - "--cacert"
-        - "--capath"
-        - "-E"
-        - "--cert"
         - "--cert-type"
         - "--ciphers"
-        - "-K"
-        - "--config"
         - "--connect-timeout"
         - "--connect-to"
         - "-C"
         - "--continue-at"
-        - "-b"
-        - "--cookie"
-        - "-c"
-        - "--cookie-jar"
         - "--create-file-mode"
-        - "--crlfile"
         - "--curves"
-        - "-d"
-        - "--data"
-        - "--data-ascii"
-        - "--data-binary"
-        - "--data-raw"
-        - "--data-urlencode"
         - "--delegation"
         - "--dns-interface"
         - "--dns-ipv4-addr"
         - "--dns-ipv6-addr"
         - "--dns-servers"
         - "--doh-url"
-        - "-D"
-        - "--dump-header"
-        - "--egd-file"
-        - "--engine"
-        - "--etag-compare"
-        - "--etag-save"
         - "--expect100-timeout"
-        - "-F"
-        - "--form"
-        - "--form-string"
-        - "--ftp-account"
-        - "--ftp-alternative-to-user"
         - "--ftp-method"
         - "-P"
         - "--ftp-port"
         - "--ftp-ssl-ccc-mode"
         - "--happy-eyeballs-timeout-ms"
-        - "--haproxy-clientip"
-        - "-H"
-        - "--header"
-        - "-h"
-        - "--help"
         - "--hostpubmd5"
         - "--hostpubsha256"
-        - "--hsts"
         - "--interface"
         - "--ipfs-gateway"
-        - "--json"
         - "--keepalive-time"
-        - "--key"
         - "--key-type"
         - "--krb"
-        - "--libcurl"
         - "--limit-rate"
         - "--local-port"
-        - "--login-options"
-        - "--mail-auth"
-        - "--mail-from"
-        - "--mail-rcpt"
         - "--max-filesize"
         - "--max-redirs"
         - "-m"
         - "--max-time"
-        - "--netrc-file"
         - "--noproxy"
-        - "--oauth2-bearer"
-        - "--output-dir"
         - "--parallel-max"
         - "--pass"
         - "--pinnedpubkey"
@@ -381,14 +623,8 @@ modifiers:
         - "--proto-redir"
         - "-x"
         - "--proxy"
-        - "--proxy-cacert"
-        - "--proxy-capath"
-        - "--proxy-cert"
         - "--proxy-cert-type"
         - "--proxy-ciphers"
-        - "--proxy-crlfile"
-        - "--proxy-header"
-        - "--proxy-key"
         - "--proxy-key-type"
         - "--proxy-pass"
         - "--proxy-pinnedpubkey"
@@ -397,21 +633,8 @@ modifiers:
         - "--proxy-tlsauthtype"
         - "--proxy-tlspassword"
         - "--proxy-tlsuser"
-        - "-U"
-        - "--proxy-user"
         - "--proxy1.0"
-        - "--pubkey"
-        - "-Q"
-        - "--quote"
-        - "--random-file"
-        - "-r"
-        - "--range"
         - "--rate"
-        - "-e"
-        - "--referer"
-        - "-X"
-        - "--request"
-        - "--request-target"
         - "--resolve"
         - "--retry"
         - "--retry-delay"
@@ -427,9 +650,6 @@ modifiers:
         - "--speed-limit"
         - "-y"
         - "--speed-time"
-        - "--stderr"
-        - "-t"
-        - "--telnet-option"
         - "--tftp-blksize"
         - "-z"
         - "--time-cond"
@@ -438,20 +658,9 @@ modifiers:
         - "--tlsauthtype"
         - "--tlspassword"
         - "--tlsuser"
-        - "--trace"
-        - "--trace-ascii"
         - "--trace-config"
         - "--unix-socket"
-        - "-T"
-        - "--upload-file"
-        - "--url-query"
-        - "-u"
-        - "--user"
-        - "-A"
-        - "--user-agent"
         - "--variable"
-        - "-w"
-        - "--write-out"
     parameters:
       - name: option_value
         semantic:
@@ -462,4 +671,10 @@ modifiers:
         cardinality: required_many
 
 subcommands: null
-extensions: {}
+extensions:
+  caushell.profile/sources: [https://curl.se/docs/manpage.html, https://github.com/curl/curl/blob/master/lib/vtls/openssl.c]
+  caushell.profile/known_limitations:
+    - Explicit headers, cookies, credentials and body inputs are request inputs even in fetch forms. FetchSource is retained so response bytes still carry network provenance. CA files, private keys, config-file bytes and local formatting options are not themselves request payload bytes.
+    - Named engines and explicit slash-containing library paths are distinct; no suffix or filesystem probing is used. Backend support is environment-dependent. Implicit configuration, proxy-specific header routing and default credential discovery are not fully expanded.
+    - --get/-G retains outbound data and FetchSource response lineage. --output-dir prefixes the complete output spelling for -o and relocates the URL basename for -O. Unknown components still require approval.
+    - Opt-in multipart grammar preserves all file-list members, quoted paths, body stdin and headers files; filename/type/encoder attributes are not local file reads. Ambiguous or oversized forms keep operation semantics unresolved.

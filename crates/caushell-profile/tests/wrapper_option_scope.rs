@@ -96,6 +96,27 @@ fn values<'a>(bound: &'a BoundInvocation, name: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn generic_one_operand_scope_stops_at_command_tail_and_honors_terminator() {
+    let profile = wrapper().with_option_scope(OptionScopePolicy::LeadingOptionsWithOperand);
+    let result = bound(
+        &profile,
+        "arbitrary-wrapper host -p 2222 child -f output --help",
+    );
+    assert_eq!(values(&result, "command"), ["host"]);
+    assert_eq!(values(&result, "password"), ["2222"]);
+    assert_eq!(values(&result, "argv"), ["child", "-f", "output", "--help"]);
+    assert!(values(&result, "file").is_empty());
+    for command in [
+        "arbitrary-wrapper -- host -p 2222",
+        "arbitrary-wrapper host -- -p 2222",
+    ] {
+        let result = bound(&profile, command);
+        assert!(values(&result, "password").is_empty(), "{result:#?}");
+        assert_eq!(values(&result, "argv"), ["-p", "2222"]);
+    }
+}
+
+#[test]
 fn child_options_and_help_do_not_belong_to_parent() {
     for command in [
         "arbitrary-wrapper -e ssh -p 2222 host",

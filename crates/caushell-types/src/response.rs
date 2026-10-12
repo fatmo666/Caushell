@@ -241,6 +241,7 @@ mod tests {
                     operation_semantics_unresolved: false,
                     network_listeners: Vec::new(),
                     database_operations: Vec::new(),
+                    state_operations: Vec::new(),
                     terminal_session_operations: Vec::new(),
                     shell_job_operations: Vec::new(),
                     node_id: "execution-semantics:command:sess-1:5".to_string(),

@@ -27,7 +27,24 @@ modifiers:
     effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: config_path}}]
   - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
   - {id: version, matcher: {kind: any_flag, flags: ['--version']}}
-subcommands: null
+subcommands:
+  roots:
+  - name: check
+    aliases: []
+    forms:
+    - id: check_files
+      selector: {kind: has_positional_at, index: 0}
+      parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+      effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, target: {kind: slot, name: input_paths}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [write_buffer_to_path]}}
+      stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+    modifiers: []
+    children: []
+    default_behavior: reject_unknown
+    extensions: {}
 extensions:
   caushell.profile/source_research: [https://aspell.net/man-html/Using-Aspell-as-a-Replacement-for-Ispell.html, GTFOBins fixed snapshot aspell/file-read/0, GTFOBins fixed snapshot aspell/file-read/1]
   caushell.profile/known_limitations:

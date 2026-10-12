@@ -14,6 +14,41 @@ platform:
   requires_features: []
 opaque_on_unresolved: true
 forms:
+- id: password_change_from_stdin_option
+  selector:
+    kind: all
+    items:
+    - kind: has_modifier
+      modifier: stdin_update
+    - kind: has_positional_at
+      index: 0
+    - kind: not
+      item:
+        kind: has_modifier
+        modifier: information
+  parameters:
+  - name: user
+    semantic:
+      kind: plain_value
+    binding:
+      kind: positional_at
+      index: 0
+    cardinality: required_one
+  implicit_inputs:
+  - source: stdin_data
+    semantic:
+      kind: plain_value
+  effects:
+  - kind: consume_stdin
+    target:
+      kind: implicit_input
+      source: stdin_data
+  - kind: write_path
+    target:
+      kind: configured_path
+      sources: []
+      default_value: "/etc/shadow"
+      missing: skip
 - id: information
   selector:
     kind: has_modifier
@@ -50,6 +85,11 @@ forms:
       default_value: "/etc/shadow"
       missing: skip
 modifiers:
+- id: stdin_update
+  matcher:
+    kind: any_flag
+    flags:
+    - "--stdin"
 - id: information
   matcher:
     kind: any_flag

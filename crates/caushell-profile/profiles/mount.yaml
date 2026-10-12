@@ -18,9 +18,19 @@ platform:
   requires_features: []
 
 forms:
+  - id: mount_all
+    selector:
+      kind: has_modifier
+      modifier: all_filesystems
+    effects:
+      - {kind: state_operation, state_operation: {domain: filesystem_mount, operation: mutate}, target: {kind: none}}
+
   - id: list_mounts
     selector:
-      kind: no_positional_args
+      kind: all
+      items:
+        - {kind: no_positional_args}
+        - {kind: not, item: {kind: has_modifier, modifier: all_filesystems}}
     stream_contract:
       stdin_mode: ignored
       stdout_mode: data
@@ -38,8 +48,10 @@ forms:
 
   - id: mount_filesystem
     selector:
-      kind: has_positional_at
-      index: 0
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: all_filesystems}}
     parameters:
       - name: source
         semantic:
@@ -58,6 +70,7 @@ forms:
           kind: last_positional
         cardinality: required_one
     effects:
+      - {kind: state_operation, state_operation: {domain: filesystem_mount, operation: mutate}, target: {kind: none}}
       - kind: target_path
         target:
           kind: slot
@@ -71,6 +84,9 @@ forms:
           kind: none
 
 modifiers:
+  - id: all_filesystems
+    matcher: {kind: any_flag, flags: [-a, --all]}
+
   - id: type
     matcher:
       kind: any_flag

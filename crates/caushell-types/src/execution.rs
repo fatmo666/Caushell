@@ -1,5 +1,32 @@
 use serde::{Deserialize, Serialize};
 
+/// A static non-filesystem state domain. No ownership or live-state assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateOperationDomain {
+    SystemClock,
+    FilesystemMount,
+    ServiceManager,
+    CloudResource,
+    RemoteAccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateOperationKind {
+    Inspect,
+    Mutate,
+    Control,
+    Opaque,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateOperation {
+    pub domain: StateOperationDomain,
+    pub operation: StateOperationKind,
+}
+
 /// Database state is not a filesystem path or evidence of workspace ownership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,6 +119,8 @@ pub enum ProcessControlTargetKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutionSemantics {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub state_operations: Vec<StateOperation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shell_job_operations: Vec<ShellJobOperationKind>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub operation_semantics_unresolved: bool,
@@ -136,6 +165,7 @@ impl ExecutionSemantics {
             terminal_session_operations: Vec::new(),
             operation_semantics_unresolved: false,
             database_operations: Vec::new(),
+            state_operations: Vec::new(),
             network_listeners: Vec::new(),
             normalized_command_name: normalized_command_name.into(),
             form_id: form_id.into(),

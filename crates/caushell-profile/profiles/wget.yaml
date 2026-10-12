@@ -1,5 +1,8 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+option_matching: declared_short_words
+opaque_on_unresolved: true
 
 identity:
   canonical_name: wget
@@ -18,14 +21,38 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
+
+  - id: probe_only
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: has_modifier, modifier: spider}
+        - {kind: not, item: {kind: has_modifier, modifier: recursive}}
+    parameters:
+      - {name: endpoints, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects:
+      - &request_endpoint
+        kind: network_endpoint
+        target: {kind: slot, name: endpoints}
+        input_scope: {slots: [body_file, request_values, cookie_input], stdin: false}
+      # Explicit -O is opened at startup even in spider mode; -P is not.
+      - &document_write {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+
   - id: fetch_to_stdout
     selector:
-      kind: has_modifier_parameter_matching
-      modifier: output_document
-      parameter: output_path
-      matcher:
-        kind: literal
-        value: "-"
+      kind: all
+      items:
+        - &not_spider {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: spider}, {kind: has_modifier, modifier: information}]}}
+        - kind: has_modifier_parameter_matching
+          modifier: output_document
+          parameter: output_operand
+          matcher: {kind: literal, value: '-'}
     parameters:
       - name: endpoints
         semantic:
@@ -40,22 +67,20 @@ forms:
       stdout_mode: data
       stderr_mode: opaque
     effects:
-      - kind: network_endpoint
-        target:
-          kind: slot
-          name: endpoints
+      - *request_endpoint
 
   - id: fetch_to_explicit_file
     selector:
       kind: all
       items:
+        - *not_spider
         - kind: has_modifier
           modifier: output_document
         - kind: not
           item:
             kind: has_modifier_parameter_matching
             modifier: output_document
-            parameter: output_path
+            parameter: output_operand
             matcher:
               kind: literal
               value: "-"
@@ -69,19 +94,16 @@ forms:
           kind: remaining_positionals
         cardinality: required_many
     effects:
-      - kind: network_endpoint
-        target:
-          kind: slot
-          name: endpoints
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_path
+      - *request_endpoint
+      - *document_write
 
   - id: fetch_to_directory
     selector:
-      kind: has_modifier
-      modifier: directory_prefix
+      kind: all
+      items:
+        - *not_spider
+        - {kind: has_modifier, modifier: directory_prefix}
+        - {kind: not, item: {kind: has_modifier, modifier: output_document}}
     parameters:
       - name: endpoints
         semantic:
@@ -92,10 +114,7 @@ forms:
           kind: remaining_positionals
         cardinality: required_many
     effects:
-      - kind: network_endpoint
-        target:
-          kind: slot
-          name: endpoints
+      - *request_endpoint
       - kind: write_path
         target:
           kind: derived_path
@@ -113,6 +132,7 @@ forms:
     selector:
       kind: all
       items:
+        - *not_spider
         - kind: has_positional_at
           index: 0
         - kind: not
@@ -133,10 +153,7 @@ forms:
           kind: remaining_positionals
         cardinality: required_many
     effects:
-      - kind: network_endpoint
-        target:
-          kind: slot
-          name: endpoints
+      - *request_endpoint
       - kind: write_path
         target:
           kind: derived_path
@@ -155,15 +172,17 @@ modifiers:
         - "-O"
         - "--output-document"
     parameters:
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+      - name: output_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: literal, value: '-'}, unless_modifier: information, target: {name: output_stdout, semantic: {kind: plain_value}}}
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifier: information, target: {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}}}
 
   - id: directory_prefix
     matcher:
@@ -173,19 +192,11 @@ modifiers:
         - "--directory-prefix"
     parameters:
       - name: output_directory
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_directory
 
   - id: input_file
     matcher:
@@ -216,21 +227,143 @@ modifiers:
         - "-q"
         - "--quiet"
 
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, -V, --version]}}
+  - {id: spider, matcher: {kind: any_flag, flags: [--spider]}}
+  - {id: recursive, matcher: {kind: any_flag, flags: [-r, --recursive, -m, --mirror, -p, --page-requisites]}}
+  - id: ordinary_flags
+    matcher: {kind: any_flag, flags: [-d, --debug, -v, --verbose, -S, --server-response, -c, --continue, -N, --timestamping, -nc, --no-clobber, -nd, --no-directories, -nH, --no-host-directories, -np, --no-parent, -nv, --no-verbose, -k, --convert-links, -K, --backup-converted, -E, --adjust-extension, -F, --force-html, '-4', --inet4-only, '-6', --inet6-only, --no-check-certificate, --no-cookies, --keep-session-cookies, --no-proxy, --no-cache, --content-disposition, --trust-server-names, --no-netrc, --no-config, --warc-cdx, --no-warc-compression, --no-warc-digests, --no-warc-keep-log]}
+  - {id: hsts_disabled, matcher: {kind: any_flag, flags: [--no-hsts]}}
+  - id: rejection_log
+    matcher: {kind: any_flag, flags: [--rejected-log]}
+    parameters:
+      - name: rejected_log_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, requires_modifiers: [recursive], unless_modifier: information, target: {name: rejected_log_file, semantic: {kind: path, role: write, purpose: generic_operand}}}
+    effects: [{kind: write_path, path_access: content_open, target: {kind: slot, name: rejected_log_file}}]
+  - id: hsts_database
+    matcher: {kind: any_flag, flags: [--hsts-file]}
+    parameters:
+      - name: hsts_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifiers: [information, hsts_disabled], target: {name: hsts_file, semantic: {kind: path, role: write, purpose: auxiliary_input}}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: hsts_file}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: hsts_file}}
+  - id: warc_output
+    matcher: {kind: any_flag, flags: [--warc-file]}
+    parameters:
+      - name: warc_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifier: information, target: {name: warc_prefix, semantic: {kind: plain_value}}}
+    effects:
+      # Compression, rotation, metadata and CDX variants share this parent.
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: warc_prefix}, rule: {kind: sibling_files}, purpose: generic_operand}}
+  - id: warc_temporary_directory
+    matcher: {kind: any_flag, flags: [--warc-tempdir]}
+    parameters:
+      - name: warc_temp_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, requires_modifiers: [warc_output], unless_modifier: information, target: {name: warc_temp_directory, semantic: {kind: path, role: write, purpose: generic_operand}}}
+    effects: [{kind: write_path, target: {kind: slot, name: warc_temp_directory}}]
+  - id: warc_deduplication
+    matcher: {kind: any_flag, flags: [--warc-dedup]}
+    parameters:
+      - name: warc_dedup_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, requires_modifiers: [warc_output], unless_modifier: information, target: {name: warc_dedup_file, semantic: {kind: path, role: read, purpose: auxiliary_input}}}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: warc_dedup_file}}]
+  - id: explicit_configuration
+    matcher: {kind: any_flag, flags: [--config]}
+    parameters:
+      - name: config_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, target: {name: config_file, semantic: {kind: path, role: config, purpose: startup_config}}}
+    effects: [{kind: load_config, target: {kind: slot, name: config_file}}]
+
+  - id: log_output
+    matcher: {kind: any_flag, flags: [-o, --output-file, -a, --append-output]}
+    parameters:
+      - name: log_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifier: information, target: {name: log_file, semantic: {kind: path, role: write, purpose: generic_operand}}}
+    effects: [{kind: write_path, path_access: content_open, target: {kind: slot, name: log_file}}]
+
+  - id: cookie_output
+    matcher: {kind: any_flag, flags: [--save-cookies]}
+    parameters:
+      - name: cookie_output_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifier: information, target: {name: cookie_file, semantic: {kind: path, role: write, purpose: generic_operand}}}
+    effects: [{kind: write_path, path_access: content_open, target: {kind: slot, name: cookie_file}}]
+
+  - id: body_file
+    matcher: {kind: any_flag, flags: [--post-file, --body-file]}
+    parameters:
+      - name: body_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifier: information, target: {name: body_file, semantic: {kind: path, role: read, purpose: generic_operand}}}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: body_file}}]
+
+  - id: request_values
+    matcher: {kind: any_flag, flags: [--post-data, --body-data, --header, --user, --password, --http-user, --http-password, --user-agent, -U, --referer]}
+    parameters: [{name: request_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+  - id: cookie_input
+    matcher: {kind: any_flag, flags: [--load-cookies]}
+    parameters: [{name: cookie_input, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: cookie_input}}]
+
   - id: common_value_option
     matcher:
       kind: any_flag
       flags:
-        - "-e"
-        - "--execute"
-        - "-o"
-        - "--output-file"
-        - "-a"
-        - "--append-output"
         - "--report-speed"
         - "-B"
         - "--base"
-        - "--config"
-        - "--rejected-log"
         - "-t"
         - "--tries"
         - "--retry-on-http-error"
@@ -250,30 +383,15 @@ modifiers:
         - "--limit-rate"
         - "--restrict-file-names"
         - "--prefer-family"
-        - "--user"
-        - "--password"
-        - "--use-askpass"
         - "--local-encoding"
         - "--remote-encoding"
         - "--cut-dirs"
-        - "--http-user"
-        - "--http-password"
         - "--default-page"
-        - "--header"
         - "--compression"
         - "--max-redirect"
         - "--proxy-user"
         - "--proxy-password"
-        - "--referer"
-        - "-U"
-        - "--user-agent"
-        - "--load-cookies"
-        - "--save-cookies"
-        - "--post-data"
-        - "--post-file"
         - "--method"
-        - "--body-data"
-        - "--body-file"
         - "--secure-protocol"
         - "--certificate"
         - "--certificate-type"
@@ -285,14 +403,10 @@ modifiers:
         - "--pinnedpubkey"
         - "--random-file"
         - "--ciphers"
-        - "--hsts-file"
         - "--ftp-user"
         - "--ftp-password"
-        - "--warc-file"
         - "--warc-header"
         - "--warc-max-size"
-        - "--warc-dedup"
-        - "--warc-tempdir"
         - "-l"
         - "--level"
         - "--backups"

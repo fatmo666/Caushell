@@ -152,15 +152,35 @@ fn collect_resolved_path_mutations(
                                     Some(&path.normalized_command_name),
                                 ));
                             }
-                            target => mutations.extend(stream_provenance_mutations(
-                                ctx,
-                                Some(record),
-                                &path.source_node_id,
-                                &target,
-                                path.role,
-                                &path.slot_name,
-                                Some(&path.normalized_command_name),
-                            )),
+                            target => {
+                                let mut inputs = stream_provenance_mutations(
+                                    ctx,
+                                    Some(record),
+                                    &path.source_node_id,
+                                    &target,
+                                    path.role,
+                                    &path.slot_name,
+                                    Some(&path.normalized_command_name),
+                                );
+                                if path.purpose
+                                    == Some(caushell_profile::PathPurpose::AuxiliaryInput)
+                                {
+                                    for mutation in &mut inputs {
+                                        if let PendingMutation::AddProvenanceArtifact {
+                                            semantics:
+                                                caushell_types::ProvenanceEdgeSemantics::Consume {
+                                                    consume_kind,
+                                                    ..
+                                                },
+                                            ..
+                                        } = mutation
+                                        {
+                                            *consume_kind = caushell_types::ProvenanceConsumeKind::AuxiliaryInput;
+                                        }
+                                    }
+                                }
+                                mutations.extend(inputs);
+                            }
                         }
                     }
                     continue;
@@ -1193,6 +1213,7 @@ mod tests {
                         | PendingMutation::AddTopLevelCommandInvocation { .. }
                         | PendingMutation::AddDerivedInvocation { .. }
                         | PendingMutation::AddExecutionUnitFlow { .. }
+                        | PendingMutation::AddNestedPayload { .. }
                 )
             })
             .cloned()
@@ -2734,6 +2755,10 @@ extensions: {}
     fn extract_path_facts_stages_read_path_mutation_for_home_expansion() {
         let ctx = run_pass("bash --rcfile ~/team.rc", Some("/home/alice"));
 
+        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddNestedPayload { source, resolution_kind, .. }
+                if source == "stdin" && resolution_kind == "requires_runtime_input")));
+
         assert_eq!(
             relevant_pending_mutations(&ctx),
             &[
@@ -2966,10 +2991,10 @@ extensions: {}
             &[PendingMutation::AddPathFact {
                 source_node_id: NodeId::new("command:sess-1:2:0"),
                 node_id: NodeId::new(
-                    "resolved-path:command:sess-1:2:0:0:startup_config:dynamic-text:$RCFILE"
+                    "resolved-path:command:sess-1:2:0:0:startup_config:missing-binding:RCFILE"
                 ),
-                resolution: PathResolution::UnsupportedDynamicText {
-                    text: "$RCFILE".to_string(),
+                resolution: PathResolution::MissingBinding {
+                    variable_name: "RCFILE".to_string(),
                 },
                 role: ResolvedPathRole::Config,
                 purpose: Some(ResolvedPathPurpose::StartupConfig),

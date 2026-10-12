@@ -15,6 +15,7 @@ mod extract_imported_package_provenance;
 mod extract_path_facts;
 mod extract_pipeline_flow;
 mod extract_pipeline_stream_provenance;
+mod state_operation_guard;
 pub(crate) use extract_pipeline_stream_provenance::inherited_pipeline_artifact;
 mod extract_process_substitution_provenance;
 pub(crate) use extract_process_substitution_provenance::{
@@ -74,6 +75,7 @@ pub use resolve_invocation::ResolveInvocationPass;
 pub use resolve_policy::ResolvePolicyPass;
 pub use sensitive_data_exfiltration_guard::SensitiveDataExfiltrationGuardPass;
 pub use sequence_integrity::SequenceIntegrityPass;
+pub use state_operation_guard::StateOperationGuardPass;
 pub use tainted_execution_guard::TaintedExecutionGuardPass;
 mod network_listener_guard;
 pub use network_listener_guard::NetworkListenerGuardPass;

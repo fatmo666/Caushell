@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: leading_options
+option_matching: exact_names
 opaque_on_unresolved: true
 identity:
   canonical_name: java
@@ -43,6 +44,8 @@ forms:
         item:
           kind: has_flag
           flag: "--version"
+      - kind: not
+        item: {kind: has_modifier, modifier: jar_mode}
     - kind: not
       item:
         kind: has_modifier
@@ -69,6 +72,18 @@ forms:
     target:
       kind: slot
       name: class_name
+
+- id: launch_jar
+  selector:
+    kind: all
+    items:
+    - {kind: has_modifier, modifier: jar_mode}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - {name: program_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+  effects:
+  - {kind: read_path, target: {kind: slot, name: jar_path}}
+  - {kind: execute_payload, target: {kind: slot, name: jar_source}}
 subcommands:
 extensions:
   caushell.profile/source_research:
@@ -78,6 +93,17 @@ extensions:
     actual child argv are encoded in the class and unavailable from this CLI form;
     no child argv is invented.
 modifiers:
+- id: jar_mode
+  matcher: {kind: any_flag, flags: ["-jar"]}
+  ends_option_scope: true
+  parameters:
+    - name: jar_source
+      semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+      binding: {kind: following_matched_flag, operand_mode: next_arg}
+      cardinality: required_one
+      structured_projection:
+        branches: []
+        fallback: {name: jar_path, semantic: {kind: path, role: read, purpose: script_source}}
 - id: information
   matcher:
     kind: any_flag

@@ -25,6 +25,9 @@ forms:
   - {name: list_operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
   - {name: unit_patterns, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
   effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
   - kind: open_interactive_escape_surface
     target: {kind: none}
     surface: {kind: pager, requires_tty: true, capabilities: [run_command, spawn_shell]}
@@ -37,6 +40,10 @@ forms:
     - {kind: not, item: {kind: has_modifier, modifier: information}}
     - {kind: has_modifier, modifier: no_pager}
   parameters: *list_arguments
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
   stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
 - id: information
   selector:
@@ -63,6 +70,9 @@ forms:
         kind: has_modifier
         modifier: no_pager
   effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
   - kind: open_interactive_escape_surface
     target:
       kind: none
@@ -83,6 +93,75 @@ forms:
       item:
         kind: has_modifier
         modifier: information
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
+- id: service_state_inspection_pager
+  selector:
+    kind: all
+    items:
+    - &paged_inspection {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(status|show|list-dependencies)$'}}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: not, item: {kind: has_modifier, modifier: no_pager}}
+  parameters: &inspection_arguments
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: unit_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
+  - kind: open_interactive_escape_surface
+    target: {kind: none}
+    surface: {kind: pager, requires_tty: true, capabilities: [run_command, spawn_shell]}
+- id: service_state_inspection
+  selector:
+    kind: all
+    items:
+    - kind: any
+      items:
+      - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(is-active|is-failed)$'}}
+      - kind: all
+        items:
+        - *paged_inspection
+        - {kind: has_modifier, modifier: no_pager}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters: *inspection_arguments
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: inspect}
+    target: {kind: none}
+- id: service_manager_control
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher: {kind: regex_pattern, pattern: "^(start|stop|restart|reload|try-restart|reload-or-restart|kill)$"}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: unit_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: control}
+    target: {kind: none}
+- id: service_manager_mutation
+  selector:
+    kind: all
+    items:
+    - kind: has_positional_at_matching
+      index: 0
+      matcher: {kind: regex_pattern, pattern: "^(enable|disable|mask|unmask)$"}
+    - {kind: not, item: {kind: has_modifier, modifier: now}}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: unit_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+  effects:
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: mutate}
+    target: {kind: none}
 - id: link_executable_service_unit
   selector:
     kind: all
@@ -184,6 +263,12 @@ forms:
   - kind: execute_hook
     target:
       kind: none
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: mutate}
+    target: {kind: none}
+  - kind: state_operation
+    state_operation: {domain: service_manager, operation: control}
+    target: {kind: none}
   - kind: write_path
     target:
       kind: configured_path
@@ -242,6 +327,8 @@ modifiers:
     kind: any_flag
     flags:
     - "--now"
+- id: user_manager
+  matcher: {kind: any_flag, flags: ["--user"]}
 subcommands:
 extensions:
   caushell.profile/source_research:

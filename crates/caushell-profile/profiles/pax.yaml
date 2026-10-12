@@ -54,6 +54,9 @@ modifiers:
   - id: archive_file
     matcher: {kind: any_flag, flags: ['-f']}
     parameters: [{name: archive_file_arg, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_one}]
+  - id: substitution
+    matcher: {kind: any_flag, flags: ['-s']}
+    parameters: [{name: substitution_expression, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
   - {id: check_pattern_exclusion, matcher: {kind: any_flag, flags: ['-c']}}
   - {id: interact, matcher: {kind: any_flag, flags: ['-i']}}
   - {id: list, matcher: {kind: any_flag, flags: ['-v']}}

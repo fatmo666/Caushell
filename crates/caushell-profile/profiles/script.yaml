@@ -18,11 +18,36 @@ platform:
   requires_features: []
 
 forms:
+  - id: command_string_default_record
+    selector:
+      kind: all
+      items:
+        - kind: has_modifier
+          modifier: command
+        - kind: no_positional_args
+    effects:
+      - kind: write_path
+        target: {kind: configured_path, sources: [], default_value: typescript}
+      - kind: open_interactive_escape_surface
+        target: {kind: none}
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities: [run_command]
+
   - id: command_string
     selector:
       kind: has_modifier
       modifier: command
+    parameters:
+      - name: output_path
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: optional_one
     effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: output_path}
       - kind: open_interactive_escape_surface
         target:
           kind: none
@@ -31,6 +56,29 @@ forms:
           requires_tty: true
           capabilities:
             - run_command
+
+  - id: record_shell_default_record
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item: {kind: has_modifier, modifier: command}
+        - kind: no_positional_args
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: help}
+              - {kind: has_modifier, modifier: version}
+    effects:
+      - kind: write_path
+        target: {kind: configured_path, sources: [], default_value: typescript}
+      - kind: open_interactive_escape_surface
+        target: {kind: none}
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities: [spawn_shell, run_command]
 
   - id: record_shell
     selector:
@@ -50,6 +98,9 @@ forms:
           kind: next_positional
         cardinality: optional_one
     effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: output_path}
       - kind: open_interactive_escape_surface
         target:
           kind: none
@@ -126,8 +177,12 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: next_arg
+          operand_mode: optional_inline_only
         cardinality: optional_one
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: timing_path}
 
   - id: log_in
     matcher:
@@ -145,6 +200,10 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: log_path}
 
   - id: log_out
     matcher:
@@ -162,6 +221,10 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: log_path}
 
   - id: log_io
     matcher:
@@ -179,6 +242,10 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+    effects:
+      - kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: log_path}
 
   - id: help
     matcher:

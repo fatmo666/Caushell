@@ -1,6 +1,9 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: leading_options
+option_operand_matcher:
+  kind: regex_pattern
+  pattern: '^-[0-9]+$'
 
 identity:
   canonical_name: nice
@@ -19,6 +22,23 @@ platform:
   requires_features: []
 
 forms:
+  - id: current_niceness_query
+    selector:
+      kind: all
+      items:
+        - kind: no_positional_args
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_flag, flag: "--help"}
+              - {kind: has_flag, flag: "--version"}
+    parameters: []
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: data
+      stderr_mode: opaque
+
   - id: wrapped_command
     selector:
       kind: all
@@ -36,6 +56,15 @@ forms:
     remaining_selector:
       kind: no_positional_args
     parameters:
+      - name: legacy_adjustment
+        semantic:
+          kind: plain_value
+        binding:
+          kind: leading_positionals_while
+          matcher:
+            kind: regex_pattern
+            pattern: '^-[0-9]+$'
+        cardinality: optional_one
       - name: wrapped_command
         semantic:
           kind: command_ref
@@ -54,6 +83,8 @@ forms:
         target:
           kind: dispatch
           command: wrapped_command
+          stdin_from_parent: true
+          stdout_to_parent: true
           argv:
             - wrapped_args
           environment: []

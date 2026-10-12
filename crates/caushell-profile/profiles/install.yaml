@@ -18,6 +18,64 @@ platform:
   requires_features: []
 
 forms:
+  # Only explicitly selected helpers are dispatched. The executable is one
+  # native argv locator, not a shell command string.
+  - id: strip_explicit_file
+    selector:
+      kind: all
+      items:
+        - &custom_strip {kind: all, items: [{kind: has_modifier, modifier: strip}, {kind: has_modifier, modifier: strip_program}, {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: directory}, {kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}]}
+        - {kind: has_modifier, modifier: no_target_directory}
+        - {kind: not, item: {kind: has_modifier, modifier: target_directory}}
+        - {kind: has_positional_at, index: 1}
+        - {kind: not, item: {kind: has_positional_at, index: 2}}
+        - {kind: last_positional_matches, matcher: {kind: regex_pattern, pattern: '^[^-].*$'}}
+    parameters:
+      - &source_parameter {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - name: destination_path
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: last_positional}
+        cardinality: required_one
+    effects:
+      - &source_read {kind: read_path, target: {kind: slot, name: source_paths}}
+      - &destination_write {kind: write_path, target: {kind: slot, name: destination_path}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: strip_program_command, argv: [destination_path]}}
+
+  - id: strip_target_directory
+    selector: {kind: all, items: [*custom_strip, {kind: has_modifier, modifier: target_directory}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - name: source_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        structured_projection:
+          branches: []
+          fallback: {name: helper_unknown_arguments, semantic: {kind: plain_value}, unresolved: true}
+    effects:
+      - *source_read
+      - &strip_dispatch {kind: dispatch_command, target: {kind: dispatch, command: strip_program_command, argv: [helper_unknown_arguments]}}
+
+  - id: strip_file_or_directory
+    selector:
+      kind: all
+      items:
+        - *custom_strip
+        - {kind: not, item: {kind: has_modifier, modifier: target_directory}}
+        - {kind: not, item: {kind: all, items: [{kind: has_modifier, modifier: no_target_directory}, {kind: not, item: {kind: has_positional_at, index: 2}}, {kind: last_positional_matches, matcher: {kind: regex_pattern, pattern: '^[^-].*$'}}]}}
+        - {kind: has_positional_at, index: 1}
+    parameters:
+      - *source_parameter
+      - name: destination_path
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        # The output can be a directory or a rewritten leading '-' name.
+        # Retain the helper invocation without inventing its output argv.
+        structured_projection:
+          branches: []
+          fallback: {name: helper_unknown_arguments, semantic: {kind: plain_value}, unresolved: true}
+    effects: [*source_read, *destination_write, *strip_dispatch]
+
   - id: show_help
     selector:
       kind: has_flag
@@ -69,6 +127,7 @@ forms:
     selector:
       kind: all
       items:
+        - {kind: not, item: *custom_strip}
         - kind: not
           item:
             kind: any
@@ -104,6 +163,7 @@ forms:
     selector:
       kind: all
       items:
+        - {kind: not, item: *custom_strip}
         - kind: not
           item:
             kind: any
@@ -298,14 +358,14 @@ modifiers:
         - "--strip-program"
     parameters:
       - name: strip_program_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, target: {name: strip_program_command, semantic: {kind: command_ref, dispatch: wrapper_command}}}
 
   - id: target_directory
     matcher:

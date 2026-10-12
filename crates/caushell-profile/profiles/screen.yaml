@@ -117,7 +117,7 @@ modifiers:
   - id: create_named
     matcher: {kind: any_flag, flags: [-dmS, -DmS]}
     parameters: [{name: session_name, semantic: *plain, binding: *operand, cardinality: required_many}]
-  - {id: attach_mode, matcher: {kind: any_flag, flags: [-r, -R, -RR, -x, -xr, -xR, -xRR, -dr, -dR, -dRR, -Dr, -DR, -DRR]}}
+  - {id: attach_mode, matcher: {kind: any_flag, flags: [-r, -R, -RR, -Rd, -x, -xr, -xR, -xRR, -dr, -dR, -dRR, -Dr, -DR, -DRR]}}
   - {id: detach_mode, matcher: {kind: any_flag, flags: [-d, -D]}}
   - {id: control_mode, matcher: {kind: any_flag, flags: [-X, -wipe]}}
   - id: configuration

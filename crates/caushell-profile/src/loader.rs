@@ -313,7 +313,7 @@ extensions: {}
 
         assert_eq!(profile.primary_name(), "bash");
         assert_eq!(profile.identity.aliases.len(), 1);
-        assert_eq!(profile.forms.len(), 5);
+        assert_eq!(profile.forms.len(), 6);
         assert_eq!(profile.modifiers.len(), 1);
 
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
@@ -325,6 +325,7 @@ extensions: {}
                 "stdin_script_explicit",
                 "stdin_script_implicit",
                 "interactive",
+                "shell_input_source_unknown",
             ]
         );
 
@@ -382,7 +383,7 @@ extensions: {}
                 .collect::<Vec<_>>(),
             vec!["ash", "dash"]
         );
-        assert_eq!(profile.forms.len(), 5);
+        assert_eq!(profile.forms.len(), 6);
         assert!(profile.modifiers.is_empty());
 
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
@@ -394,6 +395,7 @@ extensions: {}
                 "stdin_script_explicit",
                 "stdin_script_implicit",
                 "interactive",
+                "shell_input_source_unknown",
             ]
         );
 
@@ -562,6 +564,9 @@ extensions: {}
         assert_eq!(
             form_ids,
             vec![
+                "strip_explicit_file",
+                "strip_target_directory",
+                "strip_file_or_directory",
                 "show_help",
                 "show_version",
                 "create_directories",
@@ -571,11 +576,11 @@ extensions: {}
         );
         assert!(profile.modifiers.len() > 1);
         assert_eq!(
-            profile.forms[4].parameters[0].binding,
+            profile.forms[7].parameters[0].binding,
             BindingSpec::RemainingPositionalsBeforeLast
         );
         assert_eq!(
-            profile.forms[4].parameters[1].binding,
+            profile.forms[7].parameters[1].binding,
             BindingSpec::LastPositional
         );
     }
@@ -657,21 +662,25 @@ extensions: {}
         assert_eq!(profile.identity.aliases.len(), 2);
         assert_eq!(
             form_ids,
-            vec!["explicit_pattern_search", "positional_pattern_search"]
+            vec![
+                "show_help",
+                "explicit_pattern_search",
+                "positional_pattern_search"
+            ]
         );
         assert!(modifier_ids.contains(&"inline_pattern"));
         assert!(modifier_ids.contains(&"pattern_file"));
         assert!(modifier_ids.contains(&"recursive"));
         assert_eq!(
-            profile.forms[1].parameters[0].binding,
+            profile.forms[2].parameters[0].binding,
             BindingSpec::NextPositional
         );
         assert_eq!(
-            profile.forms[1].parameters[1].binding,
+            profile.forms[2].parameters[1].binding,
             BindingSpec::RemainingPositionals
         );
         assert_eq!(
-            profile.forms[0].stream_contract,
+            profile.forms[1].stream_contract,
             Some(crate::StreamContract {
                 stdin_mode: crate::StreamInputMode::DataOptional,
                 stdout_mode: crate::StreamOutputMode::Data,
@@ -681,7 +690,12 @@ extensions: {}
             })
         );
 
-        match &profile.modifiers[1].parameters[0].semantic {
+        let pattern_file = profile
+            .modifiers
+            .iter()
+            .find(|m| m.id.as_str() == "pattern_file")
+            .unwrap();
+        match &pattern_file.parameters[0].semantic {
             SemanticType::Path(semantic) => {
                 assert_eq!(semantic.role, PathRole::Read);
                 assert_eq!(semantic.purpose, Some(PathPurpose::GenericOperand));
@@ -690,7 +704,7 @@ extensions: {}
         }
 
         assert_eq!(
-            profile.forms[0].parameters[0].value_constraints,
+            profile.forms[1].parameters[0].value_constraints,
             vec![crate::ValueConstraint::ExcludeLiteral("-".to_string())]
         );
     }
@@ -867,14 +881,15 @@ extensions: {}
             .collect();
 
         assert_eq!(profile.primary_name(), "head");
-        assert_eq!(profile.forms.len(), 1);
-        assert_eq!(profile.forms[0].id.as_str(), "read_inputs");
+        assert_eq!(profile.forms.len(), 2);
+        assert_eq!(profile.forms[0].id.as_str(), "show_help");
+        assert_eq!(profile.forms[1].id.as_str(), "read_inputs");
         assert_eq!(
-            profile.forms[0].parameters[0].binding,
+            profile.forms[1].parameters[0].binding,
             BindingSpec::RemainingPositionals
         );
         assert_eq!(
-            profile.forms[0].parameters[0].value_constraints,
+            profile.forms[1].parameters[0].value_constraints,
             vec![crate::ValueConstraint::ExcludeLiteral("-".to_string())]
         );
         assert!(modifier_ids.contains(&"bytes"));
@@ -883,7 +898,7 @@ extensions: {}
         assert!(modifier_ids.contains(&"verbose"));
         assert!(modifier_ids.contains(&"zero_terminated"));
         assert_eq!(
-            profile.forms[0].stream_contract,
+            profile.forms[1].stream_contract,
             Some(crate::StreamContract {
                 stdin_mode: crate::StreamInputMode::DataOptional,
                 stdout_mode: crate::StreamOutputMode::Data,
@@ -903,19 +918,20 @@ extensions: {}
             .expect("expected sudo profile file to load");
 
         assert_eq!(profile.primary_name(), "sudo");
-        assert_eq!(profile.forms.len(), 1);
-        assert_eq!(profile.forms[0].id.as_str(), "wrapped_command");
-        assert_eq!(profile.modifiers.len(), 18);
+        assert_eq!(profile.forms.len(), 2);
+        assert_eq!(profile.forms[0].id.as_str(), "list_privileges");
+        assert_eq!(profile.forms[1].id.as_str(), "wrapped_command");
+        assert_eq!(profile.modifiers.len(), 19);
         assert_eq!(
-            profile.forms[0].effects[0].kind,
+            profile.forms[1].effects[0].kind,
             EffectKind::PrivilegeModifier
         );
         assert_eq!(
-            profile.forms[0].effects[1].kind,
+            profile.forms[1].effects[1].kind,
             EffectKind::DispatchCommand
         );
         assert_eq!(
-            profile.forms[0].parameters[0].binding,
+            profile.forms[1].parameters[0].binding,
             BindingSpec::LeadingPositionalsWhile(crate::ValueMatcher::StructuredValueContext(
                 crate::StructuredValueContext::EnvAssignment,
             ))
@@ -1014,7 +1030,7 @@ extensions: {}
             .subcommands
             .as_ref()
             .expect("expected pip subcommands to be present");
-        assert_eq!(subcommands.roots.len(), 1);
+        assert_eq!(subcommands.roots.len(), 2);
         assert_eq!(subcommands.roots[0].name, "install");
         assert_eq!(subcommands.roots[0].forms.len(), 1);
 
@@ -1138,7 +1154,7 @@ extensions: {}
             .subcommands
             .as_ref()
             .expect("expected apt-get subcommands to be present");
-        assert_eq!(subcommands.roots.len(), 2);
+        assert_eq!(subcommands.roots.len(), 4);
         assert_eq!(subcommands.roots[0].name, "install");
         assert_eq!(subcommands.roots[1].name, "source");
 

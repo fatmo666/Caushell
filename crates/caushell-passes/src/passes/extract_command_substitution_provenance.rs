@@ -196,6 +196,10 @@ fn command_substitution_body_descriptor(
     let token = command.tokens.get(token_index)?;
     let substitution = token.command_substitutions.get(substitution_index)?;
     let slot_name = command_substitution_parent_slot_name(&parent_record.result, &token.text);
+    let auxiliary = slot_name.as_ref().is_some_and(|slot| {
+        crate::support::bound_invocation(&parent_record.result)
+            .is_some_and(|b| b.is_auxiliary_input_slot(slot))
+    });
 
     Some(CommandSubstitutionProvenanceRecord {
         artifact_key: CommandSubstitutionArtifactKey::BodyLocator {
@@ -207,7 +211,11 @@ fn command_substitution_body_descriptor(
         body_text: substitution.body_text.clone(),
         parent_execution_node_id: parent_record.source_node_id.clone(),
         outer_relation: ProcessSubstitutionOuterRelation::Consume {
-            consume_kind: ProvenanceConsumeKind::CommandString,
+            consume_kind: if auxiliary {
+                ProvenanceConsumeKind::AuxiliaryInput
+            } else {
+                ProvenanceConsumeKind::CommandString
+            },
             slot_name,
             domain_label: None,
         },

@@ -21,6 +21,36 @@ option_scope: permuted_options
 opaque_on_unresolved: true
 
 forms:
+  # GNU rmt transport is a remote execution/transfer entrance, not a local
+  # archive path. Opaque remote semantics are explicit until rmt is modeled.
+  - id: remote_archive
+    selector: &remote_archive_selector
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: force_local}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: version}]}}
+        - {kind: has_modifier_parameter_matching, modifier: archive_option, parameter: archive_operand, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+    parameters: [{name: remote_members, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: &remote_effects
+      - {kind: network_endpoint, target: {kind: slot, name: remote_archive}}
+      - {kind: network_endpoint, target: {kind: slot, name: old_remote_endpoint}}
+      - {kind: execute_remote_command, target: {kind: none}}
+      - {kind: state_operation, state_operation: {domain: remote_access, operation: opaque}, target: {kind: none}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: remote_archive_old_style
+    selector: &old_remote_archive_selector
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: force_local}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: version}]}}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[a-zA-Z]*[cxtrudA][a-zA-Z]*f[a-zA-Z]*$'}}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^.*:.*$'}}
+    parameters:
+      - {name: old_remote_options, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: old_remote_endpoint, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: generic_endpoint}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: remote_members, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: *remote_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: show_help
     selector: {kind: has_modifier, modifier: information}
     parameters: &information_args
@@ -31,7 +61,12 @@ forms:
     parameters: *information_args
     stream_contract: *info_stream
   - id: extract_archive
-    remaining_selector: &running {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: version}]}}
+    remaining_selector: &running
+      kind: all
+      items:
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: version}]}}
+        - {kind: not, item: *remote_archive_selector}
+        - {kind: not, item: *old_remote_archive_selector}
     selector:
       kind: all
       items: [{kind: has_modifier, modifier: extract}, {kind: has_modifier, modifier: archive_option}, &disk_output {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: to_stdout}, {kind: has_modifier, modifier: to_command}]}}, {kind: not, item: &stdin_archive {kind: has_modifier_parameter_matching, modifier: archive_option, parameter: archive_operand, matcher: {kind: literal, value: '-'}}}]
@@ -345,6 +380,10 @@ forms:
     effects: *default_extract_effects
 
 modifiers:
+  - {id: force_local, matcher: {kind: any_flag, flags: [--force-local]}}
+  - id: remote_transport_program
+    matcher: {kind: any_flag, flags: [--rsh-command]}
+    parameters: [{name: remote_transport_program, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
   - id: archive_switches
     matcher:
       kind: any_flag
@@ -411,6 +450,7 @@ modifiers:
         structured_projection:
           branches:
             - {matcher: {kind: literal, value: '-'}, target: {name: archive_stream, semantic: {kind: plain_value}}}
+            - {matcher: {kind: regex_capture, pattern: '^.*:.*$', group: 0}, unless_modifier: force_local, target: {name: remote_archive, semantic: {kind: endpoint, endpoint_kind: remote_spec, usage: generic_endpoint}}}
           fallback: {name: archive_file, semantic: {kind: path, role: target, purpose: generic_operand}}
   - id: compression_program
     matcher: {kind: any_flag, flags: [-I, --use-compress-program]}
@@ -532,4 +572,4 @@ extensions:
     - GNU names.c allows only file-selection directives in non-verbatim filename lists, not checkpoint or compression callbacks. Unknown list names, nested lists and directory changes remain unknown reads; list bytes are not executed, inspected or fabricated as literal paths. --remove-files with a list or directory rebasing retains unknown possible deletion targets. Ordered -C rebasing, list parsing modes and list contents are not statically expanded.
     - GNU tar 1.35 source runs compression, checkpoint exec and to-command strings through /bin/sh -c. Decompression uses GNU wordsplit with environment expansion and appends -d. The selected string modes are not interchangeable.
     - GNU wordsplit environment expansions remain explicit analysis gaps. No ambient environment or subprocess is consulted. Tool-generated TAR_* values are opaque only in the callback environment, not the caller shell.
-    - Remote archive addressing and --rsh-command helper argv, info scripts, implicit compression selection, TAR_OPTIONS, transforms and BSD tar dialect differences remain pending; name registration is not complete semantic coverage.
+    - GNU colon archive addressing is remote unless --force-local. Remote rmt transport is an explicit opaque execution/transfer entrance and requires approval; --rsh-command is an executable locator, not shell code. Unused local helpers do not execute. Full rmt protocol, info scripts, implicit compression selection, TAR_OPTIONS, transforms and BSD tar dialect differences remain pending.
