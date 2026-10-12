@@ -34,6 +34,77 @@ Before parsing a recursive inline payload, its outer-shell operands must become 
 
 ## Command Modeling
 
+### External state operations and native operand grammars
+
+A Profile may declare a non-filesystem effect explicitly:
+
+```yaml
+- kind: state_operation
+  state_operation: {domain: system_clock, operation: mutate}
+  target: {kind: none}
+```
+
+Domains are `system_clock`, `filesystem_mount`, `service_manager`,
+`cloud_resource` and `remote_access`; operations are `inspect`, `mutate`,
+`control` and `opaque`. The typed declarations are retained in execution
+semantics and exposed by the public execution-semantics Query. They do not
+invent local files, remote resource ownership, successful execution or live
+system observations. The state guard defaults to approval for mutation,
+control and opaque operations; inspection does not trigger that guard.
+The `state_safety` family and its individual rules use existing policy
+overrides and decision precedence. Filesystem and other guards remain
+independent. Commands without a state-operation candidate return before
+the state guard queries the Graph; candidate queries cover the current action,
+not a scan of all session history.
+
+Native argv grammars are opt-in Profile declarations, not command-name cases
+in shared code:
+
+- `option_operand_matcher` recognizes a complete option-shaped positional
+  operand in a flat scoped grammar, such as a symbolic mode beginning with
+  `-`. Unknown controls remain unresolved.
+- `leading_options_with_operand` permits options before and after one
+  positional operand. The next positional starts an untouched command/data
+  tail; `--` always ends option ownership. Dynamic argv width remains unknown.
+
+- `optional_short_octal_prefix` consumes only attached octal digits, resumes
+  decoding the rest of the short cluster and never takes the next argv word.
+- `word_attached` and `optional_word_attached` use scoped `exact_names`
+  matching. Exact declared words take precedence; otherwise the longest
+  explicitly attached-word declaration owns its suffix. They never consume
+  a following word or enable short-cluster guessing.
+- A structured `regex_capture` matcher selects a capture only when the whole
+  operand matches. Regexes are compiled once at Profile loading and shared
+  across clones. Captured bytes are semantic projections; original execution
+  argv, source spans and materialization provenance are preserved. Dynamic,
+  empty and absent captures remain unknown. A target may declare
+  `unresolved: true` when its native form is recognized but its value is not
+  representable by the supported grammar; it cannot also select preferred
+  source slots.
+- The `basename` derived-path rule relocates a complete lexical final
+  component under execution cwd. Empty, dot/dot-dot and incomplete operands
+  do not produce a guessed destination.
+
+Risk lineage starts from the actual execution or upload entrance, not every
+read made by the same process. Code sinks use the Profile's payload slots and
+implicit code sources; ordinary stdin for a fixed inline program is not code.
+An upload `network_endpoint` effect may declare `input_scope: {slots: [...],
+stdin: true}`. Its destination slot always participates; stdin participates
+only when a bound `consume_stdin` effect consumes it. Unspecified contracts,
+untyped inputs and all upstream producer lineage remain conservative. Original
+Graph read facts are retained, including authentication keys; an explicit later
+upload of a key still traces to that path. Undeclared scope slots are rejected.
+
+Presence of a pipeline producer cannot certify unparsed executable stdin.
+Known explicit file stdin keeps its original data edge and an additional
+`script_source` consumption when the Profile declares stdin code. The existing
+script-source rule (default Observe, configurable NeedApproval) evaluates that
+source. Unknown filenames/descriptors keep unresolved-input approval. This
+does not probe file contents or add a new risk pass.
+
+Ordinary package locators also distinguish RPM from other package managers;
+an RPM local file is not a Yum registry reference.
+
 ![Shell AST to session execution graph](../assets/caushell-graph.png)
 
 Command modeling uses the AST and runtime context to add queryable behavioral semantics to each command invocation:
@@ -515,6 +586,14 @@ Command Profiles describe where a command can dispatch execution and how its arg
 Shared stdin-source queries replay one command's declared redirections in shell order. Numeric FD spelling is normalized (`000` is FD 0); descriptor copies preserve their source at the time of copying, and moves to a different FD close the old descriptor. A copy/move onto the same FD preserves its source. This is static syntax replay, not inspection of live descriptors or persistence of an inferred FD table across actions. Only the effective source contributes explicit stdin or pipeline provenance; overwritten sources can still have independent opening/producer effects. A closed stdin cannot supply executable bytes, without claiming that runtime reads succeed or return EOF. Unknown descriptor contents or an unprojectable explicit source retain a `RuntimeInput` artifact and are handled by the existing tainted-execution guard. The unknown-input fallback runs after explicit redirection/process-substitution provenance producers, rather than treating mere redirection syntax as proof of a modeled source.
 
 A dispatch target can opt into `stdout_to_parent: true`. The existing stream-provenance pass records a child `Produces` edge and parent `Consumes` edge through a `dispatch_stdout` artifact. Its bytes remain unknown, while the child's modeled inputs retain their origin. Parent pipelines, output redirections and explicitly declared wrapper chains can then trace that origin. This is independent of `stdin_from_parent`; a control/dispatch edge alone does not imply output inheritance. Each direct dispatch uses its own declaration rather than inheriting an outer wrapper's flag, and omission defaults to false. Canonical nested Bash command-string scopes supply pipeline node identities so these edges do not connect only to legacy duplicate nodes. No new risk pass, dynamic file/process probe or Harness protocol field is introduced. This does not infer arbitrary interpreter internals or replay all FD redirection semantics.
+
+`stdin_from_parent_when` and `stdout_to_parent_when` optionally name declared modifier IDs that enable routing for this dispatch. They supplement the unconditional flags and default to empty. Loading rejects undeclared IDs and any possible combination of parent stdin with `stdin_from_tool`. `unknown_environment: true` declares a manager-owned child environment independently of command flags; explicit environment overlays are applied after masking caller inheritance. These declarations use the existing dispatch/stream machinery, not executable-name exceptions.
+
+The `timeout`, `nice`, `chrt`, `setsid` and `stdbuf` wrapper profiles declare child standard-stream inheritance. The `systemd-run` profile distinguishes service and scope launches: a service routes parent streams in explicit pipe or PTY modes, has an unknown manager environment, and retains an unknown default cwd. PTY routing preserves provenance, without claiming byte-for-byte terminal output equivalence. `--same-dir` retains caller cwd; explicit `--working-directory` and decoded `WorkingDirectory=` unit properties supply child cwd without changing the caller shell or the cwd of shell redirections. Manager specifiers, other unit properties, mixed cwd declarations and native dollar-bearing argv expansion remain unresolved rather than borrowing caller facts. Explicitly disabling native argv expansion permits ordinary shell payload parsing with the declared child environment. Bare `-E NAME` forwarding into a service remains unknown; no manager or host process is inspected.
+
+Structured projection branches can use `unless_parameter_matches: {name: CONTROL_SLOT, matcher: MATCHER}`. A known last value of an unprojected plain-value control slot is required to suppress a branch. Missing or unknown controls do not prove suppression; the loader rejects undeclared, projected and non-plain control slots. Configured paths consume the semantic values of their declared source slots, including structured projections. Composition does not re-decode shell quoting or silently fall back from an explicit unknown semantic value to raw encoded argv or a lower-priority default.
+
+`apt-get` declares root-owned `-o`/`--option` operands separately from update-owned options. Both scopes retain explicit hook payload records; a harmless later option does not remove a previously declared hook. Unsupported forms/options use the existing unresolved-operation approval policy. Explicit hook records remain opaque in this slice; recognizing them is not a claim to parse undiscovered configuration files or all APT hook families.
 
 The pv Profile models ordinary file/stdin transfer, explicit output and staging files, PID-file replacement/removal, numeric descriptor progress queries and typed monitor child dispatch. `-o -` means stdout; `-U -` generates temporary storage and retains unknown write/delete targets. Cursor lock storage is also unknown. Remote reconfiguration, query IPC (which can write control files and signal a process), name/list-file watch selectors and unsupported forms use existing unresolved-operation approval. Repeated explicit targets are retained conservatively; no implicit-cache exemption or native execution replay is claimed. Env declares child stdout inheritance too; other dispatch profiles must explicitly declare it before gaining this data-flow bridge. Curl's missing `@file` content-read modeling is a separate coverage gap: pv staging provenance tests use an explicitly modeled file reader, not an unmodeled curl file input.
 
@@ -1286,6 +1365,24 @@ child's launch code. Unresolved calls do not certify parent output independence.
 Functions declared inside nested shell bodies are still a separate resolver
 expansion gap, not covered merely by fixing an I/O edge.
 
+Alternative structured-operand branches may project one source operand into
+the same slot when their semantic types agree. Cross-source slot collisions,
+raw/projected slot collisions and conflicting semantic types remain invalid.
+An unknown operand emits one unknown value per possible semantic slot, not a
+duplicate for each alternate spelling. Consumers of configured listener scalars
+read projected semantic values while preserving the original argv; an explicit
+unknown projection does not fall through to a tool default.
+
+PHP's explicit `-S` operand declares a listener, not a fetched-code source.
+Its Profile projects plain host/decimal-port and bracketed IPv6 spellings using
+the shared operand grammar. Literal loopback addresses follow the existing local
+listener policy; nonloopback and unresolved addresses require approval. The raw
+bind operand remains available, but the port is not separately projected into
+the listener fact. Router PHP code stays opaque; no PHP body, request-driven
+document-root behavior, DNS result or live socket state is inferred. Version
+mode does not invent a listener; unmodeled trailing arguments retain the existing
+unresolved-operation policy.
+
 ## Derived targets from bounded runtime path inputs
 
 Declared `derived_path` effects consume semantic path values, including implicit
@@ -1632,6 +1729,264 @@ References: [GNU sed commands and syntax](https://www.gnu.org/software/sed/manua
 [GNU sed native compiler](https://github.com/mirror/sed/blob/master/sed/compile.c),
 [Bash line continuations](https://www.gnu.org/s/bash/manual/html_node/Escape-Character.html),
 [Bash maintainer on legacy arithmetic expansion](https://lists.gnu.org/archive/html/help-bash/2022-01/msg00011.html).
+
+## Request inputs and native code-loading boundaries
+
+An explicit `network_endpoint.input_scope` declares outgoing request inputs,
+not only upload bodies. A `FetchSource` with this declaration remains a fetch
+source for response provenance while its scoped headers, cookies, query values
+and body inputs can reach the existing sensitive-data guard. Unscoped legacy
+fetch effects do not become unrestricted upload sinks. The destination itself
+remains part of its request. Scope filtering occurs only at the sink entrance;
+upstream lineage and original read facts are retained.
+
+For structured stdin markers, the projected marker or its raw owning slot must
+belong to the request scope before that stdin is treated as outgoing bytes.
+Reading config from stdin is not equivalent to uploading the config's raw
+contents. Curl distinguishes sent header files (`-H @file` / `-H @-`) from
+literal header text, and keeps local CA/key/config/formatting inputs outside the
+request-byte scope. This does not interpret hidden curl configuration.
+
+Structured projection may explicitly emit an `in_process_code_load` semantic
+slot. It cannot infer one from a filename suffix. Applicable code-load effects
+enter the existing tainted-execution guard with subtype `in_process_code_load`;
+an explicitly empty projection suppresses that entrance, while unknown/missing
+values do not prove it absent. Curl `--engine` distinguishes slash-containing
+library paths from named engines. Ordinary stdin is not engine code. Actual
+backend support and installed libraries are not probed.
+
+Rsync `--rsync-path` is an opaque command run by the remote shell, including in
+dry-run/list modes. Only forms that use that remote shell declare the existing
+`remote_access/opaque` state operation. Its text is not local Bash source.
+Unused helper text in local/direct-daemon transfers does not receive this
+operation. Ordinary remote copies retain their existing network policy.
+
+References: [curl options and header-file syntax](https://curl.se/docs/manpage.html),
+[curl OpenSSL engine/provider loading](https://github.com/curl/curl/blob/master/lib/vtls/openssl.c),
+[rsync remote helper and daemon transport](https://download.samba.org/pub/rsync/rsync.1).
+
+## Native jobs and transfer operands
+
+Profiles declare `command_string.syntax: gnu_parallel` for native shell job
+templates. Known, single-source stdin, `-a`, and `:::` inputs are expanded under
+the existing shell frontier and depth policy. Basic replacements and `-q` keep
+shell program bytes separate from quoted data. `:::` argv items are not split
+on embedded newlines. Unknown/partial input, multiple sources, Perl replacement
+code, unsupported shell overrides and expansion budgets retain opaque records.
+Inherited job stdin without a modeled route remains unresolved; explicit job
+redirections and pipelines use the existing stream model. Dry-run creates no
+executing job. No host files, ambient configs or live processes are inspected.
+
+Replacement byte ranges retain their actual input artifact and parameter slot,
+including when input bytes are recovered from prior static history. The graph
+does not treat a dispatch/control edge as data flow, nor use returned child
+stdout as the source of other jobs. This lets the existing endpoint input scope
+distinguish a `curl --data` replacement from an unsent `--cacert` replacement.
+Replacement bytes stored into shell assignments/declarations currently retain
+known job effects but mark operation semantics unresolved: recovering an exact
+variable value alone does not prove preservation of the input's data origin.
+Constant assignments without replacement data do not receive this boundary.
+The same boundary applies to replacement-derived dispatch environment slots,
+recursive execution payloads and shell positional arguments. It is scoped to
+native inputs: it neither claims complete inter-frame value provenance nor
+silently assumes that a forwarded value became benign. Ordinary wrapper argv
+with preserved source spans retain normal parameter-slot propagation.
+An invoked function whose body or call arguments contain replacement data
+also retains this boundary; an unused definition is not itself execution.
+Known function-body effects are still expanded and audited.
+These opt-in facts share immutable source metadata; commands without the
+declaration do not enter the native projector.
+
+BSD `xargs -J` inserts one input batch at the first whole-argv marker, preserves
+the suffix and honors ordinary batching. It is not `-I` substring replacement.
+Mixed replacement modes and unknown marker/argv ownership remain unresolved.
+Incomplete input still permits the default zero-input invocation; `-r`
+suppresses that branch but retains a nonempty unknown-input job. A bounded last
+operand in that job must not hide a different fixed destination in the empty
+job. Chmod's proven missing-target form has no file effects, since it exits
+before processing files; unknown argument width and unsupported options do not
+gain that error-only certificate.
+
+Tar/cpio remote archive operands are endpoint facts, not local archive paths.
+`--force-local` disables the remote projection through the generic
+`unless_modifier` branch declaration, also for unknown operands. A used remote
+transport enters the existing opaque remote-state policy; an unused
+`--rsh-command` executable name does not create a fictitious local shell call.
+
+Curl output-directory operands use the declared `prefix_directory` derivation:
+prefix the entire output spelling, then normalize it, rather than stripping to
+a basename or letting an absolute-looking operand discard its prefix.
+`content_open` on a derived target classifies the final path, preserving null
+sinks and FD aliases without exempting namespace mutations. The opt-in
+`curl_multipart` grammar preserves filename quoting, file lists, stdin and
+header-file inputs; `filename=` metadata is not a file read. Invalid grammar
+retains unknown effects. GET body-to-query conversion retains outgoing request
+data and incoming response provenance; request-only scopes remain in force.
+
+References: [GNU Parallel native templates](https://www.gnu.org/s/parallel/man.html),
+[FreeBSD xargs insertion](https://github.com/freebsd/freebsd-src/blob/main/usr.bin/xargs/xargs.c),
+[GNU chmod missing-operand handling](https://github.com/coreutils/coreutils/blob/master/src/chmod.c),
+[GNU tar remote archives](https://www.gnu.org/software/tar/manual/html_node/Device.html),
+[GNU cpio options](https://www.gnu.org/software/cpio/manual/html_node/Options.html),
+[curl options](https://curl.se/docs/manpage.html).
+
+### Explicit request outputs and native helpers
+
+Structured projection branches accept `requires_modifiers` (all must be
+present) and `unless_modifiers` (none may be present), alongside the existing
+single `unless_modifier`. References, duplicates and contradictory conditions
+are validated at load time. Disabled branches produce no path candidates,
+including for unknown operands. An omitted optional parameter does not invent
+an unknown projected operand; a missing required operand retains uncertainty,
+including when a selected modifier requires a flag operand but its aggregate
+parameter cardinality is optional.
+
+Uniq binds fixed INPUT/OUTPUT positions and distinguishes stdin/stdout `-`
+from named files such as `./-`. Named output retains file-content provenance
+without asserting that those bytes enter pipeline stdout. Sort separates
+sorting, quiet checks, diagnostic checks and information forms. Diagnostic
+checks retain input-derived stderr, while quiet checks and help/version have
+independent output. Native content-open descriptor aliases use the existing
+I/O routing query. Wget auxiliary writers respect their activation controls;
+WARC prefixes produce bounded sibling-file sets covering compression,
+rotation, metadata and index variants, not a concrete file named after the
+prefix. Explicit Wget configuration is a startup configuration load, not
+request-body data.
+
+The tainted-execution query follows typed configuration/code inputs at a
+loader boundary, rather than unrelated data inputs of the same invocation.
+An additional unscoped payload execution retains the unrestricted input
+boundary; loading downloaded configuration still preserves its provenance.
+
+Wget separates document output, log output and saved cookies from ordinary
+option values. Explicit writes use `content_open`; `-O -` is a stdout channel,
+not a file named `-`. Nonrecursive `--spider` suppresses implicit downloads and
+unused `-P` destinations but retains explicit `-O`, log and cookie outputs.
+Declared request inputs include body files, request values and loaded cookies;
+they do not include log paths or unrelated stdin. Response-fetch provenance
+continues to reach downloaded files and stdout. Unsupported option ownership
+uses the existing opaque-invocation policy.
+
+The opt-in `native_syntax: curl_write_out` decodes actual `%output{PATH}` and
+append `%output{>>PATH}` instructions, respecting `%%`, backslash pairs and
+brace-instruction boundaries. The final `-w` format wins. File-sourced formats
+retain the format-file read plus an unknown possible output; the analyzer does
+not read the format file. Decode work is bounded to 64 KiB and 256 output
+instructions, with unresolved semantics on budget overflow.
+
+Install dispatches an explicitly configured strip helper only with `-s`.
+The helper is one executable locator with native argv, never a shell string.
+For two-operand `-T`, a statically known non-option-looking output is forwarded.
+Other output forms retain an unresolved helper argument instead of guessing
+file-versus-directory state or forwarding a leading `-` name that install
+would rewrite. Original source/destination path facts remain intact. Existing
+child-resolution policy still controls uncovered helper programs; this does
+not introduce an install-specific approval rule.
+
+Structured projections may derive additional slots from unprojected read,
+write and target paths without replacing the source path semantic or raw argv.
+Cwd anchors and composition with `value_projection` remain excluded.
+
+References: [Wget log options](https://www.gnu.org/software/wget/manual/html_node/Logging-and-Input-File-Options.html),
+[Wget HTTP options](https://www.gnu.org/software/wget/manual/html_node/HTTP-Options.html),
+[Wget output initialization](https://github.com/mirror/wget/blob/master/src/main.c),
+[curl native write-out interpreter](https://github.com/curl/curl/blob/master/src/tool_writeout.c),
+[GNU install native helper invocation](https://github.com/coreutils/coreutils/blob/master/src/install.c).
+
+## Inspection boundaries and grouped operands
+
+An implicit `load_in_process_code` effect establishes a code-loading input
+scope; it does not turn every input of the command into executed code. Typed
+`InProcessCodeSource` and `ToolConfigSource` consumes remain in that scope,
+while typed query data, ordinary file data and pipeline data do not. Untyped
+legacy consumes remain conservative. For example, `getent` still loads NSS
+configuration and module code, but a DNS question is not the source of that
+module. Tainted NSS configuration and explicit downloaded module inputs retain
+the existing tainted-execution approval rule. This is effect/edge semantics,
+not a command-name exception and not dynamic module discovery.
+
+The optional `positional_groups` binding supports fixed-width native operand
+groups, for example `group_size: 2, member: 0` for input files and `member: 1`
+for output files in `dos2unix -n IN OUT IN OUT`. It requires scoped option
+ownership, a variadic cardinality, a group size from 2 through 256, and a
+member index smaller than that size. Group numbering uses the original owned
+positional sequence, excludes flag operands and the owned `--` marker, and
+does not renumber after another member binding consumes its values. Original
+argument text, spans and source metadata are retained. This declaration models
+operand roles; it does not introduce pair-specific byte transformations or
+replace the existing conservative input/output provenance model.
+
+Incomplete groups mark operation semantics unresolved, even without the
+profile's general `opaque_on_unresolved` switch. Variable-width expansions or
+option-like operands stop role assignment at that point; earlier known facts
+remain. A quoted unknown is one field but may still be a native option, so it
+requires a proven non-option prefix or an owned `--` to retain a definite
+group position. Bindings that do not opt into this declaration are unchanged.
+
+`dos2unix` uses exact option-word matching, not generic short-option clusters:
+`-f -n IN OUT` is valid, while `-fn IN OUT` is not. The native parser can process
+files immediately while scanning argv. Therefore trailing help or a later
+mode switch must not erase earlier writes. The profile handles leading
+information flags, stable conversion modes, keepdate, stdout conversion and
+multiple new-file pairs. Interspersed options, mixed modes, unknown argument
+width, and unmodeled symlink/platform-specific modes remain unresolved rather
+than being certified as read-only.
+
+`code tunnel status`, `user show`, `service log` and help use inspection or
+no-effect forms; tunnel startup, service/user changes and control subcommands
+retain the existing remote-access state-control approval rule. Option values
+such as `--name=status` are not subcommands. Unknown forms/options remain
+unresolved; no running services or credential stores are dynamically queried.
+
+References: [dos2unix manual](https://dos2unix.sourceforge.io/dos2unix/man1/dos2unix.htm),
+[dos2unix source releases](https://sourceforge.net/projects/dos2unix/files/dos2unix/),
+[VS Code tunnel argument declarations](https://github.com/microsoft/vscode/blob/main/cli/src/commands/args.rs),
+[VS Code tunnel implementations](https://github.com/microsoft/vscode/blob/main/cli/src/commands/tunnels.rs).
+
+### Declared short words, auxiliary inputs, and grouped native jobs
+
+`option_matching: declared_short_words` is an opt-in scoped argv grammar for
+declared one- and two-character short options. At each cluster position the
+longest declared word owns the bytes. An operand-taking option owns the
+remaining suffix (with an optional leading `=`), or its declared next argv.
+For example, `-jmTTcmd` selects `-j`, `-m`, and `-TT` with value `cmd`, not
+two `-T` flags. `--` still terminates option ownership. Unknown options and
+missing required operands retain the existing unresolved boundary. Zip uses
+this grammar; other profiles keep their declared matching policy.
+
+`native_syntax: passphrase_source` projects `file:PATH`, `env:NAME`, `fd:N`,
+`stdin`, and `pass:TEXT`. A literal password is not a path. Descriptor inputs
+use the existing `content_open` stream/redirection resolver; environment
+inputs use the statically supplied child environment, including prefix
+assignments. No file contents or host environment are fetched by this grammar.
+`last_value_only: true` selects the final operand for tools whose option
+repetition overwrites earlier values, without changing the original argv.
+
+The additive `auxiliary_input` path purpose and `consume_auxiliary_value` /
+`consume_auxiliary_environment` slot effects record operational input reads
+with `AuxiliaryInput` provenance. Such inputs remain in the Graph but are not
+evidence that their bytes occur in the output payload. Output-content queries
+exclude them; general provenance and tainted-execution tracing retain their
+operational influence. OpenSSL `enc -pass file:.env` therefore
+records the credential read without treating the ciphertext as containing
+the password. Ordinary `-in .env` reads retain their payload dependency,
+including when the same file is also a credential source. This is not a
+blanket declassification of encryption output.
+
+GNU Parallel's declared `-X` mode uses the native job projector. Each context
+word containing an ordinary replacement is repeated for each input in a
+group; distinct words are expanded separately. Without replacements the
+group is appended as arguments. The projector preserves replacement origin
+ranges and feeds the resulting shell jobs through existing nested analysis.
+It conservatively covers contiguous input batches rather than assuming a
+host CPU count or command-length limit. Expansion remains bounded (128 job
+candidates, 256 KiB rendered source); an exceeded budget, incomplete source,
+unsupported replacement or ambiguous quoting retains unresolved execution.
+The Graph contains possible static jobs, not a runtime scheduling trace.
+
+References: [Zip manual](https://manpages.debian.org/bookworm/zip/zip.1.en.html),
+[OpenSSL passphrase options](https://docs.openssl.org/3.5/man1/openssl-passphrase-options/),
+[GNU Parallel `-X`](https://www.gnu.org/software/parallel/man.html).
 
 ## Further Reading
 
