@@ -18,11 +18,13 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: concatenate
-    selector:
-      kind: all
-      items: []
-    parameters:
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    parameters: &inputs
       - name: source_paths
         semantic:
           kind: path
@@ -34,19 +36,21 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: &effects
       - kind: read_path
         path_access: content_open
         target:
           kind: slot
           name: source_paths
+  - id: concatenate_stdin
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin]}
+    parameters: *inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *effects
 
-modifiers: []
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
+  - {id: formatting, matcher: {kind: any_flag, flags: [-A, --show-all, -b, --number-nonblank, -e, -E, --show-ends, -n, --number, -s, --squeeze-blank, -t, -T, --show-tabs, -u, -v, --show-nonprinting]}}
 subcommands: null
-extensions:
-  caushell.profile/known_limitations:
-    - FILE value "-" is treated as a non-path stdin sentinel, but the profile does not yet materialize mixed stdin-plus-file input as an explicit implicit input fact.
+extensions: {}

@@ -22,6 +22,8 @@ forms:
     selector:
       kind: has_flag
       flag: "--help"
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 
   - id: show_version
     selector:
@@ -33,6 +35,9 @@ forms:
           item:
             kind: has_flag
             flag: "--help"
+
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 
   - id: duplicate_stream
     selector:

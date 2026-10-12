@@ -1700,6 +1700,22 @@ boundaries and original argument/span origins retained. Empty programs are
 valid. Unsupported, dynamic or oversized programs retain unknown reads/writes
 and an opaque execution boundary, never a successful safe-prefix result.
 
+A `sed_program` projection may declare `stdout_emissions: script_stdout`.
+The resulting plain-value fact slot records possible explicit output commands
+(`p/P`, substitution `p`, `a/i/c`, `r/R`, `l/L`, `=`, `F`, and command `e`).
+Comments, pattern/replacement text and ordinary file writes are not printing
+commands. A complete decode with no emissions yields an explicitly empty view;
+invalid, unavailable or over-budget input never yields that absence proof.
+Repeated expressions retain their original source indices.
+
+Quiet forms opt into `stream_contract.stdout_from_payload: true`. The shared
+proven-stream query can then set stdout dependency to `independent` only when
+every declared payload projection has a proven empty emission slot. Other
+forms retain their declared dependency. This proves no implicit content stdout,
+not no effects: explicit `w /dev/stdout` writes, file writes and executions
+remain separate effects. File-based programs have no such absence proof.
+The query performs no extra script parse and no executable-name dispatch.
+
 The optional `executions` projection slot records `e` and substitution `e`
 as opaque executable boundaries for existing approval logic. It does not
 fabricate Bash source from sed's runtime pattern space. File-script mode is

@@ -262,6 +262,8 @@ pub struct StreamContract {
     pub stderr_mode: StreamOutputMode,
     pub stdout_dependency: caushell_types::StreamDataDependency,
     pub stderr_dependency: caushell_types::StreamDataDependency,
+    /// Use declared payload output facts to prove the absence of stdout data.
+    pub stdout_from_payload: bool,
 }
 
 /// A positive guarantee about complete stdout records, separate from data
@@ -789,6 +791,8 @@ pub struct PayloadProjection {
     pub deletes: SlotName,
     /// Opaque executable boundary, present only when the grammar declares it.
     pub executions: Option<SlotName>,
+    /// Possible explicit stdout emissions. Empty only after complete decoding.
+    pub stdout_emissions: Option<SlotName>,
     /// Optional tool controls whose unknown bytes retain an unknown write.
     /// Absent optional controls do not fabricate an unresolved target.
     pub write_controls: Vec<SlotName>,

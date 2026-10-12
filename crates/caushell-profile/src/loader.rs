@@ -447,7 +447,7 @@ extensions: {}
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
 
         assert_eq!(profile.primary_name(), "cp");
-        assert_eq!(profile.forms.len(), 10);
+        assert_eq!(profile.forms.len(), 11);
         assert_eq!(
             form_ids,
             vec![
@@ -460,7 +460,8 @@ extensions: {}
                 "default_attributes_only",
                 "default_hard_link",
                 "default_symbolic_link",
-                "default_copy"
+                "default_copy",
+                "default_copy_replacing_destination"
             ]
         );
         assert!(profile.modifiers.len() > 1);
@@ -614,6 +615,7 @@ extensions: {}
                 stderr_mode: crate::StreamOutputMode::Opaque,
                 stdout_dependency: caushell_types::StreamDataDependency::Unknown,
                 stderr_dependency: caushell_types::StreamDataDependency::Unknown,
+                stdout_from_payload: false,
             })
         );
     }
@@ -665,28 +667,35 @@ extensions: {}
             vec![
                 "show_help",
                 "explicit_pattern_search",
-                "positional_pattern_search"
+                "explicit_pattern_search_stdin",
+                "explicit_pattern_search_quiet",
+                "explicit_pattern_search_quiet_stdin",
+                "positional_pattern_search",
+                "positional_pattern_search_stdin",
+                "positional_pattern_search_quiet",
+                "positional_pattern_search_quiet_stdin"
             ]
         );
         assert!(modifier_ids.contains(&"inline_pattern"));
         assert!(modifier_ids.contains(&"pattern_file"));
         assert!(modifier_ids.contains(&"recursive"));
         assert_eq!(
-            profile.forms[2].parameters[0].binding,
+            profile.forms[5].parameters[0].binding,
             BindingSpec::NextPositional
         );
         assert_eq!(
-            profile.forms[2].parameters[1].binding,
+            profile.forms[5].parameters[1].binding,
             BindingSpec::RemainingPositionals
         );
         assert_eq!(
             profile.forms[1].stream_contract,
             Some(crate::StreamContract {
-                stdin_mode: crate::StreamInputMode::DataOptional,
+                stdin_mode: crate::StreamInputMode::DeclaredEffects,
                 stdout_mode: crate::StreamOutputMode::Data,
                 stderr_mode: crate::StreamOutputMode::Opaque,
-                stdout_dependency: caushell_types::StreamDataDependency::Unknown,
+                stdout_dependency: caushell_types::StreamDataDependency::Inputs,
                 stderr_dependency: caushell_types::StreamDataDependency::Unknown,
+                stdout_from_payload: false,
             })
         );
 
@@ -695,7 +704,19 @@ extensions: {}
             .iter()
             .find(|m| m.id.as_str() == "pattern_file")
             .unwrap();
-        match &pattern_file.parameters[0].semantic {
+        assert_eq!(
+            pattern_file.parameters[0].semantic,
+            SemanticType::PlainValue
+        );
+        match &pattern_file.parameters[0]
+            .structured_projection
+            .as_ref()
+            .unwrap()
+            .fallback
+            .as_ref()
+            .unwrap()
+            .semantic
+        {
             SemanticType::Path(semantic) => {
                 assert_eq!(semantic.role, PathRole::Read);
                 assert_eq!(semantic.purpose, Some(PathPurpose::GenericOperand));
@@ -837,9 +858,14 @@ extensions: {}
             .collect();
 
         assert_eq!(profile.primary_name(), "jq");
-        assert_eq!(profile.forms.len(), 4);
-        assert_eq!(profile.forms[0].id.as_str(), "filter_program");
-        assert_eq!(profile.forms[1].id.as_str(), "filter_program_file");
+        assert_eq!(profile.forms.len(), 9);
+        assert_eq!(profile.forms[0].id.as_str(), "null_input_constant");
+        assert!(
+            profile
+                .forms
+                .iter()
+                .any(|f| f.id.as_str() == "filter_program_file")
+        );
         assert!(modifier_ids.contains(&"filter_file"));
         assert!(modifier_ids.contains(&"rawfile"));
         assert!(modifier_ids.contains(&"slurpfile"));
@@ -881,7 +907,7 @@ extensions: {}
             .collect();
 
         assert_eq!(profile.primary_name(), "head");
-        assert_eq!(profile.forms.len(), 2);
+        assert_eq!(profile.forms.len(), 3);
         assert_eq!(profile.forms[0].id.as_str(), "show_help");
         assert_eq!(profile.forms[1].id.as_str(), "read_inputs");
         assert_eq!(
@@ -900,11 +926,12 @@ extensions: {}
         assert_eq!(
             profile.forms[1].stream_contract,
             Some(crate::StreamContract {
-                stdin_mode: crate::StreamInputMode::DataOptional,
+                stdin_mode: crate::StreamInputMode::Ignored,
                 stdout_mode: crate::StreamOutputMode::Data,
                 stderr_mode: crate::StreamOutputMode::Opaque,
-                stdout_dependency: caushell_types::StreamDataDependency::Unknown,
+                stdout_dependency: caushell_types::StreamDataDependency::Inputs,
                 stderr_dependency: caushell_types::StreamDataDependency::Unknown,
+                stdout_from_payload: false,
             })
         );
     }
@@ -1338,8 +1365,18 @@ extensions: {}
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
 
         assert_eq!(profile.primary_name(), "dd");
-        assert_eq!(profile.forms.len(), 3);
-        assert_eq!(form_ids, vec!["show_help", "show_version", "raw_copy"]);
+        assert_eq!(profile.forms.len(), 6);
+        assert_eq!(
+            form_ids,
+            vec![
+                "show_help",
+                "show_version",
+                "raw_copy",
+                "raw_copy_stdin_file",
+                "raw_copy_file_stdout",
+                "raw_copy_file_file"
+            ]
+        );
         assert_eq!(
             profile.forms[2].parameters[0].binding,
             BindingSpec::ArgsWithPrefix("if=".to_string())

@@ -19,11 +19,13 @@ platform:
 
 forms:
   - id: show_help
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: has_flag
       flag: "--help"
 
   - id: show_version
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -35,6 +37,7 @@ forms:
             flag: "--help"
 
   - id: target_directory
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -71,11 +74,13 @@ forms:
         cardinality: required_many
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: source_paths
 
   - id: target_directory_attributes_only
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -117,6 +122,7 @@ forms:
           name: source_paths
 
   - id: target_directory_hard_link
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -158,6 +164,7 @@ forms:
           name: source_paths
 
   - id: target_directory_symbolic_link
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -199,6 +206,7 @@ forms:
           name: source_paths
 
   - id: default_attributes_only
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -252,6 +260,7 @@ forms:
           name: destination_path
 
   - id: default_hard_link
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -305,6 +314,7 @@ forms:
           name: destination_path
 
   - id: default_symbolic_link
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -358,6 +368,7 @@ forms:
           name: destination_path
 
   - id: default_copy
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -379,6 +390,11 @@ forms:
                 modifier: hard_link
               - kind: has_modifier
                 modifier: symbolic_link
+        - {kind: not, item: {kind: has_modifier, modifier: remove_destination}}
+        - {kind: not, item: {kind: has_modifier, modifier: backup_default}}
+        - {kind: not, item: {kind: has_modifier, modifier: backup_numbered}}
+        - {kind: not, item: {kind: has_modifier, modifier: backup_existing}}
+        - {kind: not, item: {kind: has_modifier, modifier: backup_simple}}
         - kind: has_positional_at
           index: 1
         - kind: not
@@ -404,6 +420,70 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
+        target:
+          kind: slot
+          name: source_paths
+      - kind: write_path
+        path_access: content_open
+        target:
+          kind: slot
+          name: destination_path
+        catastrophic:
+          semantic_class: raw_write_target
+
+  - id: default_copy_replacing_destination
+    # Unlink/backup modes change the namespace before copying: do not treat a
+    # destination descriptor alias as a guaranteed content-open operation.
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    selector:
+      kind: all
+      items:
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_flag
+                flag: "--help"
+              - kind: has_flag
+                flag: "--version"
+        - kind: not
+          item:
+            kind: any
+            items:
+              - kind: has_modifier
+                modifier: attributes_only
+              - kind: has_modifier
+                modifier: hard_link
+              - kind: has_modifier
+                modifier: symbolic_link
+        - {kind: any, items: [{kind: has_modifier, modifier: remove_destination}, {kind: has_modifier, modifier: backup_default}, {kind: has_modifier, modifier: backup_numbered}, {kind: has_modifier, modifier: backup_existing}, {kind: has_modifier, modifier: backup_simple}]}
+        - kind: has_positional_at
+          index: 1
+        - kind: not
+          item:
+            kind: has_modifier
+            modifier: target_directory
+    parameters:
+      - name: source_paths
+        semantic:
+          kind: path
+          role: read
+          purpose: generic_operand
+        binding:
+          kind: remaining_positionals_before_last
+        cardinality: required_many
+      - name: destination_path
+        semantic:
+          kind: path
+          role: write
+          purpose: generic_operand
+        binding:
+          kind: last_positional
+        cardinality: required_one
+    effects:
+      - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: source_paths

@@ -18,11 +18,13 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: read_inputs
-    selector:
-      kind: all
-      items: []
-    parameters:
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    parameters: &inputs
       - name: input_paths
         semantic:
           kind: path
@@ -34,17 +36,21 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: &effects
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
+  - id: read_inputs_stdin
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin]}
+    parameters: *inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *effects
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
   - id: bytes
     matcher:
       kind: any_flag
@@ -116,5 +122,3 @@ extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
-  caushell.profile/known_limitations:
-    - Short option attached operands such as -n5 and -c10 are not split by the current projection layer.

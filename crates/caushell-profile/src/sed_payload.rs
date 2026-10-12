@@ -10,6 +10,7 @@ pub(crate) struct SedTargets {
     pub reads: Vec<(usize, String)>,
     pub writes: Vec<(usize, String)>,
     pub executions: Vec<usize>,
+    pub stdout_emissions: Vec<usize>,
 }
 
 pub(crate) fn decode(text: &str, max_bytes: usize, max_operations: usize) -> Result<SedTargets> {
@@ -205,7 +206,11 @@ impl Parser<'_> {
             self.blanks();
             match self.peek() {
                 None | Some(b';' | b'\n' | b'}' | b'#') => return Ok(()),
-                Some(b'g' | b'p' | b'i' | b'I' | b'm' | b'M') => self.pos += 1,
+                Some(b'p') => {
+                    self.pos += 1;
+                    self.targets.stdout_emissions.push(offset);
+                }
+                Some(b'g' | b'i' | b'I' | b'm' | b'M') => self.pos += 1,
                 Some(b'e') => {
                     self.pos += 1;
                     self.targets.executions.push(offset);
@@ -280,12 +285,17 @@ impl Parser<'_> {
                     self.delimited(delimiter, false)?;
                     self.end_command()?;
                 }
-                b'a' | b'i' | b'c' => self.text_line()?,
+                b'a' | b'i' | b'c' => {
+                    self.targets.stdout_emissions.push(offset);
+                    self.text_line()?;
+                }
                 b'e' => {
                     self.targets.executions.push(offset);
+                    self.targets.stdout_emissions.push(offset);
                     self.text_line()?;
                 }
                 b'r' | b'R' => {
+                    self.targets.stdout_emissions.push(offset);
                     let filename = self.filename()?;
                     self.targets.reads.push((offset, filename));
                 }
@@ -295,12 +305,20 @@ impl Parser<'_> {
                 }
                 b':' | b'b' | b't' | b'T' | b'v' => self.label()?,
                 b'q' | b'Q' | b'l' | b'L' => {
+                    if matches!(command, b'l' | b'L') {
+                        self.targets.stdout_emissions.push(offset);
+                    }
                     self.blanks();
                     self.integer();
                     self.end_command()?;
                 }
                 b'd' | b'D' | b'F' | b'g' | b'G' | b'h' | b'H' | b'n' | b'N' | b'p' | b'P'
-                | b'z' | b'x' | b'=' => self.end_command()?,
+                | b'z' | b'x' | b'=' => {
+                    if matches!(command, b'F' | b'p' | b'P' | b'=') {
+                        self.targets.stdout_emissions.push(offset);
+                    }
+                    self.end_command()?;
+                }
                 _ => return invalid(),
             }
         }
@@ -337,7 +355,11 @@ mod tests {
             "s/[]/]/w/g",
             "s/a/b/\np",
         ] {
-            assert_eq!(parse(script), Ok(SedTargets::default()), "{script}");
+            let t = parse(script).unwrap();
+            assert!(
+                t.reads.is_empty() && t.writes.is_empty() && t.executions.is_empty(),
+                "{script}"
+            );
         }
     }
     #[test]
@@ -384,6 +406,36 @@ mod tests {
     fn later_writes_are_not_erased_by_quit_or_branches() {
         for script in ["q;w /opt/out", "b end\nw /opt/out\n:end"] {
             assert_eq!(parse(script).unwrap().writes[0].1, "/opt/out");
+        }
+    }
+    #[test]
+    fn explicit_output_is_distinct_from_pattern_data_and_file_writes() {
+        for script in ["s/p/p/", "h;g;d", "w local", "q", "Q", "# p", ""] {
+            assert!(
+                parse(script).unwrap().stdout_emissions.is_empty(),
+                "{script}"
+            );
+        }
+        for script in [
+            "p",
+            "P",
+            "s/a/b/p",
+            "a p",
+            "i p",
+            "c p",
+            "r input",
+            "R input",
+            "e",
+            "l",
+            "L",
+            "=",
+            "F",
+            "b end;p;:end",
+        ] {
+            assert!(
+                !parse(script).unwrap().stdout_emissions.is_empty(),
+                "{script}"
+            );
         }
     }
 }

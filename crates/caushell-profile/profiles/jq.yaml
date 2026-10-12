@@ -18,130 +18,87 @@ platform:
   requires_features: []
 
 forms:
-  - id: filter_program
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: filter_file
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: null_input
-        - kind: has_positional_at
-          index: 0
+  # -n disables the implicit first input, not input/inputs inside a filter.
+  # Only complete scalar literals prove no reads here. Strings with backslashes
+  # are excluded, so jq interpolation cannot manufacture a false guarantee.
+  - id: null_input_constant
+    selector: {kind: all, items: [{kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: filter_file}}, {kind: has_positional_at, index: 0}]}, {kind: has_modifier, modifier: null_input}, {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^\s*(null|true|false|-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?|"[^"\\\x00-\x1f]*")\s*$'}}]}
     parameters:
-      - name: filter_program
-        semantic:
-          kind: plain_value
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+      - {name: filter_program, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: unused_inputs, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: [{kind: transform_data, target: {kind: none}}]
+
+  - id: filter_program
+    selector: {kind: all, items: [{kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: filter_file}}, {kind: has_positional_at, index: 0}]}, {kind: not, item: {kind: has_modifier, modifier: null_input}}, {kind: has_positional_at, index: 1}]}
+    parameters: &inline_inputs
+      - {name: filter_program, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - name: stdin_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: &input_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_markers}}
+      - {kind: transform_data, target: {kind: none}}
+
+  - id: filter_program_stdin
+    selector: {kind: all, items: [{kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: filter_file}}, {kind: has_positional_at, index: 0}]}, {kind: not, item: {kind: has_modifier, modifier: null_input}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    parameters: *inline_inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
 
   - id: filter_program_file
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: filter_file
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: null_input
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_file}, {kind: not, item: {kind: has_modifier, modifier: null_input}}, {kind: has_positional_at, index: 0}]}
+    parameters: &file_inputs
+      - name: stdin_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
+
+  - id: filter_program_file_stdin
+    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_file}, {kind: not, item: {kind: has_modifier, modifier: null_input}}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    parameters: *file_inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
 
   - id: null_input_filter_program
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: null_input
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: filter_file
-        - kind: has_positional_at
-          index: 0
-    parameters:
-      - name: filter_program
-        semantic:
-          kind: plain_value
-        binding:
-          kind: next_positional
-        cardinality: required_one
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: transform_data
-        target:
-          kind: none
+    selector: {kind: all, items: [{kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: filter_file}}, {kind: has_positional_at, index: 0}]}, {kind: has_modifier, modifier: null_input}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^\s*(null|true|false|-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?|"[^"\\\x00-\x1f]*")\s*$'}}}]}
+    parameters: *inline_inputs
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
+
+  - id: null_input_filter_program_stdin
+    selector: {kind: all, items: [{kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: filter_file}}, {kind: has_positional_at, index: 0}]}, {kind: has_modifier, modifier: null_input}, {kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^\s*(null|true|false|-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?|"[^"\\\x00-\x1f]*")\s*$'}}}]}
+    parameters: *inline_inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
 
   - id: null_input_filter_program_file
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: null_input
-        - kind: has_modifier
-          modifier: filter_file
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: transform_data
-        target:
-          kind: none
+    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_file}, {kind: has_modifier, modifier: null_input}, {kind: has_positional_at, index: 0}]}
+    parameters: *file_inputs
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
+
+  - id: null_input_filter_program_file_stdin
+    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_file}, {kind: has_modifier, modifier: null_input}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    parameters: *file_inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *input_effects
+
 
 modifiers:
   - id: filter_file
@@ -165,6 +122,7 @@ modifiers:
             value: "-"
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: filter_files
@@ -189,6 +147,7 @@ modifiers:
             value: "-"
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: rawfile_paths
@@ -213,6 +172,7 @@ modifiers:
             value: "-"
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: slurpfile_paths
@@ -237,6 +197,7 @@ modifiers:
             value: "-"
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: argfile_paths

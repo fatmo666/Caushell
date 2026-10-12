@@ -19,6 +19,7 @@ platform:
 
 forms:
   - id: create_or_update_paths
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: has_positional_at
       index: 0
@@ -48,14 +49,14 @@ modifiers:
       - name: reference_file
         semantic:
           kind: path
-          role: read
+          role: target
           purpose: generic_operand
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: optional_one
     effects:
-      - kind: read_path
+      - kind: target_path
         target:
           kind: slot
           name: reference_file

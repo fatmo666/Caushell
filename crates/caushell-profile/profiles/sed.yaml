@@ -31,18 +31,34 @@ forms:
     selector:
       kind: all
       items:
-        - &running
-          kind: all
-          items:
-            - {kind: not, item: *information}
-            # Native backup suffixes containing * rewrite the entire filename;
-            # slashes/backslashes may escape the sibling domain. Keep opaque.
-            - kind: not
-              item: {kind: has_modifier_parameter_matching, modifier: in_place, parameter: backup_suffix, matcher: {kind: regex_pattern, pattern: '[/\\*]'}}
-        - {kind: has_modifier, modifier: inline_script}
-        - {kind: not, item: {kind: has_modifier, modifier: script_file}}
-    parameters: &inputs
-      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - &quiet_shape_explicit_script_transform
+        kind: all
+        items:
+          - &explicit_script_transform_selector
+            kind: all
+            items:
+              - &running
+                kind: all
+                items:
+                  - {kind: not, item: *information}
+                  # Native backup suffixes containing * rewrite the entire filename;
+                  # slashes/backslashes may escape the sibling domain. Keep opaque.
+                  - kind: not
+                    item: {kind: has_modifier_parameter_matching, modifier: in_place, parameter: backup_suffix, matcher: {kind: regex_pattern, pattern: '[/\\*]'}}
+              - {kind: has_modifier, modifier: inline_script}
+              - {kind: not, item: {kind: has_modifier, modifier: script_file}}
+          - {kind: not, item: {kind: has_modifier, modifier: in_place}}
+          - {kind: has_positional_at, index: 0}
+      - {kind: not, item: {kind: has_modifier, modifier: quiet}}
+    parameters: &explicit_inputs
+      - name: stdin_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
+        cardinality: optional_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^-$', group: 0}, requires_modifiers: [in_place], target: {name: in_place_dash_paths, semantic: {kind: path, role: read, purpose: generic_operand}}}
+            - {matcher: {kind: literal, value: '-'}, unless_modifiers: [in_place], target: {name: stdin_inputs, semantic: {kind: plain_value}}}
       - &input_paths
         name: input_paths
         semantic:
@@ -55,7 +71,7 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
-    payload_projections:
+    payload_projections: &explicit_script_transform_payload
       -
         format: sed_program
         source: {kind: slot, name: scripts}
@@ -63,15 +79,12 @@ forms:
         writes: script_writes
         deletes: script_deletes
         executions: script_executions
+        stdout_emissions: script_stdout
         write_controls: [backup_suffix]
         max_bytes: 65536
         max_operations: 4096
-    stream_contract: &streams
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-      stdout_dependency: inputs
-    effects: &effects
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: &sed_effects
       - kind: read_path
         path_access: content_open
         target:
@@ -81,50 +94,154 @@ forms:
       - {kind: write_path, path_access: content_open, target: {kind: slot, name: script_writes}, catastrophic: {semantic_class: raw_write_target}}
       - {kind: delete_path, target: {kind: slot, name: script_deletes}}
       - {kind: execute_payload, target: {kind: slot, name: script_executions}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_inputs}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: in_place_dash_paths}}
+
+  - id: explicit_script_transform_stdin
+    selector:
+      kind: all
+      items:
+      - &quiet_shape_explicit_script_transform_stdin {kind: all, items: [*explicit_script_transform_selector, {kind: not, item: {kind: has_modifier, modifier: in_place}}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+      - {kind: not, item: {kind: has_modifier, modifier: quiet}}
+    parameters: *explicit_inputs
+    payload_projections: *explicit_script_transform_payload
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *sed_effects
+
+  - id: explicit_script_transform_in_place
+    selector: {kind: all, items: [*explicit_script_transform_selector, {kind: has_modifier, modifier: in_place}]}
+    parameters: *explicit_inputs
+    payload_projections: *explicit_script_transform_payload
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    effects: *sed_effects
 
   - id: file_script_transform
-    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: script_file}]}
-    parameters: *inputs
-    effects:
+    selector:
+      kind: all
+      items:
+        - &file_script_transform_selector
+          {kind: all, items: [*running, {kind: has_modifier, modifier: script_file}]}
+        - {kind: not, item: {kind: has_modifier, modifier: in_place}}
+        - {kind: has_positional_at, index: 0}
+    parameters: *explicit_inputs
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: &file_effects
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
-    stream_contract: *streams
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_inputs}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: in_place_dash_paths}}
+
+  - id: file_script_transform_stdin
+    selector: {kind: all, items: [*file_script_transform_selector, {kind: not, item: {kind: has_modifier, modifier: in_place}}, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    parameters: *explicit_inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *file_effects
+
+  - id: file_script_transform_in_place
+    selector: {kind: all, items: [*file_script_transform_selector, {kind: has_modifier, modifier: in_place}]}
+    parameters: *explicit_inputs
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    effects: *file_effects
 
   - id: positional_script_transform
     selector:
       kind: all
       items:
-        - *running
-        - kind: not
-          item:
-            kind: any
+      - &quiet_shape_positional_script_transform
+        kind: all
+        items:
+          - &positional_script_transform_selector
+            kind: all
             items:
-              - kind: has_modifier
-                modifier: inline_script
-              - kind: has_modifier
-                modifier: script_file
-        - kind: has_positional_at
-          index: 0
-    parameters:
+              - *running
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - kind: has_modifier
+                      modifier: inline_script
+                    - kind: has_modifier
+                      modifier: script_file
+              - kind: has_positional_at
+                index: 0
+          - {kind: not, item: {kind: has_modifier, modifier: in_place}}
+          - {kind: has_positional_at, index: 1}
+      - {kind: not, item: {kind: has_modifier, modifier: quiet}}
+    parameters: &positional_inputs
       - name: script
         semantic:
           kind: plain_value
         binding:
           kind: next_positional
         cardinality: required_one
-      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - name: stdin_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
+        cardinality: optional_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^-$', group: 0}, requires_modifiers: [in_place], target: {name: in_place_dash_paths, semantic: {kind: path, role: read, purpose: generic_operand}}}
+            - {matcher: {kind: literal, value: '-'}, unless_modifiers: [in_place], target: {name: stdin_inputs, semantic: {kind: plain_value}}}
       - *input_paths
-    payload_projections:
+    payload_projections: &positional_script_transform_payload
       - format: sed_program
         source: {kind: slot, name: script}
         reads: script_reads
         writes: script_writes
         deletes: script_deletes
         executions: script_executions
+        stdout_emissions: script_stdout
         write_controls: [backup_suffix]
         max_bytes: 65536
         max_operations: 4096
-    stream_contract: *streams
-    effects: *effects
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *sed_effects
+
+  - id: positional_script_transform_stdin
+    selector:
+      kind: all
+      items:
+      - &quiet_shape_positional_script_transform_stdin {kind: all, items: [*positional_script_transform_selector, {kind: not, item: {kind: has_modifier, modifier: in_place}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+      - {kind: not, item: {kind: has_modifier, modifier: quiet}}
+    parameters: *positional_inputs
+    payload_projections: *positional_script_transform_payload
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: *sed_effects
+
+  - id: positional_script_transform_in_place
+    selector: {kind: all, items: [*positional_script_transform_selector, {kind: has_modifier, modifier: in_place}]}
+    parameters: *positional_inputs
+    payload_projections: *positional_script_transform_payload
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    effects: *sed_effects
+
+
+  - id: explicit_script_transform_quiet
+    selector: {kind: all, items: [*quiet_shape_explicit_script_transform, {kind: has_modifier, modifier: quiet}]}
+    parameters: *explicit_inputs
+    payload_projections: *explicit_script_transform_payload
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stdout_from_payload: true}
+    effects: *sed_effects
+
+  - id: explicit_script_transform_stdin_quiet
+    selector: {kind: all, items: [*quiet_shape_explicit_script_transform_stdin, {kind: has_modifier, modifier: quiet}]}
+    parameters: *explicit_inputs
+    payload_projections: *explicit_script_transform_payload
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stdout_from_payload: true}
+    effects: *sed_effects
+
+  - id: positional_script_transform_quiet
+    selector: {kind: all, items: [*quiet_shape_positional_script_transform, {kind: has_modifier, modifier: quiet}]}
+    parameters: *positional_inputs
+    payload_projections: *positional_script_transform_payload
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stdout_from_payload: true}
+    effects: *sed_effects
+
+  - id: positional_script_transform_stdin_quiet
+    selector: {kind: all, items: [*quiet_shape_positional_script_transform_stdin, {kind: has_modifier, modifier: quiet}]}
+    parameters: *positional_inputs
+    payload_projections: *positional_script_transform_payload
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stdout_from_payload: true}
+    effects: *sed_effects
 
 modifiers:
   - id: inline_script
@@ -165,6 +282,7 @@ modifiers:
             # -f - reads the program from stdin, not a file named '-'. The
             # original payload stays opaque regardless of program source.
             - matcher: {kind: literal, value: '-'}
+              target: {name: script_stdin, semantic: {kind: plain_value}}
           fallback:
             name: script_paths
             semantic: {kind: path, role: read, purpose: script_source}
@@ -176,6 +294,7 @@ modifiers:
           name: script_paths
         path_access: content_open
       - {kind: execute_payload, target: {kind: slot, name: script_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: script_stdin}}
 
   - id: in_place
     matcher:
@@ -191,6 +310,8 @@ modifiers:
         target:
           kind: slot
           name: input_paths
+
+      - {kind: write_path, target: {kind: slot, name: in_place_dash_paths}}
 
   - id: quiet
     matcher:

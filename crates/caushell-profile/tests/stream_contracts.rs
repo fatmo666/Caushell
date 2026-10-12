@@ -48,6 +48,36 @@ fn invalid_dependency_is_rejected_not_silently_ignored() {
 }
 
 #[test]
+fn unresolved_shell_expansion_cannot_prove_a_negative_stream_contract() {
+    let registry = ProfileRegistry::from_profiles(vec![
+        load_command_profile_from_str(&profile(
+            "      stdout_dependency: independent\n    parameters:\n      - name: operands\n        semantic: {kind: plain_value}\n        binding: {kind: remaining_positionals}\n        cardinality: optional_many\n",
+        )).unwrap(),
+    ]).unwrap();
+    for (operand, proven) in [
+        ("*", false),
+        ("{a,b}", false),
+        ("'*.txt'", true),
+        ("\\*", true),
+        ("a'['b", true),
+    ] {
+        let command = format!("arbitrary_stream_tool {operand}");
+        let parsed = parse_command(&command, ShellKind::Bash).unwrap();
+        let ResolveInvocationArtifactResult::Resolved(r) =
+            resolve_invocation_artifact_with_bindings(
+                &registry,
+                &parsed.commands[0],
+                InvocationRuntimeContext::new(),
+                &SessionBindings::new(),
+            )
+        else {
+            panic!("{command}")
+        };
+        assert_eq!(r.proven_stream_contract().is_some(), proven, "{command}");
+    }
+}
+
+#[test]
 fn positive_record_contract_is_selected_and_bound_without_tool_name_logic() {
     let source = "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: arbitrary_paths}\nforms:\n  - id: selected\n    parameters:\n      - name: roots\n        semantic: {kind: path, role: read}\n        binding: {kind: remaining_positionals}\n        cardinality: optional_many\n    stream_contract: {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque}\n    stdout_records:\n      projection: {kind: paths, roots_slot: roots, default_root: '.', separator: nul}\n      required_modifiers: [nul]\nmodifiers:\n  - id: nul\n    matcher: {kind: any_flag, flags: ['--zero']}\n";
     let registry =

@@ -208,6 +208,8 @@ pub struct RawPayloadProjection {
     #[serde(default)]
     pub executions: Option<String>,
     #[serde(default)]
+    pub stdout_emissions: Option<String>,
+    #[serde(default)]
     pub write_controls: Vec<String>,
     #[serde(default = "default_payload_max_bytes")]
     pub max_bytes: usize,
@@ -329,6 +331,8 @@ pub struct RawStreamContract {
     pub stdout_dependency: caushell_types::StreamDataDependency,
     #[serde(default)]
     pub stderr_dependency: caushell_types::StreamDataDependency,
+    #[serde(default)]
+    pub stdout_from_payload: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

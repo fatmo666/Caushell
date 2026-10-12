@@ -19,11 +19,13 @@ platform:
 
 forms:
   - id: show_help
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: has_flag
       flag: "--help"
 
   - id: show_version
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
       kind: all
       items:
@@ -35,16 +37,9 @@ forms:
             flag: "--help"
 
   - id: raw_copy
-    selector:
-      kind: not
-      item:
-        kind: any
-        items:
-          - kind: has_flag
-            flag: "--help"
-          - kind: has_flag
-            flag: "--version"
-    parameters:
+    selector: {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_flag, flag: "--help"}, {kind: has_flag, flag: "--version"}]}}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^if="}}}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^of="}}}]}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    parameters: &copy_parameters
       - name: input_target
         semantic:
           kind: path
@@ -154,17 +149,38 @@ forms:
           kind: args_with_prefix
           prefix: "status="
         cardinality: optional_one
-    effects:
+    effects: &copy_effects
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_target
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: output_target
         catastrophic:
           semantic_class: raw_write_target
+
+  - id: raw_copy_stdin_file
+    selector: {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_flag, flag: "--help"}, {kind: has_flag, flag: "--version"}]}}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^if="}}}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^of="}}]}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    parameters: *copy_parameters
+    effects: *copy_effects
+
+  - id: raw_copy_file_stdout
+    selector: {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_flag, flag: "--help"}, {kind: has_flag, flag: "--version"}]}}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^if="}}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^of="}}}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    parameters: *copy_parameters
+    effects: *copy_effects
+
+  - id: raw_copy_file_file
+    selector: {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_flag, flag: "--help"}, {kind: has_flag, flag: "--version"}]}}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^if="}}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^of="}}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    parameters: *copy_parameters
+    effects: *copy_effects
+
 
 modifiers:
   - id: help

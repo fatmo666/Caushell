@@ -43,18 +43,44 @@ impl ResolvedInvocationArtifact {
                 .materialized_projection
                 .arg_resolutions
                 .iter()
-                .any(|value| {
-                    !matches!(
-                        value,
-                        ValueMaterialization::Static
-                            | ValueMaterialization::ResolvedExactScalar { .. }
-                            | ValueMaterialization::ResolvedRuntimeProduced { .. }
-                    )
+                .zip(&self.materialized_projection.invocation.args)
+                .any(|(value, arg)| {
+                    match value {
+                        // Static means no session value was substituted, not
+                        // that pathname/brace expansion is a single argv word.
+                        ValueMaterialization::Static => {
+                            !arg.runtime_data
+                                && !crate::value_projection::decode_argument_prefix(
+                                    &arg.text,
+                                    arg.quoted,
+                                    &arg.node_kind,
+                                )
+                                .1
+                        }
+                        ValueMaterialization::ResolvedExactScalar { .. }
+                        | ValueMaterialization::ResolvedRuntimeProduced { .. } => false,
+                        _ => true,
+                    }
                 })
         {
             return None;
         }
         let mut contract = self.bound.stream_contract?;
+        if contract.stdout_from_payload {
+            let silent = !self.bound.payload_projections.is_empty()
+                && self.bound.payload_projections.iter().all(|projection| {
+                    projection.stdout_emissions.as_ref().is_some_and(|slot| {
+                        self.bound.bound_parameters.iter().any(|p| {
+                            p.name == *slot
+                                && p.payload_generated
+                                && p.projected_values.as_ref().is_some_and(|v| v.is_empty())
+                        })
+                    })
+                });
+            if silent {
+                contract.stdout_dependency = caushell_types::StreamDataDependency::Independent;
+            }
+        }
         if contract.stdin_mode == crate::StreamInputMode::DeclaredEffects {
             // The binder emits conditional effects only for bound targets.
             // Legacy modes bypass this scan, and incomplete shapes above can
@@ -1470,7 +1496,10 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "default_copy_replacing_destination"
+                );
                 assert!(modifier_ids.contains(&"backup_numbered"));
                 assert!(modifier_ids.contains(&"reflink"));
                 assert!(modifier_ids.contains(&"sparse"));
@@ -1649,7 +1678,7 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "dd");
-                assert_eq!(resolved.selection.form.id.as_str(), "raw_copy");
+                assert_eq!(resolved.selection.form.id.as_str(), "raw_copy_file_file");
                 assert_eq!(
                     first_argument_text(&resolved.bound, "input_target"),
                     "payload.img"
@@ -9150,7 +9179,7 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "jq");
                 assert_eq!(
                     resolved.selection.form.id.as_str(),
-                    "null_input_filter_program"
+                    "null_input_filter_program_stdin"
                 );
                 assert_eq!(
                     first_argument_text(&resolved.bound, "filter_program"),
@@ -11343,7 +11372,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::ReadPath]
+                    vec![EffectKind::WritePath, EffectKind::TargetPath]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -11885,7 +11914,7 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "sed");
                 assert_eq!(
                     resolved.selection.form.id.as_str(),
-                    "positional_script_transform"
+                    "positional_script_transform_in_place"
                 );
                 assert_eq!(first_argument_text(&resolved.bound, "script"), "s/a/b/");
                 assert_eq!(
@@ -12752,7 +12781,10 @@ mod tests {
                     argument_texts(&resolved.bound, "input_paths"),
                     vec!["src/lib.rs"]
                 );
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::ReadPath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::ReadPath, EffectKind::ConsumeStdin]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -14678,7 +14710,7 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "head");
-                assert_eq!(resolved.selection.form.id.as_str(), "read_inputs");
+                assert_eq!(resolved.selection.form.id.as_str(), "read_inputs_stdin");
                 assert_eq!(modifier_ids, Vec::<&str>::new());
                 assert_eq!(
                     argument_texts(&resolved.bound, "input_paths"),

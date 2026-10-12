@@ -1063,6 +1063,7 @@ fn normalize_stream_contract(raw: RawStreamContract) -> StreamContract {
         stderr_mode: normalize_stream_output_mode(raw.stderr_mode),
         stdout_dependency: raw.stdout_dependency,
         stderr_dependency: raw.stderr_dependency,
+        stdout_from_payload: raw.stdout_from_payload,
     }
 }
 
@@ -1579,6 +1580,14 @@ fn normalize_payload_projection(
     for slot in &raw.write_controls {
         ensure_non_empty(slot, "payload_projections.write_controls")?;
     }
+    if let Some(slot) = &raw.stdout_emissions {
+        ensure_non_empty(slot, "payload_projections.stdout_emissions")?;
+        if raw.format != crate::RawPayloadFormat::SedProgram {
+            return Err(NormalizeError::InvalidPayloadProjection(
+                "stdout_emissions requires a format with output semantics".into(),
+            ));
+        }
+    }
     Ok(crate::PayloadProjection {
         format: match raw.format {
             crate::RawPayloadFormat::CodexApplyPatch => crate::PayloadFormat::CodexApplyPatch,
@@ -1589,6 +1598,7 @@ fn normalize_payload_projection(
         writes: SlotName::new(raw.writes),
         deletes: SlotName::new(raw.deletes),
         executions: raw.executions.map(SlotName::new),
+        stdout_emissions: raw.stdout_emissions.map(SlotName::new),
         write_controls: raw.write_controls.into_iter().map(SlotName::new).collect(),
         max_bytes: raw.max_bytes,
         max_operations: raw.max_operations,
@@ -1697,6 +1707,25 @@ fn validate_payload_projection_references(
                     )));
                 }
             }
+            if let Some(slot) = &projection.stdout_emissions {
+                if !names.insert(slot.as_str().to_string()) {
+                    return Err(NormalizeError::InvalidPayloadProjection(format!(
+                        "stdout slot collision: {}",
+                        slot.as_str()
+                    )));
+                }
+            }
+        }
+        if form.stream_contract.is_some_and(|c| c.stdout_from_payload)
+            && (form.payload_projections.is_empty()
+                || form
+                    .payload_projections
+                    .iter()
+                    .any(|p| p.stdout_emissions.is_none()))
+        {
+            return Err(NormalizeError::InvalidPayloadProjection(
+                "stdout_from_payload requires output facts from every payload projection".into(),
+            ));
         }
     }
     Ok(())

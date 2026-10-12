@@ -26,12 +26,13 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             PayloadInputSource::Stdin => vec![missing_input()],
         };
         let targets = decode_targets(projection, &sources, complete_stdin);
-        let (reads, mut writes, deletes, executions) = match targets {
+        let (reads, mut writes, deletes, executions, stdout_emissions) = match targets {
             Ok(targets) => (
                 targets.reads,
                 targets.writes,
                 targets.deletes,
                 targets.executions,
+                targets.stdout_emissions,
             ),
             Err(reason) => {
                 let unknown = vec![(0, SemanticValueResolution::Unknown(reason))];
@@ -40,7 +41,7 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
                 } else {
                     Vec::new()
                 };
-                (unknown.clone(), unknown, deletes, vec![0])
+                (unknown.clone(), unknown, deletes, vec![0], vec![0])
             }
         };
         for control in &projection.write_controls {
@@ -87,6 +88,18 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             p.payload_generated = true;
             generated.push(p);
         }
+        if let Some(name) = &projection.stdout_emissions {
+            let mut p = BoundParameter::new(name.clone(), SemanticType::PlainValue);
+            let indices = stdout_emissions
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            p.values = indices.into_iter().map(|i| sources[i].clone()).collect();
+            if p.values.is_empty() {
+                p.projected_values = Some(Vec::new());
+            }
+            p.payload_generated = true;
+            generated.push(p);
+        }
     }
     bound.bound_parameters.extend(generated);
 }
@@ -98,6 +111,7 @@ struct Targets {
     writes: Resolutions,
     deletes: Resolutions,
     executions: Vec<usize>,
+    stdout_emissions: Vec<usize>,
 }
 
 fn decode_targets(
@@ -160,6 +174,7 @@ fn decode_targets(
                 writes: known(t.writes),
                 deletes: known(t.deletes),
                 executions: vec![],
+                stdout_emissions: vec![],
             })
         }
         PayloadFormat::SedProgram => {
@@ -175,6 +190,7 @@ fn decode_targets(
                 writes: known(t.writes),
                 deletes: vec![],
                 executions: t.executions.into_iter().map(index).collect(),
+                stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
             })
         }
     }

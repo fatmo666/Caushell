@@ -6381,7 +6381,7 @@ mod tests {
         let input_target = find_bound_parameter(&invocation, "input_target");
         let output_target = find_bound_parameter(&invocation, "output_target");
 
-        assert_eq!(selection.form.id.as_str(), "raw_copy");
+        assert_eq!(selection.form.id.as_str(), "raw_copy_file_file");
         assert_eq!(first_argument_text(input_target), "payload.img");
         assert_eq!(first_argument_text(output_target), "/dev/sda");
         assert_eq!(
