@@ -13833,7 +13833,7 @@ mod tests {
             (
                 "rg TODO src",
                 "rg",
-                "search_paths",
+                "positional_search_files",
                 &[
                     EffectKind::ReadPath,
                     EffectKind::LoadConfig,

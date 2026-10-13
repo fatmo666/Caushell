@@ -1,156 +1,129 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-
-identity:
-  canonical_name: rg
-  aliases:
-    - ripgrep
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: rg, aliases: [ripgrep]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 
 forms:
-  - id: search_paths
-    selector:
-      kind: has_positional_at
-      index: 0
-    parameters:
-      - name: pattern
-        semantic:
-          kind: structured_value
-          context: regex
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: load_config
-        target:
-          kind: tool_convention_path
-          path: .ignore
-          convention: ripgrep.ignore_config
-          purpose: tool_config
-      - kind: transform_data
-        target:
-          kind: none
-
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: information}, {kind: has_modifier, modifier: generate}]}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: list_files
-    selector:
-      kind: has_modifier
-      modifier: files
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: path_list
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
+    selector: {kind: all, items: [&running {kind: not, item: *information}, &files {kind: has_modifier, modifier: files}]}
+    parameters: [{name: input_paths, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [{kind: target_path, target: {kind: slot, name: input_paths}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+
+  - id: explicit_search_files
+    selector: {kind: all, items: [&search {kind: all, items: [*running, {kind: not, item: *files}]}, &explicit {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}, &loud {kind: not, item: &silent {kind: all, items: [{kind: has_modifier, modifier: quiet}, {kind: not, item: {kind: has_modifier, modifier: statistics}}, {kind: not, item: {kind: has_modifier, modifier: json}}]}}, {kind: not, item: &explicit_stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    remaining_selector: &complete {kind: no_positional_args}
+    parameters: &explicit_inputs
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: &reads
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: load_config, target: {kind: tool_convention_path, path: .ignore, convention: ripgrep.ignore_config, purpose: tool_config}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: &file_output {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: explicit_search_stdin
+    selector: {kind: all, items: [*search, *explicit, *loud, *explicit_stdin]}
+    remaining_selector: *complete
+    parameters: *explicit_inputs
+    effects: *reads
+    stream_contract: &stdin_output {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: explicit_search_quiet_files
+    selector: {kind: all, items: [*search, *explicit, *silent, {kind: not, item: *explicit_stdin}]}
+    remaining_selector: *complete
+    parameters: *explicit_inputs
+    effects: *reads
+    stream_contract: &quiet_files {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: explicit_search_quiet_stdin
+    selector: {kind: all, items: [*search, *explicit, *silent, *explicit_stdin]}
+    remaining_selector: *complete
+    parameters: *explicit_inputs
+    effects: *reads
+    stream_contract: &quiet_stdin {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
+  - id: positional_search_files
+    selector: {kind: all, items: [*search, {kind: not, item: *explicit}, *loud, {kind: has_positional_at, index: 0}, {kind: not, item: &positional_stdin {kind: any, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_positional_at_or_after_matching, index: 1, matcher: {kind: literal, value: '-'}}]}}]}
+    remaining_selector: *complete
+    parameters: &positional_inputs
+      - {name: pattern, semantic: {kind: structured_value, context: regex}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: *reads
+    stream_contract: *file_output
+  - id: positional_search_stdin
+    selector: {kind: all, items: [*search, {kind: not, item: *explicit}, *loud, {kind: has_positional_at, index: 0}, *positional_stdin]}
+    remaining_selector: *complete
+    parameters: *positional_inputs
+    effects: *reads
+    stream_contract: *stdin_output
+  - id: positional_search_quiet_files
+    selector: {kind: all, items: [*search, {kind: not, item: *explicit}, *silent, {kind: has_positional_at, index: 0}, {kind: not, item: *positional_stdin}]}
+    remaining_selector: *complete
+    parameters: *positional_inputs
+    effects: *reads
+    stream_contract: *quiet_files
+  - id: positional_search_quiet_stdin
+    selector: {kind: all, items: [*search, {kind: not, item: *explicit}, *silent, {kind: has_positional_at, index: 0}, *positional_stdin]}
+    remaining_selector: *complete
+    parameters: *positional_inputs
+    effects: *reads
+    stream_contract: *quiet_stdin
 
 modifiers:
-  - id: files
-    matcher:
-      kind: any_flag
-      flags:
-        - "--files"
-
-  - id: config_file
-    matcher:
-      kind: any_flag
-      flags:
-        - "--config"
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, -V, --version, --type-list]}}
+  - {id: files, matcher: {kind: any_flag, flags: [--files]}}
+  - {id: quiet, matcher: {kind: any_flag, flags: [-q, --quiet]}}
+  - {id: statistics, matcher: {kind: any_flag, flags: [--stats]}}
+  - {id: json, matcher: {kind: any_flag, flags: [--json]}}
+  - id: generate
+    matcher: {kind: any_flag, flags: [--generate]}
+    parameters: [{name: generation_kind, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: inline_pattern
+    matcher: {kind: any_flag, flags: [-e, --regexp]}
+    parameters: [{name: patterns, semantic: {kind: structured_value, context: regex}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: pattern_file
+    matcher: {kind: any_flag, flags: [-f, --file]}
     parameters:
-      - name: config_path
-        semantic:
-          kind: path
-          role: config
-          purpose: tool_config
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
+      - name: pattern_operands
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, unless_modifiers: [information, generate, files], target: {name: pattern_stdin, semantic: {kind: plain_value}}}
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifiers: [information, generate, files], target: {name: pattern_files, semantic: {kind: path, role: read, purpose: generic_operand}}}
     effects:
-      - kind: load_config
-        target:
-          kind: slot
-          name: config_path
-
-  - id: glob
-    matcher:
-      kind: any_flag
-      flags:
-        - "-g"
-        - "--glob"
-    parameters:
-      - name: glob_pattern
-        semantic:
-          kind: structured_value
-          context: path_expression
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_many
-
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: pattern_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: pattern_stdin}}
   - id: preprocessor
+    matcher: {kind: any_flag, flags: [--pre]}
+    parameters:
+      - name: preprocessor_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifiers: [information, generate, files], target: {name: preprocessor_command, semantic: {kind: command_ref, dispatch: command_name}}}
+    effects: [{kind: dispatch_command, target: {kind: dispatch, command: preprocessor_command}}]
+  - id: value_options
+    matcher: {kind: any_flag, flags: [-A, --after-context, -B, --before-context, -C, --context, --context-separator, --field-context-separator, --field-match-separator, --color, --colors, -E, --encoding, --engine, --dfa-size-limit, --regex-size-limit, -g, --glob, --iglob, --pre-glob, --ignore-file, -j, --threads, -m, --max-count, -M, --max-columns, --max-depth, --max-filesize, --path-separator, -r, --replace, --sort, --sortr, -t, --type, -T, --type-not, --type-add, --type-clear, --hyperlink-format]}
+    parameters: [{name: option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: ordinary_flags
     matcher:
       kind: any_flag
-      flags:
-        - "--pre"
-    parameters:
-      - name: preprocessor_command
-        semantic:
-          kind: command_ref
-          dispatch: command_name
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-    effects:
-      - kind: dispatch_command
-        target:
-          kind: dispatch
-          command: preprocessor_command
+      flags: [-a, --text, --no-text, -b, --byte-offset, --no-byte-offset, -c, --count, --count-matches, --include-zero, --no-include-zero, --column, --no-column, --crlf, --no-crlf, --debug, --trace, --no-encoding, -F, --fixed-strings, --no-fixed-strings, -H, --with-filename, -I, --no-filename, --heading, --no-heading, --hidden, --no-hidden, -i, --ignore-case, --no-ignore-case, -s, --case-sensitive, -S, --smart-case, -l, --files-with-matches, --files-without-match, --line-buffered, --no-line-buffered, --block-buffered, --no-block-buffered, -L, --follow, --no-follow, --max-columns-preview, --no-max-columns-preview, --mmap, --no-mmap, -n, --line-number, -N, --no-line-number, --no-config, --no-ignore, --ignore, --no-ignore-dot, --ignore-dot, --no-ignore-exclude, --ignore-exclude, --no-ignore-files, --ignore-files, --no-ignore-global, --ignore-global, --no-ignore-parent, --ignore-parent, --no-ignore-vcs, --ignore-vcs, --no-require-git, --require-git, --no-unicode, --unicode, --null, --null-data, -o, --only-matching, --no-only-matching, --one-file-system, --no-one-file-system, --passthru, --no-passthru, -p, --pretty, -P, --pcre2, --no-pcre2, --pcre2-unicode, --no-pcre2-unicode, --no-pre, --no-messages, --messages, --no-stats, --stop-on-nonmatch, --no-stop-on-nonmatch, --trim, --no-trim, -u, --unrestricted, -U, --multiline, --no-multiline, --multiline-dotall, --no-multiline-dotall, -v, --invert-match, --no-invert-match, --vimgrep, --no-vimgrep, -w, --word-regexp, --no-word-regexp, -x, --line-regexp, --no-line-regexp, -z, --search-zip, --no-search-zip]
 
-subcommands: null
 extensions:
-  caushell.profile/source_research:
-    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/sources:
+    - https://github.com/BurntSushi/ripgrep/blob/master/crates/core/flags/hiargs.rs
+    - https://github.com/BurntSushi/ripgrep/blob/master/crates/core/flags/defs.rs
   caushell.profile/known_limitations:
-    - Ripgrep config discovery through RIPGREP_CONFIG_PATH and gitignore traversal is summarized as convention-backed config loading.
+    - No-path search retains optional stdin; native fallback to cwd and directory-descendant content reads require separate recursive-read semantics.
+    - RIPGREP_CONFIG_PATH and ignore-file contents are not expanded into argument vectors. --config is not a ripgrep CLI option.
