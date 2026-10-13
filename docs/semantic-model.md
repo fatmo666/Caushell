@@ -2051,6 +2051,46 @@ origins; pipeline, background and subshell visibility uses the same scope checks
 as variable resolution. AWK programs retain opaque execution, matching `mawk`,
 without attempting to interpret AWK source as Bash.
 
+## Network sessions and metadata-only tools
+
+`ncat` has its own Profile rather than inheriting implementation-dependent
+`nc` execution switches. Internet and UNIX listeners retain bind scope and
+socket writes; output and hex logs retain actual output paths, including
+last-option ownership. Ordinary sessions consume stdin, while `--recv-only`,
+`nc -d` and scanning modes do not. Sending endpoints use the existing input
+scope and leakage Query; no additional risk Pass is required.
+
+Ncat direct exec declares literal whitespace argv, whereas `--sh-exec`
+uses the existing POSIX-shell nested analysis. Child stdout returns to the
+network sink, not the caller's native stdout pipe. Lua execution and unsupported
+direct-exec escape syntax retain unresolved execution. The ambiguous `nc -e/-c`
+switches are not treated as Ncat shell execution.
+
+`stat`, `ls`, `du`, `readlink` and `realpath` declare metadata/name targets,
+not file-content opens. They ignore unrelated stdin but preserve argument
+origins in their output: a sensitive command substitution used in an output
+format or emitted name is still tracked. `touch/chown/chgrp` retain actual
+mutations, and reference metadata is not file-byte input. Help/version modes
+have independent output and suppress modification effects; verbose ownership
+reports preserve argument origins without inheriting unrelated file contents.
+
+References: [Ncat execution](https://nmap.org/ncat/guide/ncat-exec.html),
+[OpenBSD nc](https://man.openbsd.org/nc.1),
+[GNU Coreutils manual](https://www.gnu.org/software/coreutils/manual/coreutils.html).
+
+Filesystem mutation Profiles distinguish native output modes. Ordinary
+`mkdir/rmdir/mkfifo/mknod/ln/rm/truncate/chmod` operations do not forward
+unrelated payload stdin. Silent stdout is independent; verbose name reports
+retain argument origins rather than opened file contents. Help/version modes
+end option processing and suppress modification effects, including effects
+declared by earlier modifiers. Operands after `--` remain ordinary data.
+
+`mkdir -m 700 cache/dir` binds `700` as a mode value, not an extra directory.
+`truncate -r FILE` obtains size metadata; its reference is a `TargetPath`, not
+a byte-content `ReadPath`. The target's existing content origins remain tracked
+across resize and permission changes. These are declarative Profile contracts,
+not filesystem probes or new risk Passes.
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

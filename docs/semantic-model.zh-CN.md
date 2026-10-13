@@ -938,6 +938,39 @@ Form 可以显式声明 `operation_semantics_unresolved: true`：argv 形式已�
 复用变量解析的范围判断。AWK 程序与现有 `mawk` 使用一致的不透明执行边界，不把
 AWK 源码当 Bash 解析。
 
+## 网络会话与仅元数据工具
+
+`ncat` 使用独立 Profile，不再继承不同版本 `nc` 的执行选项。Internet／UNIX
+监听保留绑定范围和 socket 写入，普通日志及十六进制日志保留实际输出路径，
+包括重复选项的最后值。普通会话消费 stdin；`--recv-only`、`nc -d` 和扫描模式
+不消费它。发送目标复用已有输入范围声明及泄露 Query，不新增风险 Pass。
+
+Ncat 直接执行声明按空白分隔的字面 argv；`--sh-exec` 复用已有 POSIX Shell
+嵌套分析。子调用 stdout 返回网络发送端，不冒充调用者的原生 stdout 管道。
+Lua 和尚未支持的直接执行转义语法保留未知执行；语义随实现变化的
+`nc -e/-c` 不被当成 Ncat Shell 执行。
+
+`stat/ls/du/readlink/realpath` 声明元数据／名称目标，不冒充文件内容打开。
+它们忽略无关 stdin，但输出保留参数来源：输出格式或名称中的敏感命令替换
+仍受追踪。`touch/chown/chgrp` 保留实际修改，参考文件的元数据不是文件字节输入。
+帮助／版本模式声明独立输出并抑制修改效果；所有权详细报告保留参数来源，
+但不继承无关文件内容。
+
+参考：[Ncat 执行](https://nmap.org/ncat/guide/ncat-exec.html)、
+[OpenBSD nc](https://man.openbsd.org/nc.1)、
+[GNU Coreutils 手册](https://www.gnu.org/software/coreutils/manual/coreutils.html)。
+
+文件系统修改 Profile 按原生输出模式区分：
+`mkdir/rmdir/mkfifo/mknod/ln/rm/truncate/chmod` 不转发无关的 stdin 内容。
+无 stdout 数据的模式声明独立输出；详细文件名报告保留参数来源，不冒充
+文件内容读取。帮助／版本模式终止选项处理并抑制修改效果，包括此前 modifier
+声明的效果。`--` 之后的操作数仍是普通数据。
+
+`mkdir -m 700 cache/dir` 把 `700` 绑定为权限值，不凭空增加目录目标。
+`truncate -r FILE` 只取得长度元数据，参考文件使用 `TargetPath` 而非内容
+`ReadPath`。目标文件已有的内容来源在扩容或权限修改后仍保留。这些行为由
+Profile 声明，不依赖文件系统探测，也不新增风险 Pass。
+
 ## 进一步阅读
 
 - [工作原理总览](how-it-works.zh-CN.md)
