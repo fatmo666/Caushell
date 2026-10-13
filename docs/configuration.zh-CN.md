@@ -50,6 +50,39 @@ caushell config validate
 
 ## 当前可配置项
 
+### 修改路径豁免
+
+`mutation_path_exemptions` 只豁免现有“工作区外修改”规则中的指定操作，默认配置：
+
+```yaml
+mutation_path_exemptions:
+  - root: /tmp
+    operations: [write, ordinary_metadata]
+  - root: /private/tmp
+    operations: [write, ordinary_metadata]
+```
+
+`write` 包括已建模的文件／目录写入和 Shell 输出重定向。
+`ordinary_metadata` 只包括已确认的普通权限、属主和属组修改；增加 setuid/setgid、
+引用文件或未知权限模式、immutable 等通用属性修改不豁免。此字段不支持删除和移动源
+操作，也不将目录变成可信脚本目录、可信启动配置目录或工作区。其他风险规则按原配置生效。
+
+路径根必须为绝对路径，操作列表不能为空。使用规范化后的目录边界判断，不做字符串包含
+匹配。未知目标、未知相对 cwd、可能逃逸或空的路径集合不豁免。复用既有路径事实，
+不新增文件系统或进程探测。
+
+显式列表会替换默认列表；`mutation_path_exemptions: []` 可关闭全部豁免。例如只允许
+自定义临时目录的普通写入：
+
+```yaml
+mutation_path_exemptions:
+  - root: /opt/scratch
+    operations: [write]
+```
+
+未提供 `TMPDIR` 时，使用默认模板的 `mktemp` 创建位置保留为未知，仍要求审批。
+显式 `/tmp` 模板或已提供、已知的 `TMPDIR` 按上述路径规则判断。
+
 | 字段 | 可选值 | 默认值 | 作用 |
 | --- | --- | --- | --- |
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Caushell 无法完成分析时的回退行为 |

@@ -1575,13 +1575,14 @@ fn normalize_payload_projection(
         ));
     }
     match (raw.format, &raw.executions) {
-        (crate::RawPayloadFormat::SedProgram, Some(name)) => {
+        (crate::RawPayloadFormat::SedProgram | crate::RawPayloadFormat::AwkProgram, Some(name)) => {
             ensure_non_empty(name, "payload_projections.executions")?;
         }
-        (crate::RawPayloadFormat::SedProgram, None)
+        (crate::RawPayloadFormat::SedProgram | crate::RawPayloadFormat::AwkProgram, None)
         | (crate::RawPayloadFormat::CodexApplyPatch, Some(_)) => {
             return Err(NormalizeError::InvalidPayloadProjection(
-                "sed_program requires an executions slot; codex_apply_patch forbids it".into(),
+                "sed_program/awk_program requires an executions slot; codex_apply_patch forbids it"
+                    .into(),
             ));
         }
         _ => {}
@@ -1598,7 +1599,10 @@ fn normalize_payload_projection(
     }
     if let Some(slot) = &raw.stdout_emissions {
         ensure_non_empty(slot, "payload_projections.stdout_emissions")?;
-        if raw.format != crate::RawPayloadFormat::SedProgram {
+        if !matches!(
+            raw.format,
+            crate::RawPayloadFormat::SedProgram | crate::RawPayloadFormat::AwkProgram
+        ) {
             return Err(NormalizeError::InvalidPayloadProjection(
                 "stdout_emissions requires a format with output semantics".into(),
             ));
@@ -1608,6 +1612,7 @@ fn normalize_payload_projection(
         format: match raw.format {
             crate::RawPayloadFormat::CodexApplyPatch => crate::PayloadFormat::CodexApplyPatch,
             crate::RawPayloadFormat::SedProgram => crate::PayloadFormat::SedProgram,
+            crate::RawPayloadFormat::AwkProgram => crate::PayloadFormat::AwkProgram,
         },
         source,
         reads: SlotName::new(raw.reads),

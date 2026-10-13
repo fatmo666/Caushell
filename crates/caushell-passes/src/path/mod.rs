@@ -9,8 +9,11 @@ mod normalize;
 mod runtime;
 mod target_match;
 
+#[cfg(test)]
+pub(crate) use expression::classify_path_operand_expression;
+
 pub(crate) use expression::{
-    PathExpression, classify_path_operand_expression, shell_pattern_matches_path,
+    PathExpression, classify_path_operand_expression_with_tilde, shell_pattern_matches_path,
 };
 pub(crate) use extract::{
     MutationTargetCandidate, collect_effect_mutation_targets, collect_mutation_scope_facts,
@@ -22,6 +25,6 @@ pub(crate) use extract::{
 };
 pub(crate) use normalize::{
     expand_home_path_spelling, join_shell_path, normalize_shell_path, path_is_within_root,
-    resolve_path_operand,
+    resolve_path_operand, resolve_path_operand_with_tilde,
 };
 pub(crate) use target_match::match_path_expression_against_target_or_direct_children;

@@ -2198,6 +2198,7 @@ PY""#,
     #[test]
     fn core_applies_custom_resolve_policy_to_unknown_command_without_profile() {
         let mut core = ShellQueryCore::with_policy(PolicyConfig {
+            mutation_path_exemptions: caushell_types::default_mutation_path_exemptions(),
             rule_policy: RulePolicy {
                 no_profile: caushell_types::NoProfilePolicy {
                     action: RuleAction::NeedApproval,

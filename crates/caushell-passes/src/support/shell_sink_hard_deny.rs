@@ -55,6 +55,7 @@ fn shell_sink_hard_deny_reason(
             quoted: target.quoted,
             node_kind: target.node_kind.as_str(),
             literal_argv_data: false,
+            allow_tilde_expansion: !target.quoted && target.text.starts_with('~'),
         },
         cwd,
         home,

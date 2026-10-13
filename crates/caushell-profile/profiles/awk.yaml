@@ -25,6 +25,8 @@ forms:
   - id: execute_program_stdin
     selector: &program_stdin {kind: has_modifier_parameter_matching, modifier: program_file, parameter: program_files, matcher: {kind: literal, value: '-'}}
     parameters:
+      - &stdin_markers {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - &input_assignments {name: input_assignments, semantic: {kind: structured_value, context: env_assignment}, binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^[A-Za-z_][A-Za-z_0-9]*='}}, cardinality: optional_many}
       - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
     implicit_inputs:
       - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
@@ -38,11 +40,10 @@ forms:
       kind: all
       items:
         - {kind: not, item: *program_stdin}
-        - kind: any
-          items:
-            - {kind: has_modifier, modifier: inline_program}
-            - {kind: has_modifier, modifier: program_file}
+        - {kind: has_modifier, modifier: inline_program}
     parameters:
+      - *stdin_markers
+      - *input_assignments
       - name: input_paths
         semantic:
           kind: path
@@ -54,16 +55,40 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
+    payload_projections: &explicit_awk_projection
+      - &awk_projection
+        format: awk_program
+        source: {kind: slot, name: programs}
+        reads: program_reads
+        writes: program_writes
+        deletes: program_deletes
+        executions: program_executions
+        stdout_emissions: program_stdout
+        max_bytes: 65536
+        max_operations: 4096
     stream_contract:
       stdin_mode: data_optional
       stdout_mode: data
       stderr_mode: opaque
     effects:
+      - &awk_reads {kind: read_path, path_access: content_open, target: {kind: slot, name: program_reads}}
+      - &awk_writes {kind: write_path, path_access: content_open, target: {kind: slot, name: program_writes}, catastrophic: {semantic_class: raw_write_target}}
+      - &awk_deletes {kind: delete_path, target: {kind: slot, name: program_deletes}}
+      - &awk_executions {kind: execute_payload, target: {kind: slot, name: program_executions}}
       - kind: read_path
         path_access: content_open
         target:
           kind: slot
           name: input_paths
+
+  - id: external_program_transform
+    selector: {kind: all, items: [{kind: not, item: *program_stdin}, {kind: has_modifier, modifier: program_file}, {kind: not, item: {kind: has_modifier, modifier: inline_program}}]}
+    parameters:
+      - *stdin_markers
+      - *input_assignments
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}]
 
   - id: positional_program_transform
     selector:
@@ -81,14 +106,12 @@ forms:
           index: 0
     parameters:
       - name: program
-        semantic:
-          kind: payload
-          language: opaque
-          source: inline_string
-          recursive: true
+        semantic: {kind: plain_value}
         binding:
           kind: next_positional
         cardinality: required_one
+      - *stdin_markers
+      - *input_assignments
       - name: input_paths
         semantic:
           kind: path
@@ -100,12 +123,25 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
+    payload_projections:
+      - format: awk_program
+        source: {kind: slot, name: program}
+        reads: program_reads
+        writes: program_writes
+        deletes: program_deletes
+        executions: program_executions
+        stdout_emissions: program_stdout
+        max_bytes: 65536
+        max_operations: 4096
     stream_contract:
       stdin_mode: data_optional
       stdout_mode: data
       stderr_mode: opaque
     effects:
-      - {kind: execute_payload, target: {kind: slot, name: program}}
+      - *awk_reads
+      - *awk_writes
+      - *awk_deletes
+      - *awk_executions
       - kind: read_path
         path_access: content_open
         target:
@@ -121,16 +157,11 @@ modifiers:
         - "--source"
     parameters:
       - name: programs
-        semantic:
-          kind: payload
-          language: opaque
-          source: inline_string
-          recursive: true
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
-    effects: [{kind: execute_payload, target: {kind: slot, name: programs}}]
 
   - id: program_file
     matcher:
@@ -164,6 +195,7 @@ modifiers:
       kind: any_flag
       flags:
         - "-v"
+        - "--assign"
     parameters:
       - name: assignments
         semantic:
@@ -193,5 +225,5 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - AWK programs are opaque executable payloads, using the same approval boundary as mawk. Their internal language is not parsed as Bash.
+    - Inline programs use the bounded AWK effect decoder. External -f program contents, unsupported extensions and command execution remain unresolved executable boundaries; AWK is never parsed as Bash.
     - Named input files do not prove stdin is unused by arbitrary programs containing getline or command pipes.

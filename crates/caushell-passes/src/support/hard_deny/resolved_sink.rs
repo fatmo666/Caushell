@@ -195,16 +195,19 @@ pub(crate) fn bound_argument_operands_for_slot<'a>(
         .filter(|parameter| parameter.name.as_str() == slot_name)
         .flat_map(|parameter| parameter.semantic_values())
         .filter_map(|value| match value {
-            SemanticValueRef::Original(BoundValue::Argument {
-                text,
-                quoted,
-                node_kind,
-                ..
-            }) => Some(HostTargetOperand {
+            SemanticValueRef::Original(
+                source @ BoundValue::Argument {
+                    text,
+                    quoted,
+                    node_kind,
+                    ..
+                },
+            ) => Some(HostTargetOperand {
                 text: text.as_str(),
                 quoted: *quoted,
                 node_kind: node_kind.as_str(),
                 literal_argv_data: false,
+                allow_tilde_expansion: source.allows_shell_tilde_expansion(),
             }),
             SemanticValueRef::Projected { value, .. } => match &value.resolution {
                 SemanticValueResolution::Known(text) => {

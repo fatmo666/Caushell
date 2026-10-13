@@ -73,14 +73,8 @@ fn rule(response: &CheckResponse, expected: RuleId) -> bool {
 }
 
 #[test]
-fn inline_awk_runs_an_opaque_program_not_a_guessed_shell_or_write() {
-    for c in [
-        "mawk 'BEGIN { print \"DATA\" > \"/opt/shared/output\" }'",
-        "mawk 'BEGIN {system(\"rm /opt/shared/file\")}'",
-        "mawk 'rm /opt/shared/file'",
-        "mawk '//' public.txt",
-        "mawk '' public.txt",
-    ] {
+fn inline_awk_keeps_native_effects_and_never_guesses_shell_code() {
+    for c in ["mawk 'BEGIN {system(\"rm /opt/shared/file\")}'"] {
         let r = check(c);
         assert_eq!(r.decision, Decision::NeedApproval, "{c}: {r:#?}");
         assert!(opaque(&r), "{c}: {r:#?}");
@@ -92,6 +86,18 @@ fn inline_awk_runs_an_opaque_program_not_a_guessed_shell_or_write() {
             "{c}"
         );
         assert!(!path(c, "/opt/shared/output", ResolvedPathRole::Write));
+    }
+    let c = "mawk 'BEGIN { print \"DATA\" > \"/opt/shared/output\" }'";
+    let r = check(c);
+    assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
+    assert!(rule(&r, RuleId::OutsideWorkspaceMutation));
+    assert!(path(c, "/opt/shared/output", ResolvedPathRole::Write));
+    assert!(!opaque(&r));
+    for c in ["mawk '//' public.txt", "mawk '' public.txt"] {
+        let r = check(c);
+        assert_eq!(r.decision, Decision::Allow, "{r:#?}");
+        assert!(!opaque(&r));
+        assert!(r.decision_trace.derived_invocations.is_empty());
     }
 }
 
@@ -169,7 +175,9 @@ fn known_awk_and_terraform_reads_still_feed_existing_exfiltration_guard() {
     ] {
         let r = check(c);
         assert!(rule(&r, RuleId::SensitiveDataExfiltration), "{c}: {r:#?}");
-        assert!(opaque(&r), "{c}");
+        if c.starts_with("terraform") {
+            assert!(opaque(&r), "{c}");
+        }
     }
 }
 
@@ -268,11 +276,13 @@ fn opaque_policy_overrides_are_explicit_and_do_not_change_legacy_literal_policy(
             UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
             RuleAction::Observe,
         );
-    let r = ShellQueryCore::with_policy(policy.clone()).check(request("mawk '//' public.txt"));
+    let r = ShellQueryCore::with_policy(policy.clone())
+        .check(request("mawk 'BEGIN{system(\"date\")}' public.txt"));
     assert_eq!(r.decision, Decision::Allow, "{r:#?}");
     assert!(opaque(&r));
-    let r = ShellQueryCore::with_policy(policy.clone())
-        .check(request("mawk '//' public.txt > /opt/shared/output"));
+    let r = ShellQueryCore::with_policy(policy.clone()).check(request(
+        "mawk 'BEGIN{system(\"date\")}' public.txt > /opt/shared/output",
+    ));
     assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
     assert!(rule(&r, RuleId::OutsideWorkspaceMutation));
     policy
@@ -299,7 +309,7 @@ fn opaque_language_survives_session_graph_snapshot_restoration() {
             RuleAction::Observe,
         );
     let mut core = ShellQueryCore::with_policy(policy);
-    let r = core.check(request("mawk '//' public.txt"));
+    let r = core.check(request("mawk 'BEGIN{system(\"date\")}' public.txt"));
     assert_eq!(r.decision, Decision::Allow);
     assert!(opaque(&r));
     assert_eq!(

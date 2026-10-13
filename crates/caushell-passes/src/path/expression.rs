@@ -30,6 +30,17 @@ pub(crate) fn classify_path_operand_expression(
     cwd: Option<&str>,
     home: Option<&str>,
 ) -> PathExpression {
+    classify_path_operand_expression_with_tilde(text, quoted, node_kind, cwd, home, true)
+}
+
+pub(crate) fn classify_path_operand_expression_with_tilde(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    cwd: Option<&str>,
+    home: Option<&str>,
+    allow_tilde_expansion: bool,
+) -> PathExpression {
     let text = text.trim();
     if text.is_empty() {
         return PathExpression::Unsupported;
@@ -51,7 +62,10 @@ pub(crate) fn classify_path_operand_expression(
 
     if !quoted && is_static_shell_word_node_kind(node_kind) {
         return static_shell_word_text(text)
-            .map(|word| classify_static_shell_word_expression(&word, cwd, home))
+            .map(|mut word| {
+                word.allow_tilde_expansion &= allow_tilde_expansion;
+                classify_static_shell_word_expression(&word, cwd, home)
+            })
             .unwrap_or(PathExpression::Unsupported);
     }
 
@@ -502,6 +516,22 @@ fn static_shell_word_text(text: &str) -> Option<StaticShellWordText> {
     })
 }
 
+/// Resolve one static shell word, preserving quote/escape provenance before
+/// deciding whether its initial tilde was eligible for expansion.
+pub(super) fn resolve_static_shell_word_path(
+    text: &str,
+    cwd: &str,
+    home: Option<&str>,
+    allow_tilde_expansion: bool,
+) -> Option<String> {
+    let mut word = static_shell_word_text(text)?;
+    word.allow_tilde_expansion &= allow_tilde_expansion;
+    match classify_static_shell_word_expression(&word, Some(cwd), home) {
+        PathExpression::Exact(path) => Some(path),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellQuote {
     None,
@@ -793,6 +823,36 @@ mod tests {
         PathExpression, classify_path_operand_expression, shell_pattern_is_bare_star_segment,
         shell_pattern_matches_path,
     };
+
+    #[test]
+    fn tilde_origin_controls_exact_patterns_and_brace_alternatives() {
+        for text in ["~/out", "~/file*", "~/{etc,usr}"] {
+            let literal = super::classify_path_operand_expression_with_tilde(
+                text,
+                false,
+                "word",
+                Some("/workspace"),
+                Some("/home/user"),
+                false,
+            );
+            let expanded = super::classify_path_operand_expression_with_tilde(
+                text,
+                false,
+                "word",
+                Some("/workspace"),
+                Some("/home/user"),
+                true,
+            );
+            assert!(
+                format!("{literal:?}").contains("/workspace/~/"),
+                "{literal:?}"
+            );
+            assert!(
+                format!("{expanded:?}").contains("/home/user/"),
+                "{expanded:?}"
+            );
+        }
+    }
 
     #[test]
     fn path_expression_resolves_literal_parent_segments() {

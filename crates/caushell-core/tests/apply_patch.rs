@@ -18,7 +18,7 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("patch-profile"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "test".into(),
@@ -26,7 +26,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 fn strict_core() -> ShellQueryCore {
@@ -130,19 +130,19 @@ fn graph_retains_read_write_and_move_source_deletion() {
         Decision::Allow,
     );
     assert!(
-        paths.contains(&(ResolvedPathRole::Read, "/tmp/project/src".into())),
+        paths.contains(&(ResolvedPathRole::Read, "/workspace/project/src".into())),
         "{paths:?}"
     );
     assert!(
-        paths.contains(&(ResolvedPathRole::Target, "/tmp/project/src".into())),
+        paths.contains(&(ResolvedPathRole::Target, "/workspace/project/src".into())),
         "{paths:?}"
     );
     assert!(
-        paths.contains(&(ResolvedPathRole::Write, "/tmp/project/dest".into())),
+        paths.contains(&(ResolvedPathRole::Write, "/workspace/project/dest".into())),
         "{paths:?}"
     );
     assert!(
-        !paths.contains(&(ResolvedPathRole::Write, "/tmp/project/src".into())),
+        !paths.contains(&(ResolvedPathRole::Write, "/workspace/project/src".into())),
         "{paths:?}"
     );
 }
@@ -240,7 +240,7 @@ fn filenames_are_literal_data_not_second_expansion() {
     assert!(
         paths.contains(&(
             ResolvedPathRole::Write,
-            "/tmp/project/$INNER/$(whoami)".into()
+            "/workspace/project/$INNER/$(whoami)".into()
         )),
         "{paths:?}"
     );
@@ -310,7 +310,10 @@ fn cwd_transitions_and_unknown_cwd_use_existing_path_guard() {
         Decision::NeedApproval,
     );
     inspect(
-        &format!("cd /tmp/project/sub; {}", argv("*** Add File: file\n+x")),
+        &format!(
+            "cd /workspace/project/sub; {}",
+            argv("*** Add File: file\n+x")
+        ),
         Decision::Allow,
     );
     inspect(
@@ -376,7 +379,7 @@ fn multiline_double_quoted_patches_keep_targets_directly_and_in_nested_shells() 
             let concrete = if target.starts_with('/') {
                 target.to_string()
             } else {
-                format!("/tmp/project/{target}")
+                format!("/workspace/project/{target}")
             };
             assert!(
                 paths.contains(&(ResolvedPathRole::Write, concrete)),
@@ -409,7 +412,10 @@ fn escaped_double_quoted_patch_filenames_are_not_expanded_again() {
         "DEST=/etc; apply_patch \"*** Begin Patch\n*** Add File: \\$DEST/literal\n+\\$(unknown-command)\n*** End Patch\"",
         Decision::Allow,
     );
-    assert!(paths.contains(&(ResolvedPathRole::Write, "/tmp/project/$DEST/literal".into())));
+    assert!(paths.contains(&(
+        ResolvedPathRole::Write,
+        "/workspace/project/$DEST/literal".into()
+    )));
 }
 
 #[test]

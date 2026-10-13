@@ -16,9 +16,10 @@ use caushell_types::{
 };
 
 use super::configured::resolve_configured_path;
-use super::glob::resolve_glob_path_operand;
+use super::glob::{resolve_glob_path_operand, resolve_glob_path_operand_with_tilde};
 use super::normalize::{
     join_shell_path, normalize_shell_path, path_is_within_root, resolve_path_operand,
+    resolve_path_operand_with_tilde,
 };
 use super::runtime::runtime_path_bounds;
 use crate::support::{ExecutionResolveRecordRef, is_file_write_redirection_operator};
@@ -68,12 +69,13 @@ pub(crate) struct MutationTargetCandidate {
     pub resolution: PathResolution,
     pub cwd_dependent: bool,
     pub implicit_incidental_cache: bool,
+    pub metadata_mutation: Option<PathMetadataMutation>,
 }
 
 pub(crate) fn path_operand_depends_on_cwd(
     text: &str,
-    _quoted: bool,
-    _node_kind: &str,
+    quoted: bool,
+    node_kind: &str,
     materialization: Option<&ValueMaterialization>,
 ) -> bool {
     let effective_text = match materialization {
@@ -81,16 +83,33 @@ pub(crate) fn path_operand_depends_on_cwd(
         | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. }) => value.as_str(),
         _ => text,
     };
-    !(effective_text.starts_with('/') || effective_text == "~" || effective_text.starts_with("~/"))
+    let shell_tilde = !quoted
+        && !matches!(node_kind, "raw_string" | "ansi_c_string")
+        && !matches!(
+            materialization,
+            Some(
+                ValueMaterialization::ResolvedExactScalar { .. }
+                    | ValueMaterialization::ResolvedRuntimeProduced { .. }
+            )
+        )
+        && (effective_text == "~" || effective_text.starts_with("~/"));
+    !(effective_text.starts_with('/') || shell_tilde)
 }
 
 fn bound_path_operand_depends_on_cwd(
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
-    materialization: &BoundArgumentMaterialization,
+    value: &BoundValue,
     projection_materialization: Option<&ValueMaterialization>,
 ) -> bool {
+    let BoundValue::Argument {
+        text,
+        quoted,
+        node_kind,
+        materialization,
+        ..
+    } = value
+    else {
+        return true;
+    };
     if matches!(
         materialization,
         BoundArgumentMaterialization::RuntimeData
@@ -99,7 +118,10 @@ fn bound_path_operand_depends_on_cwd(
     ) {
         return !text.starts_with('/');
     }
-    path_operand_depends_on_cwd(text, quoted, node_kind, projection_materialization)
+    if value.is_attached_option_operand() && text.starts_with('~') {
+        return true;
+    }
+    path_operand_depends_on_cwd(text, *quoted, node_kind, projection_materialization)
 }
 
 fn runtime_input_path_depends_on_cwd(
@@ -171,38 +193,14 @@ fn semantic_path_resolution(
                 true,
             ),
         },
-        SemanticValueRef::Original(BoundValue::Argument {
-            text,
-            quoted,
-            node_kind,
-            span,
-            materialization,
-            ..
-        }) => {
+        SemanticValueRef::Original(source @ BoundValue::Argument { span, .. }) => {
             let projection_materialization =
                 resolved.and_then(|resolved| arg_materialization_for_span(resolved, span));
-            let resolution = if resolved.is_some() {
-                resolve_bound_path_resolution(
-                    text,
-                    *quoted,
-                    node_kind,
-                    cwd,
-                    home,
-                    materialization,
-                    projection_materialization,
-                )
-            } else {
-                resolve_path_resolution(text, *quoted, node_kind, cwd, home, None)
-            };
+            let resolution =
+                resolve_bound_path_resolution(source, cwd, home, projection_materialization);
             (
                 resolution,
-                bound_path_operand_depends_on_cwd(
-                    text,
-                    *quoted,
-                    node_kind,
-                    materialization,
-                    projection_materialization,
-                ),
+                bound_path_operand_depends_on_cwd(source, projection_materialization),
             )
         }
         SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain, .. }) => (
@@ -373,12 +371,27 @@ pub(crate) fn collect_effect_mutation_targets(
             continue;
         }
 
+        let metadata_mutation = if matches!(
+            effect.kind,
+            EffectKind::ChangeMode
+                | EffectKind::ChangeOwner
+                | EffectKind::ChangeGroup
+                | EffectKind::MetadataMutation
+        ) {
+            match &effect.target {
+                EffectTarget::Slot(slot) => metadata_mutation_for_path_slot(bound, slot.as_str()),
+                _ => metadata_mutation_for_effect(bound, effect),
+            }
+        } else {
+            None
+        };
         let start = targets.len();
         match &effect.target {
             EffectTarget::ConfiguredPath(target) => {
                 if let Some(path) = resolve_configured_path(bound, target, cwd, home, Some(record))
                 {
                     targets.push(MutationTargetCandidate {
+                        metadata_mutation: metadata_mutation.clone(),
                         operation: effect.kind,
                         slot_name: format!("configured_path_{effect_index}"),
                         resolution: effect_path_scope(effect, bound, path.resolution),
@@ -408,6 +421,7 @@ pub(crate) fn collect_effect_mutation_targets(
                         let (resolution, cwd_dependent) =
                             semantic_path_resolution(value, resolved, cwd, home);
                         targets.push(MutationTargetCandidate {
+                            metadata_mutation: metadata_mutation.clone(),
                             implicit_incidental_cache: false,
                             operation: effect.kind,
                             slot_name: slot.as_str().to_string(),
@@ -422,6 +436,7 @@ pub(crate) fn collect_effect_mutation_targets(
             }
             EffectTarget::ToolConventionPath(target) => {
                 targets.push(MutationTargetCandidate {
+                    metadata_mutation: metadata_mutation.clone(),
                     implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name: tool_convention_slot_name(effect_index, &target.convention),
@@ -449,6 +464,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     })
                     .unwrap_or(true);
                 targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
+                    metadata_mutation: metadata_mutation.clone(),
                     implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name: path.slot_name,
@@ -473,6 +489,7 @@ pub(crate) fn collect_effect_mutation_targets(
                     }
                 };
                 targets.push(MutationTargetCandidate {
+                    metadata_mutation: metadata_mutation.clone(),
                     implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name,
@@ -493,6 +510,7 @@ pub(crate) fn collect_effect_mutation_targets(
 
         if targets.len() == start {
             targets.push(MutationTargetCandidate {
+                metadata_mutation: metadata_mutation.clone(),
                 implicit_incidental_cache: false,
                 operation: effect.kind,
                 slot_name: format!("effect_{effect_index}"),
@@ -1297,9 +1315,7 @@ fn derive_semantic_slot_path_resolution(
                     SemanticValueRef::Original(source)
                     | SemanticValueRef::Projected { source, .. } => source,
                 };
-                let shell_tilde = matches!(source, BoundValue::Argument { text, quoted: false, materialization: BoundArgumentMaterialization::Literal, span, binding_source, .. }
-                    if text.starts_with('~') && !matches!(binding_source,
-                        caushell_profile::ArgumentBindingSource::FollowingFlag { flag_span, .. } | caushell_profile::ArgumentBindingSource::MatchedModifierFlag { flag_span, .. } if flag_span.start_byte == span.start_byte));
+                let shell_tilde = source.allows_shell_tilde_expansion();
                 let text = if shell_tilde {
                     if text != "~" && !text.starts_with("~/") {
                         return Some(PathResolution::UnsupportedDynamicText { text });
@@ -1333,25 +1349,17 @@ fn derive_semantic_slot_path_resolution(
         }
     }
     match value {
-        SemanticValueRef::Original(BoundValue::Argument {
-            text,
-            quoted,
-            node_kind,
-            span,
-            materialization: bound_materialization,
-            ..
-        }) => Some(derive_slot_target_path_resolution(
-            parameter,
-            text,
-            *quoted,
-            node_kind,
-            cwd,
-            home,
-            resolved.and_then(|resolved| arg_materialization_for_span(resolved, span)),
-            bound_materialization,
-            slot_name,
-            rule,
-        )),
+        SemanticValueRef::Original(source @ BoundValue::Argument { span, .. }) => {
+            Some(derive_slot_target_path_resolution(
+                parameter,
+                source,
+                cwd,
+                home,
+                resolved.and_then(|resolved| arg_materialization_for_span(resolved, span)),
+                slot_name,
+                rule,
+            ))
+        }
         SemanticValueRef::Original(BoundValue::ImplicitInput { source, domain, .. }) => {
             let basis = DerivedPathBasis::PathOperand {
                 raw: format!("runtime input {source:?}"),
@@ -1404,29 +1412,29 @@ fn derive_semantic_slot_path_resolution(
 
 fn derive_slot_target_path_resolution(
     parameter: &BoundParameter,
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
+    value: &BoundValue,
     cwd: &str,
     home: Option<&str>,
     materialization: Option<&ValueMaterialization>,
-    bound_materialization: &BoundArgumentMaterialization,
     slot_name: &str,
     rule: &DerivedPathRule,
 ) -> PathResolution {
+    let BoundValue::Argument {
+        text,
+        quoted,
+        node_kind,
+        materialization: bound_materialization,
+        ..
+    } = value
+    else {
+        unreachable!("derived argument path requires an argument");
+    };
     match &parameter.semantic {
         SemanticType::Path(_) | SemanticType::InProcessCodeLoad(_)
             if path_semantics_for_parameter_value(&parameter.semantic, text).is_some() =>
         {
-            let source_resolution = resolve_bound_path_resolution(
-                text,
-                quoted,
-                node_kind,
-                cwd,
-                home,
-                bound_materialization,
-                materialization,
-            );
+            let source_resolution =
+                resolve_bound_path_resolution(value, cwd, home, materialization);
             let basis = DerivedPathBasis::PathOperand {
                 raw: text.to_string(),
                 resolved_input_path: source_resolution.concrete_path().map(str::to_string),
@@ -1444,9 +1452,11 @@ fn derive_slot_target_path_resolution(
                 _ if !matches!(bound_materialization, BoundArgumentMaterialization::Literal) => {
                     Some(text.to_string())
                 }
-                _ => caushell_parse::decode_static_shell_argument(text, quoted, node_kind).map(
+                _ => caushell_parse::decode_static_shell_argument(text, *quoted, node_kind).map(
                     |word| {
-                        if !quoted && (word == "~" || word.starts_with("~/")) {
+                        if value.allows_shell_tilde_expansion()
+                            && (word == "~" || word.starts_with("~/"))
+                        {
                             home.map(|home| format!("{home}{}", &word[1..]))
                                 .unwrap_or(word)
                         } else {
@@ -2096,14 +2106,21 @@ fn arg_materialization_for_span<'a>(
 }
 
 fn resolve_bound_path_resolution(
-    text: &str,
-    quoted: bool,
-    node_kind: &str,
+    value: &BoundValue,
     cwd: &str,
     home: Option<&str>,
-    materialization: &BoundArgumentMaterialization,
     projection_materialization: Option<&ValueMaterialization>,
 ) -> PathResolution {
+    let BoundValue::Argument {
+        text,
+        quoted,
+        node_kind,
+        materialization,
+        ..
+    } = value
+    else {
+        unreachable!("bound argument path requires an argument");
+    };
     if matches!(
         materialization,
         BoundArgumentMaterialization::RuntimeData
@@ -2114,13 +2131,14 @@ fn resolve_bound_path_resolution(
             path: lexical_path_from_argv(text, cwd),
         };
     }
-    resolve_path_resolution(
+    resolve_path_resolution_with_tilde(
         text,
-        quoted,
+        *quoted,
         node_kind,
         cwd,
         home,
         projection_materialization,
+        value.allows_shell_tilde_expansion(),
     )
 }
 
@@ -2132,15 +2150,38 @@ fn resolve_path_resolution(
     home: Option<&str>,
     materialization: Option<&ValueMaterialization>,
 ) -> PathResolution {
-    if let Some(path) = resolve_path_operand(text, quoted, node_kind, cwd, home) {
+    resolve_path_resolution_with_tilde(text, quoted, node_kind, cwd, home, materialization, true)
+}
+
+fn resolve_path_resolution_with_tilde(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    cwd: &str,
+    home: Option<&str>,
+    materialization: Option<&ValueMaterialization>,
+    allow_tilde_expansion: bool,
+) -> PathResolution {
+    if let Some(path) =
+        resolve_path_operand_with_tilde(text, quoted, node_kind, cwd, home, allow_tilde_expansion)
+    {
         return PathResolution::Concrete { path };
     }
 
-    if let Some(resolution) = resolve_glob_path_operand(text, quoted, node_kind, cwd, home, false) {
+    if let Some(resolution) = resolve_glob_path_operand_with_tilde(
+        text,
+        quoted,
+        node_kind,
+        cwd,
+        home,
+        false,
+        allow_tilde_expansion,
+    ) {
         return resolution;
     }
 
-    if home.is_none() && is_home_relative_operand(text, quoted, node_kind) {
+    if allow_tilde_expansion && home.is_none() && is_home_relative_operand(text, quoted, node_kind)
+    {
         return PathResolution::HomeUnavailable {
             text: text.to_string(),
         };
@@ -3004,13 +3045,24 @@ mod tests {
 
     #[test]
     fn materialized_argv_paths_keep_dollar_and_tilde_as_literal_bytes() {
-        let resolution = resolve_bound_path_resolution(
+        let value = caushell_profile::BoundValue::argument(
             "$HOME/~/file",
             false,
-            "word",
+            caushell_parse::SourceSpan {
+                start_byte: 0,
+                end_byte: 12,
+                start_row: 0,
+                end_row: 0,
+                start_column: 0,
+                end_column: 12,
+            },
+            caushell_profile::ArgumentBindingSource::RemainingArg,
+        )
+        .with_materialization(BoundArgumentMaterialization::RuntimeData);
+        let resolution = resolve_bound_path_resolution(
+            &value,
             "/workspace/project",
             Some("/home/user"),
-            &BoundArgumentMaterialization::RuntimeData,
             Some(&ValueMaterialization::Static),
         );
 

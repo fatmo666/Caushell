@@ -13,6 +13,7 @@ pub struct RawConfigFile {
     pub codex: RawCodexConfig,
     pub policy: RawPolicy,
     pub trusted_paths: Vec<RawTrustedPath>,
+    pub mutation_path_exemptions: Vec<caushell_types::MutationPathExemption>,
     pub sensitive_paths: RawSensitivePathConfig,
     pub analysis: RawAnalysisConfig,
 }
@@ -25,6 +26,7 @@ impl Default for RawConfigFile {
             codex: RawCodexConfig::default(),
             policy: RawPolicy::default(),
             trusted_paths: Vec::new(),
+            mutation_path_exemptions: caushell_types::default_mutation_path_exemptions(),
             sensitive_paths: RawSensitivePathConfig::default(),
             analysis: RawAnalysisConfig::default(),
         }

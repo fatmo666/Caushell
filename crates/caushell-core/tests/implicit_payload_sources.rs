@@ -322,7 +322,18 @@ fn xargs_optional_inline_operands_preserve_the_child_command_boundary() {
             "{command}: {result:?}"
         );
     }
-    for command in ["xargs -I", "xargs -L", "xargs -o sh", "xargs -J X echo X"] {
+    // BSD -J is a modeled replacement mode. Unknown input is ordinary echo
+    // data here, not an unresolved program or a mutation destination.
+    let result = ShellQueryCore::new().check(request("xargs -J X echo X"));
+    assert_eq!(result.decision, Decision::Allow, "{result:?}");
+    assert!(
+        result
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|s| s.normalized_command_name == "echo")
+    );
+    for command in ["xargs -I", "xargs -L", "xargs -o sh"] {
         let result = ShellQueryCore::new().check(request(command));
         assert_eq!(
             result.decision,

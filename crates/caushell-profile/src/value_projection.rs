@@ -47,6 +47,15 @@ pub fn project_value(
     };
     let (value, complete) = if !matches!(materialization, BoundArgumentMaterialization::Literal) {
         (text.clone(), true)
+    } else if source.is_attached_option_operand()
+        && text.starts_with('~')
+        && !quoted
+        && matches!(node_kind.as_str(), "word" | "concatenation")
+    {
+        // Decode the suffix in its original word context: stripping an
+        // option prefix cannot introduce shell tilde expansion. Only protect
+        // that literal tilde; variables, globs and vectors remain unresolved.
+        decode_argument_prefix(&format!("\\{text}"), *quoted, node_kind)
     } else {
         decode_argument_prefix(text, *quoted, node_kind)
     };

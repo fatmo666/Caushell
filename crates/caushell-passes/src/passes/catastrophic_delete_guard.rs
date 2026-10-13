@@ -181,6 +181,7 @@ fn collect_python_static_delete_reasons(
                     quoted: true,
                     node_kind: "string",
                     literal_argv_data: false,
+                    allow_tilde_expansion: false,
                 },
                 cwd,
                 home,

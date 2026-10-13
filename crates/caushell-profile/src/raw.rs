@@ -190,6 +190,7 @@ pub struct RawForm {
 pub enum RawPayloadFormat {
     CodexApplyPatch,
     SedProgram,
+    AwkProgram,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

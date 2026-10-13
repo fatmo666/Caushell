@@ -12,7 +12,7 @@ use caushell_runner::{
     SessionTransformPass, SessionView, ShellSourceCwdAnchor,
 };
 
-use crate::path::{normalize_shell_path, project_path_at_cwd, resolve_path_operand};
+use crate::path::{normalize_shell_path, project_path_at_cwd};
 use crate::support::source_node_id_for_command;
 use caushell_types::PathResolution;
 
@@ -1623,7 +1623,14 @@ fn resolve_bound_path_value(value: &BoundValue, cwd: &CwdState, home: Option<&st
         BoundArgumentMaterialization::RuntimeData => (true, "raw_string"),
     };
 
-    resolve_cwd_operand(text, effective_quoted, effective_node_kind, cwd, home)
+    resolve_cwd_operand_with_tilde(
+        text,
+        effective_quoted,
+        effective_node_kind,
+        cwd,
+        home,
+        value.allows_shell_tilde_expansion(),
+    )
 }
 
 fn resolve_cwd_operand(
@@ -1633,22 +1640,56 @@ fn resolve_cwd_operand(
     cwd: &CwdState,
     home: Option<&str>,
 ) -> CwdState {
+    resolve_cwd_operand_with_tilde(text, quoted, node_kind, cwd, home, true)
+}
+
+fn resolve_cwd_operand_with_tilde(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    cwd: &CwdState,
+    home: Option<&str>,
+    allow_tilde_expansion: bool,
+) -> CwdState {
     let trimmed = text.trim();
 
-    if cwd_independent_operand(trimmed, quoted) {
-        return resolve_path_operand(trimmed, quoted, node_kind, "/", home)
-            .map(CwdState::known)
-            .unwrap_or_else(CwdState::unknown);
+    if trimmed.starts_with('/')
+        || (allow_tilde_expansion && cwd_independent_operand(trimmed, quoted))
+    {
+        return crate::path::resolve_path_operand_with_tilde(
+            trimmed,
+            quoted,
+            node_kind,
+            "/",
+            home,
+            allow_tilde_expansion,
+        )
+        .map(CwdState::known)
+        .unwrap_or_else(CwdState::unknown);
     }
 
     let mut state = CwdState::empty();
     for base in &cwd.known {
-        if let Some(resolved) = resolve_path_operand(trimmed, quoted, node_kind, base, home) {
+        if let Some(resolved) = crate::path::resolve_path_operand_with_tilde(
+            trimmed,
+            quoted,
+            node_kind,
+            base,
+            home,
+            allow_tilde_expansion,
+        ) {
             state.add_known(resolved);
         }
     }
     for root in &cwd.roots {
-        if let Some(path) = resolve_path_operand(trimmed, quoted, node_kind, root, home) {
+        if let Some(path) = crate::path::resolve_path_operand_with_tilde(
+            trimmed,
+            quoted,
+            node_kind,
+            root,
+            home,
+            allow_tilde_expansion,
+        ) {
             state.add_resolution(project_path_at_cwd(
                 PathResolution::Concrete { path },
                 true,

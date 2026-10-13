@@ -1950,7 +1950,7 @@ fn exact_variable_reference(text: &str) -> Option<&str> {
     is_valid_variable_name(name).then_some(name)
 }
 
-fn is_valid_variable_name(name: &str) -> bool {
+pub(crate) fn is_valid_variable_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;

@@ -50,6 +50,44 @@ If the configuration file does not exist, `validate` still succeeds because Caus
 
 ## Current configuration fields
 
+### Mutation path exemptions
+
+`mutation_path_exemptions` exempts selected operations from the existing
+outside-workspace mutation rule. Defaults:
+
+```yaml
+mutation_path_exemptions:
+  - root: /tmp
+    operations: [write, ordinary_metadata]
+  - root: /private/tmp
+    operations: [write, ordinary_metadata]
+```
+
+`write` covers declared file/directory writes and shell output redirections.
+`ordinary_metadata` covers modeled permission, owner and group changes;
+setuid/setgid additions, reference/unknown permission modes, and generic
+attributes such as immutable are not exempt. Delete and move-source operations
+cannot be granted here. Other risk rules keep their configured behavior;
+these roots do not become trusted script/startup locations or workspace roots.
+
+Entries require absolute roots and a nonempty operation list. Paths are checked
+with normalized directory boundaries, not substring matching. Unknown targets,
+unknown relative cwd, and escaping/empty path bounds are not exempt. No filesystem
+or process lookup is added. The existing path facts remain unchanged.
+
+An explicit list replaces the defaults; `mutation_path_exemptions: []` disables
+all exemptions. For example, to permit only writes in a custom scratch directory:
+
+```yaml
+mutation_path_exemptions:
+  - root: /opt/scratch
+    operations: [write]
+```
+
+Without a supplied `TMPDIR`, a default-template `mktemp` invocation retains an
+unknown creation location and requires approval. An explicit `/tmp` template
+or a supplied, known `TMPDIR` is checked against these roots normally.
+
 | Field | Values | Default | Purpose |
 | --- | --- | --- | --- |
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Fallback behavior when Caushell cannot complete analysis |

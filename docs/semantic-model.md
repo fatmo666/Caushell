@@ -1701,6 +1701,38 @@ References: [FFmpeg command-line semantics](https://ffmpeg.org/ffmpeg.html),
 [iproute2 native route dispatch](https://github.com/iproute2/iproute2/blob/main/ip/iproute.c),
 [PHP CLI modes](https://www.php.net/manual/en/features.commandline.options.php).
 
+## Embedded AWK effects
+
+The AWK-family Profiles opt into `payload_projections` with `format: awk_program`
+on their plain inline-program slots. The decoder recognizes AWK syntax rather
+than treating the program as Bash or declaring every text-processing program
+opaque. It runs only for Profiles declaring that projection and adds no risk
+Pass, runtime inspection or executable-name branch in shared modeling code.
+
+The supported grammar covers fields, patterns and ranges, regex literals,
+expressions, arrays, common text/math builtins, user functions, BEGIN/END and
+ordinary control flow. Function bodies and both conditional branches contribute
+possible effects; conditions, regexes, loops and programs are not evaluated.
+File `getline` retains reads (including field/array targets). Print redirections
+retain writes; complete literal-string concatenations and AWK string escapes
+identify their paths. Nonliteral destinations remain unknown. Shell-like bytes
+inside AWK strings are native data, not a second shell expansion.
+
+`system`, command pipes, coprocesses, unknown calls and supported syntax with
+an opaque execution boundary retain the original program as executable evidence.
+External `-f` sources and stdin program mode remain opaque. Unknown extensions,
+incomplete/dynamic source or exceeded budgets cannot return a safe parsed prefix:
+they preserve unknown effects and the existing unresolved-execution policy.
+Multiple inline `-e` expressions form one ordered program with newline boundaries
+and source indices retained. Native variable-assignment operands and `-` stdin
+markers are data, not fabricated input files.
+
+Default projection limits are 64 KiB, 4,096 lexical tokens and 64 syntax levels.
+Projected effects enter the same path, stream/provenance and risk machinery as
+ordinary Profile effects. Shared derived-payload expansion retains unresolved
+records as well as parsed children, so nested entry routes do not silently lose
+opaque, dynamic or unavailable executable boundaries.
+
 ## Embedded sed effects
 
 The sed Profile opts into `payload_projections: {format: sed_program, ...}`

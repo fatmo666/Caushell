@@ -110,7 +110,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             &dispatch_derived_commands,
         );
 
-        let nested_payload_records = collect_nested_payload_records(
+        let mut nested_payload_records = collect_nested_payload_records(
             &self.registry,
             staged_view,
             staged_view.summary(),
@@ -132,7 +132,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         let mut derived_records = dispatch_derived_records.clone();
         derived_records.extend(function_derived_records.clone());
         derived_records.extend(nested_derived_records);
-        let (execution_unit_resolve_records, expansion_limit_evidence) =
+        let (execution_unit_resolve_records, expansion_limit_evidence, derived_unresolved_payloads) =
             collect_execution_unit_resolve_records(
                 &self.registry,
                 staged_view,
@@ -147,6 +147,7 @@ impl SessionTransformPass for ResolveInvocationPass {
                 &nested_payload_records,
                 ctx.policy().semantic_expansion.max_nested_parse_depth,
             );
+        nested_payload_records.extend(derived_unresolved_payloads);
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
@@ -1786,9 +1787,19 @@ fn collect_execution_unit_resolve_records(
     dispatch_derived_records: &[ResolvedCommandSeed],
     nested_payload_records: &[NestedPayloadRecord],
     max_nested_parse_depth: u8,
-) -> (Vec<ExecutionUnitResolveRecord>, Vec<Evidence>) {
+) -> (
+    Vec<ExecutionUnitResolveRecord>,
+    Vec<Evidence>,
+    Vec<NestedPayloadRecord>,
+) {
     let mut records = Vec::new();
     let mut expansion_limit_evidence = Vec::new();
+    let mut derived_unresolved_payloads = Vec::new();
+    let first_payload_id = nested_payload_records
+        .iter()
+        .map(|r| r.record_id.0)
+        .max()
+        .map_or(0, |id| id + 1);
     let mut frontier = Vec::new();
     let request_scope_base_bindings = request_bindings(session.summary(), request);
 
@@ -2340,6 +2351,8 @@ fn collect_execution_unit_resolve_records(
                 &entry,
                 resolved,
                 max_nested_parse_depth,
+                first_payload_id,
+                &mut derived_unresolved_payloads,
             ));
             children.extend(expanded_command_substitution_materialization_children(
                 registry,
@@ -2394,7 +2407,11 @@ fn collect_execution_unit_resolve_records(
         }
     }
 
-    (records, expansion_limit_evidence)
+    (
+        records,
+        expansion_limit_evidence,
+        derived_unresolved_payloads,
+    )
 }
 
 /// Native replacement inputs passed into another shell frame currently lack
@@ -3257,6 +3274,8 @@ fn expanded_recursive_payload_children(
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     max_nested_parse_depth: u8,
+    first_payload_id: usize,
+    unresolved_payloads: &mut Vec<NestedPayloadRecord>,
 ) -> Vec<ExpandedFrontierEntry> {
     if matches!(
         entry.origin_kind,
@@ -3329,18 +3348,58 @@ fn expanded_recursive_payload_children(
     let mut children = Vec::new();
     for (candidate_index, candidate) in candidates.drain(..).enumerate() {
         let materialized = materialize_recursive_payload_candidate(&candidate, &entry.bindings);
+        let record_id = NestedPayloadRecordId(first_payload_id + unresolved_payloads.len());
+        let parent_ref = NestedPayloadParentRef::DerivedInvocation {
+            node_id: entry.source_node_id.clone(),
+        };
         if !matches!(
             materialized.resolution,
             ValueMaterialization::Static
                 | ValueMaterialization::ResolvedExactScalar { .. }
                 | ValueMaterialization::ResolvedRuntimeProduced { .. }
         ) {
+            unresolved_payloads.push(NestedPayloadRecord {
+                record_id,
+                parent_ref,
+                root_command_index: entry.root_command_index,
+                depth: entry.depth.saturating_add(1),
+                bindings: entry.bindings.clone(),
+                resolution: NestedPayloadResolution::from_unresolved_materialization(
+                    materialized.resolution.clone(),
+                ),
+                candidate: materialized,
+            });
             continue;
         }
 
-        let caushell_profile::RecursivePayloadParseResult::Parsed(parsed_payload) =
-            parse_recursive_payload_candidate(&materialized.candidate)
+        if entry.depth >= max_nested_parse_depth {
+            unresolved_payloads.push(NestedPayloadRecord {
+                record_id,
+                parent_ref,
+                root_command_index: entry.root_command_index,
+                depth: entry.depth.saturating_add(1),
+                bindings: entry.bindings.clone(),
+                resolution: NestedPayloadResolution::TruncatedByDepthBudget {
+                    max_depth: max_nested_parse_depth,
+                    next_candidate_count: 1,
+                },
+                candidate: materialized,
+            });
+            continue;
+        }
+
+        let parse_result = parse_recursive_payload_candidate(&materialized.candidate);
+        let caushell_profile::RecursivePayloadParseResult::Parsed(parsed_payload) = parse_result
         else {
+            unresolved_payloads.push(NestedPayloadRecord::from_parse_result(
+                record_id,
+                parent_ref,
+                entry.root_command_index,
+                entry.depth.saturating_add(1),
+                entry.bindings.clone(),
+                materialized,
+                parse_result,
+            ));
             continue;
         };
         let shell_kind = parsed_payload.shell_kind;

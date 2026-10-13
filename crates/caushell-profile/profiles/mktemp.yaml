@@ -74,9 +74,10 @@ forms:
     effects:
       - kind: write_path
         target:
-          kind: tool_convention_path
-          path: /tmp/tmp.*
-          convention: mktemp.default_template
+          kind: configured_path
+          sources: []
+          environment: {name: TMPDIR, empty_is_unset: true}
+          missing: unknown
           purpose: generic_operand
 
   - id: create_temporary_path_in_target_directory

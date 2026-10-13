@@ -11979,7 +11979,7 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "awk");
                 assert_eq!(
                     resolved.selection.form.id.as_str(),
-                    "explicit_program_transform"
+                    "external_program_transform"
                 );
                 assert_eq!(
                     first_argument_text(&resolved.bound, "program_files"),
@@ -12031,8 +12031,14 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ExecutePayload]
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::WritePath,
+                        EffectKind::DeletePath,
+                        EffectKind::ExecutePayload,
+                    ]
                 );
+                assert!(crate::collect_recursive_payload_candidates(&resolved.bound).is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

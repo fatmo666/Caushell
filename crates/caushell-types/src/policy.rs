@@ -40,7 +40,7 @@ pub enum RuleAction {
     Deny,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyConfig {
     #[serde(default)]
     pub rule_policy: RulePolicy,
@@ -52,6 +52,48 @@ pub struct PolicyConfig {
     pub sensitive_paths: SensitivePathPolicy,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub path_trust_sets: BTreeMap<String, PathTrustSet>,
+    #[serde(default = "default_mutation_path_exemptions")]
+    pub mutation_path_exemptions: Vec<MutationPathExemption>,
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        Self {
+            rule_policy: RulePolicy::default(),
+            semantic_expansion: SemanticExpansionPolicy::default(),
+            runtime_taint: RuntimeTaintPolicy::default(),
+            sensitive_paths: SensitivePathPolicy::default(),
+            path_trust_sets: BTreeMap::new(),
+            mutation_path_exemptions: default_mutation_path_exemptions(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationExemptionOperation {
+    Write,
+    OrdinaryMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutationPathExemption {
+    pub root: String,
+    pub operations: BTreeSet<MutationExemptionOperation>,
+}
+
+pub fn default_mutation_path_exemptions() -> Vec<MutationPathExemption> {
+    ["/tmp", "/private/tmp"]
+        .into_iter()
+        .map(|root| MutationPathExemption {
+            root: root.into(),
+            operations: BTreeSet::from([
+                MutationExemptionOperation::Write,
+                MutationExemptionOperation::OrdinaryMetadata,
+            ]),
+        })
+        .collect()
 }
 
 impl PolicyConfig {
@@ -714,6 +756,7 @@ mod tests {
                 include: vec![".env".to_string(), "*.pem".to_string()],
                 exclude: vec![".env.example".to_string()],
             },
+            mutation_path_exemptions: Vec::new(),
             path_trust_sets: BTreeMap::from([
                 (
                     "system_scripts".to_string(),
@@ -780,6 +823,7 @@ mod tests {
                     "include": [".env", "*.pem"],
                     "exclude": [".env.example"]
                 },
+                "mutation_path_exemptions": [],
                 "path_trust_sets": {
                     "system_scripts": {
                         "roots": ["/usr/lib/git-core", "/nix/store"],

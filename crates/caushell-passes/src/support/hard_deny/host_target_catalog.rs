@@ -1,5 +1,5 @@
 use crate::path::{
-    PathExpression, classify_path_operand_expression,
+    PathExpression, classify_path_operand_expression_with_tilde,
     match_path_expression_against_target_or_direct_children, normalize_shell_path,
     shell_pattern_matches_path,
 };
@@ -17,6 +17,7 @@ pub(crate) struct HostTargetOperand<'a> {
     pub(crate) node_kind: &'a str,
     /// Already-decoded argv data must not be expanded again during analysis.
     pub(crate) literal_argv_data: bool,
+    pub(crate) allow_tilde_expansion: bool,
 }
 
 impl<'a> HostTargetOperand<'a> {
@@ -26,6 +27,7 @@ impl<'a> HostTargetOperand<'a> {
             quoted: false,
             node_kind: "word",
             literal_argv_data: false,
+            allow_tilde_expansion: text.starts_with('~'),
         }
     }
 
@@ -35,6 +37,7 @@ impl<'a> HostTargetOperand<'a> {
             quoted: true,
             node_kind: "raw_string",
             literal_argv_data: true,
+            allow_tilde_expansion: false,
         }
     }
 }
@@ -129,12 +132,13 @@ fn block_device_path_for_operand(
     cwd: Option<&str>,
     home: Option<&str>,
 ) -> Option<String> {
-    let expression = classify_path_operand_expression(
+    let expression = classify_path_operand_expression_with_tilde(
         operand.text,
         operand.quoted,
         operand.node_kind,
         cwd,
         home,
+        operand.allow_tilde_expansion,
     );
 
     block_device_path_for_expression(&expression)
@@ -171,12 +175,13 @@ fn catastrophic_delete_target_for_operand(
     cwd: Option<&str>,
     home: Option<&str>,
 ) -> Option<String> {
-    let expression = classify_path_operand_expression(
+    let expression = classify_path_operand_expression_with_tilde(
         operand.text,
         operand.quoted,
         operand.node_kind,
         cwd,
         home,
+        operand.allow_tilde_expansion,
     );
 
     match_path_expression_against_target_or_direct_children(&expression, CATASTROPHIC_DELETE_ROOTS)

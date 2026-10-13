@@ -29,6 +29,10 @@ const TRUSTED_PATH_RULES: [RuleId; 2] = [
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalizeConfigError {
+    InvalidMutationPathExemption {
+        index: usize,
+        reason: &'static str,
+    },
     UnsupportedVersion {
         actual: u32,
         supported: u32,
@@ -61,6 +65,9 @@ pub enum NormalizeConfigError {
 impl std::fmt::Display for NormalizeConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidMutationPathExemption { index, reason } => {
+                write!(f, "mutation_path_exemptions[{index}]: {reason}")
+            }
             Self::UnsupportedVersion { actual, supported } => write!(
                 f,
                 "unsupported Caushell config version {actual}; supported version is {supported}"
@@ -107,6 +114,8 @@ pub fn normalize_config(raw: RawConfigFile) -> Result<CaushellConfig, NormalizeC
 
     validate_hard_deny_overrides(&raw.policy.rules)?;
     validate_hard_deny_analysis_depth(raw.analysis.max_nested_parse_depth)?;
+    let mutation_path_exemptions =
+        normalize_mutation_path_exemptions(raw.mutation_path_exemptions)?;
 
     let families = raw
         .policy
@@ -151,6 +160,7 @@ pub fn normalize_config(raw: RawConfigFile) -> Result<CaushellConfig, NormalizeC
             need_approval_mode: normalize_codex_need_approval_mode(raw.codex.need_approval_mode),
         },
         policy: PolicyConfig {
+            mutation_path_exemptions,
             rule_policy: RulePolicy {
                 families,
                 rules,
@@ -168,6 +178,27 @@ pub fn normalize_config(raw: RawConfigFile) -> Result<CaushellConfig, NormalizeC
             path_trust_sets,
         },
     })
+}
+
+fn normalize_mutation_path_exemptions(
+    mut exemptions: Vec<caushell_types::MutationPathExemption>,
+) -> Result<Vec<caushell_types::MutationPathExemption>, NormalizeConfigError> {
+    for (index, entry) in exemptions.iter_mut().enumerate() {
+        entry.root = entry.root.trim().to_string();
+        if !entry.root.starts_with('/') || entry.root.contains('\0') {
+            return Err(NormalizeConfigError::InvalidMutationPathExemption {
+                index,
+                reason: "root must be an absolute path without NUL bytes",
+            });
+        }
+        if entry.operations.is_empty() {
+            return Err(NormalizeConfigError::InvalidMutationPathExemption {
+                index,
+                reason: "operations must not be empty",
+            });
+        }
+    }
+    Ok(exemptions)
 }
 
 fn normalize_sensitive_paths(raw: crate::RawSensitivePathConfig) -> SensitivePathPolicy {
@@ -337,6 +368,41 @@ fn normalize_trusted_path_scope(scope: RawTrustedPathScope) -> PathTrustScope {
 #[cfg(test)]
 mod tests {
     use caushell_types::{PathTrustScope, RuleAction, RuleId};
+
+    #[test]
+    fn mutation_path_exemptions_default_disable_and_replace() {
+        let default = crate::load_config_from_str("version: 1\n").unwrap().policy;
+        assert_eq!(
+            default.mutation_path_exemptions,
+            caushell_types::PolicyConfig::default().mutation_path_exemptions
+        );
+        let disabled = crate::load_config_from_str("mutation_path_exemptions: []\n").unwrap();
+        assert!(disabled.policy.mutation_path_exemptions.is_empty());
+        let custom = crate::load_config_from_str(
+            "mutation_path_exemptions:\n  - root: ' /opt/cache '\n    operations: [write]\n",
+        )
+        .unwrap();
+        assert_eq!(custom.policy.mutation_path_exemptions.len(), 1);
+        assert_eq!(custom.policy.mutation_path_exemptions[0].root, "/opt/cache");
+        assert!(
+            !custom.policy.mutation_path_exemptions[0]
+                .operations
+                .contains(&caushell_types::MutationExemptionOperation::OrdinaryMetadata)
+        );
+    }
+
+    #[test]
+    fn mutation_path_exemption_validation_rejects_unsafe_or_unknown_shapes() {
+        for config in [
+            "mutation_path_exemptions:\n  - root: relative/path\n    operations: [write]\n",
+            "mutation_path_exemptions:\n  - root: ''\n    operations: [write]\n",
+            "mutation_path_exemptions:\n  - root: /tmp\n    operations: []\n",
+            "mutation_path_exemptions:\n  - root: /tmp\n    operations: [delete]\n",
+            "mutation_path_exemptions:\n  - root: /tmp\n    operations: [write]\n    typo: true\n",
+        ] {
+            assert!(crate::load_config_from_str(config).is_err(), "{config}");
+        }
+    }
 
     use crate::{
         CodexNeedApprovalMode, FailureAction, NormalizeConfigError, RawAction, RawConfigFile,

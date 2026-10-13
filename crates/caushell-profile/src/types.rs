@@ -779,6 +779,7 @@ pub enum ProjectionUnknownReason {
 pub enum PayloadFormat {
     CodexApplyPatch,
     SedProgram,
+    AwkProgram,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1577,6 +1578,40 @@ pub enum BoundValue {
 }
 
 impl BoundValue {
+    /// An attached option operand is a suffix of its original shell word,
+    /// not a new word eligible for tilde expansion. Binding keeps the
+    /// original word span for inline/short-attached operands.
+    pub fn is_attached_option_operand(&self) -> bool {
+        match self {
+            Self::Argument {
+                span,
+                binding_source,
+                ..
+            } => match binding_source {
+                ArgumentBindingSource::FollowingFlag { flag_span, .. }
+                | ArgumentBindingSource::MatchedModifierFlag { flag_span, .. } => flag_span == span,
+                // Bash also expands assignment-shaped argv such as of=~/x.
+                // Other stripped prefixes do not turn their suffix into a word.
+                ArgumentBindingSource::ArgumentPrefix { prefix } => {
+                    !prefix.is_empty()
+                        && !prefix
+                            .strip_suffix('=')
+                            .is_some_and(crate::materialize::is_valid_variable_name)
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Only literal shell spelling can expand a leading, unquoted tilde.
+    /// Variables/runtime argv must never undergo a second expansion.
+    pub fn allows_shell_tilde_expansion(&self) -> bool {
+        matches!(self, Self::Argument { text, quoted: false, node_kind, materialization: BoundArgumentMaterialization::Literal, .. }
+            if text.starts_with('~') && !matches!(node_kind.as_str(), "raw_string" | "ansi_c_string"))
+            && !self.is_attached_option_operand()
+    }
+
     pub fn argument(
         text: impl Into<String>,
         quoted: bool,
@@ -1951,6 +1986,100 @@ mod tests {
             start_column: 0,
             end_row: 0,
             end_column: 0,
+        }
+    }
+
+    #[test]
+    fn bound_tilde_expansion_uses_word_origin_not_option_operand_text() {
+        let flag_span = empty_span();
+        let positional = BoundValue::argument(
+            "~/out",
+            false,
+            flag_span.clone(),
+            ArgumentBindingSource::RemainingArg,
+        );
+        assert!(positional.allows_shell_tilde_expansion());
+        let inline = BoundValue::argument(
+            "~/out",
+            false,
+            flag_span.clone(),
+            ArgumentBindingSource::FollowingFlag {
+                flag_name: FlagName::new("--output"),
+                flag_span: flag_span.clone(),
+            },
+        );
+        assert!(inline.is_attached_option_operand());
+        assert!(!inline.allows_shell_tilde_expansion());
+        let modifier = BoundValue::argument(
+            "~/out",
+            false,
+            flag_span.clone(),
+            ArgumentBindingSource::MatchedModifierFlag {
+                modifier_id: ModifierId::new("output"),
+                flag_name: FlagName::new("-o"),
+                flag_span: flag_span.clone(),
+            },
+        );
+        assert!(modifier.is_attached_option_operand());
+        assert!(!modifier.allows_shell_tilde_expansion());
+        let mut next_span = empty_span();
+        next_span.start_byte = 10;
+        next_span.end_byte = 15;
+        let separate = BoundValue::argument(
+            "~/out",
+            false,
+            next_span,
+            ArgumentBindingSource::FollowingFlag {
+                flag_name: FlagName::new("--output"),
+                flag_span,
+            },
+        );
+        assert!(!separate.is_attached_option_operand());
+        assert!(separate.allows_shell_tilde_expansion());
+        for (prefix, expands) in [
+            ("--output=", false),
+            ("-D", false),
+            ("of=", true),
+            ("", true),
+        ] {
+            let value = BoundValue::argument(
+                "~/out",
+                false,
+                empty_span(),
+                ArgumentBindingSource::ArgumentPrefix {
+                    prefix: prefix.into(),
+                },
+            );
+            assert_eq!(value.allows_shell_tilde_expansion(), expands, "{prefix}");
+        }
+        for value in [
+            positional
+                .clone()
+                .with_materialization(super::BoundArgumentMaterialization::RuntimeData),
+            positional.clone().with_materialization(
+                super::BoundArgumentMaterialization::ResolvedExactScalar {
+                    variable_name: "p".into(),
+                },
+            ),
+            positional.with_materialization(
+                super::BoundArgumentMaterialization::ResolvedRuntimeProduced {
+                    variable_name: "p".into(),
+                },
+            ),
+            BoundValue::argument(
+                "~/out",
+                true,
+                empty_span(),
+                ArgumentBindingSource::RemainingArg,
+            ),
+            BoundValue::argument(
+                r"\~/out",
+                false,
+                empty_span(),
+                ArgumentBindingSource::RemainingArg,
+            ),
+        ] {
+            assert!(!value.allows_shell_tilde_expansion(), "{value:?}");
         }
     }
 

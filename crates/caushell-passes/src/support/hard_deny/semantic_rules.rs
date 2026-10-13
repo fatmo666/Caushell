@@ -271,6 +271,7 @@ struct OwnedHostTargetOperand {
     quoted: bool,
     node_kind: String,
     literal_argv_data: bool,
+    allow_tilde_expansion: bool,
 }
 
 impl OwnedHostTargetOperand {
@@ -280,6 +281,7 @@ impl OwnedHostTargetOperand {
             quoted: operand.quoted,
             node_kind: operand.node_kind.to_string(),
             literal_argv_data: operand.literal_argv_data,
+            allow_tilde_expansion: operand.allow_tilde_expansion,
         }
     }
 
@@ -289,6 +291,7 @@ impl OwnedHostTargetOperand {
             quoted: self.quoted,
             node_kind: self.node_kind.as_str(),
             literal_argv_data: self.literal_argv_data,
+            allow_tilde_expansion: self.allow_tilde_expansion,
         }
     }
 }
@@ -316,6 +319,7 @@ fn materialized_host_target_operands(
                     quoted: false,
                     node_kind: "word".to_string(),
                     literal_argv_data: false,
+                    allow_tilde_expansion: operand.allow_tilde_expansion,
                 },
             );
         }
@@ -337,6 +341,7 @@ fn materialized_host_target_operands(
                             quoted: false,
                             node_kind: "word".to_string(),
                             literal_argv_data: false,
+                            allow_tilde_expansion: operand.allow_tilde_expansion,
                         },
                     );
                 }

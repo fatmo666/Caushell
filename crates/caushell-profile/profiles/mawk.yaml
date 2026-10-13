@@ -29,18 +29,25 @@ forms:
             modifier: program_file
     parameters:
       - name: program
-        semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}
+        semantic: {kind: plain_value}
         binding: {kind: next_positional}
         cardinality: required_one
+      - &stdin_markers {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - &input_assignments {name: input_assignments, semantic: {kind: structured_value, context: env_assignment}, binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^[A-Za-z_][A-Za-z_0-9]*='}}, cardinality: optional_many}
       - name: input_paths
         semantic: {kind: path, role: read, purpose: generic_operand}
         binding: {kind: remaining_positionals}
         cardinality: optional_many
         value_constraints:
           - {kind: exclude_literal, value: "-"}
+    payload_projections:
+      - {format: awk_program, source: {kind: slot, name: program}, reads: program_reads, writes: program_writes, deletes: program_deletes, executions: program_executions, stdout_emissions: program_stdout, max_bytes: 65536, max_operations: 4096}
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
     effects:
-      - {kind: execute_payload, target: {kind: slot, name: program}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: program_reads}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: program_writes}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: delete_path, target: {kind: slot, name: program_deletes}}
+      - {kind: execute_payload, target: {kind: slot, name: program_executions}}
       - {kind: read_path, target: {kind: slot, name: input_paths}}
 
   - id: execute_program_file
@@ -51,6 +58,8 @@ forms:
         - kind: not
           item: {kind: has_modifier_parameter_matching, modifier: program_file, parameter: program_files, matcher: {kind: literal, value: '-'}}
     parameters:
+      - *stdin_markers
+      - *input_assignments
       - name: input_paths
         semantic: {kind: path, role: read, purpose: generic_operand}
         binding: {kind: remaining_positionals}
@@ -64,6 +73,8 @@ forms:
   - id: execute_program_stdin
     selector: {kind: has_modifier_parameter_matching, modifier: program_file, parameter: program_files, matcher: {kind: literal, value: '-'}}
     parameters:
+      - *stdin_markers
+      - *input_assignments
       - name: input_paths
         semantic: {kind: path, role: read, purpose: generic_operand}
         binding: {kind: remaining_positionals}
@@ -111,5 +122,5 @@ modifiers:
 
 extensions:
   caushell.profile/known_limitations:
-    - AWK source is explicitly opaque executable code. Inline and -f programs require approval through the existing unresolved-payload policy; their internal system(), pipe, and redirection syntax is not parsed as Bash or guessed as file effects.
+    - Inline AWK source uses the bounded effect decoder shared with awk. External -f source and unsupported syntax remain unresolved; no AWK program is evaluated or parsed as Bash.
     - The -f '-' reference has an explicit stdin-payload form and no fabricated file named '-'; the original CLI reference is retained alongside its actual implicit stdin source.

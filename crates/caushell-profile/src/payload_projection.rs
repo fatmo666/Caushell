@@ -76,7 +76,7 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
                     recursive: true,
                 }),
             );
-            // Do not invent shell text from sed's pattern space. The original
+            // Do not invent shell text from a tool program. The original
             // program/source is evidence of an opaque executable boundary.
             let indices = executions
                 .into_iter()
@@ -193,13 +193,41 @@ fn decode_targets(
                 stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
             })
         }
+        PayloadFormat::AwkProgram => {
+            let t =
+                crate::awk_payload::decode(&text, projection.max_bytes, projection.max_operations)?;
+            let values = |v: Vec<(usize, Option<String>)>| {
+                v.into_iter()
+                    .map(|(offset, value)| {
+                        (
+                            index(offset),
+                            value.map(SemanticValueResolution::Known).unwrap_or(
+                                SemanticValueResolution::Unknown(
+                                    ProjectionUnknownReason::DynamicArgument,
+                                ),
+                            ),
+                        )
+                    })
+                    .collect()
+            };
+            Ok(Targets {
+                reads: values(t.reads),
+                writes: values(t.writes),
+                deletes: vec![],
+                executions: t.executions.into_iter().map(index).collect(),
+                stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
+            })
+        }
     }
 }
 
 fn tool_text(source: &BoundValue, format: PayloadFormat) -> Option<SemanticValueResolution> {
     match project_value(&ValueProjection::Identity, source) {
         Some(SemanticValueResolution::Unknown(ProjectionUnknownReason::EmptyValue))
-            if format == PayloadFormat::SedProgram =>
+            if matches!(
+                format,
+                PayloadFormat::SedProgram | PayloadFormat::AwkProgram
+            ) =>
         {
             Some(SemanticValueResolution::Known(String::new()))
         }

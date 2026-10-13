@@ -5,6 +5,17 @@ pub(crate) fn resolve_path_operand(
     cwd: &str,
     home: Option<&str>,
 ) -> Option<String> {
+    resolve_path_operand_with_tilde(text, quoted, node_kind, cwd, home, true)
+}
+
+pub(crate) fn resolve_path_operand_with_tilde(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    cwd: &str,
+    home: Option<&str>,
+    allow_tilde_expansion: bool,
+) -> Option<String> {
     if text.is_empty() {
         return None;
     }
@@ -43,7 +54,17 @@ pub(crate) fn resolve_path_operand(
         return None;
     }
 
-    if !quoted {
+    if !quoted && matches!(node_kind, "word" | "concatenation") && text.contains(['\\', '\'', '"'])
+    {
+        return super::expression::resolve_static_shell_word_path(
+            text,
+            cwd,
+            home,
+            allow_tilde_expansion,
+        );
+    }
+
+    if !quoted && allow_tilde_expansion {
         if text == "~" {
             return home.map(normalize_shell_path);
         }

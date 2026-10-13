@@ -14,6 +14,26 @@ pub(crate) fn resolve_glob_path_operand(
     home: Option<&str>,
     option_like_fields_are_data: bool,
 ) -> Option<PathResolution> {
+    resolve_glob_path_operand_with_tilde(
+        text,
+        quoted,
+        node_kind,
+        cwd,
+        home,
+        option_like_fields_are_data,
+        true,
+    )
+}
+
+pub(crate) fn resolve_glob_path_operand_with_tilde(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    cwd: &str,
+    home: Option<&str>,
+    option_like_fields_are_data: bool,
+    allow_tilde_expansion: bool,
+) -> Option<PathResolution> {
     // Cheap common-word rejection before doing any structural work.
     // Limit work on unusually large words; unknown stays unknown.
     if text.len() > 4096 || !text.contains(['*', '?', '[']) {
@@ -28,10 +48,19 @@ pub(crate) fn resolve_glob_path_operand(
     if text.contains(['$', '`', '{', '}', '(', ')', '\\', '\'', '"', '\0']) {
         return None;
     }
-    let (shape_text, tilde) = match text.strip_prefix("~/") {
-        Some(rest) => (rest, true),
-        None if text.starts_with('~') => return None,
-        None => (text, false),
+    // The width query receives shell spelling. Protect a literal initial
+    // tilde after stripping an option prefix, without suppressing its glob.
+    let literal_tilde_spelling;
+    let shape_source = if !allow_tilde_expansion && text.starts_with('~') {
+        literal_tilde_spelling = format!("\\{text}");
+        literal_tilde_spelling.as_str()
+    } else {
+        text
+    };
+    let (shape_text, tilde) = match shape_source.strip_prefix("~/") {
+        Some(rest) if allow_tilde_expansion => (rest, true),
+        None if allow_tilde_expansion && text.starts_with('~') => return None,
+        _ => (shape_source, false),
     };
     let shape = shell_word_structure(shape_text, false, node_kind);
     if let Some(literal) = shape.exact_value() {
@@ -109,6 +138,25 @@ pub(crate) fn resolve_glob_path_operand(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_tilde_glob_is_bounded_by_cwd_not_home() {
+        assert_eq!(
+            resolve_glob_path_operand_with_tilde(
+                "~/cache/*",
+                false,
+                "word",
+                "/workspace",
+                None,
+                false,
+                false,
+            ),
+            Some(PathResolution::BoundedPathSet {
+                roots: vec!["/workspace/".into()],
+                may_escape: false,
+            })
+        );
+    }
 
     fn query(text: &str) -> Option<PathResolution> {
         resolve_glob_path_operand(

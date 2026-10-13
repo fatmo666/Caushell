@@ -51,9 +51,10 @@ pub use persistence::{
     SessionSnapshot, SessionStateEffect,
 };
 pub use policy::{
-    FamilyPolicy, NoProfilePolicy, PathTrustGrant, PathTrustScope, PathTrustSet, PolicyConfig,
-    ResolveGapKind, ResolveGapPolicy, RuleAction, RulePolicy, RulePolicyEntry, RuntimeTaintPolicy,
-    SemanticExpansionPolicy, SensitivePathPolicy, UnresolvedExecutionPayloadSubtype,
+    FamilyPolicy, MutationExemptionOperation, MutationPathExemption, NoProfilePolicy,
+    PathTrustGrant, PathTrustScope, PathTrustSet, PolicyConfig, ResolveGapKind, ResolveGapPolicy,
+    RuleAction, RulePolicy, RulePolicyEntry, RuntimeTaintPolicy, SemanticExpansionPolicy,
+    SensitivePathPolicy, UnresolvedExecutionPayloadSubtype, default_mutation_path_exemptions,
     default_sensitive_path_patterns,
 };
 pub use provenance::{

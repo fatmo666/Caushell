@@ -1,6 +1,7 @@
 mod argument_ownership;
 mod argument_regions;
 mod argument_structure;
+mod awk_payload;
 mod bind;
 mod builtin;
 mod dispatch;
