@@ -1,133 +1,157 @@
-dsl_version: caushell.profile/v1alpha1
-kind: command_profile
-
-identity:
-  canonical_name: ln
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+# Namespace operations only; no fictitious content-open read of link targets.
+dsl_version: "caushell.profile/v1alpha1"
+kind: "command_profile"
+option_scope: "permuted_options"
+opaque_on_unresolved: true
+identity: {"canonical_name":"ln","aliases":[]}
+trust: {"tier":"tier_a","source":"built_in"}
+platform: {"os_families":["posix","linux","macos"],"shell_families":[],"requires_features":[]}
 forms:
-  - id: implicit_destination
+  - id: "show_help"
+    selector: {"kind":"has_modifier","modifier":"information"}
+    parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"independent"}
+  - id: "implicit_destination"
     selector:
-      kind: all
+      kind: "all"
       items:
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: has_positional_at
-            index: 1
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: target_directory
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"verbose"}}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - kind: "all"
+              items:
+                - {"kind":"has_positional_at","index":0}
+                - {"kind":"not","item":{"kind":"has_positional_at","index":1}}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"target_directory"}}
     parameters:
-      - name: link_targets
-        semantic: {kind: path, role: target, purpose: generic_operand}
-        binding: {kind: remaining_positionals}
-        cardinality: required_one
+      - name: "link_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_one"
     effects:
-      - {kind: target_path, target: {kind: slot, name: link_targets}}
-      - kind: write_path
-        target:
-          kind: derived_path
-          source: {kind: slot, name: link_targets}
-          rule: {kind: basename}
-          purpose: generic_operand
-
-  - id: target_directory
+      - {"kind":"target_path","target":{"kind":"slot","name":"link_targets"}}
+      - kind: "write_path"
+        target: {"kind":"derived_path","source":{"kind":"slot","name":"link_targets"},"rule":{"kind":"basename"},"purpose":"generic_operand"}
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "implicit_destination_reporting"
     selector:
-      kind: all
+      kind: "all"
       items:
-        - kind: has_modifier
-          modifier: target_directory
-        - kind: has_positional_at
-          index: 0
+        - {"kind":"has_modifier","modifier":"verbose"}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - kind: "all"
+              items:
+                - {"kind":"has_positional_at","index":0}
+                - {"kind":"not","item":{"kind":"has_positional_at","index":1}}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"target_directory"}}
     parameters:
-      - name: link_targets
-        semantic:
-          kind: path
-          role: target
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
+      - name: "link_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_one"
     effects:
-      - kind: target_path
-        target:
-          kind: slot
-          name: link_targets
-
-  - id: default_link
+      - {"kind":"target_path","target":{"kind":"slot","name":"link_targets"}}
+      - kind: "write_path"
+        target: {"kind":"derived_path","source":{"kind":"slot","name":"link_targets"},"rule":{"kind":"basename"},"purpose":"generic_operand"}
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "target_directory"
     selector:
-      kind: all
+      kind: "all"
       items:
-        - kind: has_positional_at
-          index: 1
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: target_directory
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"verbose"}}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - {"kind":"all","items":[{"kind":"has_modifier","modifier":"target_directory"},{"kind":"has_positional_at","index":0}]}
     parameters:
-      - name: link_targets
-        semantic:
-          kind: path
-          role: target
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals_before_last
-        cardinality: required_many
-      - name: link_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: last_positional
-        cardinality: required_one
-    effects:
-      - kind: target_path
-        target:
-          kind: slot
-          name: link_targets
-      - kind: write_path
-        target:
-          kind: slot
-          name: link_path
-
+      - name: "link_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"target_path","target":{"kind":"slot","name":"link_targets"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "target_directory_reporting"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"verbose"}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - {"kind":"all","items":[{"kind":"has_modifier","modifier":"target_directory"},{"kind":"has_positional_at","index":0}]}
+    parameters:
+      - name: "link_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"target_path","target":{"kind":"slot","name":"link_targets"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "default_link"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"verbose"}}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - {"kind":"all","items":[{"kind":"has_positional_at","index":1},{"kind":"not","item":{"kind":"has_modifier","modifier":"target_directory"}}]}
+    parameters:
+      - name: "link_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals_before_last"}
+        cardinality: "required_many"
+      - name: "link_path"
+        semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
+        binding: {"kind":"last_positional"}
+        cardinality: "required_one"
+    effects: [{"kind":"target_path","target":{"kind":"slot","name":"link_targets"}},{"kind":"write_path","target":{"kind":"slot","name":"link_path"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "default_link_reporting"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"verbose"}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - {"kind":"all","items":[{"kind":"has_positional_at","index":1},{"kind":"not","item":{"kind":"has_modifier","modifier":"target_directory"}}]}
+    parameters:
+      - name: "link_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals_before_last"}
+        cardinality: "required_many"
+      - name: "link_path"
+        semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
+        binding: {"kind":"last_positional"}
+        cardinality: "required_one"
+    effects: [{"kind":"target_path","target":{"kind":"slot","name":"link_targets"}},{"kind":"write_path","target":{"kind":"slot","name":"link_path"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
 modifiers:
-  - id: target_directory
-    matcher:
-      kind: any_flag
-      flags:
-        - "-t"
-        - "--target-directory"
+  - {"id":"information","matcher":{"kind":"any_flag","flags":["--help","--version"]},"ends_option_scope":true}
+  - id: "target_directory"
+    matcher: {"kind":"any_flag","flags":["-t","--target-directory"]}
     parameters:
-      - name: destination_directory
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: required_one
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: destination_directory
-
+      - name: "destination_directory"
+        semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
+        binding: {"kind":"following_matched_flag","operand_mode":"next_arg"}
+        cardinality: "required_one"
+    effects: [{"kind":"write_path","target":{"kind":"slot","name":"destination_directory"}}]
+  - {"id":"symbolic","matcher":{"kind":"any_flag","flags":["-s","--symbolic"]}}
+  - {"id":"force","matcher":{"kind":"any_flag","flags":["-f","--force"]}}
+  - {"id":"interactive","matcher":{"kind":"any_flag","flags":["-i","--interactive"]}}
+  - {"id":"no_dereference","matcher":{"kind":"any_flag","flags":["-n","--no-dereference"]}}
+  - {"id":"no_target_directory","matcher":{"kind":"any_flag","flags":["-T","--no-target-directory"]}}
+  - {"id":"physical","matcher":{"kind":"any_flag","flags":["-P","--physical"]}}
+  - {"id":"logical","matcher":{"kind":"any_flag","flags":["-L","--logical"]}}
+  - {"id":"verbose","matcher":{"kind":"any_flag","flags":["-v","--verbose"]}}
 subcommands: null
-extensions: {}
+extensions: {"caushell.profile/sources":["https://github.com/coreutils/coreutils/blob/master/src/ln.c"]}

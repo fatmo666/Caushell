@@ -1,118 +1,139 @@
-dsl_version: caushell.profile/v1alpha1
-kind: command_profile
-option_scope: permuted_options
+dsl_version: "caushell.profile/v1alpha1"
+kind: "command_profile"
+option_scope: "permuted_options"
 opaque_on_unresolved: true
-option_operand_matcher:
-  kind: regex_pattern
-  pattern: '^-([rwxXst]*|[ugo])([+=-]([rwxXst]*|[ugo]))*(,[ugoa]*[+=-]([rwxXst]*|[ugo])([+=-]([rwxXst]*|[ugo]))*)*$'
-
-identity:
-  canonical_name: chmod
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+option_operand_matcher: {"kind":"regex_pattern","pattern":"^-([rwxXst]*|[ugo])([+=-]([rwxXst]*|[ugo]))*(,[ugoa]*[+=-]([rwxXst]*|[ugo])([+=-]([rwxXst]*|[ugo]))*)*$"}
+identity: {"canonical_name":"chmod","aliases":[]}
+trust: {"tier":"tier_a","source":"built_in"}
+platform: {"os_families":["posix","linux","macos"],"shell_families":[],"requires_features":[]}
 forms:
-  # A proven literal mode with no file operand exits before processing any
-  # files. Unknown argv width must not be mistaken for this error-only form.
-  - id: missing_targets
+  - id: "missing_targets"
     selector:
-      kind: all
+      kind: "all"
       items:
-        - {kind: not, item: {kind: has_modifier, modifier: reference}}
-        - {kind: not, item: {kind: has_modifier, modifier: information}}
-        - {kind: not, item: {kind: has_modifier, modifier: recursive}}
-        - kind: any
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - kind: "all"
           items:
-            - {kind: no_positional_args}
-            - kind: all
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"reference"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"recursive"}}
+            - kind: "any"
               items:
-                - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([0-7]+|[ugoa]*([-+=]([rwxXst]*|[ugo]))+(,[ugoa]*([-+=]([rwxXst]*|[ugo]))+)*)$'}}
-                - {kind: not, item: {kind: has_positional_at, index: 1}}
-    parameters:
-      - {name: mode, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
-    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
-
-  - id: change_mode
+                - {"kind":"no_positional_args"}
+                - kind: "all"
+                  items:
+                    - kind: "has_positional_at_matching"
+                      index: 0
+                      matcher: {"kind":"regex_pattern","pattern":"^([0-7]+|[ugoa]*([-+=]([rwxXst]*|[ugo]))+(,[ugoa]*([-+=]([rwxXst]*|[ugo]))+)*)$"}
+                    - {"kind":"not","item":{"kind":"has_positional_at","index":1}}
+    parameters: [{"name":"mode","semantic":{"kind":"plain_value"},"binding":{"kind":"next_positional"},"cardinality":"optional_one"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "change_mode"
     selector:
-      kind: all
+      kind: "all"
       items:
-        - {kind: has_positional_at, index: 1}
-        - {kind: not, item: {kind: has_modifier, modifier: reference}}
-        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"reporting"}}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - kind: "all"
+              items:
+                - {"kind":"has_positional_at","index":1}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"reference"}}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
     parameters:
-      - name: mode
-        semantic:
-          kind: plain_value
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: path_targets
-        semantic:
-          kind: path
-          role: metadata_mutation
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: change_mode
-        target:
-          kind: slot
-          name: path_targets
-        extensions:
-          metadata_mutation.raw_operand_slot: mode
-
-  - id: change_mode_from_reference
+      - {"name":"mode","semantic":{"kind":"plain_value"},"binding":{"kind":"next_positional"},"cardinality":"required_one"}
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"metadata_mutation","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"change_mode","target":{"kind":"slot","name":"path_targets"},"extensions":{"metadata_mutation.raw_operand_slot":"mode"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "change_mode_reporting"
     selector:
-      kind: all
+      kind: "all"
       items:
-        - {kind: has_modifier, modifier: reference}
-        - {kind: has_positional_at, index: 0}
-        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {"kind":"has_modifier","modifier":"reporting"}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - kind: "all"
+              items:
+                - {"kind":"has_positional_at","index":1}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"reference"}}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
     parameters:
-      - {name: path_targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
-    effects:
-      - {kind: change_mode, target: {kind: slot, name: path_targets}}
-
-  - id: information
-    selector: {kind: has_modifier, modifier: information}
-    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
-    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
-
+      - {"name":"mode","semantic":{"kind":"plain_value"},"binding":{"kind":"next_positional"},"cardinality":"required_one"}
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"metadata_mutation","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"change_mode","target":{"kind":"slot","name":"path_targets"},"extensions":{"metadata_mutation.raw_operand_slot":"mode"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "change_mode_from_reference"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"reporting"}}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - kind: "all"
+              items:
+                - {"kind":"has_modifier","modifier":"reference"}
+                - {"kind":"has_positional_at","index":0}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+    parameters:
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"metadata_mutation","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"change_mode","target":{"kind":"slot","name":"path_targets"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "change_mode_from_reference_reporting"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"reporting"}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+            - kind: "all"
+              items:
+                - {"kind":"has_modifier","modifier":"reference"}
+                - {"kind":"has_positional_at","index":0}
+                - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+    parameters:
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"metadata_mutation","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"change_mode","target":{"kind":"slot","name":"path_targets"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "show_help"
+    selector: {"kind":"has_modifier","modifier":"information"}
+    parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"independent"}
 modifiers:
-  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
-  - {id: reporting, matcher: {kind: any_flag, flags: [-f, --silent, --quiet, -c, --changes, -v, --verbose]}}
-  - {id: root_behavior, matcher: {kind: any_flag, flags: [--preserve-root, --no-preserve-root]}}
-  - id: reference
-    matcher: {kind: any_flag, flags: [--reference]}
+  - {"id":"information","matcher":{"kind":"any_flag","flags":["--help","--version"]},"ends_option_scope":true}
+  - {"id":"reporting","matcher":{"kind":"any_flag","flags":["-c","--changes","-v","--verbose"]}}
+  - {"id":"root_behavior","matcher":{"kind":"any_flag","flags":["--preserve-root","--no-preserve-root"]}}
+  - id: "reference"
+    matcher: {"kind":"any_flag","flags":["--reference"]}
     parameters:
-      # The reference supplies mode metadata, not file content. Preserve its
-      # path without inventing a byte-content read or a modification to it.
-      - {name: reference_path, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
-  - id: recursive
-    matcher:
-      kind: any_flag
-      flags:
-        - "-R"
-        - "--recursive"
-    effects:
-      - kind: metadata_mutation
-        target:
-          kind: slot
-          name: path_targets
-        extensions:
-          metadata_mutation.recursive: true
-
+      - name: "reference_path"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"following_matched_flag","operand_mode":"next_arg"}
+        cardinality: "required_one"
+    effects: [{"kind":"target_path","target":{"kind":"slot","name":"reference_path"}}]
+  - id: "recursive"
+    matcher: {"kind":"any_flag","flags":["-R","--recursive"]}
+    effects: [{"kind":"metadata_mutation","target":{"kind":"slot","name":"path_targets"},"extensions":{"metadata_mutation.recursive":true}}]
+  - {"id":"quiet","matcher":{"kind":"any_flag","flags":["-f","--silent","--quiet"]}}
 subcommands: null
-extensions: {}
+extensions: {"caushell.profile/sources":["https://github.com/coreutils/coreutils/blob/master/src/chmod.c"]}

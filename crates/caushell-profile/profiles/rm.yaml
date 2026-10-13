@@ -1,187 +1,83 @@
-dsl_version: caushell.profile/v1alpha1
-kind: command_profile
-
-identity:
-  canonical_name: rm
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+dsl_version: "caushell.profile/v1alpha1"
+kind: "command_profile"
+option_scope: "permuted_options"
+opaque_on_unresolved: true
+identity: {"canonical_name":"rm","aliases":[]}
+trust: {"tier":"tier_a","source":"built_in"}
+platform: {"os_families":["posix","linux","macos"],"shell_families":[],"requires_features":[]}
 forms:
-  - id: show_help
+  - id: "show_help"
+    selector: {"kind":"has_modifier","modifier":"help"}
+    parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"independent"}
+  - id: "show_version"
+    selector: {"kind":"all","items":[{"kind":"has_modifier","modifier":"version"},{"kind":"not","item":{"kind":"has_modifier","modifier":"help"}}]}
+    parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"independent"}
+  - id: "delete_paths"
     selector:
-      kind: any
+      kind: "all"
       items:
-        - kind: has_flag
-          flag: "--help"
-
-  - id: show_version
-    selector:
-      kind: all
-      items:
-        - kind: has_flag
-          flag: "--version"
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "--help"
-
-  - id: delete_paths
-    selector:
-      kind: all
-      items:
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: any
-            items:
-              - kind: has_flag
-                flag: "--help"
-              - kind: has_flag
-                flag: "--version"
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"verbose"}}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"any","items":[{"kind":"has_modifier","modifier":"help"},{"kind":"has_modifier","modifier":"version"}]}}
+            - kind: "all"
+              items:
+                - {"kind":"has_positional_at","index":0}
+                - {"kind":"not","item":{"kind":"any","items":[{"kind":"has_flag","flag":"--help"},{"kind":"has_flag","flag":"--version"}]}}
     parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: target
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: delete_path
-        target:
-          kind: slot
-          name: path_targets
-        catastrophic:
-          semantic_class: delete_path
-
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"delete_path","target":{"kind":"slot","name":"path_targets"},"catastrophic":{"semantic_class":"delete_path"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "delete_paths_reporting"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"verbose"}
+        - kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"any","items":[{"kind":"has_modifier","modifier":"help"},{"kind":"has_modifier","modifier":"version"}]}}
+            - kind: "all"
+              items:
+                - {"kind":"has_positional_at","index":0}
+                - {"kind":"not","item":{"kind":"any","items":[{"kind":"has_flag","flag":"--help"},{"kind":"has_flag","flag":"--version"}]}}
+    parameters:
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"delete_path","target":{"kind":"slot","name":"path_targets"},"catastrophic":{"semantic_class":"delete_path"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
 modifiers:
-  - id: recursive
-    matcher:
-      kind: any_flag
-      flags:
-        - "-r"
-        - "-R"
-        - "--recursive"
-
-  - id: dir
-    matcher:
-      kind: any_flag
-      flags:
-        - "-d"
-        - "--dir"
-
-  - id: force
-    matcher:
-      kind: any_flag
-      flags:
-        - "-f"
-        - "--force"
-
-  - id: interactive_always
-    matcher:
-      kind: any_flag
-      flags:
-        - "-i"
-        - "--interactive"
-        - "--interactive=always"
-    constraints:
-      - kind: mutually_exclusive_with
-        modifier: interactive_once
-      - kind: mutually_exclusive_with
-        modifier: interactive_never
-
-  - id: interactive_once
-    matcher:
-      kind: any_flag
-      flags:
-        - "-I"
-        - "--interactive=once"
-    constraints:
-      - kind: mutually_exclusive_with
-        modifier: interactive_always
-      - kind: mutually_exclusive_with
-        modifier: interactive_never
-
-  - id: interactive_never
-    matcher:
-      kind: any_flag
-      flags:
-        - "--interactive=never"
-    constraints:
-      - kind: mutually_exclusive_with
-        modifier: interactive_always
-      - kind: mutually_exclusive_with
-        modifier: interactive_once
-
-  - id: one_file_system
-    matcher:
-      kind: any_flag
-      flags:
-        - "--one-file-system"
-
-  - id: no_preserve_root
-    matcher:
-      kind: any_flag
-      flags:
-        - "--no-preserve-root"
-    constraints:
-      - kind: mutually_exclusive_with
-        modifier: preserve_root
-      - kind: mutually_exclusive_with
-        modifier: preserve_root_all
-
-  - id: preserve_root
-    matcher:
-      kind: any_flag
-      flags:
-        - "--preserve-root"
-    constraints:
-      - kind: mutually_exclusive_with
-        modifier: no_preserve_root
-      - kind: mutually_exclusive_with
-        modifier: preserve_root_all
-
-  - id: preserve_root_all
-    matcher:
-      kind: any_flag
-      flags:
-        - "--preserve-root=all"
-    constraints:
-      - kind: mutually_exclusive_with
-        modifier: no_preserve_root
-      - kind: mutually_exclusive_with
-        modifier: preserve_root
-
-  - id: verbose
-    matcher:
-      kind: any_flag
-      flags:
-        - "-v"
-        - "--verbose"
-
-  - id: help
-    matcher:
-      kind: any_flag
-      flags:
-        - "--help"
-
-  - id: version
-    matcher:
-      kind: any_flag
-      flags:
-        - "--version"
+  - {"id":"recursive","matcher":{"kind":"any_flag","flags":["-r","-R","--recursive"]}}
+  - {"id":"dir","matcher":{"kind":"any_flag","flags":["-d","--dir"]}}
+  - {"id":"force","matcher":{"kind":"any_flag","flags":["-f","--force"]}}
+  - {"id":"interactive_always","matcher":{"kind":"any_flag","flags":["-i"]}}
+  - {"id":"interactive_once","matcher":{"kind":"any_flag","flags":["-I"]}}
+  - {"id":"one_file_system","matcher":{"kind":"any_flag","flags":["--one-file-system"]}}
+  - {"id":"no_preserve_root","matcher":{"kind":"any_flag","flags":["--no-preserve-root"]}}
+  - id: "preserve_root"
+    matcher: {"kind":"any_flag","flags":["--preserve-root"]}
+    parameters:
+      - name: "preserve_root_scope"
+        semantic: {"kind":"plain_value"}
+        binding: {"kind":"following_matched_flag","operand_mode":"optional_inline_only"}
+        cardinality: "optional_many"
+  - {"id":"verbose","matcher":{"kind":"any_flag","flags":["-v","--verbose"]}}
+  - {"id":"help","matcher":{"kind":"any_flag","flags":["--help"]},"ends_option_scope":true}
+  - {"id":"version","matcher":{"kind":"any_flag","flags":["--version"]},"ends_option_scope":true}
+  - id: "interactive_policy"
+    matcher: {"kind":"any_flag","flags":["--interactive"]}
+    parameters:
+      - name: "interactive_policy"
+        semantic: {"kind":"plain_value"}
+        binding: {"kind":"following_matched_flag","operand_mode":"optional_inline_only"}
+        cardinality: "optional_many"
 subcommands: null
-extensions: {}
+extensions: {"caushell.profile/sources":["https://github.com/coreutils/coreutils/blob/master/src/rm.c"]}

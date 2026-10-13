@@ -1,76 +1,52 @@
-dsl_version: caushell.profile/v1alpha1
-kind: command_profile
-
-identity:
-  canonical_name: rmdir
-  aliases: []
-
+# Parent removal keeps lexical argv ancestors, including ./, via the existing derived-path rule.
+dsl_version: "caushell.profile/v1alpha1"
+kind: "command_profile"
+option_scope: "permuted_options"
 opaque_on_unresolved: true
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+identity: {"canonical_name":"rmdir","aliases":[]}
+trust: {"tier":"tier_a","source":"built_in"}
+platform: {"os_families":["posix","linux","macos"],"shell_families":[],"requires_features":[]}
 forms:
-  - id: remove_empty_directories
+  - id: "show_help"
+    selector: {"kind":"has_modifier","modifier":"information"}
+    parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"independent"}
+  - id: "remove_empty_directories"
     selector:
-      kind: has_positional_at
-      index: 0
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"verbose"}}
+        - {"kind":"all","items":[{"kind":"not","item":{"kind":"has_modifier","modifier":"information"}},{"kind":"has_positional_at","index":0}]}
     parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: target
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: delete_path
-        target:
-          kind: slot
-          name: path_targets
-        catastrophic:
-          semantic_class: delete_path
-
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"delete_path","target":{"kind":"slot","name":"path_targets"},"catastrophic":{"semantic_class":"delete_path"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
+  - id: "remove_empty_directories_reporting"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"verbose"}
+        - {"kind":"all","items":[{"kind":"not","item":{"kind":"has_modifier","modifier":"information"}},{"kind":"has_positional_at","index":0}]}
+    parameters:
+      - name: "path_targets"
+        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
+        binding: {"kind":"remaining_positionals"}
+        cardinality: "required_many"
+    effects: [{"kind":"delete_path","target":{"kind":"slot","name":"path_targets"},"catastrophic":{"semantic_class":"delete_path"}}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
+    remaining_selector: {"kind":"no_positional_args"}
 modifiers:
-  - id: parents
-    matcher:
-      kind: any_flag
-      flags:
-        - "-p"
-        - "--parents"
-    # Parent removal truncates argv spelling; do not normalize ./ away first.
-    effects:
-      - kind: delete_path
-        target:
-          kind: derived_path
-          source: {kind: slot, name: path_targets}
-          rule: {kind: lexical_ancestors}
-
-  - id: ignore_non_empty
-    matcher:
-      kind: any_flag
-      flags:
-        - "--ignore-fail-on-non-empty"
-
-  - id: verbose
-    matcher:
-      kind: any_flag
-      flags:
-        - "-v"
-        - "--verbose"
-
+  - {"id":"information","matcher":{"kind":"any_flag","flags":["--help","--version"]},"ends_option_scope":true}
+  - id: "parents"
+    matcher: {"kind":"any_flag","flags":["-p","--parents"]}
+    effects: [{"kind":"delete_path","target":{"kind":"derived_path","source":{"kind":"slot","name":"path_targets"},"rule":{"kind":"lexical_ancestors"}}}]
+  - {"id":"ignore_non_empty","matcher":{"kind":"any_flag","flags":["--ignore-fail-on-non-empty"]}}
+  - {"id":"verbose","matcher":{"kind":"any_flag","flags":["-v","--verbose"]}}
 subcommands: null
 extensions:
-  caushell.profile/source_research:
-    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
-    - https://www.gnu.org/s/coreutils/manual/html_node/rmdir-invocation.html
+  caushell.profile/source_research: ["command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md","https://www.gnu.org/s/coreutils/manual/html_node/rmdir-invocation.html"]
+  caushell.profile/sources: ["https://github.com/coreutils/coreutils/blob/master/src/rmdir.c"]

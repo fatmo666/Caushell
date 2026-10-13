@@ -8370,9 +8370,7 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "rm");
                 assert_eq!(resolved.selection.form.id.as_str(), "show_help");
-                assert!(modifier_ids.contains(&"help"));
-                assert!(modifier_ids.contains(&"interactive_never"));
-                assert!(modifier_ids.contains(&"no_preserve_root"));
+                assert_eq!(modifier_ids, vec!["help"]);
                 assert!(resolved.bound.effects.is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -8427,9 +8425,7 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "rm");
                 assert_eq!(resolved.selection.form.id.as_str(), "show_version");
-                assert!(modifier_ids.contains(&"version"));
-                assert!(modifier_ids.contains(&"recursive"));
-                assert!(modifier_ids.contains(&"force"));
+                assert_eq!(modifier_ids, vec!["version"]);
                 assert!(resolved.bound.effects.is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -8455,7 +8451,10 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "rm");
-                assert_eq!(resolved.selection.form.id.as_str(), "delete_paths");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "delete_paths_reporting"
+                );
                 assert_eq!(
                     modifier_ids,
                     vec!["recursive", "force", "no_preserve_root", "verbose"]
@@ -8490,7 +8489,15 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "rm");
                 assert_eq!(resolved.selection.form.id.as_str(), "delete_paths");
-                assert_eq!(modifier_ids, vec!["interactive_never", "preserve_root_all"]);
+                assert_eq!(modifier_ids, vec!["preserve_root", "interactive_policy"]);
+                assert_eq!(
+                    argument_texts(&resolved.bound, "interactive_policy"),
+                    vec!["never"]
+                );
+                assert_eq!(
+                    argument_texts(&resolved.bound, "preserve_root_scope"),
+                    vec!["all"]
+                );
                 assert_eq!(
                     argument_texts(&resolved.bound, "path_targets"),
                     vec!["victim"]
@@ -8521,7 +8528,7 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "rm");
                 assert_eq!(resolved.selection.form.id.as_str(), "delete_paths");
-                assert_eq!(modifier_ids, vec!["interactive_always"]);
+                assert_eq!(modifier_ids, vec!["interactive_policy"]);
                 assert_eq!(
                     argument_texts(&resolved.bound, "path_targets"),
                     vec!["victim"]
@@ -8583,7 +8590,7 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "rm");
                 assert_eq!(resolved.selection.form.id.as_str(), "delete_paths");
-                assert_eq!(modifier_ids, vec!["interactive_always"]);
+                assert_eq!(modifier_ids, vec!["interactive_policy"]);
                 assert_eq!(
                     argument_texts(&resolved.bound, "path_targets"),
                     vec!["victim"]
