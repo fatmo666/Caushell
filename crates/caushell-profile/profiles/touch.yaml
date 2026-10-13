@@ -1,89 +1,37 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-
-identity:
-  canonical_name: touch
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: touch, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 
 forms:
+  - id: show_help
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: create_or_update_paths
-    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
-    selector:
-      kind: has_positional_at
-      index: 0
-    parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: path_targets
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: [{name: path_targets, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: write_path, target: {kind: slot, name: path_targets}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}, ends_option_scope: true}
   - id: reference_file
-    matcher:
-      kind: any_flag
-      flags:
-        - "-r"
-        - "--reference"
-    parameters:
-      - name: reference_file
-        semantic:
-          kind: path
-          role: target
-          purpose: generic_operand
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-    effects:
-      - kind: target_path
-        target:
-          kind: slot
-          name: reference_file
-
+    matcher: {kind: any_flag, flags: [-r, --reference]}
+    parameters: [{name: reference_file, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: target_path, target: {kind: slot, name: reference_file}}]
   - id: timestamp
-    matcher:
-      kind: any_flag
-      flags:
-        - "-d"
-        - "--date"
-        - "-t"
-    parameters:
-      - name: timestamp
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-
-  - id: update_mode
-    matcher:
-      kind: any_flag
-      flags:
-        - "-a"
-        - "-m"
-        - "-c"
-        - "--no-create"
-subcommands: null
-extensions: {}
+    matcher: {kind: any_flag, flags: [-d, --date, -t]}
+    parameters: [{name: timestamp, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: time_kind
+    matcher: {kind: any_flag, flags: [--time]}
+    parameters: [{name: time_kind, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: update_mode, matcher: {kind: any_flag, flags: [-a, -m, -c, --no-create, -h, --no-dereference, -f]}}
+extensions:
+  caushell.profile/sources: [https://github.com/coreutils/coreutils/blob/master/src/touch.c]
+  caushell.profile/known_limitations:
+    - The native '-' stdout-descriptor timestamp target is unresolved rather than treated as a filename.

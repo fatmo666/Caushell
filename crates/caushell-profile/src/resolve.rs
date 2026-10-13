@@ -12889,7 +12889,7 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "ls");
                 assert_eq!(resolved.selection.form.id.as_str(), "list_paths");
                 assert_eq!(argument_texts(&resolved.bound, "path_targets"), vec!["src"]);
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::ReadPath]);
+                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::TargetPath]);
             }
             other => panic!("unexpected ls resolve result: {other:?}"),
         }
@@ -13117,9 +13117,9 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "nc");
-                assert_eq!(resolved.selection.form.id.as_str(), "network_session");
+                assert_eq!(resolved.selection.form.id.as_str(), "dialect_dependent");
                 assert_eq!(
-                    argument_texts(&resolved.bound, "remote_endpoint"),
+                    argument_texts(&resolved.bound, "operands"),
                     vec!["127.0.0.1", "4444"]
                 );
                 assert_eq!(
@@ -13127,8 +13127,8 @@ mod tests {
                     "/bin/sh"
                 );
                 let effects = effect_kinds(&resolved.bound);
-                assert!(effects.contains(&EffectKind::NetworkEndpoint));
-                assert!(effects.contains(&EffectKind::DispatchCommand));
+                assert!(resolved.bound.operation_semantics_unresolved);
+                assert!(!effects.contains(&EffectKind::DispatchCommand));
             }
             other => panic!("unexpected nc resolve result: {other:?}"),
         }
@@ -13868,7 +13868,7 @@ mod tests {
                 "readlink -f ./link",
                 "readlink",
                 "resolve_links",
-                &[EffectKind::ReadPath, EffectKind::TransformData],
+                &[EffectKind::TargetPath, EffectKind::TransformData],
             ),
             (
                 "basename src/main.rs",
@@ -13886,7 +13886,7 @@ mod tests {
                 "du -sh src",
                 "du",
                 "summarize_usage",
-                &[EffectKind::ReadPath, EffectKind::TransformData],
+                &[EffectKind::TargetPath, EffectKind::TransformData],
             ),
             (
                 "md5sum file.bin",
@@ -14366,7 +14366,7 @@ mod tests {
                 "stat Cargo.toml",
                 "stat",
                 "inspect_paths",
-                &[EffectKind::ReadPath, EffectKind::TransformData],
+                &[EffectKind::TargetPath, EffectKind::TransformData],
             ),
             (
                 "sha512sum file.bin",
@@ -14408,7 +14408,7 @@ mod tests {
                 "realpath src",
                 "realpath",
                 "resolve_paths",
-                &[EffectKind::ReadPath, EffectKind::TransformData],
+                &[EffectKind::TargetPath, EffectKind::TransformData],
             ),
             (
                 "printenv PATH",

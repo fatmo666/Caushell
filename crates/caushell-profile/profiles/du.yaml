@@ -1,60 +1,38 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-
-identity:
-  canonical_name: du
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: du, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 
 forms:
+  - id: show_help
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: summarize_usage
-    selector:
-      kind: all
-      items: []
-    parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: path_targets
-      - kind: transform_data
-        target:
-          kind: none
+    selector: {kind: not, item: *information}
+    remaining_selector: {kind: no_positional_args}
+    parameters: [{name: path_targets, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects: [{kind: target_path, target: {kind: slot, name: path_targets}}, {kind: transform_data, target: {kind: none}}]
 
 modifiers:
-  - id: dereference
-    matcher:
-      kind: any_flag
-      flags:
-        - "-L"
-        - "-H"
-        - "-P"
-        - "--dereference"
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}, ends_option_scope: true}
+  - id: size
+    matcher: {kind: any_flag, flags: [-B, --block-size, -d, --max-depth, -t, --threshold]}
+    parameters: [{name: numeric_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: exclusion
+    matcher: {kind: any_flag, flags: [--exclude]}
+    parameters: [{name: exclusion_pattern, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: mode, matcher: {kind: any_flag, flags: ['-0', --null, -a, --all, --apparent-size, -b, --bytes, -c, --total, -D, --dereference-args, -H, -h, --human-readable, --si, -k, -l, --count-links, -L, --dereference, -m, -P, --no-dereference, -s, --summarize, -S, --separate-dirs, -x, --one-file-system]}}
+  - id: time
+    matcher: {kind: any_flag, flags: [--time]}
+    parameters: [{name: time_kind, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}]
+  - id: time_style
+    matcher: {kind: any_flag, flags: [--time-style]}
+    parameters: [{name: time_style, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 
-subcommands: null
 extensions:
-  caushell.profile/source_research:
-    - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/sources: [https://github.com/coreutils/coreutils/blob/master/src/du.c]

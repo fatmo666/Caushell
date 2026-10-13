@@ -1,0 +1,651 @@
+# Ncat semantics are separate from implementation-dependent nc/netcat.
+# Reused anchors share transport, stream and effect declarations across IO modes.
+dsl_version: "caushell.profile/v1alpha1"
+kind: "command_profile"
+option_scope: "permuted_options"
+opaque_on_unresolved: true
+identity: {"canonical_name":"ncat","aliases":[]}
+trust: {"tier":"tier_a","source":"built_in"}
+platform: {"os_families":["posix","linux","macos"],"shell_families":[],"requires_features":[]}
+forms:
+  - id: "show_help"
+    selector: {"kind":"has_modifier","modifier":"information"}
+    parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
+    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"independent"}
+  - id: "unix_datagram"
+    selector: {"kind":"all","items":[{"kind":"not","item":{"kind":"has_modifier","modifier":"information"}},{"kind":"has_modifier","modifier":"unix_socket"},{"kind":"has_modifier","modifier":"udp"}]}
+    operation_semantics_unresolved: true
+    parameters: [{"name":"operands","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_positionals"},"cardinality":"optional_many"}]
+  - id: "connect_session"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - &connect_transport {"kind":"all","items":[{"kind":"not","item":{"kind":"has_modifier","modifier":"listen"}},{"kind":"not","item":{"kind":"has_modifier","modifier":"unix_socket"}},{"kind":"has_positional_at","index":0}]}
+        - &session_mode
+          kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"direct_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"shell_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"lua_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"receive_only"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"send_only"}}
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &connect_parameters
+      - {"name":"remote_endpoint","semantic":{"kind":"endpoint","endpoint_kind":"host_port","usage":"generic_endpoint"},"binding":{"kind":"next_positional"},"cardinality":"required_one"}
+      - &optional_port {"name":"port","semantic":{"kind":"plain_value"},"binding":{"kind":"next_positional"},"cardinality":"optional_one"}
+    stream_contract: &duplex_stream {"stdin_mode":"data_optional","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs"}
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: &sending_effects
+      - &sending_endpoint {"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"},"input_scope":{"slots":["remote_endpoint","request_values"],"stdin":true}}
+      - &consume_stdin {"kind":"consume_stdin","target":{"kind":"implicit_input","source":"stdin_data"}}
+  - id: "connect_send"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *connect_transport
+        - &send_only_mode
+          kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"direct_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"shell_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"lua_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"receive_only"}}
+            - {"kind":"has_modifier","modifier":"send_only"}
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *connect_parameters
+    stream_contract: &send_only_stream {"stdin_mode":"data_optional","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent"}
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *sending_effects
+  - id: "connect_receive"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *connect_transport
+        - &receive_only_mode
+          kind: "all"
+          items:
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"direct_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"shell_exec"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"lua_exec"}}
+            - {"kind":"has_modifier","modifier":"receive_only"}
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *connect_parameters
+    stream_contract: &receive_only_stream {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs"}
+    effects: &receiving_effects [{"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"},"input_scope":{"slots":["remote_endpoint","request_values"],"stdin":false}}]
+  - id: "connect_execute"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *connect_transport
+        - &exec_mode
+          kind: "all"
+          items:
+            - {"kind":"any","items":[{"kind":"has_modifier","modifier":"direct_exec"},{"kind":"has_modifier","modifier":"shell_exec"}]}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"lua_exec"}}
+            - {"kind":"not","item":{"kind":"all","items":[{"kind":"has_modifier","modifier":"direct_exec"},{"kind":"has_modifier","modifier":"shell_exec"}]}}
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &exec_connect_parameters
+      - {"name":"remote_endpoint","semantic":{"kind":"endpoint","endpoint_kind":"host_port","usage":"upload_target"},"binding":{"kind":"next_positional"},"cardinality":"required_one"}
+      - *optional_port
+    stream_contract: &exec_stream {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent"}
+    effects: [{"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}]
+  - id: "connect_lua"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *connect_transport
+        - &lua_mode
+          kind: "all"
+          items: [{"kind":"has_modifier","modifier":"lua_exec"},{"kind":"not","item":{"kind":"has_modifier","modifier":"direct_exec"}},{"kind":"not","item":{"kind":"has_modifier","modifier":"shell_exec"}}]
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *exec_connect_parameters
+    stream_contract: *exec_stream
+    effects: [{"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}]
+  - id: "listen_host_session"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - &explicit_listener_transport
+          kind: "all"
+          items:
+            - {"kind":"has_modifier","modifier":"listen"}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"unix_socket"}}
+            - {"kind":"has_positional_at","index":0}
+            -
+              kind: "any"
+              items:
+                - {"kind":"has_positional_at","index":1}
+                - {"kind":"has_modifier","modifier":"source_port"}
+                - {"kind":"not","item":{"kind":"has_positional_at_matching","index":0,"matcher":{"kind":"regex_pattern","pattern":"^[0-9]{0,5}$"}}}
+        - *session_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &listener_parameters
+      -
+        name: "remote_endpoint"
+        semantic: {"kind":"endpoint","endpoint_kind":"host_port","usage":"generic_endpoint"}
+        binding: {"kind":"next_positional"}
+        cardinality: "required_one"
+        structured_projection: &bind_host_projection {"branches":[{"matcher":{"kind":"regex_capture","pattern":"^.*$","group":0},"target":{"name":"bind_host","semantic":{"kind":"plain_value"}}}]}
+      - *optional_port
+    stream_contract: *duplex_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: &listener_sending_effects
+      - *sending_endpoint
+      - *consume_stdin
+      - &positional_port_listener {"kind":"listen_network","target":{"kind":"network_listener","host":{"slot":"bind_host","default_value":"0.0.0.0"},"port":{"slot":"port","default_value":"31337"}}}
+  - id: "listen_host_session_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *session_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *listener_parameters
+    stream_contract: *duplex_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: &source_port_listener_sending_effects
+      - *sending_endpoint
+      - *consume_stdin
+      - &source_port_listener {"kind":"listen_network","target":{"kind":"network_listener","host":{"slot":"bind_host","default_value":"0.0.0.0"},"port":{"slot":"source_port","default_value":"31337"}}}
+  - id: "listen_host_send"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *send_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *listener_parameters
+    stream_contract: *send_only_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *listener_sending_effects
+  - id: "listen_host_send_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *send_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *listener_parameters
+    stream_contract: *send_only_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *source_port_listener_sending_effects
+  - id: "listen_host_receive"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *receive_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *listener_parameters
+    stream_contract: *receive_only_stream
+    effects:
+      - &receiving_endpoint {"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"},"input_scope":{"slots":["remote_endpoint","request_values"],"stdin":false}}
+      - *positional_port_listener
+  - id: "listen_host_receive_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *receive_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *listener_parameters
+    stream_contract: *receive_only_stream
+    effects:
+      - *receiving_endpoint
+      - *source_port_listener
+  - id: "listen_host_execute"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *exec_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &exec_listener_parameters
+      -
+        name: "remote_endpoint"
+        semantic: {"kind":"endpoint","endpoint_kind":"host_port","usage":"upload_target"}
+        binding: {"kind":"next_positional"}
+        cardinality: "required_one"
+        structured_projection: *bind_host_projection
+      - *optional_port
+    stream_contract: *exec_stream
+    effects: &exec_listener_effects
+      - {"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}
+      - *positional_port_listener
+  - id: "listen_host_execute_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *exec_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *exec_listener_parameters
+    stream_contract: *exec_stream
+    effects: &exec_source_port_listener_effects
+      - {"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}
+      - *source_port_listener
+  - id: "listen_host_lua"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *lua_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *exec_listener_parameters
+    stream_contract: *exec_stream
+    effects: *exec_listener_effects
+  - id: "listen_host_lua_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *explicit_listener_transport
+        - *lua_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *exec_listener_parameters
+    stream_contract: *exec_stream
+    effects: *exec_source_port_listener_effects
+  - id: "listen_default_session"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - &default_listener_transport
+          kind: "all"
+          items:
+            - {"kind":"has_modifier","modifier":"listen"}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"unix_socket"}}
+            -
+              kind: "any"
+              items:
+                - {"kind":"no_positional_args"}
+                -
+                  kind: "all"
+                  items:
+                    - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+                    - {"kind":"not","item":{"kind":"has_positional_at","index":1}}
+                    - {"kind":"has_positional_at_matching","index":0,"matcher":{"kind":"regex_pattern","pattern":"^[0-9]{0,5}$"}}
+        - *session_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &default_listener_parameters
+      - *optional_port
+      - {"name":"bind_host","semantic":{"kind":"plain_value"},"binding":{"kind":"next_positional"},"cardinality":"optional_one"}
+    stream_contract: *duplex_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: &default_listener_effects
+      - *consume_stdin
+      - *positional_port_listener
+  - id: "listen_default_session_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *session_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *duplex_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: &default_source_port_listener_effects
+      - *consume_stdin
+      - *source_port_listener
+  - id: "listen_default_send"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *send_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *send_only_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *default_listener_effects
+  - id: "listen_default_send_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *send_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *send_only_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *default_source_port_listener_effects
+  - id: "listen_default_receive"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *receive_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *receive_only_stream
+    effects: &default_listener_receive_effects [{"kind":"listen_network","target":{"kind":"network_listener","host":{"slot":"bind_host","default_value":"0.0.0.0"},"port":{"slot":"port","default_value":"31337"}}}]
+  - id: "listen_default_receive_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *receive_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *receive_only_stream
+    effects: &default_source_port_listener_receive_effects [{"kind":"listen_network","target":{"kind":"network_listener","host":{"slot":"bind_host","default_value":"0.0.0.0"},"port":{"slot":"source_port","default_value":"31337"}}}]
+  - id: "listen_default_execute"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *exec_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *exec_stream
+    effects: *default_listener_receive_effects
+  - id: "listen_default_execute_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *exec_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *default_listener_parameters
+    stream_contract: *exec_stream
+    effects: *default_source_port_listener_receive_effects
+  - id: "listen_default_lua"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"source_port"}}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *lua_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *default_listener_parameters
+    stream_contract: *exec_stream
+    effects: *default_listener_receive_effects
+  - id: "listen_default_lua_source_port"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"has_modifier","modifier":"source_port"}
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *default_listener_transport
+        - *lua_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *default_listener_parameters
+    stream_contract: *exec_stream
+    effects: *default_source_port_listener_receive_effects
+  - id: "unix_connect_session"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - &unix_connect_transport
+          kind: "all"
+          items:
+            - {"kind":"has_modifier","modifier":"unix_socket"}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"udp"}}
+            - {"kind":"not","item":{"kind":"has_modifier","modifier":"listen"}}
+            - {"kind":"has_positional_at","index":0}
+        - *session_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &unix_connect_parameters [{"name":"remote_endpoint","semantic":{"kind":"endpoint","endpoint_kind":"socket_path","usage":"generic_endpoint"},"binding":{"kind":"next_positional"},"cardinality":"required_one"}]
+    stream_contract: *duplex_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *sending_effects
+  - id: "unix_connect_send"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_connect_transport
+        - *send_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *unix_connect_parameters
+    stream_contract: *send_only_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *sending_effects
+  - id: "unix_connect_receive"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_connect_transport
+        - *receive_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *unix_connect_parameters
+    stream_contract: *receive_only_stream
+    effects: *receiving_effects
+  - id: "unix_connect_execute"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_connect_transport
+        - *exec_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &unix_exec_connect_parameters [{"name":"remote_endpoint","semantic":{"kind":"endpoint","endpoint_kind":"socket_path","usage":"upload_target"},"binding":{"kind":"next_positional"},"cardinality":"required_one"}]
+    stream_contract: *exec_stream
+    effects: [{"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}]
+  - id: "unix_connect_lua"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_connect_transport
+        - *lua_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *unix_exec_connect_parameters
+    stream_contract: *exec_stream
+    effects: [{"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}]
+  - id: "unix_listen_session"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - &unix_listener_transport
+          kind: "all"
+          items: [{"kind":"has_modifier","modifier":"unix_socket"},{"kind":"not","item":{"kind":"has_modifier","modifier":"udp"}},{"kind":"has_modifier","modifier":"listen"},{"kind":"has_positional_at","index":0}]
+        - *session_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &unix_listener_parameters
+      -
+        name: "remote_endpoint"
+        semantic: {"kind":"endpoint","endpoint_kind":"socket_path","usage":"generic_endpoint"}
+        binding: {"kind":"next_positional"}
+        cardinality: "required_one"
+        structured_projection: &unix_socket_projection {"branches":[{"matcher":{"kind":"regex_capture","pattern":"^.+$","group":0},"target":{"name":"socket_path","semantic":{"kind":"path","role":"write","purpose":"generic_operand"}}}]}
+    stream_contract: *duplex_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: &unix_listener_effects
+      - *sending_endpoint
+      - *consume_stdin
+      - &unix_listener {"kind":"listen_network","target":{"kind":"network_listener","host":{"slot":"bind_host"},"unix_socket":{"slot":"socket_path"}}}
+      - {"kind":"write_path","target":{"kind":"slot","name":"socket_path"}}
+  - id: "unix_listen_send"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_listener_transport
+        - *send_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *unix_listener_parameters
+    stream_contract: *send_only_stream
+    implicit_inputs: [{"source":"stdin_data","semantic":{"kind":"plain_value"}}]
+    effects: *unix_listener_effects
+  - id: "unix_listen_receive"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_listener_transport
+        - *receive_only_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: *unix_listener_parameters
+    stream_contract: *receive_only_stream
+    effects:
+      - *receiving_endpoint
+      - *unix_listener
+      - {"kind":"write_path","target":{"kind":"slot","name":"socket_path"}}
+  - id: "unix_listen_execute"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_listener_transport
+        - *exec_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    parameters: &unix_exec_listener_parameters
+      -
+        name: "remote_endpoint"
+        semantic: {"kind":"endpoint","endpoint_kind":"socket_path","usage":"upload_target"}
+        binding: {"kind":"next_positional"}
+        cardinality: "required_one"
+        structured_projection: *unix_socket_projection
+    stream_contract: *exec_stream
+    effects: &unix_exec_listener_effects
+      - {"kind":"network_endpoint","target":{"kind":"slot","name":"remote_endpoint"}}
+      - *unix_listener
+      - {"kind":"write_path","target":{"kind":"slot","name":"socket_path"}}
+  - id: "unix_listen_lua"
+    selector:
+      kind: "all"
+      items:
+        - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
+        - *unix_listener_transport
+        - *lua_mode
+    remaining_selector: {"kind":"no_positional_args"}
+    operation_semantics_unresolved: true
+    parameters: *unix_exec_listener_parameters
+    stream_contract: *exec_stream
+    effects: *unix_exec_listener_effects
+modifiers:
+  - {"id":"information","matcher":{"kind":"any_flag","flags":["-h","--help","--version"]},"ends_option_scope":true}
+  - {"id":"listen","matcher":{"kind":"any_flag","flags":["-l","--listen"]}}
+  - {"id":"send_only","matcher":{"kind":"any_flag","flags":["--send-only"]}}
+  - {"id":"udp","matcher":{"kind":"any_flag","flags":["-u","--udp"]}}
+  - {"id":"receive_only","matcher":{"kind":"any_flag","flags":["--recv-only"]}}
+  - {"id":"unix_socket","matcher":{"kind":"any_flag","flags":["-U","--unixsock"]}}
+  - id: "direct_exec"
+    matcher: {"kind":"any_flag","flags":["-e","--exec"]}
+    parameters:
+      - name: "exec_operand"
+        semantic: {"kind":"plain_value"}
+        binding: {"kind":"following_matched_flag","operand_mode":"next_arg"}
+        cardinality: "required_one"
+        structured_projection:
+          branches: [{"matcher":{"kind":"regex_capture","pattern":"^[\\x09-\\x0d\\x20-\\x5b\\x5d-\\x7e]+$","group":0},"target":{"name":"direct_command","semantic":{"kind":"plain_value"}}}]
+          fallback: {"name":"direct_command","semantic":{"kind":"plain_value"},"unresolved":true}
+    effects:
+      - kind: "dispatch_command"
+        target:
+          kind: "dispatch"
+          command_whitespace_argv: "direct_command"
+          stdin_from_tool: true
+          stdout_to_parent: true
+          unknown_environment_names: &ncat_environment ["NCAT_REMOTE_ADDR","NCAT_REMOTE_PORT","NCAT_LOCAL_ADDR","NCAT_LOCAL_PORT","NCAT_PROTO"]
+  - id: "shell_exec"
+    matcher: {"kind":"any_flag","flags":["-c","--sh-exec"]}
+    parameters: [{"name":"shell_program","semantic":{"kind":"plain_value"},"binding":{"kind":"following_matched_flag","operand_mode":"next_arg"},"cardinality":"required_one"}]
+    effects:
+      - kind: "dispatch_command"
+        target:
+          kind: "dispatch"
+          command_string: {"slot":"shell_program","syntax":"posix_shell"}
+          stdin_from_tool: true
+          stdout_to_parent: true
+          unknown_environment_names: *ncat_environment
+  - id: "lua_exec"
+    matcher: {"kind":"any_flag","flags":["--lua-exec"]}
+    parameters: [{"name":"lua_program","semantic":{"kind":"path","role":"read","purpose":"script_source"},"binding":{"kind":"following_matched_flag","operand_mode":"next_arg"},"cardinality":"required_one"}]
+    effects: [{"kind":"read_path","path_access":"content_open","target":{"kind":"slot","name":"lua_program"}},{"kind":"execute_payload","target":{"kind":"slot","name":"lua_program"}}]
+  - id: "log_file"
+    matcher: {"kind":"any_flag","flags":["-o","--output"]}
+    parameters:
+      - name: "log_arguments"
+        semantic: {"kind":"plain_value"}
+        binding: {"kind":"following_matched_flag","operand_mode":"next_arg"}
+        cardinality: "required_many"
+        structured_projection:
+          last_value_only: true
+          branches: [{"matcher":{"kind":"regex_capture","pattern":"^.*$","group":0},"target":{"name":"log_files","semantic":{"kind":"path","role":"write","purpose":"generic_operand"}}}]
+    effects: [{"kind":"write_path","path_access":"content_open","target":{"kind":"slot","name":"log_files"}}]
+  - id: "hex_log"
+    matcher: {"kind":"any_flag","flags":["-x","--hex-dump"]}
+    parameters:
+      - name: "hex_log_arguments"
+        semantic: {"kind":"plain_value"}
+        binding: {"kind":"following_matched_flag","operand_mode":"next_arg"}
+        cardinality: "required_many"
+        structured_projection:
+          last_value_only: true
+          branches: [{"matcher":{"kind":"regex_capture","pattern":"^.*$","group":0},"target":{"name":"hex_log_files","semantic":{"kind":"path","role":"write","purpose":"generic_operand"}}}]
+    effects: [{"kind":"write_path","path_access":"content_open","target":{"kind":"slot","name":"hex_log_files"}}]
+  - id: "request_values"
+    matcher: {"kind":"any_flag","flags":["--proxy","--proxy-auth","--ssl-servername","--ssl-alpn"]}
+    parameters: [{"name":"request_values","semantic":{"kind":"plain_value"},"binding":{"kind":"following_matched_flag","operand_mode":"next_arg"},"cardinality":"required_many"}]
+  - id: "source_port"
+    matcher: {"kind":"any_flag","flags":["-p","--source-port"]}
+    parameters: [{"name":"source_port","semantic":{"kind":"plain_value"},"binding":{"kind":"following_matched_flag","operand_mode":"next_arg"},"cardinality":"required_one"}]
+  - id: "auxiliary_files"
+    matcher: {"kind":"any_flag","flags":["--allowfile","--denyfile","--ssl-cert","--ssl-key","--ssl-trustfile"]}
+    parameters: [{"name":"auxiliary_files","semantic":{"kind":"path","role":"read","purpose":"auxiliary_input"},"binding":{"kind":"following_matched_flag","operand_mode":"next_arg"},"cardinality":"required_many"}]
+    effects: [{"kind":"read_path","path_access":"content_open","target":{"kind":"slot","name":"auxiliary_files"}}]
+  - id: "values"
+    matcher:
+      kind: "any_flag"
+      flags: ["-g","-G","-m","--max-conns","-d","--delay","-i","--idle-timeout","-w","--wait","-s","--source","--allow","--deny","--proxy-type","--proxy-dns","--nsock-engine","--ssl-ciphers"]
+    parameters: [{"name":"option_values","semantic":{"kind":"plain_value"},"binding":{"kind":"following_matched_flag","operand_mode":"next_arg"},"cardinality":"required_many"}]
+  - id: "ordinary"
+    matcher: {"kind":"any_flag","flags":["-4","-6","-C","--crlf","-k","--keep-open","--append-output","--no-shutdown","-t","--telnet","--sctp","-n","--nodns","-v","--verbose","--ssl","--ssl-verify"]}
+extensions:
+  caushell.profile/sources: ["https://github.com/nmap/nmap/blob/master/ncat/ncat_main.c","https://github.com/nmap/nmap/blob/master/ncat/ncat_posix.c"]
+  caushell.profile/known_limitations:
+    - "Direct exec uses literal ASCII whitespace argv, not shell or GNU quote parsing. Native backslash escapes and non-ASCII exec strings remain explicitly unresolved."
+    - "Executed child stdout returns to the parent network sink; independent native stdout prevents it leaking into the caller's pipe."
+    - "Lua is an opaque executable entry, never parsed as Bash. Broker/chat, VSOCK and undeclared forms remain unresolved."

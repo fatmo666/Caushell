@@ -1739,6 +1739,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/nc.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "ncat",
+        content: include_str!("../profiles/ncat.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "nice",
         content: include_str!("../profiles/nice.yaml"),
     },

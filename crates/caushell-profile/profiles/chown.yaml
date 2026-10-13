@@ -1,109 +1,59 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-
-identity:
-  canonical_name: chown
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: chown, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 
 forms:
+  - id: show_help
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: change_owner_from_reference
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: reference
-        - kind: has_positional_at
-          index: 0
-    parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: metadata_mutation
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: read_path
-        target: {kind: slot, name: reference_path}
-      - kind: metadata_mutation
-        target: {kind: slot, name: path_targets}
-
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: reporting}}, {kind: not, item: *information}, {kind: has_modifier, modifier: reference}, {kind: has_positional_at, index: 0}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &targets [{name: path_targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: path_targets}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+  - id: change_owner_from_reference_reporting
+    selector: {kind: all, items: [{kind: has_modifier, modifier: reporting}, {kind: not, item: *information}, {kind: has_modifier, modifier: reference}, {kind: has_positional_at, index: 0}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: [{name: path_targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: path_targets}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: independent}
   - id: change_owner_or_group
-    selector:
-      kind: all
-      items:
-        - kind: has_positional_at_matching
-          index: 0
-          matcher:
-            kind: structured_value_context
-            context: owner_group_spec
-        - kind: has_positional_at
-          index: 1
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: reporting}}, {kind: not, item: *information}, {kind: not, item: {kind: has_modifier, modifier: reference}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: structured_value_context, context: owner_group_spec}}, {kind: has_positional_at, index: 1}]}
+    remaining_selector: {kind: no_positional_args}
     parameters:
-      - name: owner_spec
-        semantic:
-          kind: structured_value
-          context: owner_group_spec
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: path_targets
-        semantic:
-          kind: path
-          role: metadata_mutation
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: metadata_mutation
-        target:
-          kind: slot
-          name: path_targets
-        extensions:
-          metadata_mutation.raw_operand_slot: owner_spec
+      - {name: owner_spec, semantic: {kind: structured_value, context: owner_group_spec}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: path_targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: path_targets}, extensions: {metadata_mutation.raw_operand_slot: owner_spec}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+  - id: change_owner_or_group_reporting
+    selector: {kind: all, items: [{kind: has_modifier, modifier: reporting}, {kind: not, item: *information}, {kind: not, item: {kind: has_modifier, modifier: reference}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: structured_value_context, context: owner_group_spec}}, {kind: has_positional_at, index: 1}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: owner_spec, semantic: {kind: structured_value, context: owner_group_spec}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: path_targets, semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: path_targets}, extensions: {metadata_mutation.raw_operand_slot: owner_spec}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: independent}
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}, ends_option_scope: true}
   - id: reference
-    matcher:
-      kind: any_flag
-      flags: ["--reference"]
-    parameters:
-      - name: reference_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: required_one
-
+    matcher: {kind: any_flag, flags: [--reference]}
+    parameters: [{name: reference_path, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects: [{kind: target_path, target: {kind: slot, name: reference_path}}]
   - id: recursive
-    matcher:
-      kind: any_flag
-      flags:
-        - "-R"
-        - "--recursive"
-    effects:
-      - kind: metadata_mutation
-        target:
-          kind: slot
-          name: path_targets
-        extensions:
-          metadata_mutation.recursive: true
-
-subcommands: null
+    matcher: {kind: any_flag, flags: [-R, --recursive]}
+    effects: [{kind: metadata_mutation, target: {kind: slot, name: path_targets}, extensions: {metadata_mutation.recursive: true}}]
+  - {id: reporting, matcher: {kind: any_flag, flags: [-c, --changes, -v, --verbose]}}
+  - {id: quiet, matcher: {kind: any_flag, flags: [-f, --silent, --quiet]}}
+  - {id: traversal, matcher: {kind: any_flag, flags: [-H, -L, -P, -h, --no-dereference, --dereference, --preserve-root, --no-preserve-root]}}
+  - id: from
+    matcher: {kind: any_flag, flags: [--from]}
+    parameters: [{name: previous_owner_spec, semantic: {kind: structured_value, context: owner_group_spec}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+extensions:
+  caushell.profile/sources: [https://github.com/coreutils/coreutils/blob/master/src/chown.c]
