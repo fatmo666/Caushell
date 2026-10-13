@@ -19,6 +19,178 @@ fn resolved(command: &str) -> ResolvedInvocationArtifact {
 }
 
 #[test]
+fn comparison_inputs_are_content_opens_with_explicit_stdin() {
+    for command in [
+        "comm a b",
+        "join a b",
+        "cmp -l a b",
+        "diff -u a b",
+        "file a",
+        "split -n 1/1 a",
+    ] {
+        let r = resolved(command);
+        assert_eq!(
+            r.proven_stream_contract().unwrap().stdin_mode,
+            StreamInputMode::Ignored,
+            "{command}"
+        );
+        assert!(
+            r.bound
+                .effects
+                .iter()
+                .any(|e| e.kind == EffectKind::ReadPath
+                    && e.path_access == Some(PathAccessKind::ContentOpen)),
+            "{command}"
+        );
+    }
+    for command in [
+        "comm - b",
+        "join a -",
+        "cmp -l - b",
+        "cmp a",
+        "diff -u a -",
+        "file -",
+        "split -n 1/1 -",
+        "split -n 1/1",
+        "split -",
+        "split",
+    ] {
+        let r = resolved(command);
+        assert_ne!(
+            r.proven_stream_contract().unwrap().stdin_mode,
+            StreamInputMode::Ignored,
+            "{command}"
+        );
+    }
+    let r = resolved("cmp -l a b 10 20");
+    let paths = r
+        .bound
+        .bound_parameters
+        .iter()
+        .find(|p| p.name.as_str() == "input_paths")
+        .unwrap();
+    assert_eq!(
+        paths
+            .values
+            .iter()
+            .map(|v| match v {
+                BoundValue::Argument { text, .. } => text.as_str(),
+                other => panic!("unexpected value: {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    for (name, value) in [("skip_first", "10"), ("skip_second", "20")] {
+        let p = r
+            .bound
+            .bound_parameters
+            .iter()
+            .find(|p| p.name.as_str() == name)
+            .unwrap();
+        assert!(matches!(&p.values[0], BoundValue::Argument { text, .. } if text == value));
+    }
+}
+
+#[test]
+fn incomplete_comparison_argv_never_proves_silence_or_ignored_stdin() {
+    static REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| ProfileRegistry::built_in().unwrap());
+    for command in [
+        "comm -123 \"$input\" b",
+        "comm -123 *.txt b",
+        "cmp -s \"$input\" b",
+        "cmp -s a b unexpected extra too-many",
+        "join a b extra",
+        "file \"$input\"",
+        "split -n 1/1 \"$input\"",
+        "diff a b extra",
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        match resolve_invocation_artifact_with_bindings(
+            registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+            &SessionBindings::new(),
+        ) {
+            ResolveInvocationArtifactResult::Resolved(r) => {
+                assert!(r.proven_stream_contract().is_none(), "{command}: {r:#?}")
+            }
+            ResolveInvocationArtifactResult::SelectionError { .. } => {}
+            other => panic!("unexpected resolution: {command}: {other:#?}"),
+        }
+    }
+}
+
+#[test]
+fn comparison_silence_is_not_inferred_from_partial_suppression() {
+    for command in [
+        "cmp -s a b",
+        "cmp --quiet a",
+        "cmp --silent - b",
+        "comm -123 a b",
+        "comm -1 -2 -3 a b",
+    ] {
+        assert_eq!(
+            resolved(command)
+                .proven_stream_contract()
+                .unwrap()
+                .stdout_dependency,
+            StreamDataDependency::Independent,
+            "{command}"
+        );
+    }
+    for command in [
+        "cmp -l a b",
+        "cmp -b a b",
+        "comm -12 a b",
+        "comm --total -123 a b",
+        "diff -q a b",
+    ] {
+        assert_eq!(
+            resolved(command)
+                .proven_stream_contract()
+                .unwrap()
+                .stdout_dependency,
+            StreamDataDependency::Inputs,
+            "{command}"
+        );
+    }
+    for command in ["file -f list", "file -f -"] {
+        assert_ne!(
+            resolved(command)
+                .proven_stream_contract()
+                .unwrap()
+                .stdin_mode,
+            StreamInputMode::Ignored,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn file_magic_config_keeps_configuration_and_content_read_semantics() {
+    let r = resolved("file -m /dev/fd/3 public");
+    assert!(
+        r.bound
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::LoadConfig)
+    );
+    assert!(
+        r.bound
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::ReadPath
+                && e.path_access == Some(PathAccessKind::ContentOpen)
+                && matches!(&e.target, EffectTarget::Slot(slot) if slot.as_str() == "magic_file"))
+    );
+    assert_eq!(
+        r.proven_stream_contract().unwrap().stdin_mode,
+        StreamInputMode::Ignored
+    );
+}
+
+#[test]
 fn file_tools_declare_no_implicit_content_stdout_or_stdin() {
     for command in [
         "cp .env cache/copy",

@@ -55,6 +55,7 @@ struct OverlayGraphRead<'a> {
     overlay_path_fact_by_concrete_path_index: BTreeMap<String, Vec<NodeId>>,
     overlay_path_content_artifact_index: Vec<NodeId>,
     overlay_path_content_artifact_by_path_index: BTreeMap<String, Vec<NodeId>>,
+    overlay_path_family_by_directory_index: BTreeMap<String, Vec<NodeId>>,
 }
 
 impl<'a> OverlayGraphRead<'a> {
@@ -103,6 +104,7 @@ impl<'a> OverlayGraphRead<'a> {
             overlay_path_fact_by_concrete_path_index: BTreeMap::new(),
             overlay_path_content_artifact_index: Vec::new(),
             overlay_path_content_artifact_by_path_index: BTreeMap::new(),
+            overlay_path_family_by_directory_index: BTreeMap::new(),
         };
         graph.rebuild_overlay_indexes();
 
@@ -230,6 +232,14 @@ impl<'a> OverlayGraphRead<'a> {
                     }
                 }
                 NodeKind::ProvenanceArtifact { artifact } => {
+                    if let ProvenanceArtifact::PathFamily { directory, .. } = artifact {
+                        self.overlay_path_content_artifact_index
+                            .push(node.id.clone());
+                        self.overlay_path_family_by_directory_index
+                            .entry(directory.clone())
+                            .or_default()
+                            .push(node.id.clone());
+                    }
                     if let ProvenanceArtifact::PathContent { path, .. } = artifact {
                         self.overlay_path_content_artifact_index
                             .push(node.id.clone());
@@ -384,6 +394,22 @@ impl GraphRead for OverlayGraphRead<'_> {
             self.base.path_content_artifact_nodes(),
             self.overlay_indexed_nodes(&self.overlay_path_content_artifact_index),
         )
+    }
+
+    fn path_family_artifact_nodes_for_path<'b>(
+        &'b self,
+        path: &str,
+    ) -> Box<dyn Iterator<Item = &'b GraphNode> + 'b> {
+        let path_owned = path.to_owned();
+        let directory = path
+            .rsplit_once('/')
+            .map(|(d, _)| if d.is_empty() { "/" } else { d });
+        let nodes = match directory.and_then(|d| self.overlay_path_family_by_directory_index.get(d))
+        {
+            Some(ids) => self.overlay_indexed_nodes(ids),
+            None => Box::new(std::iter::empty()),
+        };
+        self.merge_base_and_overlay_nodes(self.base.path_family_artifact_nodes_for_path(path), Box::new(nodes.filter(move |n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact } if artifact.family_contains_path(&path_owned)))))
     }
 
     fn path_content_artifact_nodes_by_path<'b>(

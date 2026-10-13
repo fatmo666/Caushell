@@ -1,5 +1,8 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_matching: exact_names
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: xxd
@@ -18,229 +21,95 @@ platform:
   requires_features: []
 
 forms:
-  - id: reverse_stream
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: reverse
-        - kind: no_positional_args
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: decode
-
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: reverse_file_to_stdout
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: reverse
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: has_positional_at
-            index: 1
-    parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: required_one
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: decode
-
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: has_modifier, modifier: reverse}, &file_input {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}, &stdout {kind: any, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}]}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &operands
+      - name: input_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}}
+      - name: output_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}}
+    effects: &reverse_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: reverse_stream
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: reverse}, {kind: not, item: *file_input}, *stdout]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: *reverse_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: reverse_file_to_file
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: reverse
-        - kind: has_positional_at
-          index: 1
-    parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: required_one
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: last_positional
-        cardinality: required_one
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: opaque
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_path
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: decode
-
-  - id: hexdump_stream
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: reverse
-        - kind: no_positional_args
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: encode
-
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: reverse}, *file_input, {kind: not, item: *stdout}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: *reverse_effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: reverse_stdin_to_file
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: reverse}, {kind: not, item: *file_input}, {kind: not, item: *stdout}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: *reverse_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: hexdump_file_to_stdout
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: reverse
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: has_positional_at
-            index: 1
-    parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: required_one
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: encode
-
+    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: reverse}}, *file_input, *stdout]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: &hexdump_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: hexdump_stream
+    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: reverse}}, {kind: not, item: *file_input}, *stdout]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: *hexdump_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: hexdump_file_to_file
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: reverse
-        - kind: has_positional_at
-          index: 1
-    parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: required_one
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: last_positional
-        cardinality: required_one
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: opaque
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_path
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: encode
+    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: reverse}}, *file_input, {kind: not, item: *stdout}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: *hexdump_effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: hexdump_stdin_to_file
+    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: reverse}}, {kind: not, item: *file_input}, {kind: not, item: *stdout}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *operands
+    effects: *hexdump_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
 modifiers:
-  - id: reverse
-    matcher:
-      kind: any_flag
-      flags:
-        - "-r"
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '-help', '-v', '-version']}, ends_option_scope: true}
+  - {id: reverse, matcher: {kind: any_flag, flags: ['-r', '-revert']}}
+  - id: numeric_options
+    matcher: {kind: any_flag, flags: ['-c', '-cols', '-g', '-groupsize', '-l', '-len', '-s', '-seek', '-o', '-R']}
+    parameters:
+      - {name: option_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}, cardinality: required_many}
+  - id: name
+    matcher: {kind: any_flag, flags: ['-n', '-name']}
+    parameters:
+      - {name: include_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}, cardinality: required_many}
+  - {id: format, matcher: {kind: any_flag, flags: ['-a', '-autoskip', '-b', '-bits', '-C', '-capitalize', '-d', '-E', '-EBCDIC', '-e', '-i', '-include', '-p', '-ps', '-postscript', '-plain', '-t', '-u']}}
 
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - The profile models xxd as a stream/file transform and does not distinguish plain hexdump formatting flags such as -p beyond allowing them as inert modifiers.
-    - The positional contract is modeled as infile [outfile]; stdin sentinel patterns such as xxd -r -p - outfile are left unresolved rather than guessed.
+    - Formatting choices are modeled as data transforms, not interpreted byte by byte.
+  caushell.profile/semantic_sources:
+    - https://github.com/vim/vim/blob/master/runtime/doc/xxd.1

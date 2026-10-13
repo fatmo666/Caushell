@@ -119,6 +119,9 @@ fn path_resolution_sort_key(resolution: &PathResolution) -> (u8, String) {
         PathResolution::BoundedPathSet { roots, may_escape } => {
             (3, format!("{roots:?}:{may_escape}"))
         }
+        PathResolution::FileNamePrefix { directory, prefix } => {
+            (9, format!("{directory}:{prefix}"))
+        }
         PathResolution::DerivedUnresolved {
             basis,
             rule,

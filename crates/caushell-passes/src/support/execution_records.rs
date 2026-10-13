@@ -34,6 +34,22 @@ impl<'a> ExecutionResolveRecordRef<'a> {
         &self.0.source_node_id
     }
 
+    pub(crate) fn variable_frame(
+        &self,
+    ) -> Option<(
+        NodeId,
+        caushell_runner::ExecutionUnitOriginKind,
+        caushell_runner::ExecutionUnitOriginLocator,
+    )> {
+        (self.0.origin_kind != caushell_runner::ExecutionUnitOriginKind::TopLevel).then(|| {
+            (
+                self.0.parent_execution_node_id.clone(),
+                self.0.origin_kind,
+                self.0.origin_locator.clone(),
+            )
+        })
+    }
+
     pub(crate) fn command_index(&self) -> usize {
         self.0.command_ref.command_index
     }

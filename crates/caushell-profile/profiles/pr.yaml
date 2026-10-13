@@ -18,53 +18,50 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: paginate_files
-    selector:
-      kind: all
-      items: []
-    parameters:
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &inputs
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
       - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    effects: &effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: paginate_files_stdin
+    selector: {kind: all, items: [*running, *stdin]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
+  - id: header
+    matcher: {kind: any_flag, flags: ['-h', '--header', '-D', '--date-format']}
+    parameters: [{name: header_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
   - id: columns
-    matcher:
-      kind: any_flag
-      flags:
-        - "-C"
-        - "--columns"
-    parameters:
-      - name: columns
-        semantic:
-          kind: structured_value
-          context: numeric_quantity
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
+    matcher: {kind: any_flag, flags: ['--columns']}
+    parameters: [{name: columns, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: numeric_format
+    matcher: {kind: any_flag, flags: ['-l', '--length', '-N', '--first-line-number', '-o', '--indent', '-w', '--width', '-W', '--page-width', '--pages']}
+    parameters: [{name: format_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: optional_format
+    matcher: {kind: any_flag, flags: ['-e', '--expand-tabs', '-i', '--output-tabs', '-n', '--number-lines', '-s', '--separator', '-S', '--sep-string']}
+    parameters: [{name: inline_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}]
+  - {id: layout, matcher: {kind: any_flag, flags: ['-a', '--across', '-c', '--show-control-chars', '-d', '--double-space', '-F', '-f', '--form-feed', '-J', '--join-lines', '-m', '--merge', '-r', '--no-file-warnings', '-t', '--omit-header', '-T', '--omit-pagination', '-v', '--show-nonprinting']}}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/semantic_sources:
+    - https://github.com/coreutils/coreutils/blob/master/src/pr.c

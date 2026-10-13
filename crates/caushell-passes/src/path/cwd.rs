@@ -32,6 +32,9 @@ pub(crate) fn project_path_at_cwd(
         },
         CwdPathContext::Subtree(root) => {
             let (paths, may_escape) = match &resolution {
+                PathResolution::FileNamePrefix { directory, .. } => {
+                    (vec![directory.clone()], false)
+                }
                 PathResolution::BoundedPathSet { roots, may_escape } => {
                     (roots.clone(), *may_escape)
                 }

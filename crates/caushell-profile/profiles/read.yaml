@@ -120,6 +120,7 @@ forms:
       stdout_mode: opaque
       stderr_mode: opaque
     effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: descriptor}}
       - kind: bind_variable_from_runtime_input
         target: {kind: slot, name: variable_name}
 
@@ -134,6 +135,7 @@ forms:
         - {kind: no_positional_args}
     stream_contract: *descriptor_contract
     effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: descriptor}}
       - kind: bind_variable_from_runtime_input
         target: {kind: variable_name, name: REPLY}
 
@@ -148,6 +150,7 @@ forms:
     parameters: *ignored_names
     stream_contract: *descriptor_contract
     effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: descriptor}}
       - kind: bind_variable_from_runtime_input
         target: {kind: slot, name: array_name}
 
@@ -210,6 +213,7 @@ modifiers:
     parameters:
       - name: descriptor
         semantic: {kind: plain_value}
+        value_projection: {kind: descriptor_path}
         binding: {kind: following_matched_flag, operand_mode: next_arg}
         cardinality: required_many
   - id: array_destination

@@ -110,13 +110,13 @@ forms:
       - name: source_paths
         semantic:
           kind: path
-          role: read
+          role: target
           purpose: generic_operand
         binding:
           kind: remaining_positionals
         cardinality: required_many
     effects:
-      - kind: read_path
+      - kind: target_path
         target:
           kind: slot
           name: source_paths
@@ -236,7 +236,7 @@ forms:
       - name: source_paths
         semantic:
           kind: path
-          role: read
+          role: target
           purpose: generic_operand
         binding:
           kind: remaining_positionals_before_last
@@ -250,7 +250,7 @@ forms:
           kind: last_positional
         cardinality: required_one
     effects:
-      - kind: read_path
+      - kind: target_path
         target:
           kind: slot
           name: source_paths

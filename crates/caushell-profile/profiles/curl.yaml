@@ -20,33 +20,44 @@ platform:
   requires_features: []
 
 forms:
+  - id: configured_request
+    operation_semantics_unresolved: true
+    selector: {kind: all, items: [{kind: has_modifier, modifier: config_input}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects:
+      - kind: network_endpoint
+        target: {kind: slot, name: endpoint}
+        input_scope: &request_inputs
+          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, query_operand, query_file, netrc_file]
+          stdin: true
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque}
+
   - id: show_help
     selector: {kind: has_modifier, modifier: information}
     parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
 
   - id: list_engines
-    selector: {kind: has_modifier_parameter_matching, modifier: engine_library, parameter: engine_operand, matcher: {kind: literal, value: list}}
+    selector: {kind: all, items: [&unconfigured {kind: not, item: {kind: has_modifier, modifier: config_input}}, {kind: has_modifier_parameter_matching, modifier: engine_library, parameter: engine_operand, matcher: {kind: literal, value: list}}]}
     parameters: [{name: engine_list_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
 
   - id: upload_explicit_url
-    selector: {kind: all, items: [{kind: has_modifier, modifier: explicit_url}, {kind: any, items: [{kind: has_modifier, modifier: upload_data}, {kind: has_modifier, modifier: upload_binary}, {kind: has_modifier, modifier: upload_file}, {kind: has_modifier, modifier: upload_literal}, {kind: has_modifier, modifier: upload_form}, {kind: has_modifier, modifier: upload_urlencode}]}]}
+    selector: {kind: all, items: [*unconfigured, {kind: has_modifier, modifier: explicit_url}, {kind: any, items: [{kind: has_modifier, modifier: upload_data}, {kind: has_modifier, modifier: upload_binary}, {kind: has_modifier, modifier: upload_file}, {kind: has_modifier, modifier: upload_literal}, {kind: has_modifier, modifier: upload_form}, {kind: has_modifier, modifier: upload_urlencode}]}]}
     remaining_selector: {kind: no_positional_args}
     parameters:
       - {name: upload_endpoints, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: following_flag, flag: '--url', operand_mode: next_arg}, cardinality: required_many}
     effects:
       - kind: network_endpoint
         target: {kind: slot, name: upload_endpoints}
-        input_scope: &request_inputs
-          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, query_operand, query_file, netrc_file]
-          stdin: true
+        input_scope: *request_inputs
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
 
   - id: upload_to_url
     selector:
       kind: all
       items:
+        - *unconfigured
         - &uploading
           kind: any
           items:
@@ -89,6 +100,7 @@ forms:
     selector:
       kind: all
       items:
+        - *unconfigured
         - &has_output {kind: any, items: [{kind: has_modifier, modifier: output}, {kind: has_modifier, modifier: output_in_directory}]}
         - kind: has_modifier
           modifier: explicit_url
@@ -99,6 +111,7 @@ forms:
     selector:
       kind: all
       items:
+        - *unconfigured
         - &has_remote_name {kind: any, items: [{kind: has_modifier, modifier: remote_name}, {kind: has_modifier, modifier: remote_name_in_directory}]}
         - kind: has_modifier
           modifier: explicit_url
@@ -109,6 +122,7 @@ forms:
     selector:
       kind: all
       items:
+        - *unconfigured
         - kind: has_modifier
           modifier: explicit_url
         - kind: not
@@ -137,6 +151,7 @@ forms:
     selector:
       kind: all
       items:
+        - *unconfigured
         - {kind: not, item: *uploading}
         - *has_output
         - kind: not
@@ -165,6 +180,7 @@ forms:
     selector:
       kind: all
       items:
+        - *unconfigured
         - {kind: not, item: *uploading}
         - *has_remote_name
         - kind: not
@@ -193,6 +209,7 @@ forms:
     selector:
       kind: all
       items:
+        - *unconfigured
         - kind: has_positional_at
           index: 0
         - kind: not
@@ -233,6 +250,8 @@ forms:
         input_scope: *request_inputs
 
 modifiers:
+  - id: disable_default_config
+    matcher: {kind: any_flag, flags: [-q, --disable]}
   # -G changes where -d payload bytes are sent, not whether they are sent.
   - {id: get_query, matcher: {kind: any_flag, flags: [-G, --get]}}
   - id: information

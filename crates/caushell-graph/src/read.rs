@@ -2,6 +2,16 @@ use crate::{Edge, GraphNode, NodeId};
 use caushell_types::CommandSequenceNo;
 
 pub trait GraphRead {
+    /// Compatibility fallback; production graph views use a directory index.
+    fn path_family_artifact_nodes_for_path<'a>(
+        &'a self,
+        path: &str,
+    ) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        let path = path.to_owned();
+        Box::new(self.path_content_artifact_nodes().filter(move |node| {
+            matches!(&node.kind, crate::NodeKind::ProvenanceArtifact { artifact } if artifact.family_contains_path(&path))
+        }))
+    }
     fn get_node(&self, id: &NodeId) -> Option<&GraphNode>;
     fn node_count(&self) -> usize;
     fn edge_count(&self) -> usize;

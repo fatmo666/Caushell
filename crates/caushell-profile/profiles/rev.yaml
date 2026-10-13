@@ -18,37 +18,34 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: reverse_lines
-    selector:
-      kind: all
-      items: []
-    parameters:
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: no_positional_args}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &inputs
       - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+    effects: &effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: reverse_lines_stdin
+    selector: {kind: all, items: [*running, *stdin]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
-modifiers: []
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '--help', '-V', '--version']}}
 subcommands: null
 extensions:
+  caushell.profile/semantic_sources:
+    - https://github.com/util-linux/util-linux/blob/master/text-utils/rev.c
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

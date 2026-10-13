@@ -434,8 +434,19 @@ fn validate_configured_path_references(
         .chain(modifiers.iter().flat_map(|modifier| &modifier.effects))
     {
         if let EffectTarget::DerivedPath(target) = &effect.target
-            && target.rule == caushell_types::DerivedPathRule::PrefixDirectory
+            && matches!(
+                target.rule,
+                caushell_types::DerivedPathRule::PrefixDirectory
+                    | caushell_types::DerivedPathRule::FileNamePrefix
+            )
         {
+            if target.rule == caushell_types::DerivedPathRule::FileNamePrefix {
+                if let DerivedPathSource::ToolConventionRoot { convention } = &target.source {
+                    if !forms.iter().flat_map(|f| &f.effects).chain(modifiers.iter().flat_map(|m| &m.effects)).any(|e| matches!(&e.target, EffectTarget::ToolConventionPath(root) if root.convention == *convention)) {
+                        return Err(NormalizeError::InvalidConfiguredPath(format!("undeclared filename-prefix convention: {convention}")));
+                    }
+                }
+            }
             for source in std::iter::once(&target.source).chain(target.root.iter()) {
                 if let DerivedPathSource::Slot(slot) = source
                     && !names.contains(slot.as_str())
@@ -655,10 +666,12 @@ fn validate_option_scope(
                         operand_mode: FlagOperandMode::OptionalShortOctalPrefix
                             | FlagOperandMode::WordAttached
                             | FlagOperandMode::OptionalWordAttached
+                            | FlagOperandMode::WordAttachedOrNextArg
                     } | BindingSpec::FollowingFlag {
                         operand_mode: FlagOperandMode::OptionalShortOctalPrefix
                             | FlagOperandMode::WordAttached
-                            | FlagOperandMode::OptionalWordAttached,
+                            | FlagOperandMode::OptionalWordAttached
+                            | FlagOperandMode::WordAttachedOrNextArg,
                         ..
                     }
                 )
@@ -792,6 +805,7 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
 
     Ok(Form {
         id: FormId::new(raw.id),
+        operation_semantics_unresolved: raw.operation_semantics_unresolved,
         selector: normalize_selector_expr(raw.selector)?,
         remaining_selector: normalize_selector_expr(raw.remaining_selector)?,
         parameters: raw
@@ -1199,6 +1213,8 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
         && !matches!(&semantic,
             SemanticType::Path(path) if path.role != PathRole::CwdAnchor
         )
+        && !(value_projection == Some(crate::ValueProjection::DescriptorPath)
+            && semantic == SemanticType::PlainValue)
     {
         return Err(NormalizeError::InvalidValueProjection(format!(
             "parameter {}: value_projection requires a filesystem path semantic (not cwd_anchor)",
@@ -1739,6 +1755,7 @@ fn normalize_value_projection(
     };
     match raw {
         RawValueProjection::Identity => Ok(ValueProjection::Identity),
+        RawValueProjection::DescriptorPath => Ok(ValueProjection::DescriptorPath),
         RawValueProjection::TomlString { key } => {
             ensure_non_empty(&key, "parameters.value_projection.key")?;
             Ok(ValueProjection::TomlString { key })
@@ -1859,6 +1876,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
     match raw {
         RawFlagOperandMode::WordAttached => FlagOperandMode::WordAttached,
         RawFlagOperandMode::OptionalWordAttached => FlagOperandMode::OptionalWordAttached,
+        RawFlagOperandMode::WordAttachedOrNextArg => FlagOperandMode::WordAttachedOrNextArg,
         RawFlagOperandMode::NextPositional => FlagOperandMode::NextPositional,
         RawFlagOperandMode::NextArg => FlagOperandMode::NextArg,
         RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
@@ -3048,6 +3066,7 @@ fn normalize_derived_path_rule(
             Ok(caushell_types::DerivedPathRule::LexicalAncestors)
         }
         RawDerivedPathRule::SiblingFiles => Ok(caushell_types::DerivedPathRule::SiblingFiles),
+        RawDerivedPathRule::FileNamePrefix => Ok(caushell_types::DerivedPathRule::FileNamePrefix),
         RawDerivedPathRule::ChildUnder { relative_path } => {
             ensure_non_empty(&relative_path, "effects.target.rule.relative_path")?;
             Ok(caushell_types::DerivedPathRule::ChildUnder { relative_path })
@@ -3266,6 +3285,7 @@ mod tests {
             platform: Default::default(),
             forms: vec![RawForm {
                 id: "command_string".to_string(),
+                operation_semantics_unresolved: false,
                 payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasFlag {
                     flag: "-c".to_string(),
@@ -3450,6 +3470,7 @@ mod tests {
             platform: RawPlatformConstraints::default(),
             forms: vec![RawForm {
                 id: "copy".to_string(),
+                operation_semantics_unresolved: false,
                 payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 1 },
                 remaining_selector: RawSelectorExpr::default(),
@@ -3554,6 +3575,7 @@ mod tests {
             platform: RawPlatformConstraints::default(),
             forms: vec![RawForm {
                 id: "interactive".to_string(),
+                operation_semantics_unresolved: false,
                 payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 0 },
                 remaining_selector: RawSelectorExpr::default(),
@@ -3658,6 +3680,7 @@ mod tests {
             platform: RawPlatformConstraints::default(),
             forms: vec![RawForm {
                 id: "retargeted".to_string(),
+                operation_semantics_unresolved: false,
                 payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 2 },
                 remaining_selector: RawSelectorExpr::default(),
@@ -3711,6 +3734,7 @@ mod tests {
             },
             forms: vec![RawForm {
                 id: "change_mode".to_string(),
+                operation_semantics_unresolved: false,
                 payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasPositionalAt { index: 1 },
                 remaining_selector: RawSelectorExpr::All { items: Vec::new() },
@@ -3861,6 +3885,7 @@ mod tests {
             platform: Default::default(),
             forms: vec![RawForm {
                 id: "require_hook".to_string(),
+                operation_semantics_unresolved: false,
                 payload_projections: Vec::new(),
                 selector: RawSelectorExpr::HasFlag {
                     flag: "-r".to_string(),

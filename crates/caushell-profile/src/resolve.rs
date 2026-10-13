@@ -6876,7 +6876,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                    vec![EffectKind::TargetPath, EffectKind::WritePath]
                 );
                 assert!(catastrophic_semantic_classes(&resolved.bound).is_empty());
             }
@@ -6972,7 +6972,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                    vec![EffectKind::TargetPath, EffectKind::WritePath]
                 );
                 assert!(catastrophic_semantic_classes(&resolved.bound).is_empty());
             }
@@ -7180,7 +7180,10 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "csplit");
-                assert_eq!(resolved.selection.form.id.as_str(), "split_file");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "split_file_with_prefix"
+                );
                 assert_eq!(
                     first_argument_text(&resolved.bound, "output_prefix"),
                     "pref"
@@ -11981,7 +11984,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ReadPath, EffectKind::ReadPath]
+                    vec![
+                        EffectKind::ReadPath,
+                        EffectKind::ReadPath,
+                        EffectKind::ExecutePayload
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -12015,7 +12022,10 @@ mod tests {
                         .iter()
                         .all(|parameter| parameter.name.as_str() != "input_paths")
                 );
-                assert!(effect_kinds(&resolved.bound).is_empty());
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::ExecutePayload]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -13152,7 +13162,10 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "csplit");
-                assert_eq!(resolved.selection.form.id.as_str(), "split_file");
+                assert_eq!(
+                    resolved.selection.form.id.as_str(),
+                    "split_file_default_prefix"
+                );
                 assert_eq!(
                     first_argument_text(&resolved.bound, "input_path"),
                     "input.txt"

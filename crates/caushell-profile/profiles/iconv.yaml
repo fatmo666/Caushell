@@ -19,66 +19,32 @@ platform:
 
 forms:
   - id: convert_to_stdout
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: output_path
-    parameters:
+    selector: {kind: all, items: [{kind: not, item: &output {kind: all, items: [{kind: has_modifier, modifier: output_path}, {kind: not, item: {kind: has_modifier_parameter_matching, modifier: output_path, parameter: output_operand, matcher: {kind: literal, value: '-'}}}]}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    parameters: &inputs
       - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
-
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    effects: &effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: convert_stdin_to_stdout
+    selector: {kind: all, items: [{kind: not, item: *output}, *stdin]}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: convert_to_file
-    selector:
-      kind: has_modifier
-      modifier: output_path
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: opaque
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+    selector: {kind: all, items: [*output, {kind: not, item: *stdin}]}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: convert_stdin_to_file
+    selector: {kind: all, items: [*output, *stdin]}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
 modifiers:
   - id: from_encoding
@@ -118,17 +84,18 @@ modifiers:
         - "-o"
         - "--output"
     parameters:
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+      - name: output_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}}
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: output_path

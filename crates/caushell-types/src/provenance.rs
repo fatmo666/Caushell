@@ -227,6 +227,10 @@ pub enum ProvenanceArtifact {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<u64>,
     },
+    PathFamily {
+        directory: String,
+        prefix: String,
+    },
     VariableValue {
         name: String,
         state: ProvenanceVariableValueState,
@@ -294,6 +298,19 @@ pub enum ProvenanceArtifact {
         source_path: Option<String>,
         version: u64,
     },
+}
+
+impl ProvenanceArtifact {
+    pub fn family_contains_path(&self, path: &str) -> bool {
+        let Self::PathFamily { directory, prefix } = self else {
+            return false;
+        };
+        let Some((parent, name)) = path.rsplit_once('/') else {
+            return false;
+        };
+        let parent = if parent.is_empty() { "/" } else { parent };
+        parent == directory && name.starts_with(prefix) && name.len() > prefix.len()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

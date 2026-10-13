@@ -118,6 +118,8 @@ pub enum DerivedPathRule {
     /// Tool-generated filenames sharing a statically known parent directory.
     /// This is a bounded set, not a fictitious concrete filename.
     SiblingFiles,
+    /// Nonempty tool-generated suffixes appended to a filename prefix.
+    FileNamePrefix,
     /// Parent-removal targets formed by truncating the original argv spelling.
     /// Relative spellings stop at the cwd; absolute/parent spellings widen.
     LexicalAncestors,
@@ -177,6 +179,11 @@ pub enum PathResolution {
         roots: Vec<String>,
         may_escape: bool,
     },
+    /// A filename family in one directory, not a concrete file or subtree.
+    FileNamePrefix {
+        directory: String,
+        prefix: String,
+    },
     DerivedUnresolved {
         basis: DerivedPathBasis,
         rule: DerivedPathRule,
@@ -203,7 +210,7 @@ impl PathResolution {
             Self::Concrete { path }
             | Self::ToolConvention { path, .. }
             | Self::DerivedConcrete { path, .. } => Some(path.as_str()),
-            Self::BoundedPathSet { .. } => None,
+            Self::BoundedPathSet { .. } | Self::FileNamePrefix { .. } => None,
             Self::DerivedUnresolved { .. }
             | Self::MissingBinding { .. }
             | Self::UnsupportedDynamicBinding { .. }

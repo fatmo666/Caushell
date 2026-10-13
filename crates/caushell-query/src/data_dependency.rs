@@ -133,8 +133,20 @@ impl DataDependencyQuery {
     }
 
     pub fn input_producers(graph: &dyn GraphRead, artifact: &NodeId) -> Vec<NodeId> {
-        graph
-            .incoming_edges(artifact)
+        let mut artifacts = vec![artifact.clone()];
+        if let Some(NodeKind::ProvenanceArtifact {
+            artifact: caushell_types::ProvenanceArtifact::PathContent { path, .. },
+        }) = graph.get_node(artifact).map(|n| &n.kind)
+        {
+            artifacts.extend(
+                graph
+                    .path_family_artifact_nodes_for_path(path)
+                    .map(|n| n.id.clone()),
+            );
+        }
+        artifacts
+            .iter()
+            .flat_map(|id| graph.incoming_edges(id))
             .filter(|edge| edge.kind == EdgeKind::Produces)
             .filter(|edge| Self::carries_inputs(edge))
             .filter(|edge| {

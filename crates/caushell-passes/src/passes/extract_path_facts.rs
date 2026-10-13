@@ -221,6 +221,32 @@ fn collect_resolved_path_mutations(
                 },
             });
 
+            if let PathResolution::FileNamePrefix { directory, prefix } = &resolution {
+                if path.role == PathRole::Write {
+                    let (_, semantics) = provenance_edge_for_path_fact(
+                        path.role,
+                        path.purpose,
+                        &slot_name,
+                        Some(&normalized_command_name),
+                    )
+                    .expect("file family writes have provenance");
+                    mutations.push(PendingMutation::AddProvenanceArtifact {
+                        source_node_id: source_node_id.clone(),
+                        node_id: caushell_graph::NodeId::new(format!(
+                            "artifact:path-family:{}:{}:{}",
+                            directory.len(),
+                            directory,
+                            prefix
+                        )),
+                        artifact: caushell_types::ProvenanceArtifact::PathFamily {
+                            directory: directory.clone(),
+                            prefix: prefix.clone(),
+                        },
+                        relation: EdgeKind::Produces,
+                        semantics,
+                    });
+                }
+            }
             if let Some(path_string) = resolution.concrete_path() {
                 if let Some((relation, semantics)) = provenance_edge_for_path_fact(
                     path.role,

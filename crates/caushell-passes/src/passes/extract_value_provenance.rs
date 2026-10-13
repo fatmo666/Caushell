@@ -31,7 +31,10 @@ impl SessionTransformPass for ExtractValueProvenancePass {
     fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
         let records = graph_backed_execution_resolve_records(ctx);
         let explicit_stdin_payload_sources = explicit_stdin_payload_sources(ctx);
-        let mut mutations = collect_variable_binding_provenance_mutations(ctx);
+        let (ordered, consumed, written) =
+            collect_ordered_variable_origins(session.summary(), session.graph(), ctx, &records);
+        let mut mutations = collect_variable_binding_provenance_mutations(ctx).into_iter().filter(|m| !matches!(m, PendingMutation::AddProvenanceArtifact { artifact: ProvenanceArtifact::VariableValue { name, .. }, .. } if written.contains(name))).collect::<Vec<_>>();
+        mutations.extend(ordered);
         mutations.extend(collect_auxiliary_environment_inputs(
             &records,
             ctx.request().sequence_no,
@@ -40,7 +43,7 @@ impl SessionTransformPass for ExtractValueProvenancePass {
             session.summary(),
             &records,
             ctx.request().sequence_no,
-        ));
+        ).into_iter().filter(|m| !matches!(m, PendingMutation::AddProvenanceArtifact { source_node_id, artifact: ProvenanceArtifact::VariableValue { name, .. }, relation: EdgeKind::Consumes, .. } if consumed.contains(&(source_node_id.clone(), name.clone())))));
         mutations.extend(collect_implicit_argument_provenance_mutations(
             &records,
             ctx.request().sequence_no,
@@ -325,6 +328,356 @@ fn variable_binding_provenance_mutation(
             domain_label: None,
         },
     }
+}
+
+/// Data origins follow the same ordered bindings used for argv resolution.
+/// A producer-specific artifact distinguishes repeated writes in one action;
+/// the final write additionally publishes the persisted session version.
+struct VariableWriter<'a> {
+    end: usize,
+    source: NodeId,
+    conditional: bool,
+    scope: Option<&'a SourceSpan>,
+    command: Option<&'a caushell_parse::CommandFact>,
+}
+
+fn collect_ordered_variable_origins(
+    summary: &SessionSummary,
+    graph: &dyn caushell_graph::GraphRead,
+    ctx: &RunnerContext,
+    records: &[ExecutionResolveRecordRef<'_>],
+) -> (
+    Vec<PendingMutation>,
+    std::collections::BTreeSet<(NodeId, String)>,
+    std::collections::BTreeSet<String>,
+) {
+    let mut frames = std::collections::BTreeMap::new();
+    let mut function_children = std::collections::BTreeMap::new();
+    if ctx.parsed_command().is_some() {
+        frames.entry(None).or_insert_with(Vec::new);
+    }
+    for record in records {
+        let frame = record.variable_frame();
+        if let Some((parent, caushell_runner::ExecutionUnitOriginKind::FunctionExpansion, _)) =
+            &frame
+        {
+            function_children
+                .entry(parent.clone())
+                .or_insert_with(Vec::new)
+                .push(*record);
+        }
+        frames.entry(frame).or_insert_with(Vec::new).push(*record);
+    }
+    let mut mutations = Vec::new();
+    let mut consumed = std::collections::BTreeSet::new();
+    let mut written = std::collections::BTreeSet::new();
+    for (frame, records) in frames {
+        let parsed = if frame.is_none() {
+            let Some(parsed) = ctx.parsed_command() else {
+                continue;
+            };
+            parsed
+        } else {
+            records[0].parsed_scope()
+        };
+        let (more, uses, writes) = collect_frame_variable_origins(
+            summary,
+            graph,
+            ctx,
+            &records,
+            &function_children,
+            parsed,
+            frame.as_ref().map(|f| &f.0),
+        );
+        mutations.extend(more);
+        consumed.extend(uses);
+        if frame.is_none() {
+            written.extend(writes);
+        }
+    }
+    (mutations, consumed, written)
+}
+
+fn collect_frame_variable_origins(
+    summary: &SessionSummary,
+    graph: &dyn caushell_graph::GraphRead,
+    ctx: &RunnerContext,
+    records: &[ExecutionResolveRecordRef<'_>],
+    function_children: &std::collections::BTreeMap<NodeId, Vec<ExecutionResolveRecordRef<'_>>>,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    parent_frame: Option<&NodeId>,
+) -> (
+    Vec<PendingMutation>,
+    std::collections::BTreeSet<(NodeId, String)>,
+    std::collections::BTreeSet<String>,
+) {
+    use caushell_profile::{EnvironmentValueRef, runtime_variable_writes};
+    let mut writers: std::collections::BTreeMap<String, Vec<VariableWriter<'_>>> =
+        std::collections::BTreeMap::new();
+    for assignment in &parsed.assignment_commands {
+        if let Some(source) = if let Some(parent) = parent_frame {
+            Some(parent.clone())
+        } else {
+            top_level_node_id_for_span(ctx.request(), parsed, &assignment.top_level_span)
+        } {
+            for value in &assignment.assignments {
+                writers
+                    .entry(value.name.clone())
+                    .or_default()
+                    .push(VariableWriter {
+                        end: assignment.span.end_byte,
+                        source: source.clone(),
+                        conditional: assignment.conditional_execution,
+                        scope: assignment.shell_scope_span.as_ref(),
+                        command: None,
+                    });
+            }
+        }
+    }
+    for &record in records {
+        if record.parsed_scope().raw_command != parsed.raw_command {
+            continue;
+        }
+        let ResolveInvocationArtifactResult::Resolved(r) = record.result() else {
+            continue;
+        };
+        let Some(command) = record.command() else {
+            continue;
+        };
+        for name in runtime_variable_writes(&r.bound).names {
+            writers.entry(name).or_default().push(VariableWriter {
+                end: command.span.end_byte,
+                source: record.source_node_id().clone(),
+                conditional: command.conditional_execution,
+                scope: command.shell_scope_span.as_ref(),
+                command: Some(command),
+            });
+        }
+    }
+    for (command_index, command) in parsed.commands.iter().enumerate() {
+        let source = if parent_frame.is_none() {
+            crate::support::source_node_id_for_command(
+                ctx.request(),
+                parsed,
+                command_index,
+                command,
+            )
+        } else {
+            let Some(record) = records
+                .iter()
+                .find(|r| r.command().is_some_and(|c| c.span == command.span))
+            else {
+                continue;
+            };
+            record.source_node_id().clone()
+        };
+        let Some(children) = function_children.get(&source) else {
+            continue;
+        };
+        for &child in children {
+            let ResolveInvocationArtifactResult::Resolved(resolved) = child.result() else {
+                continue;
+            };
+            for name in runtime_variable_writes(&resolved.bound).names {
+                if !crate::support::function_variable_escapes(child.parsed_scope(), &name) {
+                    continue;
+                }
+                writers.entry(name).or_default().push(VariableWriter {
+                    end: command.span.end_byte,
+                    source: child.source_node_id().clone(),
+                    conditional: command.conditional_execution
+                        || child.command().is_some_and(|c| c.conditional_execution),
+                    scope: command.shell_scope_span.as_ref(),
+                    command: Some(command),
+                });
+            }
+        }
+    }
+    if writers.is_empty() {
+        return Default::default();
+    }
+    for events in writers.values_mut() {
+        events.sort_by_key(|event| event.end);
+    }
+    let mut mutations = Vec::new();
+    let mut consumed = std::collections::BTreeSet::new();
+    for &record in records {
+        if record.parsed_scope().raw_command != parsed.raw_command {
+            continue;
+        }
+        let ResolveInvocationArtifactResult::Resolved(r) = record.result() else {
+            continue;
+        };
+        let Some(command) = record.command() else {
+            continue;
+        };
+        for (arg, resolution) in r
+            .materialized_projection
+            .invocation
+            .args
+            .iter()
+            .zip(&r.materialized_projection.arg_resolutions)
+        {
+            let name = match resolution {
+                ValueMaterialization::ResolvedExactScalar {
+                    variable_name,
+                    origin: BindingOrigin::SessionBinding,
+                    ..
+                }
+                | ValueMaterialization::ResolvedRuntimeProduced {
+                    variable_name,
+                    origin: BindingOrigin::SessionBinding,
+                    ..
+                }
+                | ValueMaterialization::UnsupportedDynamicBinding {
+                    variable_name,
+                    origin: BindingOrigin::SessionBinding,
+                    ..
+                }
+                | ValueMaterialization::UnsafeUnquotedScalar {
+                    variable_name,
+                    origin: BindingOrigin::SessionBinding,
+                    ..
+                } => variable_name,
+                ValueMaterialization::RequiresRuntimeInput {
+                    variable_name: Some(name),
+                    origin: Some(BindingOrigin::SessionBinding),
+                    ..
+                } => name,
+                _ => continue,
+            };
+            let Some(events) = writers.get(name) else {
+                continue;
+            };
+            let producers = possible_variable_writers(events, parsed, command.span.start_byte);
+            if producers.is_empty() {
+                continue;
+            }
+            let Some(value) = record.bindings().get(name) else {
+                continue;
+            };
+            if producers.iter().any(|writer| !writer.conditional) {
+                consumed.insert((record.source_node_id().clone(), name.clone()));
+            }
+            let binding = SessionVariableBinding::new(
+                name,
+                value.value.to_session_variable_value(),
+                matches!(
+                    record.bindings().environment_value(name),
+                    EnvironmentValueRef::Present(_)
+                ),
+                ctx.request().sequence_no,
+            );
+            for writer in producers {
+                let producer = &writer.source;
+                let node_id =
+                    NodeId::new(format!("artifact:ordered-variable:{}:{name}", producer.0));
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: producer.clone(),
+                    node_id: node_id.clone(),
+                    artifact: variable_value_artifact(&binding),
+                    relation: EdgeKind::Produces,
+                    semantics: ProvenanceEdgeSemantics::Produce {
+                        produce_kind: ProvenanceProduceKind::VariableBinding,
+                        slot_name: Some(name.clone()),
+                        normalized_command_name: None,
+                        domain_label: if writer.command.is_none()
+                            && matches!(binding.value, SessionVariableValue::ExactScalar(_))
+                        {
+                            Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                                dependency: caushell_types::StreamDataDependency::Independent,
+                                domain: None,
+                            })
+                        } else {
+                            None
+                        },
+                    },
+                });
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: record.source_node_id().clone(),
+                    node_id,
+                    artifact: variable_value_artifact(&binding),
+                    relation: EdgeKind::Consumes,
+                    semantics: ProvenanceEdgeSemantics::Consume {
+                        consume_kind: ProvenanceConsumeKind::VariableExpansion,
+                        slot_name: slot_name_for_arg(&r.bound, &arg.span),
+                        normalized_command_name: Some(r.normalized_command_name.clone()),
+                        domain_label: None,
+                    },
+                });
+            }
+        }
+    }
+    for mutation in ctx.pending_mutations() {
+        if parent_frame.is_some() {
+            break;
+        }
+        let PendingMutation::UpsertVariableBinding { binding } = mutation else {
+            continue;
+        };
+        if let Some(events) = writers.get(&binding.name) {
+            let sources = possible_variable_writers(events, parsed, usize::MAX);
+            // Persist only the final session binding, never an earlier read's value.
+            for writer in &sources {
+                let mut mutation =
+                    variable_binding_provenance_mutation(writer.source.clone(), binding);
+                if writer.command.is_none()
+                    && matches!(binding.value, SessionVariableValue::ExactScalar(_))
+                {
+                    if let PendingMutation::AddProvenanceArtifact {
+                        semantics: ProvenanceEdgeSemantics::Produce { domain_label, .. },
+                        ..
+                    } = &mut mutation
+                    {
+                        *domain_label = Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                            dependency: caushell_types::StreamDataDependency::Independent,
+                            domain: None,
+                        });
+                    }
+                }
+                mutations.push(mutation);
+            }
+            if !sources.iter().any(|writer| !writer.conditional) {
+                if let Some(prior) = summary.variable_binding(&binding.name) {
+                    let prior_id = variable_value_artifact_node_id(&prior.name, prior.observed_at);
+                    for source in
+                        caushell_query::DataDependencyQuery::input_producers(graph, &prior_id)
+                    {
+                        mutations.push(variable_binding_provenance_mutation(source, binding));
+                    }
+                }
+            }
+        }
+    }
+    let written = writers
+        .iter()
+        .filter(|(_, events)| !possible_variable_writers(events, parsed, usize::MAX).is_empty())
+        .map(|(name, _)| name.clone())
+        .collect();
+    (mutations, consumed, written)
+}
+
+fn possible_variable_writers<'a, 's>(
+    events: &'a [VariableWriter<'s>],
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    before: usize,
+) -> Vec<&'a VariableWriter<'s>> {
+    let mut result = Vec::new();
+    for event in events.iter().rev().filter(|event| {
+        event.end <= before
+            && event
+                .scope
+                .is_none_or(|s| before >= s.start_byte && before < s.end_byte)
+            && event
+                .command
+                .is_none_or(|c| crate::support::runtime_write_visible(c, parsed, before))
+    }) {
+        result.push(event);
+        if !event.conditional {
+            break;
+        }
+    }
+    result
 }
 
 fn current_request_variable_binding_sources(

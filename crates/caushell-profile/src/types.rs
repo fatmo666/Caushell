@@ -563,6 +563,9 @@ pub enum FlagOperandMode {
     /// Requires scoped exact_names matching; never consumes the next argv word.
     WordAttached,
     OptionalWordAttached,
+    /// Prefer a declared attached suffix; a bare word owns the next argv item.
+    /// Requires scoped exact_names matching and never enables short clusters.
+    WordAttachedOrNextArg,
     NextPositional,
     NextArg,
     /// Attached/inline value, otherwise the immediate non-option argv value.
@@ -649,6 +652,8 @@ impl Parameter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueProjection {
     Identity,
+    /// Decimal descriptor operand projected to its content-open alias.
+    DescriptorPath,
     /// Decode a top-level string from an opaque file-or-TOML operand.
     TomlString {
         key: String,
@@ -898,6 +903,8 @@ impl ImplicitInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Form {
     pub id: FormId,
+    /// Known invocation shape whose tool-owned operation remains opaque.
+    pub operation_semantics_unresolved: bool,
     pub selector: SelectorExpr,
     pub remaining_selector: SelectorExpr,
     pub parameters: Vec<Parameter>,
@@ -914,6 +921,7 @@ impl Form {
     pub fn new(id: &str) -> Self {
         Self {
             id: FormId::new(id),
+            operation_semantics_unresolved: false,
             selector: SelectorExpr::new(),
             remaining_selector: SelectorExpr::new(),
             parameters: Vec::new(),

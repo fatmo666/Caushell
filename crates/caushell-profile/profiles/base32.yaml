@@ -18,79 +18,57 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: decode_stream
-    selector:
-      kind: has_modifier
-      modifier: decode
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: decode
-
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: has_modifier, modifier: decode}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &inputs
+      - name: input_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects: &decode_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_stream_stdin
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: decode}, *stdin, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *decode_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: encode_stream
-    selector:
-      kind: not
-      item:
-        kind: has_modifier
-        modifier: decode
-    parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
-        extensions:
-          transform.kind: encode
+    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: decode}}, {kind: not, item: *stdin}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: &encode_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: encode}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: encode_stream_stdin
+    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: decode}}, *stdin, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *encode_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
 modifiers:
-  - id: decode
-    matcher:
-      kind: any_flag
-      flags:
-        - "-d"
-        - "--decode"
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
+  - {id: decode, matcher: {kind: any_flag, flags: ['-d', '--decode']}}
+  - {id: ignore_garbage, matcher: {kind: any_flag, flags: ['-i', '--ignore-garbage']}}
+  - id: wrap
+    matcher: {kind: any_flag, flags: ['-w', '--wrap']}
+    parameters: [{name: wrap_columns, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/semantic_sources:
+    - https://www.gnu.org/software/coreutils/manual/html_node/base32-invocation.html

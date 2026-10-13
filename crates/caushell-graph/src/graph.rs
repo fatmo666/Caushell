@@ -27,6 +27,7 @@ pub struct SessionGraph {
     path_fact_by_concrete_path_index: BTreeMap<String, Vec<NodeId>>,
     path_content_artifact_index: Vec<NodeId>,
     path_content_artifact_by_path_index: BTreeMap<String, Vec<NodeId>>,
+    path_family_by_directory_index: BTreeMap<String, Vec<NodeId>>,
 }
 
 impl SessionGraph {
@@ -297,6 +298,13 @@ impl SessionGraph {
                 }
             }
             NodeKind::ProvenanceArtifact { artifact } => {
+                if let ProvenanceArtifact::PathFamily { directory, .. } = artifact {
+                    self.path_content_artifact_index.push(node.id.clone());
+                    self.path_family_by_directory_index
+                        .entry(directory.clone())
+                        .or_default()
+                        .push(node.id.clone());
+                }
                 if let ProvenanceArtifact::PathContent { path, .. } = artifact {
                     self.path_content_artifact_index.push(node.id.clone());
                     self.path_content_artifact_by_path_index
@@ -375,6 +383,14 @@ impl SessionGraph {
                 }
             }
             NodeKind::ProvenanceArtifact { artifact } => {
+                if let ProvenanceArtifact::PathFamily { directory, .. } = artifact {
+                    remove_vec_entry(&mut self.path_content_artifact_index, &node.id);
+                    remove_index_entry(
+                        &mut self.path_family_by_directory_index,
+                        directory,
+                        &node.id,
+                    );
+                }
                 if let ProvenanceArtifact::PathContent { path, .. } = artifact {
                     remove_vec_entry(&mut self.path_content_artifact_index, &node.id);
                     remove_index_entry(
@@ -538,6 +554,23 @@ impl GraphRead for SessionGraph {
         self.indexed_nodes(&self.path_content_artifact_index)
     }
 
+    fn path_family_artifact_nodes_for_path<'a>(
+        &'a self,
+        path: &str,
+    ) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        if self.path_family_by_directory_index.is_empty() {
+            return Box::new(std::iter::empty());
+        }
+        let path = path.to_owned();
+        let directory = path
+            .rsplit_once('/')
+            .map(|(d, _)| if d.is_empty() { "/" } else { d });
+        let Some(ids) = directory.and_then(|d| self.path_family_by_directory_index.get(d)) else {
+            return Box::new(std::iter::empty());
+        };
+        Box::new(self.indexed_nodes(ids).filter(move |n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact } if artifact.family_contains_path(&path))))
+    }
+
     fn path_content_artifact_nodes_by_path<'a>(
         &'a self,
         path: &str,
@@ -593,6 +626,58 @@ mod tests {
         assert_eq!(graph.add_node(node.clone()), None);
         assert_eq!(graph.node_count(), 1);
         assert_eq!(graph.get_node(&NodeId::new("cmd-1")), Some(&node));
+    }
+
+    #[test]
+    fn filename_family_index_is_precise_and_replacement_removes_old_entries() {
+        use crate::GraphRead;
+        use caushell_types::ProvenanceArtifact;
+        let mut graph = SessionGraph::new();
+        let id = NodeId::new("family");
+        graph.add_node(GraphNode::new_provenance_artifact(
+            id.clone(),
+            ProvenanceArtifact::PathFamily {
+                directory: "/workspace/cache".into(),
+                prefix: "part".into(),
+            },
+        ));
+        assert_eq!(
+            graph
+                .path_family_artifact_nodes_for_path("/workspace/cache/part01")
+                .count(),
+            1
+        );
+        for path in [
+            "/workspace/cache/part",
+            "/workspace/cache/unrelated",
+            "/workspace/cache/part01/child",
+            "/workspace/other/part01",
+        ] {
+            assert_eq!(
+                graph.path_family_artifact_nodes_for_path(path).count(),
+                0,
+                "{path}"
+            );
+        }
+        graph.add_node(GraphNode::new_provenance_artifact(
+            id,
+            ProvenanceArtifact::PathContent {
+                path: "/workspace/cache/exact".into(),
+                version: None,
+            },
+        ));
+        assert_eq!(
+            graph
+                .path_family_artifact_nodes_for_path("/workspace/cache/part01")
+                .count(),
+            0
+        );
+        assert_eq!(
+            graph
+                .path_content_artifact_nodes_by_path("/workspace/cache/exact")
+                .count(),
+            1
+        );
     }
 
     #[test]

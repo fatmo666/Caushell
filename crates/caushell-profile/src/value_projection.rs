@@ -82,6 +82,21 @@ fn project_text(
     complete: bool,
 ) -> Option<SemanticValueResolution> {
     let selected = match projection {
+        ValueProjection::DescriptorPath => {
+            let descriptor = complete
+                .then(|| {
+                    value
+                        .trim_matches(|c: char| c.is_ascii_whitespace())
+                        .parse::<i32>()
+                        .ok()
+                })
+                .flatten()
+                .filter(|n| *n >= 0);
+            return Some(match descriptor {
+                Some(n) => SemanticValueResolution::Known(format!("/dev/fd/{n}")),
+                _ => SemanticValueResolution::Unknown(ProjectionUnknownReason::DynamicArgument),
+            });
+        }
         ValueProjection::TomlString { key } => {
             if !complete {
                 return Some(SemanticValueResolution::Unknown(

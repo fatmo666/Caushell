@@ -228,23 +228,7 @@ impl RuntimeVariableContext<'_> {
     ) -> Option<(usize, usize)> {
         // A pipeline/background shell cannot write the caller's variables.
         // A (...) write is visible only to later commands inside that scope.
-        let same_pipeline_shell = parsed
-            .commands
-            .iter()
-            .find(|c| c.span.start_byte == target_start)
-            .is_some_and(|target| {
-                target.in_pipeline
-                    && target.pipeline_span == command.pipeline_span
-                    && target.pipeline_position == command.pipeline_position
-            });
-        let visible = !((command.in_pipeline && !same_pipeline_shell)
-            || command.terminator == Some(StatementTerminator::Background)
-            || command.shell_scope_span.as_ref().is_some_and(|scope| {
-                target_start < scope.start_byte || target_start >= scope.end_byte
-            })
-            || command.subshell_span.as_ref().is_some_and(|scope| {
-                target_start < scope.start_byte || target_start >= scope.end_byte
-            }));
+        let visible = runtime_write_visible(command, parsed, target_start);
         let (expanded, _) = expand_alias_chain(command, self.request.shell_kind, &self.aliases, 8);
         apply_alias_command(&mut self.aliases, command, self.request.sequence_no);
         let name = expanded
@@ -354,13 +338,7 @@ impl RuntimeVariableContext<'_> {
             result.touched.extend(result.assigned);
             for variable in result.touched.into_iter().filter(|_| visible) {
                 // Plain function locals do not escape to the calling shell.
-                if body.declaration_commands.iter().any(|d| {
-                    d.kind == caushell_parse::DeclarationCommandKind::Local
-                        && d.unconditional_current_shell
-                        && d.options.is_empty()
-                        && (d.names.contains(&variable)
-                            || d.assignments.iter().any(|a| a.name == variable))
-                }) {
+                if !function_variable_escapes(&body, &variable) {
                     continue;
                 }
                 touched.insert(variable.clone());
@@ -466,6 +444,42 @@ fn termination_fence(
             .as_ref()
             .map_or(usize::MAX, |s| s.end_byte),
     ))
+}
+
+pub(crate) fn runtime_write_visible(
+    command: &CommandFact,
+    parsed: &ParsedCommandArtifact,
+    target_start: usize,
+) -> bool {
+    let same_pipeline_shell = parsed
+        .commands
+        .iter()
+        .find(|c| c.span.start_byte == target_start)
+        .is_some_and(|target| {
+            target.in_pipeline
+                && target.pipeline_span == command.pipeline_span
+                && target.pipeline_position == command.pipeline_position
+        });
+    !((command.in_pipeline && !same_pipeline_shell)
+        || command.terminator == Some(StatementTerminator::Background)
+        || command
+            .shell_scope_span
+            .as_ref()
+            .is_some_and(|s| target_start < s.start_byte || target_start >= s.end_byte)
+        || command
+            .subshell_span
+            .as_ref()
+            .is_some_and(|s| target_start < s.start_byte || target_start >= s.end_byte))
+}
+
+pub(crate) fn function_variable_escapes(body: &ParsedCommandArtifact, variable: &str) -> bool {
+    !body.declaration_commands.iter().any(|d| {
+        d.kind == caushell_parse::DeclarationCommandKind::Local
+            && d.unconditional_current_shell
+            && d.options.is_empty()
+            && (d.names.iter().any(|name| name == variable)
+                || d.assignments.iter().any(|a| a.name == variable))
+    })
 }
 
 #[cfg(test)]

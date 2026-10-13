@@ -836,10 +836,24 @@ extensions: {}
             load_command_profile_from_path(&profile_path).expect("expected iconv profile to load");
 
         assert_eq!(profile.primary_name(), "iconv");
-        assert_eq!(profile.forms.len(), 2);
-        assert_eq!(profile.forms[0].id.as_str(), "convert_to_stdout");
-        assert_eq!(profile.forms[1].id.as_str(), "convert_to_file");
-        assert_eq!(profile.forms[1].effects[1].kind, EffectKind::TransformData);
+        assert_eq!(
+            profile
+                .forms
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "convert_to_stdout",
+                "convert_stdin_to_stdout",
+                "convert_to_file",
+                "convert_stdin_to_file"
+            ]
+        );
+        assert_eq!(profile.forms[2].effects[1].kind, EffectKind::TransformData);
+        assert_eq!(
+            profile.forms[0].effects[0].path_access,
+            Some(crate::PathAccessKind::ContentOpen)
+        );
         assert_eq!(profile.modifiers[2].id.as_str(), "output_path");
     }
 

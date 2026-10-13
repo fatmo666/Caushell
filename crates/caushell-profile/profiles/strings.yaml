@@ -52,6 +52,7 @@ forms:
       stderr_mode: opaque
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths

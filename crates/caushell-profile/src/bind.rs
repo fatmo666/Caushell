@@ -576,10 +576,21 @@ pub fn bind_invocation(
             .collect();
         bound.effects.extend(defaults);
     }
+    if selection.form.operation_semantics_unresolved {
+        residuals.push(Residual::new(
+            ResidualKind::UnboundControlSurface,
+            ResidualSurface::Control,
+            format!(
+                "form {} declares unresolved tool-owned operation semantics",
+                selection.form.id.as_str()
+            ),
+        ));
+    }
     bound.residuals = residuals;
     bound.operation_semantics_unresolved |=
         profile.opaque_on_unresolved && !bound.residuals.is_empty();
-    bound.operation_semantics_unresolved |= state.group_binding_unresolved;
+    bound.operation_semantics_unresolved |=
+        state.group_binding_unresolved || selection.form.operation_semantics_unresolved;
     bound
 }
 
@@ -2661,12 +2672,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 binding_source,
                 value_constraints,
             ),
-            FlagOperandMode::NextArg => self.consume_immediate_arg_after(
-                flag_index,
-                scope,
-                binding_source,
-                value_constraints,
-            ),
+            FlagOperandMode::NextArg | FlagOperandMode::WordAttachedOrNextArg => self
+                .consume_immediate_arg_after(flag_index, scope, binding_source, value_constraints),
             FlagOperandMode::OptionalNextArg => {
                 if self.optional_operand_available(flag_index, scope) {
                     self.consume_immediate_arg_after(
@@ -4198,7 +4205,9 @@ fn owned_flag_token_binding_match<'a>(
     }
     if matches!(
         mode,
-        FlagOperandMode::WordAttached | FlagOperandMode::OptionalWordAttached
+        FlagOperandMode::WordAttached
+            | FlagOperandMode::OptionalWordAttached
+            | FlagOperandMode::WordAttachedOrNextArg
     ) {
         return token
             .strip_prefix(flag)

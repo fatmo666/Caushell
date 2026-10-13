@@ -764,7 +764,10 @@ mod tests {
                         produce_kind: ProvenanceProduceKind::PipelineOutput,
                         slot_name: None,
                         normalized_command_name: Some("cat".to_string()),
-                        domain_label: None,
+                        domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                            dependency: caushell_types::StreamDataDependency::Inputs,
+                            domain: None
+                        }),
                     },
                 })
         );
@@ -937,7 +940,10 @@ mod tests {
                         produce_kind: ProvenanceProduceKind::TransformOutput,
                         slot_name: None,
                         normalized_command_name: Some("base64".to_string()),
-                        domain_label: None,
+                        domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                            dependency: caushell_types::StreamDataDependency::Inputs,
+                            domain: None
+                        }),
                     },
                 })
         );
@@ -988,7 +994,10 @@ mod tests {
                         produce_kind: ProvenanceProduceKind::TransformOutput,
                         slot_name: None,
                         normalized_command_name: Some("xxd".to_string()),
-                        domain_label: None,
+                        domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                            dependency: caushell_types::StreamDataDependency::Inputs,
+                            domain: None
+                        }),
                     },
                 })
         );
@@ -1049,7 +1058,10 @@ mod tests {
                         produce_kind: ProvenanceProduceKind::PipelineOutput,
                         slot_name: None,
                         normalized_command_name: Some("cat".to_string()),
-                        domain_label: None,
+                        domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                            dependency: caushell_types::StreamDataDependency::Inputs,
+                            domain: None
+                        }),
                     },
                 })
         );

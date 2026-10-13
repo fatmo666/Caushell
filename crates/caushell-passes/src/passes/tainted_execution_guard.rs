@@ -753,6 +753,7 @@ fn taint_source_artifact(
             | caushell_types::ProvenanceVariableValueState::OpaqueDynamic { .. } => None,
         },
         ProvenanceArtifact::MaterializedValue { .. }
+        | ProvenanceArtifact::PathFamily { .. }
         | ProvenanceArtifact::PathContent { .. }
         | ProvenanceArtifact::InlineShellContent { .. }
         | ProvenanceArtifact::CommandSubstitutionOutput { .. }

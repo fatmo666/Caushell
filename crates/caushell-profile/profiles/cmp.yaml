@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: cmp
@@ -18,43 +20,64 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: compare_files
     selector:
       kind: all
-      items: []
-    parameters:
+      items:
+        - &running {kind: not, item: {kind: has_modifier, modifier: information}}
+        - &has_input {kind: has_positional_at, index: 0}
+        - &within_arity {kind: not, item: {kind: has_positional_at, index: 4}}
+        - &second_file {kind: has_positional_at, index: 1}
+        - {kind: not, item: &quiet {kind: has_modifier, modifier: quiet}}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &inputs
+      # PositionalAt consumes from the remaining argv: bind suffixes right-to-left.
+      - {name: skip_second, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 3}, cardinality: optional_one}
+      - {name: skip_first, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 2}, cardinality: optional_one}
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
       - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    effects: &effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_markers}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: compare_stdin
+    selector: {kind: all, items: [*running, *has_input, *within_arity, {kind: not, item: *second_file}, {kind: not, item: *quiet}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: compare_silent
+    selector: {kind: all, items: [*running, *has_input, *within_arity, *second_file, *quiet]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: compare_silent_stdin
+    selector: {kind: all, items: [*running, *has_input, *within_arity, {kind: not, item: *second_file}, *quiet]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
 
 modifiers:
-  - id: mode
-    matcher:
-      kind: any_flag
-      flags:
-        - "-l"
-        - "-s"
-        - "-b"
+  - {id: information, matcher: {kind: any_flag, flags: [--help, '--version', '-v']}}
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-s', --quiet, --silent]}}
+  - {id: byte_output, matcher: {kind: any_flag, flags: ['-l', --verbose, '-b', --print-bytes]}}
+  - id: skip
+    matcher: {kind: any_flag, flags: ['-i', --ignore-initial]}
+    parameters: [{name: skip, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: limit
+    matcher: {kind: any_flag, flags: ['-n', --bytes]}
+    parameters: [{name: limit, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 
 subcommands: null
 extensions:

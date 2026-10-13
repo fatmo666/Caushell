@@ -19,10 +19,8 @@ platform:
 
 forms:
   - id: checksum_inputs
-    selector:
-      kind: all
-      items: []
-    parameters:
+    selector: {kind: all, items: [{kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    parameters: &inputs
       - name: input_paths
         semantic:
           kind: path
@@ -35,17 +33,24 @@ forms:
           - kind: exclude_literal
             value: "-"
     stream_contract:
-      stdin_mode: data_optional
+      stdin_mode: ignored
       stdout_mode: data
       stderr_mode: opaque
-    effects:
+    effects: &effects
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
       - kind: transform_data
         target:
           kind: none
+
+  - id: checksum_inputs_stdin
+    selector: {kind: all, items: [*stdin]}
+    parameters: *inputs
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
 modifiers: []
 subcommands: null

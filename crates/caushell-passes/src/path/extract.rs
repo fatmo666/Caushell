@@ -889,8 +889,18 @@ fn collect_effect_target_path_facts(
                 let Some(parameter) = bound_parameter(invocation, slot.as_str()) else {
                     continue;
                 };
-                let SemanticType::Path(path) = &parameter.semantic else {
-                    continue;
+                let path = match &parameter.semantic {
+                    SemanticType::Path(path) => path.clone(),
+                    SemanticType::PlainValue
+                        if parameter.value_projection
+                            == Some(caushell_profile::ValueProjection::DescriptorPath) =>
+                    {
+                        caushell_profile::PathSemantic {
+                            role: PathRole::Target,
+                            purpose: None,
+                        }
+                    }
+                    _ => continue,
                 };
                 // Parameters provide a base role, not an exclusive role. A
                 // declared read/modify effect on the same file must also enter
@@ -1090,11 +1100,25 @@ fn collect_derived_target_path_facts(
                         .to_string(),
                     convention: convention.clone(),
                 };
-                let resolution = derive_path_resolution_from_concrete_source(
-                    root_resolution,
-                    basis,
-                    &target.rule,
-                );
+                let resolution = if target.rule == DerivedPathRule::FileNamePrefix {
+                    let (parent, prefix) = root_target
+                        .path
+                        .rsplit_once('/')
+                        .unwrap_or((".", &root_target.path));
+                    PathResolution::FileNamePrefix {
+                        directory: lexical_path_from_argv(
+                            if parent.is_empty() { "/" } else { parent },
+                            cwd,
+                        ),
+                        prefix: prefix.into(),
+                    }
+                } else {
+                    derive_path_resolution_from_concrete_source(
+                        root_resolution,
+                        basis,
+                        &target.rule,
+                    )
+                };
 
                 out.push(PathFactCandidate {
                     source_node_id: record.source_node_id().clone(),
@@ -1204,10 +1228,16 @@ fn derive_semantic_slot_path_resolution(
     slot_name: &str,
     rule: &DerivedPathRule,
 ) -> Option<PathResolution> {
-    if *rule == DerivedPathRule::SiblingFiles {
+    if matches!(
+        rule,
+        DerivedPathRule::SiblingFiles | DerivedPathRule::FileNamePrefix
+    ) {
         let known = match value {
             SemanticValueRef::Projected { value, .. } => match &value.resolution {
                 SemanticValueResolution::Known(text) => Some(text.clone()),
+                SemanticValueResolution::Unknown(
+                    caushell_profile::ProjectionUnknownReason::EmptyValue,
+                ) if *rule == DerivedPathRule::FileNamePrefix => Some(String::new()),
                 _ => None,
             },
             SemanticValueRef::Original(source) => match caushell_profile::project_value(
@@ -1215,10 +1245,81 @@ fn derive_semantic_slot_path_resolution(
                 source,
             ) {
                 Some(SemanticValueResolution::Known(text)) => Some(text),
+                Some(SemanticValueResolution::Unknown(
+                    caushell_profile::ProjectionUnknownReason::EmptyValue,
+                )) if *rule == DerivedPathRule::FileNamePrefix => Some(String::new()),
                 _ => None,
             },
         };
+        let known = known.or_else(|| {
+            if *rule != DerivedPathRule::FileNamePrefix {
+                return None;
+            }
+            let SemanticValueRef::Original(source) = value else {
+                return None;
+            };
+            let BoundValue::Argument {
+                text,
+                quoted: false,
+                materialization: BoundArgumentMaterialization::Literal,
+                ..
+            } = source
+            else {
+                return None;
+            };
+            if !text.starts_with('~') {
+                return None;
+            }
+            // Decode the suffix in word context; tilde expansion is handled
+            // separately using the original argv position and quoting facts.
+            // Dollar/glob/substitution syntax remains unresolved by the decoder.
+            let mut suffix = source.clone();
+            if let BoundValue::Argument {
+                text, node_kind, ..
+            } = &mut suffix
+            {
+                *text = format!("_{text}");
+                *node_kind = "word".into();
+            }
+            match caushell_profile::project_value(
+                &caushell_profile::ValueProjection::Identity,
+                &suffix,
+            ) {
+                Some(SemanticValueResolution::Known(value)) => {
+                    value.strip_prefix('_').map(str::to_string)
+                }
+                _ => None,
+            }
+        });
         if let Some(text) = known {
+            if *rule == DerivedPathRule::FileNamePrefix {
+                let source = match value {
+                    SemanticValueRef::Original(source)
+                    | SemanticValueRef::Projected { source, .. } => source,
+                };
+                let shell_tilde = matches!(source, BoundValue::Argument { text, quoted: false, materialization: BoundArgumentMaterialization::Literal, span, binding_source, .. }
+                    if text.starts_with('~') && !matches!(binding_source,
+                        caushell_profile::ArgumentBindingSource::FollowingFlag { flag_span, .. } | caushell_profile::ArgumentBindingSource::MatchedModifierFlag { flag_span, .. } if flag_span.start_byte == span.start_byte));
+                let text = if shell_tilde {
+                    if text != "~" && !text.starts_with("~/") {
+                        return Some(PathResolution::UnsupportedDynamicText { text });
+                    }
+                    let Some(home) = home else {
+                        return Some(PathResolution::HomeUnavailable { text });
+                    };
+                    format!("{home}{}", &text[1..])
+                } else {
+                    text
+                };
+                let (parent, prefix) = text.rsplit_once('/').unwrap_or((".", &text));
+                return Some(PathResolution::FileNamePrefix {
+                    directory: lexical_path_from_argv(
+                        if parent.is_empty() { "/" } else { parent },
+                        cwd,
+                    ),
+                    prefix: prefix.to_owned(),
+                });
+            }
             // A basename is a prefix, not an existing path: `..` becomes
             // `.._report.csv`, so normalize its parent, not the prefix itself.
             let directory = text
@@ -1495,7 +1596,7 @@ fn derive_bounded_path_resolution(
         {
             false
         }
-        DerivedPathRule::SiblingFiles => false,
+        DerivedPathRule::SiblingFiles | DerivedPathRule::FileNamePrefix => false,
         DerivedPathRule::ChildUnder { relative_path }
             if !relative_path.starts_with('/')
                 && !relative_path.contains('\0')
@@ -1561,6 +1662,13 @@ fn derive_path_resolution_from_concrete_source(
             reason: DerivedPathUnresolvedReason::UnsupportedOperandShape,
         },
         DerivedPathRule::SiblingFiles => sibling_file_resolution(source_path, false),
+        DerivedPathRule::FileNamePrefix => {
+            let (directory, prefix) = source_path.rsplit_once('/').unwrap_or(("/", source_path));
+            PathResolution::FileNamePrefix {
+                directory: if directory.is_empty() { "/" } else { directory }.into(),
+                prefix: prefix.into(),
+            }
+        }
         DerivedPathRule::AppendSuffix { suffix } => PathResolution::DerivedConcrete {
             path: format!("{source_path}{suffix}"),
             basis,
@@ -1676,6 +1784,10 @@ fn compose_derived_path_under_root(
     root_path: &str,
 ) -> PathResolution {
     match child_resolution {
+        PathResolution::FileNamePrefix { prefix, .. } => PathResolution::FileNamePrefix {
+            directory: root_path.into(),
+            prefix: prefix.clone(),
+        },
         PathResolution::DerivedConcrete { path, basis, rule } => {
             let child_name = path.rsplit('/').next().unwrap_or(path);
             PathResolution::DerivedConcrete {
@@ -2412,6 +2524,9 @@ fn path_resolution_id_suffix(resolution: &PathResolution) -> String {
         PathResolution::BoundedPathSet { roots, may_escape } => {
             format!("bounded-path-set:{}:{}", roots.join("|"), may_escape)
         }
+        PathResolution::FileNamePrefix { directory, prefix } => {
+            format!("filename-prefix:{}:{directory}:{prefix}", directory.len())
+        }
     }
 }
 
@@ -2453,6 +2568,7 @@ fn derived_path_rule_id_suffix(rule: &DerivedPathRule) -> String {
         DerivedPathRule::ArchiveMembers => "archive-members".to_string(),
         DerivedPathRule::LexicalAncestors => "lexical-ancestors".to_string(),
         DerivedPathRule::SiblingFiles => "sibling-files".to_string(),
+        DerivedPathRule::FileNamePrefix => "filename-prefix".to_string(),
         DerivedPathRule::ChildUnder { relative_path } => {
             format!("child-under:{relative_path}")
         }

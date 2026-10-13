@@ -259,6 +259,14 @@ fn add_reason_for_target(
             ));
         }
         None => {
+            if let PathResolution::FileNamePrefix { directory, .. } = resolution {
+                if !directory.starts_with('/')
+                    || !path_is_within_root(&normalize_shell_path(directory), root)
+                {
+                    reasons.insert(format!("{operation} filename family for slot {slot_name} is outside workspace root {root} through directory {directory}"));
+                }
+                return;
+            }
             if let PathResolution::BoundedPathSet { roots, may_escape } = resolution {
                 if *may_escape {
                     reasons.insert(format!(

@@ -19,64 +19,61 @@ platform:
 
 forms:
   - id: shuffle_to_stdout
-    selector:
-      kind: not
-      item:
-        kind: has_modifier
-        modifier: output_path
-    parameters:
+    selector: {kind: all, items: [&file_mode {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: echo_args}}, {kind: not, item: {kind: has_modifier, modifier: input_range}}]}, {kind: not, item: &output {kind: has_modifier, modifier: output_path}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &file_inputs
       - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
-
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_one}
+    effects: &file_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: shuffle_stdin_to_stdout
+    selector: {kind: all, items: [*file_mode, {kind: not, item: *output}, *stdin]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *file_inputs
+    effects: *file_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: shuffle_to_file
-    selector:
-      kind: has_modifier
-      modifier: output_path
+    selector: {kind: all, items: [*file_mode, *output, {kind: not, item: *stdin}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *file_inputs
+    effects: *file_effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: shuffle_stdin_to_file
+    selector: {kind: all, items: [*file_mode, *output, *stdin]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *file_inputs
+    effects: *file_effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: echo_to_stdout
+    selector: {kind: all, items: [{kind: all, items: [{kind: has_modifier, modifier: echo_args}, {kind: not, item: {kind: has_modifier, modifier: input_range}}]}, {kind: not, item: *output}]}
+    remaining_selector: {kind: no_positional_args}
     parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: opaque
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+      - {name: arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: echo_to_file
+    selector: {kind: all, items: [{kind: all, items: [{kind: has_modifier, modifier: echo_args}, {kind: not, item: {kind: has_modifier, modifier: input_range}}]}, *output]}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: range_to_stdout
+    selector: {kind: all, items: [{kind: all, items: [{kind: has_modifier, modifier: input_range}, {kind: not, item: {kind: has_modifier, modifier: echo_args}}]}, {kind: not, item: *output}]}
+    remaining_selector: {kind: no_positional_args}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: range_to_file
+    selector: {kind: all, items: [{kind: all, items: [{kind: has_modifier, modifier: input_range}, {kind: not, item: {kind: has_modifier, modifier: echo_args}}]}, *output]}
+    remaining_selector: {kind: no_positional_args}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
 modifiers:
   - id: output_path
@@ -94,9 +91,10 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: output_path
@@ -121,7 +119,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
 
   - id: random_source
     matcher:
@@ -140,12 +138,21 @@ modifiers:
         cardinality: optional_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: random_source
 
+  - id: head_count
+    matcher: {kind: any_flag, flags: ['-n', '--head-count']}
+    parameters:
+      - {name: count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - {id: shuffle_controls, matcher: {kind: any_flag, flags: ['-r', '--repeat', '-z', '--zero-terminated']}}
+
 subcommands: null
 extensions:
+  caushell.profile/semantic_sources:
+    - https://www.gnu.org/software/coreutils/manual/html_node/shuf-invocation.html
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv

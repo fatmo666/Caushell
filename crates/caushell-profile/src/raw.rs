@@ -171,6 +171,8 @@ pub struct RawPlatformConstraints {
 #[serde(default, deny_unknown_fields)]
 pub struct RawForm {
     pub id: String,
+    #[serde(default)]
+    pub operation_semantics_unresolved: bool,
     pub selector: RawSelectorExpr,
     pub remaining_selector: RawSelectorExpr,
     pub parameters: Vec<RawParameter>,
@@ -420,6 +422,7 @@ pub struct RawParameter {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawValueProjection {
     Identity,
+    DescriptorPath,
     TomlString {
         key: String,
     },
@@ -550,6 +553,7 @@ pub enum RawCardinality {
 pub enum RawFlagOperandMode {
     WordAttached,
     OptionalWordAttached,
+    WordAttachedOrNextArg,
     NextPositional,
     NextArg,
     OptionalNextArg,
@@ -996,6 +1000,7 @@ pub enum RawDerivedPathRule {
     ArchiveMembers,
     ChildUnder { relative_path: String },
     SiblingFiles,
+    FileNamePrefix,
     LexicalAncestors,
 }
 

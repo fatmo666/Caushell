@@ -41,6 +41,7 @@ forms:
         semantic: {kind: path, role: write, purpose: generic_operand}
         binding: {kind: positional_at, index: 1}
         cardinality: required_one
+      - &stdin_marker {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
       - &input_paths
         name: input_paths
         semantic:
@@ -52,29 +53,35 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
-      - &stdin_marker {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
     effects:
       - &read_input
         kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
+      - &consume_input {kind: consume_stdin, target: {kind: slot, name: stdin_marker}}
       - kind: write_path
         target:
           kind: slot
           name: output_prefix
-    stream_contract: &file_streams {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    stream_contract: &file_streams {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
   - id: split_default_prefix
     remaining_selector: *running
     selector:
       kind: all
-      items: [*ordinary_output, &no_prefix {kind: not, item: *has_prefix}]
+      items:
+        - &shape_split_default_prefix
+          kind: all
+          items: [*ordinary_output, &no_prefix {kind: not, item: *has_prefix}]
+        - {kind: has_positional_at, index: 0}
     parameters:
-      - *input_paths
       - *stdin_marker
+      - *input_paths
     effects:
       - *read_input
+      - *consume_input
       - kind: write_path
         target:
           kind: tool_convention_path
@@ -91,27 +98,72 @@ forms:
     selector: {kind: all, items: [{kind: has_modifier, modifier: filter_command}, *has_prefix, *safe_suffix]}
     parameters:
       - {name: output_prefix, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: required_one}
-      - *input_paths
       - *stdin_marker
-    effects: [*read_input]
-    stream_contract: &filter_streams {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+      - *input_paths
+    effects: [*read_input, *consume_input]
+    stream_contract: &filter_streams {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
 
   - id: filter_default_prefix
     remaining_selector: *running
-    selector: {kind: all, items: [{kind: has_modifier, modifier: filter_command}, *no_prefix, *safe_suffix]}
-    parameters: [*input_paths, *stdin_marker]
-    effects: [*read_input]
+    selector:
+      kind: all
+      items:
+        - &shape_filter_default_prefix {kind: all, items: [{kind: has_modifier, modifier: filter_command}, *no_prefix, *safe_suffix]}
+        - {kind: has_positional_at, index: 0}
+    parameters: [*stdin_marker, *input_paths]
+    effects: [*read_input, *consume_input]
     stream_contract: *filter_streams
 
   - id: stdout_chunk
     remaining_selector: *running
-    selector: {kind: all, items: [*stdout_chunk, *not_filter, *safe_suffix]}
+    selector:
+      kind: all
+      items:
+        - &shape_stdout_chunk {kind: all, items: [*stdout_chunk, *not_filter, *safe_suffix]}
+        - {kind: has_positional_at, index: 0}
     parameters:
       - {name: unused_prefix, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: optional_one}
-      - *input_paths
       - *stdin_marker
-    effects: [*read_input]
-    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+      - *input_paths
+    effects: [*read_input, *consume_input]
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: split_default_prefix_stdin
+    remaining_selector: *running
+    selector: {kind: all, items: [*shape_split_default_prefix, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    parameters:
+      - *stdin_marker
+      - *input_paths
+    effects:
+      - *read_input
+      - *consume_input
+      - kind: write_path
+        target:
+          kind: tool_convention_path
+          path: x*
+          convention: split.default_prefix
+          purpose: generic_operand
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+
+  # --filter runs a shell program instead of opening each generated output.
+  # The tool-supplied FILE variable remains unknown until a genuine generated
+  # path-domain contract is available; do not fabricate a literal chunk name.
+  - id: filter_default_prefix_stdin
+    remaining_selector: *running
+    selector: {kind: all, items: [*shape_filter_default_prefix, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    parameters: [*stdin_marker, *input_paths]
+    effects: [*read_input, *consume_input]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: stdout_chunk_stdin
+    remaining_selector: *running
+    selector: {kind: all, items: [*shape_stdout_chunk, {kind: not, item: {kind: has_positional_at, index: 0}}]}
+    parameters:
+      - {name: unused_prefix, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: optional_one}
+      - *stdin_marker
+      - *input_paths
+    effects: [*read_input, *consume_input]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 
 modifiers:
   - id: chunk_size

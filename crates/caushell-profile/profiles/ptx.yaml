@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: ptx
@@ -18,37 +20,107 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: permuted_index
-    selector:
-      kind: all
-      items: []
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &traditional {kind: has_modifier, modifier: traditional}}, {kind: has_positional_at, index: 0}]}
+    remaining_selector: {kind: no_positional_args}
     parameters:
-      - name: input_paths
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
+      - {name: empty_stdin_inputs, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: ''}}, cardinality: optional_many}
+      - name: input_operands
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_paths
-      - kind: transform_data
-        target:
-          kind: none
+        structured_projection:
+          branches: &stdin_branches
+            - {matcher: {kind: literal, value: '-'}, target: {name: stdin_inputs, semantic: {kind: plain_value}}}
+          fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects: &effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_inputs}}
+      - {kind: consume_stdin, target: {kind: slot, name: empty_stdin_inputs}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: permuted_index_stdin
+    selector: {kind: all, items: [*running, {kind: not, item: *traditional}, {kind: no_positional_args}]}
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: traditional_to_stdout
+    selector: {kind: all, items: [*running, *traditional, {kind: has_positional_at, index: 0}, {kind: not, item: &empty_input {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: ''}}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &traditional_operands
+      - name: input_operand
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        structured_projection:
+          branches: *stdin_branches
+          fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}
+      - {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: optional_one}
+    effects: &traditional_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_inputs}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: traditional_default_stdin
+    selector: {kind: all, items: [*running, *traditional, {kind: no_positional_args}]}
+    effects: *effects
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: traditional_to_file
+    selector: {kind: all, items: [*running, *traditional, {kind: not, item: *empty_input}, {kind: has_positional_at, index: 1}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *traditional_operands
+    effects: *traditional_effects
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: traditional_empty_input_to_stdout
+    selector: {kind: all, items: [*running, *traditional, *empty_input, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &empty_input_operands
+      - {name: input_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: optional_one}
+    effects: &empty_input_effects
+      - {kind: consume_stdin, target: {kind: slot, name: input_marker}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_path}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: traditional_empty_input_to_file
+    selector: {kind: all, items: [*running, *traditional, *empty_input, {kind: has_positional_at, index: 1}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *empty_input_operands
+    effects: *empty_input_effects
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
-modifiers: []
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
+  - {id: traditional, matcher: {kind: any_flag, flags: ['-G', '--traditional']}}
+  - id: format_values
+    matcher: {kind: any_flag, flags: ['-F', '--flag-truncation', '-M', '--macro-name', '-S', '--sentence-regexp', '-W', '--word-regexp', '--format']}
+    parameters: [{name: format_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: dimensions
+    matcher: {kind: any_flag, flags: ['-g', '--gap-size', '-w', '--width']}
+    parameters: [{name: dimensions, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: formatting, matcher: {kind: any_flag, flags: ['-A', '--auto-reference', '-O', '-T', '-R', '--right-side-refs', '-f', '--ignore-case', '-r', '--references']}}
+  - id: auxiliary_files
+    matcher: {kind: any_flag, flags: ['-b', '--break-file', '-i', '--ignore-file', '-o', '--only-file']}
+    parameters:
+      - name: auxiliary_operands
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: auxiliary_stdin, semantic: {kind: plain_value}}}
+          fallback: {name: auxiliary_files, semantic: {kind: path, role: read, purpose: auxiliary_input}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: auxiliary_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: auxiliary_stdin}}
+
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/semantic_sources:
+    - https://github.com/coreutils/coreutils/blob/master/src/ptx.c

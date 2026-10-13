@@ -80,7 +80,9 @@ fn declarations(
     let mut add = |flag: &str, mode| -> Result<(), String> {
         if matches!(
             mode,
-            FlagOperandMode::WordAttached | FlagOperandMode::OptionalWordAttached
+            FlagOperandMode::WordAttached
+                | FlagOperandMode::OptionalWordAttached
+                | FlagOperandMode::WordAttachedOrNextArg
         ) && (matching != OptionMatchingPolicy::ExactNames || flag.starts_with("--"))
         {
             return Err(
@@ -250,6 +252,7 @@ pub(crate) fn scan_leading_options(
                                 Some(
                                     FlagOperandMode::WordAttached
                                         | FlagOperandMode::OptionalWordAttached
+                                        | FlagOperandMode::WordAttachedOrNextArg
                                 )
                             ) && token.starts_with(name.as_str())
                                 && token.len() > name.len()
@@ -342,6 +345,7 @@ pub(crate) fn scan_leading_options(
                             FlagOperandMode::NextArg
                                 | FlagOperandMode::WordAttached
                                 | FlagOperandMode::OptionalWordAttached
+                                | FlagOperandMode::WordAttachedOrNextArg
                                 | FlagOperandMode::OptionalNextArg
                                 | FlagOperandMode::InlineOrShortAttached
                                 | FlagOperandMode::OptionalInlineOrShortAttached
@@ -355,7 +359,11 @@ pub(crate) fn scan_leading_options(
             0
         } else {
             match mode {
-                Some(FlagOperandMode::NextArg | FlagOperandMode::NextPositional) => 1,
+                Some(
+                    FlagOperandMode::NextArg
+                    | FlagOperandMode::NextPositional
+                    | FlagOperandMode::WordAttachedOrNextArg,
+                ) => 1,
                 Some(FlagOperandMode::OptionalNextArg) => usize::from(
                     index + 1 < scope.end_index
                         && projection.args.get(index + 1).is_some_and(|arg| {

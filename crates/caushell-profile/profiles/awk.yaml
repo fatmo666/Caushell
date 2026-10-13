@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: awk
@@ -20,14 +22,26 @@ platform:
   requires_features: []
 
 forms:
+  - id: execute_program_stdin
+    selector: &program_stdin {kind: has_modifier_parameter_matching, modifier: program_file, parameter: program_files, matcher: {kind: literal, value: '-'}}
+    parameters:
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
   - id: explicit_program_transform
     selector:
-      kind: any
+      kind: all
       items:
-        - kind: has_modifier
-          modifier: inline_program
-        - kind: has_modifier
-          modifier: program_file
+        - {kind: not, item: *program_stdin}
+        - kind: any
+          items:
+            - {kind: has_modifier, modifier: inline_program}
+            - {kind: has_modifier, modifier: program_file}
     parameters:
       - name: input_paths
         semantic:
@@ -46,6 +60,7 @@ forms:
       stderr_mode: opaque
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
@@ -67,8 +82,10 @@ forms:
     parameters:
       - name: program
         semantic:
-          kind: structured_value
-          context: awk_program
+          kind: payload
+          language: opaque
+          source: inline_string
+          recursive: true
         binding:
           kind: next_positional
         cardinality: required_one
@@ -88,7 +105,9 @@ forms:
       stdout_mode: data
       stderr_mode: opaque
     effects:
+      - {kind: execute_payload, target: {kind: slot, name: program}}
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: input_paths
@@ -103,12 +122,15 @@ modifiers:
     parameters:
       - name: programs
         semantic:
-          kind: structured_value
-          context: awk_program
+          kind: payload
+          language: opaque
+          source: inline_string
+          recursive: true
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
+    effects: [{kind: execute_payload, target: {kind: slot, name: programs}}]
 
   - id: program_file
     matcher:
@@ -119,21 +141,23 @@ modifiers:
     parameters:
       - name: program_files
         semantic:
-          kind: path
-          role: read
-          purpose: script_source
+          kind: payload
+          language: opaque
+          source: script_file_ref
+          recursive: true
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
-        value_constraints:
-          - kind: exclude_literal
-            value: "-"
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: null}]
+          fallback: {name: program_file_paths, semantic: {kind: path, role: read, purpose: script_source}}
     effects:
       - kind: read_path
         target:
           kind: slot
-          name: program_files
+          name: program_file_paths
+      - {kind: execute_payload, target: {kind: slot, name: program_files}}
 
   - id: assign_variable
     matcher:
@@ -169,5 +193,5 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - Awk programs are structured values, not recursively parsed shell payloads.
-    - Output redirection inside awk source is not modeled without awk-language parsing.
+    - AWK programs are opaque executable payloads, using the same approval boundary as mawk. Their internal language is not parsed as Bash.
+    - Named input files do not prove stdin is unused by arbitrary programs containing getline or command pipes.
