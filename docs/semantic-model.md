@@ -73,6 +73,11 @@ in shared code:
   matching. Exact declared words take precedence; otherwise the longest
   explicitly attached-word declaration owns its suffix. They never consume
   a following word or enable short-cluster guessing.
+- `word_attached_or_next_arg` uses the same scoped `exact_names` ownership,
+  but a bare declared option requires and owns the immediate next argv item.
+  Thus `-c8` and `-c 8` both bind `8`. Exact declared option names win over
+  prefix matches, and attached matches use the longest declared name. It does
+  not enable short clusters or alter the older operand modes.
 - A structured `regex_capture` matcher selects a capture only when the whole
   operand matches. Regexes are compiled once at Profile loading and shared
   across clones. Captured bytes are semantic projections; original execution
@@ -1332,6 +1337,14 @@ conservative. Dependency labels survive Graph snapshots and are respected by
 shared taint queries and existing guards. An independent child output alone does
 not prove all parent output independent when the parent's dependency is undeclared.
 
+Text-tool Profiles preserve each native operand grammar. A named input ignores
+unrelated stdin; an explicit content-open FD read still consumes its backing
+source. `rev -` reads a file literally named `-`, whereas `ptx -G - OUTPUT`
+reads stdin and writes `OUTPUT` (including a literal output name `-`). GNU
+`ptx` without `-G` treats all operands as inputs. File-output forms retain
+write/provenance facts while declaring empty content stdout. Titles and regex
+values are not file paths; their original argument provenance is retained.
+
 ## Parsed shell execution I/O boundaries
 
 Fully parsed shell command strings, recursive shell scripts and expanded
@@ -2003,6 +2016,32 @@ The Graph contains possible static jobs, not a runtime scheduling trace.
 References: [Zip manual](https://manpages.debian.org/bookworm/zip/zip.1.en.html),
 [OpenSSL passphrase options](https://docs.openssl.org/3.5/man1/openssl-passphrase-options/),
 [GNU Parallel `-X`](https://www.gnu.org/software/parallel/man.html).
+
+## File families and runtime-variable content origins
+
+`derived_path: {rule: {kind: file_name_prefix}}` declares files formed by appending
+nonempty filename suffixes to a known prefix. The Graph retains the directory and
+prefix as a typed set, not a fictitious concrete filename or the whole directory.
+Family membership excludes the prefix itself, unrelated siblings, and descendants.
+Persistent and staged graphs index families by directory for content-origin queries.
+`csplit` uses this contract for default and explicit output prefixes; unsupported
+suffix formats containing path separators retain unresolved operation semantics.
+Only silent mode declares independent stdout; ordinary partition counts retain
+input dependency because matching split patterns can reveal content structure.
+
+Forms may opt into `operation_semantics_unresolved: true` even when their argv
+shape is understood. Existing effects are retained and ResolvePolicy handles the
+opaque operation. `curl -K` uses it for configuration-defined options; configuration
+bytes are not automatically treated as request bodies.
+
+`value_projection: {kind: descriptor_path}` projects a decimal descriptor operand
+to a content-open alias without changing raw argv. It is consumed only by a declared
+path effect, so polling forms do not acquire fictitious reads. Runtime-variable
+producers preserve input content origins, distinguish ordered writes, and publish
+only final binding origins across actions. Conditional writes retain alternative
+origins; pipeline, background and subshell visibility uses the same scope checks
+as variable resolution. AWK programs retain opaque execution, matching `mawk`,
+without attempting to interpret AWK source as Bash.
 
 ## Further Reading
 
