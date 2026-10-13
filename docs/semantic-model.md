@@ -1345,6 +1345,14 @@ reads stdin and writes `OUTPUT` (including a literal output name `-`). GNU
 write/provenance facts while declaring empty content stdout. Titles and regex
 values are not file paths; their original argument provenance is retained.
 
+`rg` keeps positional patterns separate from `-e`/`-f` sources and search paths.
+Named search files ignore unrelated stdin; explicit `-` and `-f -` retain stdin
+consumption. Content-open file operands include FD-backed reads. Quiet searches
+without statistics and information-only modes declare independent stdout;
+statistics/JSON modes retain input dependency. File listing does not read file
+contents. `mv` preserves move/write facts and moved-file origins without treating
+them as stdout content; help/version do not produce filesystem mutations.
+
 ## Parsed shell execution I/O boundaries
 
 Fully parsed shell command strings, recursive shell scripts and expanded
