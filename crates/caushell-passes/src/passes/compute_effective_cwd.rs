@@ -1251,6 +1251,7 @@ fn execution_cwd_override_for_record(
     base: &CwdState,
     home: Option<&str>,
 ) -> Option<CwdState> {
+    let home = record.bindings.tilde_home_with_default(home);
     let bound = match &record.result {
         ResolveInvocationArtifactResult::Resolved(resolved) => &resolved.bound,
         ResolveInvocationArtifactResult::SelectionError {
@@ -1460,6 +1461,7 @@ fn current_shell_cwd_update(
     home: Option<&str>,
     known_existing_dirs: &BTreeSet<String>,
 ) -> Option<CwdUpdate> {
+    let home = record.bindings.tilde_home_with_default(home);
     if !command_can_update_current_shell(command) {
         return None;
     }

@@ -1368,6 +1368,7 @@ fn decoded_projected_argv_value(
             resolution,
             ValueMaterialization::ResolvedExactScalar { .. }
                 | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                | ValueMaterialization::ResolvedShellWord { .. }
         )
     {
         // The value is already the materialized argv byte string. Do not run
@@ -3357,6 +3358,7 @@ fn expanded_recursive_payload_children(
             ValueMaterialization::Static
                 | ValueMaterialization::ResolvedExactScalar { .. }
                 | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                | ValueMaterialization::ResolvedShellWord { .. }
         ) {
             unresolved_payloads.push(NestedPayloadRecord {
                 record_id,
@@ -5129,6 +5131,7 @@ fn shell_payload_from_bound_invocation(
         ValueMaterialization::Static
             | ValueMaterialization::ResolvedExactScalar { .. }
             | ValueMaterialization::ResolvedRuntimeProduced { .. }
+            | ValueMaterialization::ResolvedShellWord { .. }
     ) {
         return None;
     }
@@ -6767,7 +6770,8 @@ fn unresolved_reason_evidence(
     match materialization {
         ValueMaterialization::Static
         | ValueMaterialization::ResolvedExactScalar { .. }
-        | ValueMaterialization::ResolvedRuntimeProduced { .. } => {
+        | ValueMaterialization::ResolvedRuntimeProduced { .. }
+        | ValueMaterialization::ResolvedShellWord { .. } => {
             panic!("unresolved_reason_evidence only accepts unresolved materialization states")
         }
         ValueMaterialization::MissingBinding { variable_name } => {
@@ -6857,6 +6861,7 @@ fn classify_argument_fragment_payload(
         ValueMaterialization::Static => UnresolvedExecutionPayloadSubtype::StaticInlineLiteral,
         ValueMaterialization::ResolvedExactScalar { .. }
         | ValueMaterialization::ResolvedRuntimeProduced { .. }
+        | ValueMaterialization::ResolvedShellWord { .. }
         | ValueMaterialization::MissingBinding { .. }
         | ValueMaterialization::UnsupportedDynamicBinding { .. }
         | ValueMaterialization::UnsupportedDynamicText { .. }
@@ -7110,7 +7115,8 @@ fn collect_nested_payload_records(
         match &materialized.resolution {
             ValueMaterialization::Static
             | ValueMaterialization::ResolvedExactScalar { .. }
-            | ValueMaterialization::ResolvedRuntimeProduced { .. } => {
+            | ValueMaterialization::ResolvedRuntimeProduced { .. }
+            | ValueMaterialization::ResolvedShellWord { .. } => {
                 let parse_result = parse_recursive_payload_candidate(&materialized.candidate);
                 let record_bindings = entry
                     .positional_args
@@ -7158,6 +7164,7 @@ fn collect_nested_payload_records(
                                     ValueMaterialization::Static
                                         | ValueMaterialization::ResolvedExactScalar { .. }
                                         | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                                        | ValueMaterialization::ResolvedShellWord { .. }
                                 )
                             })
                             .count();
@@ -7173,7 +7180,8 @@ fn collect_nested_payload_records(
                             let resolution = match &child_materialized.resolution {
                                 ValueMaterialization::Static
                                 | ValueMaterialization::ResolvedExactScalar { .. }
-                                | ValueMaterialization::ResolvedRuntimeProduced { .. } => {
+                                | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                                | ValueMaterialization::ResolvedShellWord { .. } => {
                                     NestedPayloadResolution::TruncatedByDepthBudget {
                                         max_depth: max_nested_parse_depth,
                                         next_candidate_count: expandable_child_count,
@@ -7603,6 +7611,7 @@ fn resolved_parameter_path(
     cwd: &str,
     home: Option<&str>,
 ) -> Option<String> {
+    let home = bindings.tilde_home_with_default(home);
     for value in &parameter.values {
         let BoundValue::Argument {
             text,
@@ -7616,24 +7625,11 @@ fn resolved_parameter_path(
         };
 
         let (text, node_kind) = match materialization {
-            caushell_profile::BoundArgumentMaterialization::ResolvedExactScalar {
-                variable_name,
-            }
-            | caushell_profile::BoundArgumentMaterialization::ResolvedRuntimeProduced {
-                variable_name,
-            } => {
-                let resolved = bindings
-                    .get(variable_name)
-                    .and_then(|binding| match binding.value {
-                        caushell_profile::SessionValue::ExactScalar(value)
-                        | caushell_profile::SessionValue::RuntimeProduced { value, .. } => {
-                            Some(value.as_str())
-                        }
-                        caushell_profile::SessionValue::OpaqueDynamic { .. }
-                        | caushell_profile::SessionValue::RuntimeInput { .. } => None,
-                    })
-                    .unwrap_or(text.as_str());
-                (resolved, "word")
+            caushell_profile::BoundArgumentMaterialization::ResolvedExactScalar { .. }
+            | caushell_profile::BoundArgumentMaterialization::ResolvedRuntimeProduced { .. } => {
+                // The bound bytes are the complete expanded operand. Looking
+                // up its provenance variable would lose a composite suffix.
+                (text.as_str(), "raw_string")
             }
             caushell_profile::BoundArgumentMaterialization::Literal => {
                 (text.as_str(), node_kind.as_str())
@@ -8407,7 +8403,8 @@ modifiers:
 
     #[test]
     fn resolve_invocation_pass_materializes_home_in_quoted_command_path() {
-        let summary = SessionSummary::new();
+        let mut summary = SessionSummary::new();
+        summary.set_exact_scalar_variable("HOME", "/home/alice", false, CommandSequenceNo::new(1));
         let ctx = run_pass(
             &summary,
             ShellKind::Bash,
@@ -8428,7 +8425,8 @@ modifiers:
 
     #[test]
     fn resolve_invocation_pass_materializes_braced_home_and_tilde_command_paths() {
-        let summary = SessionSummary::new();
+        let mut summary = SessionSummary::new();
+        summary.set_exact_scalar_variable("HOME", "/home/alice", false, CommandSequenceNo::new(1));
 
         for (command, expected) in [
             (r#""${HOME}/bin/tool" --help"#, "/home/alice/bin/tool"),
@@ -8447,7 +8445,8 @@ modifiers:
 
     #[test]
     fn resolve_invocation_pass_materializes_same_action_variable_command_paths() {
-        let summary = SessionSummary::new();
+        let mut summary = SessionSummary::new();
+        summary.set_exact_scalar_variable("HOME", "/home/alice", false, CommandSequenceNo::new(1));
         let ctx = run_pass(
             &summary,
             ShellKind::Bash,

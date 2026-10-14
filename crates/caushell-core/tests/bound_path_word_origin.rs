@@ -123,8 +123,8 @@ fn quoted_escaped_and_materialized_tildes_are_literal_path_bytes() {
 fn variable_expansion_is_not_disabled_for_attached_option_values() {
     for command in [
         "d=/opt/shared; cp --target-directory=\"$d\" input",
-        "cp --target-directory=\"$HOME/staging\" input",
-        "cp --target-directory=$HOME/staging input",
+        "HOME=/home/benchmark-user; cp --target-directory=\"$HOME/staging\" input",
+        "HOME=/home/benchmark-user; cp --target-directory=$HOME/staging input",
     ] {
         let path = if command.starts_with("d=") {
             "/opt/shared"

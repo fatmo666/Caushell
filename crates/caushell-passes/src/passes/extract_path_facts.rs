@@ -103,6 +103,7 @@ fn collect_resolved_path_mutations(
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
     for &record in records {
+        let home = record.bindings().tilde_home_with_default(home);
         for path in collect_path_facts(&[record], cwd, home) {
             let kind = match path.role {
                 PathRole::Read => Some(EffectKind::ReadPath),
@@ -365,6 +366,7 @@ fn collect_redirection_path_mutations(
     let streams = StreamSemanticsIndex::new(ctx);
 
     for record in records {
+        let home = record.bindings().tilde_home_with_default(home);
         let parsed_scope = record.parsed_scope();
         // Redirections are opened by the caller shell, before a tool-local
         // chdir. Derived shell payloads have their own shell-entry cwd.

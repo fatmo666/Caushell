@@ -89,6 +89,9 @@ pub struct BindingValueRef<'a> {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionBindings {
+    // Account-home fact supplied by the request, not a shell variable or an
+    // exported environment entry. Explicit HOME facts override this default.
+    default_tilde_home: Option<String>,
     // Static shell frame kind; no process/runtime observation is involved.
     in_function_scope: bool,
     functions: BTreeMap<String, SessionFunctionBinding>,
@@ -128,6 +131,53 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn set_default_tilde_home(&mut self, home: Option<&str>) {
+        self.default_tilde_home = home.map(str::to_owned);
+    }
+
+    /// Preserve the request's initial-home default only when the shell and
+    /// environment have supplied no HOME fact. Never overwrite a snapshot,
+    /// a complete environment, an explicit unknown, or an unset binding.
+    pub fn set_request_home_facts(&mut self, home: Option<&str>) {
+        self.set_default_tilde_home(home);
+        if let Some(home) = home
+            && !self.variables_complete
+            && !self.child_environment_complete
+            && !self.variable_presence.contains_key("HOME")
+            && !self.child_environment.contains_key("HOME")
+            && self.get("HOME").is_none()
+        {
+            self.insert_inherited_exact_scalar("HOME", home);
+        }
+    }
+
+    pub fn tilde_home(&self) -> Option<&str> {
+        self.tilde_home_with_default(None)
+    }
+
+    pub fn tilde_home_with_default<'a>(&'a self, account_home: Option<&'a str>) -> Option<&'a str> {
+        if self.variable_presence.get("HOME") == Some(&VariablePresence::Unknown) {
+            return None;
+        }
+        if let Some(binding) = self.get("HOME") {
+            return match binding.value {
+                SessionValue::ExactScalar(value) | SessionValue::RuntimeProduced { value, .. }
+                    if !value.contains('\0') =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            };
+        }
+        if self.variable_presence("HOME") == VariablePresence::Present {
+            return None;
+        }
+        self.default_tilde_home
+            .as_deref()
+            .or(account_home)
+            .filter(|home| !home.contains('\0'))
+    }
+
     pub fn enter_function_scope(&mut self) {
         self.in_function_scope = true;
     }
@@ -765,7 +815,7 @@ fn materialize_shell_word(
     mode: ShellWordMode,
     initial_quote: ShellWordQuote,
 ) -> Option<String> {
-    materialize_shell_word_with_references(text, bindings, mode, initial_quote)
+    materialize_shell_word_with_references(text, bindings, mode, initial_quote, true)
         .map(|(value, _)| value)
 }
 
@@ -774,13 +824,18 @@ fn materialize_shell_word_with_references(
     bindings: &SessionBindings,
     mode: ShellWordMode,
     initial_quote: ShellWordQuote,
+    allow_tilde_expansion: bool,
 ) -> Option<(String, Vec<ShellParameterReference>)> {
     let mut out = String::with_capacity(text.len());
     let mut references = Vec::new();
     let mut chars = text.chars().peekable();
     let mut quote = initial_quote;
+    let mut at_word_start = initial_quote == ShellWordQuote::None;
+    let mut tilde_expanded = false;
 
     while let Some(ch) = chars.next() {
+        let lexical_start = at_word_start;
+        at_word_start = false;
         match quote {
             ShellWordQuote::Single => {
                 if ch == '\'' {
@@ -854,14 +909,14 @@ fn materialize_shell_word_with_references(
                 // Brace expansion can produce multiple fields before parameter
                 // expansion. This scalar query must not collapse those fields.
                 '{' | '}' if mode == ShellWordMode::PositionalArgument => return None,
-                '~' if out.is_empty() && matches!(chars.peek(), None | Some('/')) => {
-                    let home = exact_scalar_shell_parameter_reference_value("$HOME", bindings)?;
-                    if home.contains('\0') {
-                        return None;
-                    }
-                    out.push_str(&home);
+                '~' if allow_tilde_expansion
+                    && lexical_start
+                    && matches!(chars.peek(), None | Some('/')) =>
+                {
+                    out.push_str(bindings.tilde_home()?);
+                    tilde_expanded = true;
                 }
-                '~' if out.is_empty() => return None,
+                '~' if allow_tilde_expansion && lexical_start => return None,
                 _ => out.push(ch),
             },
         }
@@ -870,6 +925,7 @@ fn materialize_shell_word_with_references(
     let quote_complete = quote == initial_quote;
     let value_allowed = mode == ShellWordMode::Assignment
         || !out.is_empty()
+        || tilde_expanded
         || (mode == ShellWordMode::PositionalArgument && initial_quote == ShellWordQuote::Double);
     (quote_complete && value_allowed).then_some((out, references))
 }
@@ -1111,6 +1167,10 @@ fn shell_value_to_session_value(value: &ShellValueSnapshot) -> Option<SessionVal
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueMaterialization {
     Static,
+    /// An expanded shell word, not a fabricated HOME variable reference.
+    ResolvedShellWord {
+        value: String,
+    },
     ResolvedExactScalar {
         variable_name: String,
         value: String,
@@ -1211,9 +1271,8 @@ pub fn materialize_projected_invocation(
                     // Tilde's value is not field-split or glob-expanded. A pure
                     // pathname suffix may generate many fields, all retaining
                     // this spelling prefix. Use supplied bindings, no lookup.
-                    let binding = bindings.get("HOME")?;
-                    let prefix = exact_scalar_session_value(binding.value)?;
-                    (prefix.starts_with('/') && !prefix.contains('\0')).then_some(prefix)
+                    let prefix = bindings.tilde_home()?;
+                    prefix.starts_with('/').then(|| prefix.to_owned())
                 }),
                 // A resolved field is argv data, not shell source to decode
                 // again. Its binding origin stays in arg_resolutions below.
@@ -1222,6 +1281,7 @@ pub fn materialize_projected_invocation(
                         materialized.resolution,
                         ValueMaterialization::ResolvedExactScalar { .. }
                             | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                            | ValueMaterialization::ResolvedShellWord { .. }
                     ),
                 kind: arg.kind,
                 quoted: arg.quoted,
@@ -1258,7 +1318,8 @@ pub fn materialize_recursive_payload_candidate(
             for fragment in fragments {
                 let materialized = materialize_recursive_fragment_text(fragment, bindings);
                 let materialization = match &materialized.resolution {
-                    ValueMaterialization::Static => {
+                    ValueMaterialization::Static
+                    | ValueMaterialization::ResolvedShellWord { .. } => {
                         if fragment.materialization
                             == RecursivePayloadFragmentMaterialization::RuntimeData
                         {
@@ -1421,6 +1482,7 @@ fn aggregate_recursive_payload_resolution(
             ValueMaterialization::Static
                 | ValueMaterialization::ResolvedExactScalar { .. }
                 | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                | ValueMaterialization::ResolvedShellWord { .. }
         )
     }) {
         return resolution.clone();
@@ -1624,6 +1686,16 @@ pub(crate) fn materialize_argument_text(
     node_kind: &str,
     bindings: &SessionBindings,
 ) -> MaterializedText {
+    materialize_argument_text_with_tilde(text, quoted, node_kind, bindings, true)
+}
+
+pub(crate) fn materialize_argument_text_with_tilde(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    bindings: &SessionBindings,
+    allow_tilde_expansion: bool,
+) -> MaterializedText {
     if matches!(node_kind, "raw_string" | "ansi_c_string") {
         return MaterializedText {
             text: text.to_string(),
@@ -1634,7 +1706,12 @@ pub(crate) fn materialize_argument_text(
     // A dollar sign inside a single-quoted segment is literal, including
     // concatenated flag operands. Keep the source for its first lexical
     // decode; do not invent a variable origin from the whole source word.
-    if crate::value_projection::decode_argument_prefix(text, quoted, node_kind).1 {
+    let tilde_word = allow_tilde_expansion && !quoted && (text == "~" || text.starts_with("~/"));
+    let tilde_literal_composite = node_kind == "concatenation" && text.contains('~');
+    if !tilde_word
+        && !tilde_literal_composite
+        && crate::value_projection::decode_argument_prefix(text, quoted, node_kind).1
+    {
         return MaterializedText {
             text: text.to_string(),
             resolution: ValueMaterialization::Static,
@@ -1835,7 +1912,7 @@ pub(crate) fn materialize_argument_text(
         }
     }
 
-    if contains_unescaped_dynamic_syntax(text) {
+    if tilde_word || tilde_literal_composite || contains_unescaped_dynamic_syntax(text) {
         // Composite positional words (e.g. "$10", "${1}0")
         // use the same parameter grammar as command names/assignments. Only
         // statically proven single-field expansions are materialized; unknown
@@ -1850,6 +1927,7 @@ pub(crate) fn materialize_argument_text(
             } else {
                 ShellWordQuote::None
             },
+            allow_tilde_expansion,
         ) {
             // Preserve the actual variable's origin for attached operands
             // such as -e"$CODE". Expanded bytes are argv data and must never
@@ -1863,7 +1941,28 @@ pub(crate) fn materialize_argument_text(
                     .map(|value| (value, BindingOrigin::SessionBinding)),
                 _ => None,
             };
-            let resolution = if references.len() == 1 {
+            let resolution = if references.is_empty() && (tilde_word || tilde_literal_composite) {
+                Some(match tilde_word.then(|| bindings.get("HOME")).flatten() {
+                    Some(binding) => match binding.value {
+                        SessionValue::RuntimeProduced { kind, .. } => {
+                            ValueMaterialization::ResolvedRuntimeProduced {
+                                variable_name: "HOME".into(),
+                                value: value.clone(),
+                                kind: *kind,
+                                origin: binding.origin,
+                            }
+                        }
+                        _ => ValueMaterialization::ResolvedExactScalar {
+                            variable_name: "HOME".into(),
+                            value: value.clone(),
+                            origin: binding.origin,
+                        },
+                    },
+                    None => ValueMaterialization::ResolvedShellWord {
+                        value: value.clone(),
+                    },
+                })
+            } else if references.len() == 1 {
                 let variable_name = shell_parameter_reference_name(&references[0]);
                 match reference_value(&references[0]) {
                     Some((SessionValue::RuntimeProduced { kind, .. }, origin)) => {

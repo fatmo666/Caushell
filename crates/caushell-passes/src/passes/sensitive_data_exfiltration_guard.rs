@@ -118,6 +118,7 @@ fn collect_python_static_exfiltration_reasons(
             ValueMaterialization::Static
                 | ValueMaterialization::ResolvedExactScalar { .. }
                 | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                | ValueMaterialization::ResolvedShellWord { .. }
         ) {
             continue;
         }

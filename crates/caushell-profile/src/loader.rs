@@ -488,9 +488,14 @@ extensions: {}
         assert_eq!(
             preserve_default.parameters[0].binding,
             BindingSpec::FollowingMatchedFlag {
-                operand_mode: crate::FlagOperandMode::InlineOnly,
+                operand_mode: crate::FlagOperandMode::OptionalInlineOrShortAttached,
             }
         );
+        assert_eq!(
+            profile.option_scope,
+            crate::OptionScopePolicy::PermutedOptions
+        );
+        assert!(profile.opaque_on_unresolved);
     }
 
     #[test]

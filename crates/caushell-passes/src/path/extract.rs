@@ -82,7 +82,8 @@ pub(crate) fn path_operand_depends_on_cwd(
 ) -> bool {
     let effective_text = match materialization {
         Some(ValueMaterialization::ResolvedExactScalar { value, .. })
-        | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. }) => value.as_str(),
+        | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. })
+        | Some(ValueMaterialization::ResolvedShellWord { value }) => value.as_str(),
         _ => text,
     };
     let shell_tilde = !quoted
@@ -92,6 +93,7 @@ pub(crate) fn path_operand_depends_on_cwd(
             Some(
                 ValueMaterialization::ResolvedExactScalar { .. }
                     | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                    | ValueMaterialization::ResolvedShellWord { .. }
             )
         )
         && (effective_text == "~" || effective_text.starts_with("~/"));
@@ -365,6 +367,7 @@ pub(crate) fn collect_effect_mutation_targets(
     cwd: &str,
     home: Option<&str>,
 ) -> Vec<MutationTargetCandidate> {
+    let home = record.bindings().tilde_home_with_default(home);
     let (bound, resolved, command_name) = match record.result() {
         ResolveInvocationArtifactResult::Resolved(resolved) => (
             &resolved.bound,
@@ -570,6 +573,7 @@ pub(crate) fn collect_path_facts(
     let mut paths = Vec::new();
 
     for &record in records {
+        let home = record.bindings().tilde_home_with_default(home);
         for case in record.cwd_cases(cwd) {
             let start = paths.len();
             let resolution_cwd = case.resolution_base(cwd);
@@ -630,6 +634,7 @@ pub(crate) fn collect_mutation_scope_facts(
     let mut scopes = Vec::new();
 
     for &record in records {
+        let home = record.bindings().tilde_home_with_default(home);
         let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
             continue;
         };
@@ -1500,9 +1505,8 @@ fn derive_slot_target_path_resolution(
             // materialized `$`/`~` bytes must not undergo shell expansion again.
             let spelling = match materialization {
                 Some(ValueMaterialization::ResolvedExactScalar { value, .. })
-                | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. }) => {
-                    Some(value.clone())
-                }
+                | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. })
+                | Some(ValueMaterialization::ResolvedShellWord { value }) => Some(value.clone()),
                 _ if !matches!(bound_materialization, BoundArgumentMaterialization::Literal) => {
                     Some(text.to_string())
                 }
@@ -1986,7 +1990,8 @@ fn endpoint_url_unresolved_reason(
         Some(
             ValueMaterialization::Static
             | ValueMaterialization::ResolvedExactScalar { .. }
-            | ValueMaterialization::ResolvedRuntimeProduced { .. },
+            | ValueMaterialization::ResolvedRuntimeProduced { .. }
+            | ValueMaterialization::ResolvedShellWord { .. },
         )
         | None => DerivedPathUnresolvedReason::MissingUrlBasename,
     }
@@ -2247,7 +2252,8 @@ fn resolve_path_resolution_with_tilde(
                 variable_name: variable_name.clone(),
             }
         }
-        Some(ValueMaterialization::ResolvedExactScalar { value, .. }) => {
+        Some(ValueMaterialization::ResolvedExactScalar { value, .. })
+        | Some(ValueMaterialization::ResolvedShellWord { value }) => {
             if let Some(path) = resolve_path_operand(value, quoted, node_kind, cwd, home) {
                 PathResolution::Concrete { path }
             } else {

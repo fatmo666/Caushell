@@ -45,7 +45,7 @@ A Profile may declare a non-filesystem effect explicitly:
 ```
 
 Domains are `system_clock`, `filesystem_mount`, `service_manager`,
-`cloud_resource` and `remote_access`; operations are `inspect`, `mutate`,
+`cloud_resource`, `remote_access` and `shell_history`; operations are `inspect`, `mutate`,
 `control` and `opaque`. The typed declarations are retained in execution
 semantics and exposed by the public execution-semantics Query. They do not
 invent local files, remote resource ownership, successful execution or live
@@ -57,8 +57,23 @@ independent. Commands without a state-operation candidate return before
 the state guard queries the Graph; candidate queries cover the current action,
 not a scan of all session history.
 
+The `history` Profile declares a `shell_history` mutation for clearing the
+history list or deleting selected entries. It respects clear-before-file and
+store/expand-before-delete ordering; file reads and writes retain separate
+path effects. Display, expansion and ordinary record insertion do not gain a
+removal effect. No history-list entry is represented as a filesystem path.
+
 Native argv grammars are opt-in Profile declarations, not command-name cases
 in shared code:
+
+`cp` uses `permuted_options` with complete option ownership before `--`.
+Unknown words that can become options keep the invocation unresolved; a proven
+non-option path prefix or an explicit terminator retains data-only operands.
+Long-option values are bound separately from their names, including optional
+backup/preserve/reflink/update/context controls and required sparse/no-preserve
+operands. Backup modes retain the distinction between content opens and
+namespace replacement. The existing resolution guard handles uncertainty;
+there is no separate copy-command risk pass.
 
 - `option_operand_matcher` recognizes a complete option-shaped positional
   operand in a flat scoped grammar, such as a symbolic mode beginning with
@@ -482,11 +497,24 @@ its ordinary resolve-gap category. Other residuals and independently modeled
 redirections, substitutions and child actions retain their existing checks.
 The declaration is not a command-name allowlist or a rule-policy override.
 
-A known absolute `HOME` supplies a lexical prefix proof for an unquoted leading
-`~` with a pure pathname suffix. Original argv text is retained; glob cardinality
-remains variable and escaped/quoted tildes or dynamic suffixes do not gain this
-proof. This certifies possible control spellings, not an exact value, existence
-or filesystem containment. There is no named-user or filesystem lookup.
+The shared shell-word materializer expands a lexically unquoted, leading `~`
+using the current shell's known `HOME`, or the request's default account-home
+fact when no overriding HOME fact is supplied. The account-home fact is kept
+separately from variables. For compatibility, an entirely unspecified initial
+shell/environment retains the request's initial HOME default; complete snapshots,
+explicit unknowns and recorded absence are not filled in as HOME. Explicit empty HOME
+is preserved; an unavailable/opaque/unknown HOME is not replaced by the default.
+Known unset HOME uses the account-home fact. Child shells see exported HOME,
+not unexported parent locals. Prefix assignments do not change the caller's argv.
+Mixed quoted pathname suffixes are decoded once; expanded bytes remain argv
+data, including spaces, dollar signs and glob characters in the home value.
+Quoted, escaped, non-leading and transported tildes remain literal.
+
+A known absolute home also supplies a lexical prefix proof for a leading `~`
+with a pure pathname suffix when glob cardinality remains variable. Path facts
+and mutation targets consult the same per-execution home query. This certifies
+possible control spellings, not existence or filesystem containment. Dynamic
+suffixes do not gain blanket prefix proofs; named-user lookup is not performed.
 
 The shared leading-option scan distinguishes a variable-length native batch
 from an arbitrary control surface. Proven non-option items at a trailing

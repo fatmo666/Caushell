@@ -2,7 +2,7 @@ use caushell_parse::{CommandFact, CommandToken, CommandTokenKind};
 use caushell_types::{ResolveGapKind, SessionSummary};
 
 use crate::bind::bind_modifier_only_invocation;
-use crate::materialize::materialize_argument_text;
+use crate::materialize::materialize_argument_text_with_tilde;
 use crate::{
     BindError, BoundArgumentMaterialization, BoundInvocation, BoundValue, CommandProfile,
     InvocationRuntimeContext, InvocationSelection, MaterializedProjectedInvocation,
@@ -58,7 +58,8 @@ impl ResolvedInvocationArtifact {
                                 .1
                         }
                         ValueMaterialization::ResolvedExactScalar { .. }
-                        | ValueMaterialization::ResolvedRuntimeProduced { .. } => false,
+                        | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                        | ValueMaterialization::ResolvedShellWord { .. } => false,
                         _ => true,
                     }
                 })
@@ -388,6 +389,7 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                         crate::ValueMaterialization::Static
                             | crate::ValueMaterialization::ResolvedExactScalar { .. }
                             | crate::ValueMaterialization::ResolvedRuntimeProduced { .. }
+                            | crate::ValueMaterialization::ResolvedShellWord { .. }
                     )
                 })
             {
@@ -503,6 +505,7 @@ fn argument_file_rule_matches(
                 ValueMaterialization::Static
                     | ValueMaterialization::ResolvedExactScalar { .. }
                     | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                    | ValueMaterialization::ResolvedShellWord { .. }
             ) {
                 return true;
             }
@@ -566,6 +569,7 @@ fn attach_bound_argument_materialization(
             continue;
         }
         for value in &mut parameter.values {
+            let allow_tilde_expansion = !value.is_attached_option_operand();
             let BoundValue::Argument {
                 text,
                 quoted,
@@ -661,8 +665,13 @@ fn attach_bound_argument_materialization(
             }
             // Inline/sub-operand bindings may not match a complete argv word;
             // those still need their own first materialization.
-            let materialized_bound_value =
-                materialize_argument_text(text, *quoted, node_kind, bindings);
+            let materialized_bound_value = materialize_argument_text_with_tilde(
+                text,
+                *quoted,
+                node_kind,
+                bindings,
+                allow_tilde_expansion,
+            );
             let bound_resolution = materialized_bound_value.resolution;
             let effective_resolution = match resolution {
                 Some(resolved) if matches!(bound_resolution, ValueMaterialization::Static) => {
@@ -673,6 +682,9 @@ fn attach_bound_argument_materialization(
 
             *text = materialized_bound_value.text;
             *materialization = match effective_resolution {
+                ValueMaterialization::ResolvedShellWord { .. } => {
+                    BoundArgumentMaterialization::RuntimeData
+                }
                 ValueMaterialization::ResolvedExactScalar { variable_name, .. } => {
                     BoundArgumentMaterialization::ResolvedExactScalar {
                         variable_name: variable_name.clone(),
@@ -1501,7 +1513,11 @@ mod tests {
                     resolved.selection.form.id.as_str(),
                     "default_copy_replacing_destination"
                 );
-                assert!(modifier_ids.contains(&"backup_numbered"));
+                assert!(modifier_ids.contains(&"backup_default"));
+                assert_eq!(
+                    first_argument_text(&resolved.bound, "backup_control"),
+                    "numbered"
+                );
                 assert!(modifier_ids.contains(&"reflink"));
                 assert!(modifier_ids.contains(&"sparse"));
                 assert!(modifier_ids.contains(&"suffix"));
@@ -1636,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_invocation_resolves_cp_sparse_without_explicit_mode() {
+    fn resolve_invocation_requires_cp_sparse_operand_and_keeps_its_actual_value() {
         let registry = built_in_registry();
         let artifact =
             parse_command("cp --sparse src dest", ShellKind::Bash).expect("expected parse");
@@ -1645,23 +1661,17 @@ mod tests {
         let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
 
         match result {
-            ResolveInvocationResult::Resolved(resolved) => {
-                let modifier_ids: Vec<&str> = resolved
-                    .bound
-                    .applied_modifiers
-                    .iter()
-                    .map(|modifier| modifier.as_str())
-                    .collect();
-
-                assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
-                assert_eq!(modifier_ids, vec!["sparse"]);
-                assert!(find_bound_parameter_opt(&resolved.bound, "sparse_mode").is_none());
-                assert_eq!(argument_texts(&resolved.bound, "source_paths"), vec!["src"]);
-                assert_eq!(
-                    first_argument_text(&resolved.bound, "destination_path"),
-                    "dest"
-                );
+            ResolveInvocationResult::SelectionError {
+                normalized_command_name,
+                gap_kind,
+                partial_bound: Some(bound),
+                ..
+            } => {
+                assert_eq!(normalized_command_name, "cp");
+                assert_eq!(gap_kind, caushell_types::ResolveGapKind::OpaqueInvocation);
+                assert_eq!(first_argument_text(&bound, "sparse_mode"), "src");
+                assert!(find_bound_parameter_opt(&bound, "destination_path").is_none());
+                assert!(bound.operation_semantics_unresolved);
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

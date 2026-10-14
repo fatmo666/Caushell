@@ -766,7 +766,9 @@ fn collect_variable_expansion_provenance_mutations(
             if arg.implicit_input_source.is_some() {
                 continue;
             }
-            let Some(expansion) = variable_expansion(summary, resolution, sequence_no) else {
+            let Some(expansion) =
+                variable_expansion(summary, record.bindings(), resolution, sequence_no)
+            else {
                 if let Some(materialized_state) = materialized_value_state(resolution) {
                     let slot_name = slot_name_for_arg(&resolved.bound, &arg.span);
 
@@ -904,97 +906,53 @@ enum VariableExpansion<'a> {
 
 fn variable_expansion<'a>(
     summary: &'a SessionSummary,
+    bindings: &caushell_profile::SessionBindings,
     resolution: &ValueMaterialization,
     sequence_no: CommandSequenceNo,
 ) -> Option<VariableExpansion<'a>> {
-    match resolution {
+    let (variable_name, origin) = match resolution {
         ValueMaterialization::ResolvedExactScalar {
             variable_name,
             origin,
-            value,
-        } => match origin {
-            BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
-                summary.variable_binding(variable_name)?,
-            )),
-            BindingOrigin::InheritedEnvironment => Some(VariableExpansion::InheritedEnvironment {
-                name: variable_name.clone(),
-                state: ProvenanceVariableValueState::ExactScalar {
-                    value: value.clone(),
-                },
-                version: sequence_no.0,
-            }),
-        },
-        ValueMaterialization::ResolvedRuntimeProduced {
+            ..
+        }
+        | ValueMaterialization::ResolvedRuntimeProduced {
             variable_name,
             origin,
-            value,
-            kind,
-        } => match origin {
-            BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
-                summary.variable_binding(variable_name)?,
-            )),
-            BindingOrigin::InheritedEnvironment => Some(VariableExpansion::InheritedEnvironment {
-                name: variable_name.clone(),
-                state: ProvenanceVariableValueState::RuntimeProduced {
-                    value: value.clone(),
-                    value_kind: *kind,
-                },
-                version: sequence_no.0,
-            }),
-        },
-        ValueMaterialization::UnsupportedDynamicBinding {
+            ..
+        }
+        | ValueMaterialization::UnsupportedDynamicBinding {
             variable_name,
             origin,
-            repr,
-        } => match origin {
-            BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
-                summary.variable_binding(variable_name)?,
-            )),
-            BindingOrigin::InheritedEnvironment => Some(VariableExpansion::InheritedEnvironment {
-                name: variable_name.clone(),
-                state: ProvenanceVariableValueState::OpaqueDynamic { repr: repr.clone() },
-                version: sequence_no.0,
-            }),
-        },
-        ValueMaterialization::UnsafeUnquotedScalar {
+            ..
+        }
+        | ValueMaterialization::UnsafeUnquotedScalar {
             variable_name,
             origin,
-            value,
-        } => match origin {
-            BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
-                summary.variable_binding(variable_name)?,
-            )),
-            BindingOrigin::InheritedEnvironment => Some(VariableExpansion::InheritedEnvironment {
-                name: variable_name.clone(),
-                state: ProvenanceVariableValueState::ExactScalar {
-                    value: value.clone(),
-                },
-                version: sequence_no.0,
-            }),
-        },
-        ValueMaterialization::RequiresRuntimeInput {
-            source,
-            capture,
+            ..
+        }
+        | ValueMaterialization::RequiresRuntimeInput {
             variable_name: Some(variable_name),
             origin: Some(origin),
-        } => match origin {
-            BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
-                summary.variable_binding(variable_name)?,
-            )),
-            BindingOrigin::InheritedEnvironment => Some(VariableExpansion::InheritedEnvironment {
+            ..
+        } => (variable_name, origin),
+        _ => return None,
+    };
+    match origin {
+        BindingOrigin::SessionBinding => Some(VariableExpansion::SessionBinding(
+            summary.variable_binding(variable_name)?,
+        )),
+        BindingOrigin::InheritedEnvironment => {
+            // Variable identity describes the source binding, not the expanded
+            // argument. Two HOME-derived paths consume the same HOME value and
+            // produce distinct materialized operands below.
+            let binding = bindings.get(variable_name)?;
+            Some(VariableExpansion::InheritedEnvironment {
                 name: variable_name.clone(),
-                state: ProvenanceVariableValueState::RuntimeInput {
-                    source: *source,
-                    capture: capture.clone().unwrap_or(RuntimeInputCapture::NotCaptured),
-                },
+                state: variable_value_state(&binding.value.to_session_variable_value()),
                 version: sequence_no.0,
-            }),
-        },
-        ValueMaterialization::Static
-        | ValueMaterialization::MissingBinding { .. }
-        | ValueMaterialization::UnsupportedDynamicText { .. }
-        | ValueMaterialization::RequiresImplicitInput { .. }
-        | ValueMaterialization::RequiresRuntimeInput { .. } => None,
+            })
+        }
     }
 }
 
@@ -1185,7 +1143,8 @@ fn materialized_value_state(
 ) -> Option<ProvenanceMaterializedValueState> {
     match resolution {
         ValueMaterialization::Static => None,
-        ValueMaterialization::ResolvedExactScalar { value, .. } => {
+        ValueMaterialization::ResolvedExactScalar { value, .. }
+        | ValueMaterialization::ResolvedShellWord { value } => {
             Some(ProvenanceMaterializedValueState::ExactScalar {
                 value: value.clone(),
             })
@@ -1287,6 +1246,7 @@ fn materialized_value_source_kind(resolution: &ValueMaterialization) -> String {
             format!("implicit_input:{}", source.as_str())
         }
         ValueMaterialization::Static => "static".to_string(),
+        ValueMaterialization::ResolvedShellWord { .. } => "shell_word_expansion".to_string(),
     }
 }
 
@@ -1336,6 +1296,7 @@ fn materialized_value_version(
             }
         },
         ValueMaterialization::MissingBinding { .. }
+        | ValueMaterialization::ResolvedShellWord { .. }
         | ValueMaterialization::RequiresImplicitInput { .. }
         | ValueMaterialization::UnsupportedDynamicText { .. }
         | ValueMaterialization::Static => sequence_no.0,

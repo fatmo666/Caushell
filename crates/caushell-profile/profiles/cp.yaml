@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: cp
@@ -23,6 +25,8 @@ forms:
     selector:
       kind: has_flag
       flag: "--help"
+    parameters: &information_arguments
+      - {name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
 
   - id: show_version
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
@@ -35,6 +39,7 @@ forms:
           item:
             kind: has_flag
             flag: "--help"
+    parameters: *information_arguments
 
   - id: target_directory
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
@@ -391,10 +396,25 @@ forms:
               - kind: has_modifier
                 modifier: symbolic_link
         - {kind: not, item: {kind: has_modifier, modifier: remove_destination}}
-        - {kind: not, item: {kind: has_modifier, modifier: backup_default}}
-        - {kind: not, item: {kind: has_modifier, modifier: backup_numbered}}
-        - {kind: not, item: {kind: has_modifier, modifier: backup_existing}}
-        - {kind: not, item: {kind: has_modifier, modifier: backup_simple}}
+        - kind: not
+          item: &active_backup
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: backup_short}
+              - kind: all
+                items:
+                  - {kind: has_modifier, modifier: backup_default}
+                  - kind: not
+                    item:
+                      kind: all
+                      items:
+                        # An any-value matcher cannot prove last-option-wins
+                        # for repeated controls. Retain namespace semantics.
+                        - {kind: not, item: {kind: has_flag_at_least, flag: "--backup", count: 2}}
+                        - kind: has_modifier_parameter_matching
+                          modifier: backup_default
+                          parameter: backup_control
+                          matcher: {kind: regex_pattern, pattern: '^(none|off)$'}
         - kind: has_positional_at
           index: 1
         - kind: not
@@ -457,7 +477,7 @@ forms:
                 modifier: hard_link
               - kind: has_modifier
                 modifier: symbolic_link
-        - {kind: any, items: [{kind: has_modifier, modifier: remove_destination}, {kind: has_modifier, modifier: backup_default}, {kind: has_modifier, modifier: backup_numbered}, {kind: has_modifier, modifier: backup_existing}, {kind: has_modifier, modifier: backup_simple}]}
+        - {kind: any, items: [{kind: has_modifier, modifier: remove_destination}, *active_backup]}
         - kind: has_positional_at
           index: 1
         - kind: not
@@ -506,36 +526,12 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
-        - "-b"
         - "--backup"
+    parameters:
+      - {name: backup_control, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}
 
-  - id: backup_none
-    matcher:
-      kind: any_flag
-      flags:
-        - "--backup=none"
-        - "--backup=off"
-
-  - id: backup_numbered
-    matcher:
-      kind: any_flag
-      flags:
-        - "--backup=numbered"
-        - "--backup=t"
-
-  - id: backup_existing
-    matcher:
-      kind: any_flag
-      flags:
-        - "--backup=existing"
-        - "--backup=nil"
-
-  - id: backup_simple
-    matcher:
-      kind: any_flag
-      flags:
-        - "--backup=simple"
-        - "--backup=never"
+  - id: backup_short
+    matcher: {kind: any_flag, flags: ["-b"]}
 
   - id: attributes_only
     matcher:
@@ -607,7 +603,6 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
-        - "-p"
         - "--preserve"
     parameters:
       - name: preserve_attr_list
@@ -615,14 +610,11 @@ modifiers:
           kind: plain_value
         binding:
           kind: following_matched_flag
-          operand_mode: inline_only
+          operand_mode: optional_inline_or_short_attached
         cardinality: optional_one
 
-  - id: preserve_all
-    matcher:
-      kind: any_flag
-      flags:
-        - "--preserve=all"
+  - id: preserve_short
+    matcher: {kind: any_flag, flags: ["-p"]}
 
   - id: no_preserve
     matcher:
@@ -635,7 +627,7 @@ modifiers:
           kind: plain_value
         binding:
           kind: following_matched_flag
-          operand_mode: inline_only
+          operand_mode: next_arg
         cardinality: required_one
 
   - id: preserve_links_mode
@@ -661,7 +653,7 @@ modifiers:
           kind: plain_value
         binding:
           kind: following_matched_flag
-          operand_mode: inline_only
+          operand_mode: optional_inline_or_short_attached
         cardinality: optional_one
 
   - id: recursive
@@ -689,8 +681,8 @@ modifiers:
           kind: plain_value
         binding:
           kind: following_matched_flag
-          operand_mode: inline_only
-        cardinality: optional_one
+          operand_mode: next_arg
+        cardinality: required_one
 
   - id: strip_trailing_slashes
     matcher:
@@ -753,21 +745,12 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
-        - "-u"
         - "--update"
-        - "--update=older"
+    parameters:
+      - {name: update_control, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}
 
-  - id: update_all
-    matcher:
-      kind: any_flag
-      flags:
-        - "--update=all"
-
-  - id: update_none
-    matcher:
-      kind: any_flag
-      flags:
-        - "--update=none"
+  - id: update_short
+    matcher: {kind: any_flag, flags: ["-u"]}
 
   - id: one_file_system
     matcher:
@@ -793,7 +776,7 @@ modifiers:
           kind: plain_value
         binding:
           kind: following_matched_flag
-          operand_mode: inline_only
+          operand_mode: optional_inline_or_short_attached
         cardinality: optional_one
 
   - id: verbose
@@ -816,4 +799,7 @@ modifiers:
         - "--version"
 
 subcommands: null
-extensions: {}
+extensions:
+  caushell.profile/sources:
+    - https://github.com/coreutils/coreutils/blob/master/src/cp.c
+    - https://www.gnu.org/software/coreutils/manual/html_node/cp-invocation.html

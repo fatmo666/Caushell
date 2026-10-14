@@ -44,6 +44,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
         let exemptions = &ctx.policy().mutation_path_exemptions;
 
         for record in graph_backed_execution_resolve_records(ctx) {
+            let home = record.bindings().tilde_home_with_default(home.as_deref());
             for (effective_cwd, redirections) in [
                 (ctx.execution_cwd_for_node(record.source_node_id()), false),
                 (ctx.effective_cwd_for_node(record.source_node_id()), true),
@@ -55,10 +56,10 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                             record.parsed_scope(),
                             Some(record.command_index()),
                             resolution_cwd,
-                            home.as_deref(),
+                            home,
                         )
                     } else {
-                        collect_effect_mutation_targets(record, resolution_cwd, home.as_deref())
+                        collect_effect_mutation_targets(record, resolution_cwd, home)
                     };
                     for target in targets {
                         let exemption_operation = exemption_operation_for_target(&target);
@@ -85,7 +86,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                                     &target.resolution,
                                     target.cwd_dependent,
                                     entry.resolution_base(&fallback_cwd),
-                                    home.as_deref(),
+                                    home,
                                 );
                                 if let Some((resolution, dependent)) = mutation_path_for_io(io) {
                                     let resolution =

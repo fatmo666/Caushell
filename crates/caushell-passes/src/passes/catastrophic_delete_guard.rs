@@ -166,6 +166,7 @@ fn collect_python_static_delete_reasons(
             ValueMaterialization::Static
                 | ValueMaterialization::ResolvedExactScalar { .. }
                 | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                | ValueMaterialization::ResolvedShellWord { .. }
         ) {
             continue;
         }
