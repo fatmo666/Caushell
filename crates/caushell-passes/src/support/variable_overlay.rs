@@ -59,6 +59,15 @@ pub(super) fn apply_variable_overlay(
     let mut state_fences = Vec::new();
     let mut function_mutations = Vec::new();
 
+    for iteration in &parsed.for_loops {
+        if iteration.body_span.start_byte <= span_start_byte {
+            events.push(VariableOverlayEvent::ForEnter(iteration));
+        }
+        if iteration.span.end_byte <= span_start_byte {
+            events.push(VariableOverlayEvent::ForExit(iteration));
+        }
+    }
+
     for definition in &parsed.function_definitions {
         if definition.span.end_byte <= span_start_byte {
             events.push(VariableOverlayEvent::FunctionDefinition(definition));
@@ -104,6 +113,33 @@ pub(super) fn apply_variable_overlay(
             continue;
         }
         match event {
+            VariableOverlayEvent::ForEnter(iteration) => {
+                if !state_visible(&iteration.shell_scope_span, span_start_byte) {
+                    continue;
+                }
+                assigned.insert(iteration.variable.clone());
+                let domain = super::loop_overlay::iteration_domain(iteration, &bindings);
+                if let Some(domain) = domain {
+                    bindings.insert_argument_domain(&iteration.variable, domain);
+                } else {
+                    bindings.insert_opaque_dynamic(
+                        &iteration.variable,
+                        "unresolved shell iteration list",
+                    );
+                }
+            }
+            VariableOverlayEvent::ForExit(iteration) => {
+                if !state_visible(&iteration.shell_scope_span, span_start_byte) {
+                    continue;
+                }
+                // Zero iterations, break and body writes prevent a final-value
+                // claim. In particular, never resurrect the pre-loop scalar.
+                assigned.insert(iteration.variable.clone());
+                bindings.insert_opaque_dynamic(
+                    &iteration.variable,
+                    "shell iteration final value unknown",
+                );
+            }
             VariableOverlayEvent::FunctionDefinition(definition) => {
                 if state_visible(&definition.shell_scope_span, span_start_byte) {
                     function_mutations.push((
@@ -487,6 +523,8 @@ fn invalidate_unknown_scalar_targets(
 }
 
 enum VariableOverlayEvent<'a> {
+    ForEnter(&'a caushell_parse::ForLoopFact),
+    ForExit(&'a caushell_parse::ForLoopFact),
     FunctionDefinition(&'a caushell_parse::FunctionDefinitionFact),
     Declaration(&'a caushell_parse::DeclarationCommandFact),
     AssignmentCommand(&'a caushell_parse::AssignmentCommandFact),
@@ -498,6 +536,8 @@ enum VariableOverlayEvent<'a> {
 impl VariableOverlayEvent<'_> {
     fn start_byte(&self) -> usize {
         match self {
+            Self::ForEnter(iteration) => iteration.body_span.start_byte,
+            Self::ForExit(iteration) => iteration.span.end_byte,
             Self::FunctionDefinition(definition) => definition.span.start_byte,
             Self::Declaration(declaration) => declaration.span.start_byte,
             Self::AssignmentCommand(assignment_command) => assignment_command.span.start_byte,

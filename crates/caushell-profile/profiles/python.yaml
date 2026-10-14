@@ -49,10 +49,16 @@ forms:
   - id: script_file
     selector: {kind: all, items: [*supported, *not_module, *not_inline, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
     parameters:
-      - {name: script_path, semantic: {kind: path, role: read, purpose: script_source}, binding: {kind: next_positional}, cardinality: required_one}
+      - name: script_path
+        semantic: {kind: payload, language: python, source: script_file_ref, recursive: true}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches: []
+          fallback: {name: script_reads, semantic: {kind: path, role: read, purpose: script_source}}
       - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
     effects:
-      - {kind: read_path, target: {kind: slot, name: script_path}}
+      - {kind: read_path, target: {kind: slot, name: script_reads}}
       - {kind: execute_payload, target: {kind: slot, name: script_path}}
   - id: stdin_script
     selector: {kind: all, items: [*supported, *not_module, *not_inline, {kind: no_positional_args}, {kind: stdin_payload_available}]}

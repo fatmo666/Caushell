@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: tmux
@@ -46,6 +47,8 @@ forms:
               - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: new-window}}
               - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: new}}
               - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: neww}}
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: list-sessions}}
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: ls}}
     parameters:
       - name: arguments
         semantic:
@@ -130,6 +133,17 @@ modifiers:
 
 subcommands:
   roots:
+    - name: list-sessions
+      aliases: [ls]
+      option_scope: leading_options
+      forms:
+        - id: inspect_sessions
+          selector: {kind: no_arguments}
+          effects:
+            - {kind: terminal_session_operation, terminal_session_operation: inspect, target: {kind: none}}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
     - name: new-session
       aliases: [new]
       option_scope: leading_options

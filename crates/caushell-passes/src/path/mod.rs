@@ -5,6 +5,7 @@ pub(crate) use cwd::{effective_cwd_cases, project_path_at_cwd};
 mod expression;
 mod extract;
 mod glob;
+pub(crate) use glob::resolve_glob_path_operand as iteration_glob_bounds;
 mod normalize;
 mod runtime;
 mod target_match;

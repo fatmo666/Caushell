@@ -187,8 +187,8 @@ fn unknown_module_does_not_fall_back_to_executable_profile() {
         "env python -m rm /opt/victim",
         "python -m custom \"$ARGS\"",
     ] {
-        // Preserve the existing unknown-module/code-load policy; no invented rm/bash subprocess.
-        check(c, Decision::Allow);
+        // Unknown module execution asks without inventing rm/bash subprocesses.
+        check(c, Decision::NeedApproval);
         inspect(c, |g| {
             assert!(!g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {normalized_command_name, ..} if matches!(normalized_command_name.as_deref(), Some("rm" | "bash")))))
         });

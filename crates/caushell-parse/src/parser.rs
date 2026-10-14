@@ -470,6 +470,7 @@ fn artifact_from_tree(
         commands: extract_commands(root, source),
         declaration_commands: extract_declaration_commands(root, source),
         assignment_commands: extract_assignment_commands(root, source),
+        for_loops: extract_for_loops(root, source),
         unset_commands: extract_unset_commands(root, source),
         function_definitions: extract_function_definitions(root, source),
         redirections: extract_redirections(root, source),
@@ -941,6 +942,57 @@ fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
     });
 
     diagnostics
+}
+
+fn extract_for_loops(root: Node<'_>, source: &[u8]) -> Vec<crate::ForLoopFact> {
+    let mut loops = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "for_statement" || is_nested_shell_substructure(node) {
+            return;
+        }
+        let Some(variable) = node.child_by_field_name("variable") else {
+            return;
+        };
+        let Some(body) = node.child_by_field_name("body") else {
+            return;
+        };
+        let mut explicit = false;
+        let mut items = Vec::new();
+        for child in all_children(node) {
+            if child.kind() == "in" {
+                explicit = true;
+                continue;
+            }
+            if child.start_byte() >= body.start_byte() {
+                break;
+            }
+            if !explicit || !child.is_named() {
+                continue;
+            }
+            // Unsupported header words remain opaque rather than disappearing.
+            let (text, quoted) = extract_token_text(child, source)
+                .unwrap_or_else(|| (source_text(child, source), false));
+            items.push(CommandToken {
+                text,
+                quoted,
+                node_kind: child.kind().into(),
+                span: span_for(child),
+                kind: CommandTokenKind::Arg,
+                implicit_input_source: None,
+                runtime_argument_domain: None,
+                runtime_data: false,
+                command_substitutions: command_substitutions_for_expansion_node(child, source),
+            });
+        }
+        loops.push(crate::ForLoopFact {
+            variable: source_text(variable, source),
+            items: explicit.then_some(items),
+            span: span_for(node),
+            body_span: span_for(body),
+            shell_scope_span: enclosing_shell_scope(node),
+        });
+    });
+    loops
 }
 
 fn extract_commands(root: Node<'_>, source: &[u8]) -> Vec<CommandFact> {

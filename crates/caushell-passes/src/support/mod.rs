@@ -6,6 +6,7 @@ mod implicit_startup;
 mod io_provenance;
 mod io_target;
 mod listener;
+mod loop_overlay;
 pub(crate) use io_provenance::stream_provenance_mutations;
 pub(crate) use io_target::{
     bound_invocation, content_io_target, execution_content_io_target, slot_uses_content_open,

@@ -90,6 +90,8 @@ pub enum ImplicitInputSource {
     InteractiveSession,
     DispatchOutput,
     InheritedEnvironment,
+    /// A statically bounded member of a shell for-loop's evaluated word list.
+    ShellIteration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

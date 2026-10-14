@@ -352,6 +352,17 @@ pub enum PayloadLanguage {
     MysqlCli,
 }
 
+impl PayloadLanguage {
+    /// Named general-purpose code with no decoder has the same policy boundary
+    /// as explicit opaque code. Modeled shell/SQL contracts remain separate.
+    pub fn requires_opaque_execution_boundary(self) -> bool {
+        matches!(
+            self,
+            Self::Opaque | Self::Python | Self::Perl | Self::Javascript
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PayloadSource {
     InlineString,
@@ -839,6 +850,7 @@ pub enum ImplicitInputSource {
     InteractiveSession,
     DispatchOutput,
     InheritedEnvironment,
+    ShellIteration,
 }
 
 impl ImplicitInputSource {
@@ -849,6 +861,7 @@ impl ImplicitInputSource {
             Self::InteractiveSession => "interactive_session",
             Self::DispatchOutput => "dispatch_output",
             Self::InheritedEnvironment => "inherited_environment",
+            Self::ShellIteration => "shell_iteration",
         }
     }
 
@@ -859,6 +872,7 @@ impl ImplicitInputSource {
             Self::InteractiveSession => caushell_types::ImplicitInputSource::InteractiveSession,
             Self::DispatchOutput => caushell_types::ImplicitInputSource::DispatchOutput,
             Self::InheritedEnvironment => caushell_types::ImplicitInputSource::InheritedEnvironment,
+            Self::ShellIteration => caushell_types::ImplicitInputSource::ShellIteration,
         }
     }
 
@@ -871,6 +885,7 @@ impl ImplicitInputSource {
             caushell_types::ImplicitInputSource::InteractiveSession => Self::InteractiveSession,
             caushell_types::ImplicitInputSource::DispatchOutput => Self::DispatchOutput,
             caushell_types::ImplicitInputSource::InheritedEnvironment => Self::InheritedEnvironment,
+            caushell_types::ImplicitInputSource::ShellIteration => Self::ShellIteration,
         }
     }
 
@@ -883,6 +898,7 @@ impl ImplicitInputSource {
             }
             Self::DispatchOutput => None,
             Self::InheritedEnvironment => None,
+            Self::ShellIteration => None,
         }
     }
 }

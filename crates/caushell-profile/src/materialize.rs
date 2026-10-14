@@ -103,6 +103,9 @@ pub struct SessionBindings {
     /// scalar assignment contract. This is analysis metadata, not runtime data.
     unresolved_runtime_variable_targets: std::collections::BTreeSet<String>,
     session_variables: BTreeMap<String, SessionValue>,
+    // Local abstract values, not observed bytes and never persisted as a
+    // concrete session variable. Scalar writes invalidate this metadata.
+    argument_domains: BTreeMap<String, caushell_types::RuntimeArgumentDomain>,
     inherited_environment: BTreeMap<String, SessionValue>,
     // $0 belongs to the shell frame, not to the list changed by set/shift.
     shell_program_name: Option<SessionValue>,
@@ -205,6 +208,7 @@ impl SessionBindings {
     }
 
     pub fn mark_variable_presence_unknown(&mut self, name: &str) {
+        self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Unknown);
     }
@@ -250,6 +254,7 @@ impl SessionBindings {
         self.functions = bindings.into_iter().map(|b| (b.name.clone(), b)).collect();
     }
     pub fn mark_unresolved_runtime_variable_target(&mut self, name: &str) {
+        self.argument_domains.remove(name);
         self.unresolved_runtime_variable_targets.insert(name.into());
     }
     pub fn runtime_variable_target_is_unresolved(&self, name: &str) -> bool {
@@ -389,6 +394,7 @@ impl SessionBindings {
     }
 
     pub fn insert_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
         let value = value.into();
@@ -403,6 +409,7 @@ impl SessionBindings {
         value: impl Into<String>,
         kind: RuntimeProducedValueKind,
     ) {
+        self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
         let value = value.into();
@@ -451,6 +458,7 @@ impl SessionBindings {
     }
 
     pub fn insert_inherited_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
         let value = value.into();
@@ -502,11 +510,25 @@ impl SessionBindings {
     }
 
     pub fn remove(&mut self, name: &str) {
+        self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Absent);
         self.session_variables.remove(name);
         self.inherited_environment.remove(name);
         self.child_environment.insert(name.into(), None);
+    }
+
+    pub fn insert_argument_domain(
+        &mut self,
+        name: &str,
+        domain: caushell_types::RuntimeArgumentDomain,
+    ) {
+        self.insert_opaque_dynamic(name, "bounded shell iteration value");
+        self.argument_domains.insert(name.into(), domain);
+    }
+
+    pub fn argument_domain(&self, name: &str) -> Option<&caushell_types::RuntimeArgumentDomain> {
+        self.argument_domains.get(name)
     }
 
     pub fn environment_value(&self, name: &str) -> EnvironmentValueRef<'_> {
@@ -538,6 +560,7 @@ impl SessionBindings {
     /// Enter a child process after a wrapper resets (or obscures) its env.
     /// Its old shell locals must not survive as facts for a nested shell.
     pub fn reset_child_environment(&mut self, complete: bool) {
+        self.argument_domains.clear();
         self.functions.clear();
         self.variable_presence.clear();
         self.variables_complete = complete;
@@ -552,6 +575,7 @@ impl SessionBindings {
     }
 
     pub fn set_child_environment_value(&mut self, name: &str, value: SessionValue) {
+        self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
         self.session_variables.remove(name);
@@ -561,6 +585,7 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        self.argument_domains.clear();
         self.in_function_scope = false;
         // Function export is deliberately not modeled. Ordinary shell
         // functions must not leak into a new interpreter's namespace.
@@ -1252,6 +1277,19 @@ pub fn materialize_projected_invocation(
     let mut arg_resolutions = Vec::with_capacity(projection.args.len());
 
     for arg in &projection.args {
+        if let Some(domain) = materialize_argument_domain(arg, bindings) {
+            let mut argument = arg.clone();
+            argument.implicit_input_source =
+                Some(caushell_types::ImplicitInputSource::ShellIteration);
+            argument.runtime_argument_domain = Some(domain);
+            argument.runtime_data = true;
+            argument.node_kind = "runtime_scalar".into();
+            args.push(argument);
+            arg_resolutions.push(ValueMaterialization::RequiresImplicitInput {
+                source: ImplicitInputSource::ShellIteration,
+            });
+            continue;
+        }
         for materialized in materialize_argument_fields(arg, bindings) {
             args.push(ProjectedArg {
                 text: materialized.text,
@@ -1304,6 +1342,50 @@ pub fn materialize_projected_invocation(
         },
         arg_resolutions,
     }
+}
+
+fn materialize_argument_domain(
+    arg: &ProjectedArg,
+    bindings: &SessionBindings,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    // A loop assigns one item, but an unquoted use can split/glob it again.
+    // Only whole double-quoted scalars carry a one-field domain here.
+    if bindings.argument_domains.is_empty()
+        || arg.text.len() > 4096
+        || arg.runtime_data
+        || !arg.quoted
+        || arg.node_kind != "string"
+        || arg.implicit_input_source.is_some()
+    {
+        return None;
+    }
+    if let Some(ShellParameterReference::Variable(name)) =
+        exact_shell_parameter_reference(&arg.text)
+    {
+        return bindings.argument_domain(&name).cloned();
+    }
+    const MARKER: &str = "__CAUSHELL_ABSTRACT_VALUE__";
+    if arg.text.contains(MARKER) {
+        return None;
+    }
+    for (name, domain) in &bindings.argument_domains {
+        let mut proof_bindings = bindings.clone();
+        proof_bindings.insert_exact_scalar(name, MARKER);
+        let Some((template, refs)) = materialize_shell_word_with_references(
+            &arg.text,
+            &proof_bindings,
+            ShellWordMode::PositionalArgument,
+            ShellWordQuote::Double,
+            false,
+        ) else {
+            continue;
+        };
+        if refs != [ShellParameterReference::Variable(name.clone())] {
+            continue;
+        }
+        return Some(domain.substitute_into(&template, MARKER));
+    }
+    None
 }
 
 pub fn materialize_recursive_payload_candidate(

@@ -342,7 +342,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::NetworkListenerExposure => RuleAction::NeedApproval,
         RuleId::NetworkUpload => RuleAction::NeedApproval,
         RuleId::CommandParseFailure => RuleAction::NeedApproval,
-        RuleId::InteractiveEscapeSurface => RuleAction::Observe,
+        RuleId::InteractiveEscapeSurface => RuleAction::NeedApproval,
         RuleId::TerminalSessionOperation => RuleAction::NeedApproval,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
@@ -489,7 +489,7 @@ mod tests {
             config
                 .rule_policy
                 .action_for(RuleId::InteractiveEscapeSurface),
-            RuleAction::Observe
+            RuleAction::NeedApproval
         );
         assert_eq!(
             config.rule_policy.action_for(RuleId::NoProfile),

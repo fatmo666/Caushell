@@ -51,9 +51,8 @@ fn has_state_operation(
 fn systemctl_query_does_not_hide_a_pager_and_no_pager_does_not_approve_control() {
     for operation in ["status", "show", "list-dependencies"] {
         let response = check(&format!("systemctl {operation} example.service"));
-        // Existing default policy observes pager escape; modeling must retain
-        // the finding without silently changing that independently chosen rule.
-        assert_eq!(response.decision, Decision::Allow, "{response:#?}");
+        // Query itself is read-only, but its pager still exposes shell escape.
+        assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
         assert!(
             response
                 .decision_trace

@@ -245,9 +245,25 @@ Persistent `launch/start/stop/shutdown` sessions, callbacks/plugins, command fil
 
 Reference: [NVIDIA stats CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options), [profile CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-profile-command-switch-options).
 
+### Shell word-list iteration
+
+Shell word-list `for` loops retain their variable, list words and body/shell
+scope in the parse artifact. The ordered variable overlay gives body uses an
+abstract member domain, reusing existing argv/path-set and path-template
+contracts rather than enumerating files or selecting one iteration. Static
+lists, complete positional lists and proven pure pathname-generation bounds
+are supported, with at most 256 list members. Raw producer spellings such as
+`./` are preserved until affix and path resolution. Only whole double-quoted
+variable uses carry a one-field domain; splitting, unsupported substitutions,
+unknown lists and oversized proofs retain unknown values. Scalar/runtime
+writes invalidate domains. Loop exit invalidates the final scalar instead of
+restoring an old value, and isolated loop scopes do not change caller state.
+Bounds become ordinary Graph path facts, never guessed concrete filenames or
+persisted exact variable values. No new risk Pass or Harness input is required.
+
 ### Opaque code and keyword-owned shell commands
 
-`{kind: payload, language: opaque, source: inline_string, recursive: true}` explicitly declares executable code outside the modeled shell languages. The existing recursive-analysis record retains its source and unsupported-language evidence; the existing ResolvePolicy pass defaults the `opaque_non_shell` subtype to approval. Script references and implicit stdin use the same language declaration with their actual source. A local or empty stdin does not prove this declared code entry understood or safe: opaque input is unsupported language, not a runtime-input gap deferred to provenance guards. No AWK/HCL parser, guessed internal path, dynamic content read or new risk pass is involved. Existing Python/Node and other static-literal/runtime-input defaults are unchanged. This boundary does not claim configuration/provider/backend coverage.
+`{kind: payload, language: opaque, source: inline_string, recursive: true}` explicitly declares executable code outside the modeled shell languages. The existing recursive-analysis record retains its source and unsupported-language evidence; the existing ResolvePolicy pass defaults the `opaque_non_shell` subtype to approval. Named Python, JavaScript and Perl payloads use the same unsupported-code boundary while retaining their language identity. This applies to inline programs, script references and stdin, even when the text is literal or locally produced. A known string is not a modeled program. Python/Node script Profiles also retain separate script-source read facts. Registered Python module CLI contracts and modeled shell payloads keep their own semantic analysis; SQL client contracts are unchanged. No language interpreter, guessed internal path, dynamic code read or new risk pass is introduced. Explicit subtype policy overrides remain available and cannot override independent deny findings.
 
 For a mixed option carrying a shell command, use a virtual plain-value slot and the existing `command_string: {slot: proxy_command, syntax: posix_shell}` dispatch:
 
@@ -355,7 +371,7 @@ References: [Redis CLI](https://redis.io/docs/latest/develop/tools/cli/), [pinne
 
 A Profile may declare `{kind: terminal_session_operation, terminal_session_operation: inspect|create|attach|control|opaque, target: {kind: none}}`. These are static operation classes, not statements about a live session or its ownership. They are deduplicated per invocation and preserved in `ExecutionSemantics.terminal_session_operations`, traces, snapshots and the existing execution-semantics Query. Old data defaults to an empty list, which is omitted on serialization. Session/window identifiers and protocol text remain ordinary values rather than filesystem targets.
 
-The existing `interactive_escape_guard` consumes these classes from its already-indexed current-request semantics query; no new Pass, history traversal or runtime probing is added. Inspect adds no finding or decision. The new `terminal_session_operation` rule defaults to NeedApproval for Create, Attach, Control and Opaque. It uses the existing `interactive_control` family and rule/family configuration precedence. The older `interactive_escape_surface` default remains Observe, and unrelated tools retain their previous policy. An empty terminal-operation list adds no secondary traversal or allocation; this is not a measured latency claim.
+The existing `interactive_escape_guard` consumes these classes from its already-indexed current-request semantics query; no new Pass, history traversal or runtime probing is added. Inspect adds no finding or decision. The `terminal_session_operation` rule defaults to NeedApproval for Create, Attach, Control and Opaque. It uses the existing `interactive_control` family and rule/family configuration precedence. `interactive_escape_surface` also defaults to NeedApproval; explicit Observe/Deny overrides remain available. Query forms that do not expose an escape surface retain their own policy. An empty terminal-operation list adds no secondary traversal or allocation; this is not a measured latency claim.
 
 The `screen` Profile admits `-v`, `-ls`/`-list` with zero or one trailing pattern, and argumentless, case-sensitive `-Q windows|info|lastmsg|number|title` queries. Other query syntax, option gaps, unknown options and undeclared compact spellings are opaque; explicit selection-failure effects keep approval independent of the default resolve-gap Observe policy. Mixed list/control flags and options after a list pattern are conservative rather than relying on an optional-operand scanner extension. Query admission is a logical operation policy, not a whole-program zero-side-effect proof: native socket-registry setup may perform housekeeping even on list/query calls.
 
@@ -978,7 +994,7 @@ to a same-named executable, a basename, or an executable-family alias. A
 module-only Profile is excluded from both executable lookup APIs. The derived
 node is a modeling unit, not a claim that Python starts an OS subprocess. The
 parent's module load and the module's CLI effects are both retained. Undeclared
-or dynamic modules keep the established code-load policy; unknown argv of a
+or dynamic modules retain an unresolved execution gap requiring approval; unknown argv of a
 registered module still leaves an unresolved-dispatch gap.
 
 The optional modifier declaration `ends_option_scope: true` ends scoped option

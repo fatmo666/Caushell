@@ -292,6 +292,7 @@ mod tests {
                         commands: Vec::new(),
                         declaration_commands: Vec::new(),
                         assignment_commands: Vec::new(),
+                        for_loops: Vec::new(),
                         unset_commands: Vec::new(),
                         function_definitions: Vec::new(),
                         redirections: Vec::new(),

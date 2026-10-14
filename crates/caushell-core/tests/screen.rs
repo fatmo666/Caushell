@@ -239,10 +239,14 @@ fn terminal_rule_is_configurable_without_changing_old_escape_or_file_rules() {
         policy
             .rule_policy
             .action_for(RuleId::InteractiveEscapeSurface),
-        RuleAction::Observe
+        RuleAction::NeedApproval
     );
     policy.rule_policy.rules.insert(
         RuleId::TerminalSessionOperation,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
+    policy.rule_policy.rules.insert(
+        RuleId::InteractiveEscapeSurface,
         RulePolicyEntry::new(RuleAction::Observe),
     );
     for c in ["screen", "screen -X stuff hi", "screen --future -ls"] {
@@ -279,14 +283,14 @@ fn terminal_rule_is_configurable_without_changing_old_escape_or_file_rules() {
 }
 #[test]
 fn unrelated_tools_and_inspection_do_not_emit_terminal_guard_findings() {
-    for c in [
-        "echo hi",
-        "less README.md",
-        "top -b",
-        "tmux list-sessions",
-        "screen -ls",
+    for (c, decision) in [
+        ("echo hi", Decision::Allow),
+        ("less README.md", Decision::NeedApproval),
+        ("top -b", Decision::Allow),
+        ("tmux list-sessions", Decision::Allow),
+        ("screen -ls", Decision::Allow),
     ] {
-        let r = check(c, Decision::Allow);
+        let r = check(c, decision);
         assert!(
             !r.decision_trace
                 .findings

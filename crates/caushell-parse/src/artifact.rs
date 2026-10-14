@@ -231,6 +231,16 @@ pub struct ProcessSubstitutionFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForLoopFact {
+    pub variable: String,
+    /// None is the implicit positional-parameter list, not an empty list.
+    pub items: Option<Vec<CommandToken>>,
+    pub span: SourceSpan,
+    pub body_span: SourceSpan,
+    pub shell_scope_span: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommandArtifact {
     pub raw_command: String,
     pub shell_kind: ShellKind,
@@ -238,6 +248,7 @@ pub struct ParsedCommandArtifact {
     pub commands: Vec<CommandFact>,
     pub declaration_commands: Vec<DeclarationCommandFact>,
     pub assignment_commands: Vec<AssignmentCommandFact>,
+    pub for_loops: Vec<ForLoopFact>,
     pub unset_commands: Vec<UnsetCommandFact>,
     pub function_definitions: Vec<FunctionDefinitionFact>,
     pub redirections: Vec<RedirectionFact>,

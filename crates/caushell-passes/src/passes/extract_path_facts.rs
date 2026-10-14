@@ -3210,69 +3210,74 @@ extensions: {}
     fn extract_path_facts_projects_node_preload_path_as_in_process_code_source() {
         let ctx = run_pass("node -r ./hook.js app.js", Some("/home/alice"));
 
-        assert_eq!(
-            relevant_pending_mutations(&ctx),
-            &[
-                PendingMutation::AddPathFact {
-                    source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new(
-                        "resolved-path:command:sess-1:2:0:0:script_path:/tmp/project/app.js"
-                    ),
-                    resolution: PathResolution::Concrete {
-                        path: "/tmp/project/app.js".to_string()
-                    },
-                    role: ResolvedPathRole::Read,
-                    purpose: Some(ResolvedPathPurpose::ScriptSource),
-                    slot_name: "script_path".to_string(),
+        let expected = [
+            PendingMutation::AddPathFact {
+                source_node_id: NodeId::new("command:sess-1:2:0"),
+                node_id: NodeId::new(
+                    "resolved-path:command:sess-1:2:0:0:script_reads:/tmp/project/app.js",
+                ),
+                resolution: PathResolution::Concrete {
+                    path: "/tmp/project/app.js".to_string(),
+                },
+                role: ResolvedPathRole::Read,
+                purpose: Some(ResolvedPathPurpose::ScriptSource),
+                slot_name: "script_reads".to_string(),
+                normalized_command_name: Some("node".to_string()),
+                relation: EdgeKind::Reads,
+            },
+            PendingMutation::AddProvenanceArtifact {
+                source_node_id: NodeId::new("command:sess-1:2:0"),
+                node_id: NodeId::new("artifact:path-content:/tmp/project/app.js"),
+                artifact: path_artifact("/tmp/project/app.js"),
+                relation: EdgeKind::Consumes,
+                semantics: ProvenanceEdgeSemantics::Consume {
+                    consume_kind: ProvenanceConsumeKind::ScriptSource,
+                    slot_name: Some("script_reads".to_string()),
                     normalized_command_name: Some("node".to_string()),
-                    relation: EdgeKind::Reads,
-                },
-                PendingMutation::AddProvenanceArtifact {
-                    source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new("artifact:path-content:/tmp/project/app.js"),
-                    artifact: path_artifact("/tmp/project/app.js"),
-                    relation: EdgeKind::Consumes,
-                    semantics: ProvenanceEdgeSemantics::Consume {
-                        consume_kind: ProvenanceConsumeKind::ScriptSource,
-                        slot_name: Some("script_path".to_string()),
-                        normalized_command_name: Some("node".to_string()),
-                        domain_label: path_domain_label(
-                            ResolvedPathRole::Read,
-                            Some(ResolvedPathPurpose::ScriptSource),
-                        ),
-                    },
-                },
-                PendingMutation::AddPathFact {
-                    source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new(
-                        "resolved-path:command:sess-1:2:0:0:preload_targets:/tmp/project/hook.js"
+                    domain_label: path_domain_label(
+                        ResolvedPathRole::Read,
+                        Some(ResolvedPathPurpose::ScriptSource),
                     ),
-                    resolution: PathResolution::Concrete {
-                        path: "/tmp/project/hook.js".to_string()
-                    },
-                    role: ResolvedPathRole::Read,
-                    purpose: Some(ResolvedPathPurpose::InProcessCode),
-                    slot_name: "preload_targets".to_string(),
-                    normalized_command_name: Some("node".to_string()),
-                    relation: EdgeKind::Reads,
                 },
-                PendingMutation::AddProvenanceArtifact {
-                    source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new("artifact:path-content:/tmp/project/hook.js"),
-                    artifact: path_artifact("/tmp/project/hook.js"),
-                    relation: EdgeKind::Consumes,
-                    semantics: ProvenanceEdgeSemantics::Consume {
-                        consume_kind: ProvenanceConsumeKind::InProcessCodeSource,
-                        slot_name: Some("preload_targets".to_string()),
-                        normalized_command_name: Some("node".to_string()),
-                        domain_label: path_domain_label(
-                            ResolvedPathRole::Read,
-                            Some(ResolvedPathPurpose::InProcessCode),
-                        ),
-                    },
-                }
-            ]
-        );
+            },
+            PendingMutation::AddPathFact {
+                source_node_id: NodeId::new("command:sess-1:2:0"),
+                node_id: NodeId::new(
+                    "resolved-path:command:sess-1:2:0:0:preload_targets:/tmp/project/hook.js",
+                ),
+                resolution: PathResolution::Concrete {
+                    path: "/tmp/project/hook.js".to_string(),
+                },
+                role: ResolvedPathRole::Read,
+                purpose: Some(ResolvedPathPurpose::InProcessCode),
+                slot_name: "preload_targets".to_string(),
+                normalized_command_name: Some("node".to_string()),
+                relation: EdgeKind::Reads,
+            },
+            PendingMutation::AddProvenanceArtifact {
+                source_node_id: NodeId::new("command:sess-1:2:0"),
+                node_id: NodeId::new("artifact:path-content:/tmp/project/hook.js"),
+                artifact: path_artifact("/tmp/project/hook.js"),
+                relation: EdgeKind::Consumes,
+                semantics: ProvenanceEdgeSemantics::Consume {
+                    consume_kind: ProvenanceConsumeKind::InProcessCodeSource,
+                    slot_name: Some("preload_targets".to_string()),
+                    normalized_command_name: Some("node".to_string()),
+                    domain_label: path_domain_label(
+                        ResolvedPathRole::Read,
+                        Some(ResolvedPathPurpose::InProcessCode),
+                    ),
+                },
+            },
+        ];
+        let actual = relevant_pending_mutations(&ctx);
+        assert_eq!(actual.len(), expected.len());
+        for mutation in &expected {
+            assert!(
+                actual.contains(mutation),
+                "missing {mutation:?}: {actual:?}"
+            );
+        }
     }
 
     #[test]

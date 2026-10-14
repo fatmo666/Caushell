@@ -2143,7 +2143,7 @@ mod tests {
     }
 
     #[test]
-    fn core_allows_static_inline_unresolved_execution_payload_under_default_resolve_policy() {
+    fn core_requires_approval_for_static_non_shell_inline_code_by_default() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request(
@@ -2152,13 +2152,12 @@ mod tests {
             r#"python -c 'print(1)'"#,
         ));
 
-        assert_eq!(response.decision, Decision::Allow);
-        assert!(response.reasons.is_empty());
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(!response.reasons.is_empty());
     }
 
     #[test]
-    fn core_allows_static_quoted_heredoc_unresolved_execution_payload_under_default_resolve_policy()
-    {
+    fn core_requires_approval_for_static_non_shell_heredoc_by_default() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request(
@@ -2167,8 +2166,8 @@ mod tests {
             "python <<'PY'\nprint(1)\nPY",
         ));
 
-        assert_eq!(response.decision, Decision::Allow);
-        assert!(response.reasons.is_empty());
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(!response.reasons.is_empty());
     }
 
     #[test]
@@ -2189,7 +2188,7 @@ mod tests {
     }
 
     #[test]
-    fn core_allows_static_quoted_heredoc_in_nested_bash_payload_under_default_resolve_policy() {
+    fn core_requires_approval_for_non_shell_heredoc_nested_in_bash_by_default() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request(
@@ -2200,8 +2199,8 @@ print(1)
 PY""#,
         ));
 
-        assert_eq!(response.decision, Decision::Allow);
-        assert!(response.reasons.is_empty());
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(!response.reasons.is_empty());
     }
 
     #[test]
@@ -5103,6 +5102,14 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             caushell_types::RuleId::FileDeletion,
             caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
         );
+        policy
+            .rule_policy
+            .resolve_gap
+            .unresolved_execution_payload_subtypes
+            .insert(
+                caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
+                caushell_types::RuleAction::Observe,
+            );
         let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-heredoc-no-pipeline");
 
@@ -6213,7 +6220,16 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
     #[test]
     fn multi_top_level_commands_in_single_request_do_not_conflict() {
-        let mut core = ShellQueryCore::new();
+        let mut policy = PolicyConfig::default();
+        policy
+            .rule_policy
+            .resolve_gap
+            .unresolved_execution_payload_subtypes
+            .insert(
+                caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
+                caushell_types::RuleAction::Observe,
+            );
+        let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-multi-top-level");
 
         let response = core.check(sample_request(

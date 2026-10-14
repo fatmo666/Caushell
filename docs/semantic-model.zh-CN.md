@@ -166,9 +166,13 @@ structured_projection:
 
 依据：[NVIDIA stats CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-stats-command-switch-options)、[profile CLI](https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-profile-command-switch-options)。
 
+### Shell 词列表循环
+
+Shell 的词列表 `for` 循环在解析工件中保留变量、列表词、循环体及 Shell 作用域。共享的有序变量绑定为循环体提供抽象候选值范围，复用现有 argv 路径集合及路径模板，而不枚举文件或选一个迭代值充当真实值。支持静态列表、完整位置参数列表和能证明范围的纯 glob；列表证明上限为 256 项。保留 `./` 等原始拼写，直到前后缀和路径解析完成。只有完整双引号变量使用传递单字段范围；再次分词、未支持的替换、未知列表及超限情况保持未知。变量写入会使范围失效，循环结束不恢复旧值、不声称最终值确定，隔离作用域也不修改调用者状态。范围进入普通 Graph 路径事实，不伪造具体文件名或持久化为精确变量值；不新增风险 Pass 或 Harness 输入。
+
 ### 不透明代码与选项内的 Shell 命令
 
-`{kind: payload, language: opaque, source: inline_string, recursive: true}` 显式声明不属于已建模 Shell 语言的可执行代码。既有递归分析保留真实来源及“不支持此语言”证据，既有 ResolvePolicy Pass 默认对 `opaque_non_shell` 要求审批。脚本引用和隐式 stdin 使用同一语言声明及各自真实来源。本地或空 stdin 不能证明这个显式代码入口已被理解或安全：opaque 是语言语义未支持，不是可交给来源护栏兜底的运行时输入缺口。不引入 AWK/HCL 解释器、不猜内部路径、不动态读取代码，也不新增风险 Pass；现有 Python/Node 等静态字面量及运行时输入默认行为不变。本声明不声称覆盖配置、provider 或 backend 行为。
+`{kind: payload, language: opaque, source: inline_string, recursive: true}` 显式声明不属于已建模 Shell 语言的可执行代码。既有递归分析保留真实来源及“不支持此语言”证据，既有 ResolvePolicy Pass 默认对 `opaque_non_shell` 要求审批。Python、JavaScript、Perl 载荷也使用这条边界，同时保留语言身份；覆盖内联代码、脚本引用和 stdin，即使代码是字面量或来自本地也一样。字符串已知不等于程序语义已建模。Python/Node 的脚本 Profile 同时保留脚本来源读取事实；已注册的 Python 模块 CLI、已建模的 Shell 载荷及 SQL 客户端契约继续按各自语义判断。不引入语言解释器、不猜内部路径、不动态读取代码，也不新增风险 Pass。保留显式 subtype 配置覆盖，且不能绕过独立的拒绝规则。
 
 混合选项中的 Shell 命令先投影为 plain-value 虚拟 slot，再用既有 `command_string: {slot: proxy_command, syntax: posix_shell}` 分派：
 
@@ -273,7 +277,7 @@ Profile 可声明 `{kind: database_operation, database_operation: read|write|adm
 
 Profile 可声明 `{kind: terminal_session_operation, terminal_session_operation: inspect|create|attach|control|opaque, target: {kind: none}}`。这是静态操作类别，不证明实际 session 存在或归属。每个调用内去重，保留到 `ExecutionSemantics.terminal_session_operations`、trace、快照和既有执行语义 Query；旧数据缺字段默认为空，空列表不输出。会话／窗口名称、控制协议文本均为普通值，不伪装成文件路径。
 
-复用已有 `interactive_escape_guard` 的当前请求索引语义查询，不新增 Pass、历史遍历或运行时探测。Inspect 不添加 finding 或决策；Create、Attach、Control、Opaque 由新规则 `terminal_session_operation` 默认 NeedApproval，归属既有 `interactive_control` family，沿用单规则优先的配置机制。原 `interactive_escape_surface` 默认 Observe 不变，其他工具原策略不变。空操作列表不增加二次遍历或分配；这不是 latency 实测结果。
+复用已有 `interactive_escape_guard` 的当前请求索引语义查询，不新增 Pass、历史遍历或运行时探测。Inspect 不添加 finding 或决策；Create、Attach、Control、Opaque 由规则 `terminal_session_operation` 默认 NeedApproval，归属既有 `interactive_control` family，沿用单规则优先的配置机制。`interactive_escape_surface` 同样默认 NeedApproval，保留显式 Observe/Deny 配置覆盖；不开放逃逸能力的查询形式沿用各自策略。空操作列表不增加二次遍历或分配；这不是 latency 实测结果。
 
 `screen` Profile 放行 `-v`、带零或一个尾部匹配模式的 `-ls`／`-list`，以及无额外参数、大小写精确的 `-Q windows|info|lastmsg|number|title`。其他查询语法、缺参数／未知选项、未声明的紧凑组合保留 Opaque；明确的 selection-failure 效果保证默认解析缺口 Observe 也不会绕过审批。列表与控制选项混用、匹配模式后追加选项保守审批，没有扩改可选操作数扫描器。查询准入是操作层策略，不证明整个原生程序零副作用：原生列表／查询路径也可能维护 socket 注册目录。
 
@@ -750,7 +754,7 @@ Profile 用 `identity.module_entrypoints: [{runtime: python, name: json.tool}]`
 不会回退到同名命令、可执行文件 basename 或命令族别名。两套可执行文件
 查找接口都排除模块专属 Profile。派生节点是语义建模单元，不代表创建了
 OS 子进程；父层模块加载与模块 CLI 的效果同时保留。未登记或动态模块
-沿用已有代码加载策略；已登记模块的未知 argv 仍保留真正的分析缺口。
+保留需要审批的未解析执行缺口；已登记模块的未知 argv 仍保留真正的分析缺口。
 
 可选 modifier 声明 `ends_option_scope: true` 在该选项及其操作数之后结束
 选项归属范围，要求使用 `leading_options` 或 `permuted_options`；未声明时

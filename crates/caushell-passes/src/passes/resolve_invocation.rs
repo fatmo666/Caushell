@@ -1043,6 +1043,7 @@ fn parsed_dispatch_scope(
         commands: vec![command.clone()],
         declaration_commands: Vec::new(),
         assignment_commands: Vec::new(),
+        for_loops: Vec::new(),
         unset_commands: Vec::new(),
         function_definitions: Vec::new(),
         redirections: Vec::new(),
@@ -1095,23 +1096,29 @@ fn registered_dispatch_projection(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> caushell_profile::DispatchCommandProjection {
     let mut projection = collect_dispatch_command_projection(&resolved.bound);
+    let unresolved = &mut projection.unresolved;
     projection.resolved.retain(|candidate| {
-        candidate.module_runtime.as_deref().is_none_or(|runtime| {
+        let known = candidate.module_runtime.as_deref().is_none_or(|runtime| {
             registry
                 .lookup_module(runtime, &candidate.command.text)
                 .profile
                 .is_some()
-        })
-    });
-    // Preserve unknown-module code-load policy, but retain unknown argv gaps of
-    // registered module invocations. Ordinary wrappers are unchanged.
-    projection.unresolved.retain(|gap| {
-        gap.module_runtime.is_none()
-            || projection
-                .resolved
+        });
+        if !known
+            && !unresolved
                 .iter()
-                .any(|candidate| candidate.dispatch_index == gap.dispatch_index)
+                .any(|gap| gap.dispatch_index == candidate.dispatch_index)
+        {
+            unresolved.push(caushell_profile::UnresolvedDispatchCommand {
+                module_runtime: candidate.module_runtime.clone(),
+                dispatch_index: candidate.dispatch_index,
+                command_slot: candidate.command.slot.clone(),
+            });
+        }
+        known
     });
+    // A declared module execution without a registered CLI contract is an
+    // unresolved child, not a same-named executable or an understood program.
     projection
 }
 
@@ -2770,6 +2777,7 @@ fn execution_body_scope(
                 commands: Vec::new(),
                 declaration_commands: Vec::new(),
                 assignment_commands: Vec::new(),
+                for_loops: Vec::new(),
                 unset_commands: Vec::new(),
                 function_definitions: Vec::new(),
                 redirections: Vec::new(),
@@ -4903,6 +4911,7 @@ fn empty_dispatch_scope(
         commands: vec![command],
         declaration_commands: Vec::new(),
         assignment_commands: Vec::new(),
+        for_loops: Vec::new(),
         unset_commands: Vec::new(),
         function_definitions: Vec::new(),
         redirections: Vec::new(),
@@ -6813,7 +6822,12 @@ fn unresolved_execution_payload_subtype(
     record: &NestedPayloadRecord,
     parsed_request: Option<&caushell_parse::ParsedCommandArtifact>,
 ) -> Option<UnresolvedExecutionPayloadSubtype> {
-    if record.candidate.candidate.language == caushell_profile::PayloadLanguage::Opaque {
+    if record
+        .candidate
+        .candidate
+        .language
+        .requires_opaque_execution_boundary()
+    {
         return Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell);
     }
     Some(match &record.candidate.candidate.input {
@@ -9506,7 +9520,7 @@ modifiers:
             EvidenceKind::NestedPayloadUnresolved(unresolved) => {
                 assert_eq!(
                     unresolved.unresolved_execution_payload_subtype,
-                    Some(caushell_types::UnresolvedExecutionPayloadSubtype::StaticHeredocLiteral)
+                    Some(caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell)
                 );
                 assert_eq!(
                     unresolved.reason,

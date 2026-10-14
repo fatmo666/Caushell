@@ -27,6 +27,10 @@ forms:
           flag: "-e"
         - kind: has_flag
           flag: "--eval"
+        - kind: has_flag
+          flag: "-p"
+        - kind: has_flag
+          flag: "--print"
     parameters:
       - name: short_payload
         semantic:
@@ -38,6 +42,14 @@ forms:
           kind: following_flag
           flag: "-e"
           operand_mode: next_positional_after_dashdash
+        cardinality: optional_one
+      - name: short_print_payload
+        semantic: {kind: payload, language: javascript, source: inline_string, recursive: true}
+        binding: {kind: following_flag, flag: '-p', operand_mode: next_positional_after_dashdash}
+        cardinality: optional_one
+      - name: long_print_payload
+        semantic: {kind: payload, language: javascript, source: inline_string, recursive: true}
+        binding: {kind: following_flag, flag: '--print', operand_mode: next_positional_after_dashdash}
         cardinality: optional_one
       - name: long_payload
         semantic:
@@ -51,6 +63,8 @@ forms:
           operand_mode: next_positional_after_dashdash
         cardinality: optional_one
     effects:
+      - {kind: execute_payload, target: {kind: slot, name: short_print_payload}}
+      - {kind: execute_payload, target: {kind: slot, name: long_print_payload}}
       - kind: execute_payload
         target:
           kind: slot
@@ -67,6 +81,8 @@ forms:
         - kind: has_positional_at
           index: 0
         - kind: not
+          item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}
+        - kind: not
           item:
             kind: any
             items:
@@ -74,15 +90,23 @@ forms:
                 flag: "-e"
               - kind: has_flag
                 flag: "--eval"
+              - kind: has_flag
+                flag: "-p"
+              - kind: has_flag
+                flag: "--print"
     parameters:
       - name: script_path
         semantic:
-          kind: path
-          role: read
-          purpose: script_source
+          kind: payload
+          language: javascript
+          source: script_file_ref
+          recursive: true
         binding:
           kind: next_positional
         cardinality: required_one
+        structured_projection:
+          branches: []
+          fallback: {name: script_reads, semantic: {kind: path, role: read, purpose: script_source}}
       - name: script_args
         semantic:
           kind: plain_value
@@ -93,11 +117,28 @@ forms:
       - kind: read_path
         target:
           kind: slot
-          name: script_path
+          name: script_reads
       - kind: execute_payload
         target:
           kind: slot
           name: script_path
+
+  - id: explicit_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}
+        - kind: not
+          item: {kind: any, items: [{kind: has_flag, flag: '-e'}, {kind: has_flag, flag: '--eval'}, {kind: has_flag, flag: '-p'}, {kind: has_flag, flag: '--print'}]}
+    parameters:
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: script_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    implicit_inputs: &node_stdin_inputs
+      - {source: stdin_payload, semantic: {kind: payload, language: javascript, source: stdin, recursive: true}}
+    stream_contract: &node_stdin_stream {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+    effects: &node_stdin_effects
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
 
   - id: stdin_script
     selector:
@@ -112,27 +153,14 @@ forms:
                 flag: "-e"
               - kind: has_flag
                 flag: "--eval"
+              - kind: has_flag
+                flag: "-p"
+              - kind: has_flag
+                flag: "--print"
         - kind: stdin_payload_available
-    implicit_inputs:
-      - source: stdin_payload
-        semantic:
-          kind: payload
-          language: javascript
-          source: stdin
-          recursive: true
-    stream_contract:
-      stdin_mode: payload_required
-      stdout_mode: opaque
-      stderr_mode: opaque
-    effects:
-      - kind: consume_stdin
-        target:
-          kind: implicit_input
-          source: stdin_payload
-      - kind: execute_payload
-        target:
-          kind: implicit_input
-          source: stdin_payload
+    implicit_inputs: *node_stdin_inputs
+    stream_contract: *node_stdin_stream
+    effects: *node_stdin_effects
 
 modifiers:
   - id: preload

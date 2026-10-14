@@ -196,7 +196,7 @@ pub fn parse_recursive_payload_candidate(
     // This opt-in boundary is about unsupported executable semantics, not
     // merely unknown bytes. Even a locally sourced stdin program is opaque;
     // it must not be delegated to provenance-only runtime-input handling.
-    if candidate.language == PayloadLanguage::Opaque {
+    if candidate.language.requires_opaque_execution_boundary() {
         return RecursivePayloadParseResult::UnsupportedLanguage {
             candidate: candidate.clone(),
         };
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn python_stdin_collects_runtime_payload_candidate() {
+    fn python_stdin_collects_unsupported_code_candidate() {
         let profile = built_in_profile("python");
         let artifact = parse_command("python", ShellKind::Bash).expect("expected parse to succeed");
 
@@ -669,7 +669,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         match &results[0] {
-            RecursivePayloadParseResult::RequiresRuntimeInput { candidate, .. } => {
+            RecursivePayloadParseResult::UnsupportedLanguage { candidate } => {
                 assert_eq!(candidate.language, PayloadLanguage::Python);
                 assert_eq!(candidate.source, PayloadSource::Stdin);
             }

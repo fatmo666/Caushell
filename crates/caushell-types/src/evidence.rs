@@ -811,6 +811,7 @@ fn implicit_input_source_name(source: ImplicitInputSource) -> &'static str {
         ImplicitInputSource::InteractiveSession => "interactive_session",
         ImplicitInputSource::DispatchOutput => "dispatch_output",
         ImplicitInputSource::InheritedEnvironment => "inherited_environment",
+        ImplicitInputSource::ShellIteration => "shell_iteration",
     }
 }
 
