@@ -3,25 +3,66 @@ kind: command_profile
 identity: {canonical_name: arp, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
-option_matching: exact_names
+option_scope: permuted_options
 opaque_on_unresolved: true
 forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
   - id: load_entries_from_file
-    selector: {kind: has_modifier, modifier: file}
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: entry_file}}]
+    selector: {kind: all, items: [ &running {kind: not, item: *information}, &file {kind: has_modifier, modifier: file}, {kind: not, item: &manage {kind: any, items: [{kind: has_modifier, modifier: set}, {kind: has_modifier, modifier: delete}, {kind: has_modifier, modifier: all}]}} ]}
+    parameters:
+      - {name: entry_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: optional_one}
+    remaining_selector: {kind: no_positional_args}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: entry_file}}
+      - {kind: read_path, target: {kind: configured_path, sources: [{slot: entry_file, projection: {kind: identity}}], default_value: /etc/ethers, only_when_sources_absent: true, missing: skip}}
+      - &mutation {kind: state_operation, state_operation: {domain: network_configuration, operation: mutate}, target: {kind: none}}
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+
+  - id: modify_cache
+    selector:
+      kind: all
+      items:
+        - *running
+        - {kind: not, item: *file}
+        - {kind: not, item: {kind: has_modifier, modifier: all}}
+        - kind: any
+          items:
+            - {kind: all, items: [{kind: has_modifier, modifier: set}, {kind: not, item: {kind: has_modifier, modifier: delete}}]}
+            - {kind: all, items: [{kind: has_modifier, modifier: delete}, {kind: not, item: {kind: has_modifier, modifier: set}}]}
+    parameters: [{name: entry_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    remaining_selector: {kind: no_positional_args}
+    effects: [*mutation]
+
   - id: display_or_manage_cache
-    selector: {kind: not, item: {kind: has_modifier, modifier: file}}
-    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    selector: {kind: all, items: [*running, {kind: not, item: *file}, {kind: not, item: {kind: has_modifier, modifier: set}}, {kind: not, item: {kind: has_modifier, modifier: delete}}]}
+    parameters: [{name: queried_host, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}]
+    remaining_selector: {kind: no_positional_args}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
 modifiers:
-  - id: file
-    matcher: {kind: any_flag, flags: ['-f', '--file']}
-    parameters: [{name: entry_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: file, matcher: {kind: any_flag, flags: ['-f', '--file']}}
+  - {id: set, matcher: {kind: any_flag, flags: ['-s', '--set']}}
+  - {id: delete, matcher: {kind: any_flag, flags: ['-d', '--delete']}}
   - {id: verbose, matcher: {kind: any_flag, flags: ['-v', '--verbose']}}
   - {id: numeric, matcher: {kind: any_flag, flags: ['-n', '--numeric']}}
   - {id: all, matcher: {kind: any_flag, flags: ['-a', '--all']}}
+  - {id: display, matcher: {kind: any_flag, flags: ['-e', '-N', '--symbolic']}}
+  - {id: device_address, matcher: {kind: any_flag, flags: ['-D', '--use-device']}}
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '-?', '--help', '-V', '--version']}, ends_option_scope: true}
+  - id: address_family
+    matcher: {kind: any_flag, flags: ['-A', '-p', '--protocol']}
+    parameters: [{name: address_family, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: hardware
+    matcher: {kind: any_flag, flags: ['-H', '-t', '--hw-type']}
+    parameters: [{name: hardware_type, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: device
+    matcher: {kind: any_flag, flags: ['-i', '--device']}
+    parameters: [{name: device, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 extensions:
-  caushell.profile/source_research: [https://man7.org/linux/man-pages/man8/arp.8.html]
+  caushell.profile/source_research: [https://man7.org/linux/man-pages/man8/arp.8.html, https://github.com/ecki/net-tools/blob/master/arp.c]
   caushell.profile/known_limitations:
-    - -f loads ARP entry records from the named file; file contents can alter system neighbor state. The profile records the actual file read but the record grammar and resulting kernel mutations are not expanded into individual effects.
+    - -f is a mode flag; the first remaining positional argument names its entry file, defaulting to /etc/ethers. Reading entries also declares network-configuration mutation without decoding file contents.
+    - Conflicting display/set/delete/file modes retain unresolved operation semantics rather than guessing native last-option precedence. Unknown options and variable-width arguments remain opaque.
     - The source recipe's verbose diagnostic leakage is not modeled as reliable file-content output; dynamic kernel permissions and resulting ARP state are outside the static Graph.

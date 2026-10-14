@@ -53,6 +53,17 @@ Query 将它与逻辑上传／下载目标分开，非本地或未知路由阻�
 
 ## 命令建模
 
+非文件系统状态通过 `state_operation` 声明。网络接口配置和 ARP 表修改使用
+`network_configuration`，主机名、名称文件设置和启动回退使用 `host_identity`。
+这些声明复用既有状态审批 Pass 与 Graph／Query，不伪造无目标的文件元数据修改，
+也不新增 Pass；查询不产生修改候选。Profile 按原生参数归属区分全局显示选项、
+接口配置尾部，以及 ARP `-f` 模式和后续位置参数中的输入文件。
+
+`date` 的显式 `--set` 和位置参数设置形式声明 `system_clock` 修改；
+`+FORMAT`、GNU `--date` 和 BSD `-j` 转换不修改时钟。GNU 日期文件内容读取、
+参考文件元数据和 BSD 输入格式分别建模，格式字符串不冒充文件路径。
+分析不探测平台或读取输入／配置文件；普通状态 Pass 仍在没有修改候选时提前返回。
+
 命令历史的清空／删除通过已有 `state_operation` 声明为 `shell_history`
 域的修改，由既有状态审批 Pass 处理，不伪造 `.bash_history` 文件目标。
 Profile 保留先清空再读写文件，以及追加／展开优先于单项删除的顺序；

@@ -10,6 +10,8 @@ pub enum StateOperationDomain {
     CloudResource,
     RemoteAccess,
     ShellHistory,
+    NetworkConfiguration,
+    HostIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

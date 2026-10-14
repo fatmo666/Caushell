@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: date
@@ -18,11 +20,21 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
   - id: set_system_clock
     selector:
-      kind: has_modifier
-      modifier: set_date
-    effects:
+      kind: all
+      items:
+        - &running {kind: not, item: *information}
+        - &explicit_set {kind: has_modifier, modifier: set_date}
+    parameters: &operands
+      - {name: format_or_dates, semantic: {kind: structured_value, context: date_expression}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    remaining_selector: {kind: no_positional_args}
+    effects: &clock_mutation
       - kind: state_operation
         state_operation:
           domain: system_clock
@@ -30,27 +42,49 @@ forms:
         target:
           kind: none
 
+  # GNU/POSIX numeric operands and BSD formatted input set the clock unless
+  # the BSD -j mode was requested. Query option values are not positional dates.
+  - id: set_system_clock_operand
+    selector:
+      kind: all
+      items:
+        - *running
+        - {kind: not, item: *explicit_set}
+        - {kind: not, item: &no_set {kind: has_modifier, modifier: no_set}}
+        - {kind: not, item: {kind: has_modifier, modifier: date_string}}
+        - {kind: not, item: {kind: has_modifier, modifier: reference}}
+        - {kind: not, item: {kind: has_modifier, modifier: resolution}}
+        - &date_operand {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[^+]'}}
+    parameters: *operands
+    remaining_selector: {kind: no_positional_args}
+    effects: *clock_mutation
+
+  - id: parse_without_setting_clock
+    selector: {kind: all, items: [*running, *no_set, {kind: not, item: *explicit_set}]}
+    parameters: *operands
+    remaining_selector: {kind: no_positional_args}
+    stream_contract: &conversion_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects:
+      - {kind: target_path, target: {kind: slot, name: reference_operand}}
+      - {kind: transform_data, target: {kind: none}}
+
   - id: print_or_parse_date
     selector:
       kind: all
       items:
+        - *running
         - kind: not
           item:
             kind: has_modifier
             modifier: set_date
-    parameters:
-      - name: format_or_dates
-        semantic:
-          kind: structured_value
-          context: date_expression
-        binding:
-          kind: remaining_args
-        cardinality: optional_many
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
+        - {kind: not, item: *no_set}
+        - {kind: not, item: *date_operand}
+    parameters: *operands
+    remaining_selector: {kind: no_positional_args}
+    stream_contract: *conversion_stream
     effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: file_or_format}}
+      - {kind: target_path, target: {kind: slot, name: reference_operand}}
       - kind: transform_data
         target:
           kind: none
@@ -79,20 +113,12 @@ modifiers:
         - "-f"
         - "--file"
     parameters:
-      - name: input_path
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
+      - name: file_or_format
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: input_path
+        cardinality: required_many
 
   - id: date_string
     matcher:
@@ -108,10 +134,41 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_many
+        cardinality: required_many
+
+  - {id: no_set, matcher: {kind: any_flag, flags: ['-j']}}
+  - {id: information, matcher: {kind: any_flag, flags: ['--help', '--version']}, ends_option_scope: true}
+  - {id: display, matcher: {kind: any_flag, flags: ['-u', '--utc', '--universal', '-R', '--rfc-email', '-n', '--debug']}}
+  - {id: resolution, matcher: {kind: any_flag, flags: ['--resolution']}}
+  - id: reference
+    matcher: {kind: any_flag, flags: ['-r', '--reference']}
+    parameters:
+      - {name: reference_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: iso_format
+    matcher: {kind: any_flag, flags: ['-I', '--iso-8601']}
+    parameters:
+      - {name: iso_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
+  - id: rfc_format
+    matcher: {kind: any_flag, flags: ['--rfc-3339']}
+    parameters:
+      - {name: rfc_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: adjustment
+    matcher: {kind: any_flag, flags: ['-v']}
+    parameters:
+      - {name: adjustment, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: output_zone
+    matcher: {kind: any_flag, flags: ['-z']}
+    parameters:
+      - {name: output_zone, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+    - https://github.com/coreutils/coreutils/blob/v9.1/src/date.c
+    - https://github.com/apple-oss-distributions/shell_cmds/blob/main/date/date.c
+  caushell.profile/known_limitations:
+    - A non-format positional operand requests clock setting; GNU date options for parsing, reference files and resolution own their operands instead. BSD -j suppresses positional setting; -v adjusts displayed time, not the clock.
+    - GNU -f reads a date file; BSD -f is an input format. Read effects are attached to the GNU query form, not to BSD -j or positional setting forms. -r retains possible file provenance across GNU/BSD without filesystem probes.
+    - Unknown options and uncertain argument ownership stay opaque rather than being treated as harmless formatting.

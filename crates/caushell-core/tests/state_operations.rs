@@ -77,6 +77,8 @@ fn run_at(
 fn schema_accepts_only_typed_state_effects_without_fake_filesystem_targets() {
     for domain in [
         "system_clock",
+        "network_configuration",
+        "host_identity",
         "filesystem_mount",
         "service_manager",
         "cloud_resource",

@@ -45,7 +45,8 @@ A Profile may declare a non-filesystem effect explicitly:
 ```
 
 Domains are `system_clock`, `filesystem_mount`, `service_manager`,
-`cloud_resource`, `remote_access` and `shell_history`; operations are `inspect`, `mutate`,
+`cloud_resource`, `remote_access`, `shell_history`, `network_configuration` and
+`host_identity`; operations are `inspect`, `mutate`,
 `control` and `opaque`. The typed declarations are retained in execution
 semantics and exposed by the public execution-semantics Query. They do not
 invent local files, remote resource ownership, successful execution or live
@@ -56,6 +57,19 @@ overrides and decision precedence. Filesystem and other guards remain
 independent. Commands without a state-operation candidate return before
 the state guard queries the Graph; candidate queries cover the current action,
 not a scan of all session history.
+
+Interface configuration and ARP entry updates declare `network_configuration`
+mutations; setting a hostname, loading a name file or requesting a boot fallback
+declares `host_identity` mutation. These declarations reuse the same state guard,
+not a filesystem metadata effect without a target. Queries have no mutation
+candidate. Native argv ownership distinguishes global display options from
+interface configuration tails, and ARP's `-f` mode from its positional entry file.
+
+`date` declares clock mutation for explicit `--set` and positional time-setting
+forms. A `+FORMAT` operand, GNU `--date` and BSD `-j` conversion are not clock
+mutations. GNU date-file reads and reference-file metadata keep separate input
+facts; BSD input formats do not become fictitious file paths. These Profiles do
+not add a platform probe or read configuration/input files during analysis.
 
 The `history` Profile declares a `shell_history` mutation for clearing the
 history list or deleting selected entries. It respects clear-before-file and

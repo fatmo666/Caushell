@@ -8953,14 +8953,14 @@ mod tests {
             "hostname buildbox",
             "hostname",
             "set_hostname",
-            &[EffectKind::MetadataMutation],
+            &[EffectKind::StateOperation],
         );
         assert_resolves_command_without_catastrophic_semantic(
             &registry,
             "ifconfig eth0 up",
             "ifconfig",
             "configure_interface",
-            &[EffectKind::MetadataMutation],
+            &[EffectKind::StateOperation],
         );
         assert_resolves_command_without_catastrophic_semantic(
             &registry,
@@ -13958,7 +13958,7 @@ mod tests {
                 "ifconfig eth0 up",
                 "ifconfig",
                 "configure_interface",
-                &[EffectKind::MetadataMutation],
+                &[EffectKind::StateOperation],
             ),
             (
                 "rev notes.txt",
@@ -13988,7 +13988,7 @@ mod tests {
                 "hostname buildbox",
                 "hostname",
                 "set_hostname",
-                &[EffectKind::MetadataMutation],
+                &[EffectKind::StateOperation],
             ),
             (
                 "ping -c 1 example.com",

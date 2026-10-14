@@ -1,5 +1,8 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
 
 identity:
   canonical_name: ifconfig
@@ -18,17 +21,30 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
   - id: configure_interface
     selector:
-      kind: has_positional_at
-      index: 1
+      kind: all
+      items:
+        - &running {kind: not, item: *information}
+        - {kind: has_positional_at, index: 1}
+        - kind: not
+          item: &family_query
+            kind: all
+            items:
+              - {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(inet|inet6|link|ether|ax25|ddp|ipx|netrom)$'}}
+              - {kind: not, item: {kind: has_positional_at, index: 2}}
+    remaining_selector: {kind: no_positional_args}
     parameters:
       - name: interface_name
         semantic:
           kind: plain_value
         binding:
-          kind: positional_at
-          index: 0
+          kind: next_positional
         cardinality: required_one
       - name: interface_arguments
         semantic:
@@ -37,7 +53,8 @@ forms:
           kind: remaining_args
         cardinality: optional_many
     effects:
-      - kind: metadata_mutation
+      - kind: state_operation
+        state_operation: {domain: network_configuration, operation: mutate}
         target:
           kind: none
 
@@ -45,17 +62,19 @@ forms:
     selector:
       kind: all
       items:
+        - *running
         - kind: not
           item:
             kind: has_positional_at
             index: 1
+    remaining_selector: {kind: no_positional_args}
     parameters:
       - name: interface_names
         semantic:
           kind: plain_value
         binding:
           kind: remaining_positionals
-        cardinality: optional_many
+        cardinality: optional_one
     stream_contract:
       stdin_mode: ignored
       stdout_mode: data
@@ -65,8 +84,23 @@ forms:
         target:
           kind: none
 
-modifiers: []
+  - id: inspect_address_family
+    selector: {kind: all, items: [*running, *family_query]}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: interface_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: address_family, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
+modifiers:
+  - {id: display, matcher: {kind: any_flag, flags: ['-a', '-s', '-v', '-l', '-m', '-C']}}
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '-?', '-help', '--help', '-V', '-version', '--version']}, ends_option_scope: true}
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - https://github.com/ecki/net-tools/blob/master/ifconfig.c
+    - https://man.freebsd.org/cgi/man.cgi?query=ifconfig&sektion=8
+  caushell.profile/known_limitations:
+    - Recognized global display options and zero/one interface operand are queries; an address family alone is not a configuration operation. Other tails request interface configuration, including negative controls such as -arp.
+    - Unknown global options or uncertain argv ownership remain unresolved; no interface, privilege or live kernel state is probed.
