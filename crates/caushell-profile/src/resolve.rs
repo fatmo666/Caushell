@@ -14085,11 +14085,8 @@ mod tests {
             (
                 "watch -n 1 ls -l",
                 "watch",
-                "repeat_command",
-                &[
-                    EffectKind::DispatchCommand,
-                    EffectKind::OpenInteractiveEscapeSurface,
-                ],
+                "repeat_shell_command",
+                &[EffectKind::DispatchCommand],
             ),
             (
                 "w",

@@ -1072,6 +1072,16 @@ are runtime data and are not expanded again as caller syntax. `argv_suffix` adds
 fixed argv data after the child arguments, e.g. the decompressor's `-d`.
 String sources cannot also declare `argv` or `argv_prefix`.
 
+`command_string: {slot: program_args, syntax: posix_shell, join_arguments: true}`
+opts into a tool that joins all decoded slot arguments with one ASCII space and
+executes the result as a single shell program. Unknown arguments, missing input,
+NULs and the existing 64 KiB / 4096-argument limits retain one unresolved dispatch;
+no known fragment is executed in isolation. The original operands remain intact.
+This option is only valid for `posix_shell`; omitted or false keeps the existing
+one-program-per-value behavior. `watch` uses it by default, and uses literal
+wrapper argv under `--exec`. Display controls are not interactive escape effects;
+child commands still pass through the existing execution and risk machinery.
+
 `unknown_environment_names` masks only tool-generated names in the child;
 unrelated exported variables and caller state remain intact. `stdin_from_tool`
 declares opaque tool-produced bytes, separately from `stdin_from_parent`; the two

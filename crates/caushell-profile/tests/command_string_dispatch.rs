@@ -133,6 +133,14 @@ fn invalid_declarations_fail_at_load_time_and_legacy_sources_are_unchanged() {
     for yaml in [
         FIXTURE.replace("slot: programs", "slot: missing"),
         FIXTURE.replace("gnu_wordsplit", "guess"),
+        FIXTURE.replace(
+            "syntax: gnu_wordsplit",
+            "syntax: gnu_wordsplit, join_arguments: true",
+        ),
+        FIXTURE.replace(
+            "syntax: gnu_wordsplit",
+            "syntax: gnu_parallel, join_arguments: true",
+        ),
         FIXTURE.replace("slot: programs", "slot: ''"),
         FIXTURE.replace("argv_suffix: [-d]", "argv_prefix: [-d]"),
         FIXTURE.replace("argv_suffix: [-d]", "argv: [programs]"),
@@ -159,4 +167,114 @@ fn invalid_declarations_fail_at_load_time_and_legacy_sources_are_unchanged() {
             .collect::<Vec<_>>(),
         ["\"two", "words\"", "-d"]
     );
+}
+
+#[test]
+fn joined_shell_program_is_one_dispatch_over_decoded_arguments() {
+    let yaml = FIXTURE.replace("gnu_wordsplit", "posix_shell, join_arguments: true");
+    let (bound, p) = project(
+        &yaml,
+        r#"string-fixture printf '%s\n' '"a b"' '; rm /opt/shared/file'"#,
+    );
+    assert!(p.unresolved.is_empty());
+    assert_eq!(p.resolved.len(), 1);
+    let child = &p.resolved[0];
+    assert_eq!(child.command.text, "/bin/sh");
+    assert_eq!(
+        child
+            .argv
+            .iter()
+            .map(|a| a.text.as_str())
+            .collect::<Vec<_>>(),
+        ["-c", "printf %s\\n \"a b\" ; rm /opt/shared/file", "-d"]
+    );
+    assert_eq!(bound.bound_parameters[0].values.len(), 4);
+    assert!(child.argv.iter().all(|a| a.runtime_data));
+    assert!(child.argv.iter().all(|a| {
+        a.span.start_byte
+            > bound.bound_parameters[0]
+                .values
+                .iter()
+                .filter_map(|v| {
+                    if let BoundValue::Argument { span, .. } = v {
+                        Some(span.end_byte)
+                    } else {
+                        None
+                    }
+                })
+                .max()
+                .unwrap()
+    }));
+    assert!(child.stdin_from_tool);
+    assert_eq!(child.unknown_environment_names, ["TOOL_FILENAME"]);
+}
+
+#[test]
+fn joined_shell_program_never_dispatches_known_fragments_around_unknown_input() {
+    let yaml = FIXTURE.replace("gnu_wordsplit", "posix_shell, join_arguments: true");
+    for command in [
+        "string-fixture 'printf SAFE' \"$UNKNOWN\" 'rm /opt/file'",
+        "string-fixture printf *.txt",
+        "string-fixture printf $(cat input)",
+    ] {
+        let (_, p) = project(&yaml, command);
+        assert!(p.resolved.is_empty(), "{command}: {p:?}");
+        assert_eq!(p.unresolved.len(), 1, "{command}");
+        assert_eq!(p.unresolved[0].dispatch_index, 0);
+    }
+    let (_, p) = project(&yaml, "string-fixture ''");
+    assert_eq!(p.resolved[0].argv[1].text, "");
+    let (_, p) = project(&yaml, "string-fixture printf '' SAFE");
+    assert_eq!(p.resolved[0].argv[1].text, "printf  SAFE");
+}
+
+#[test]
+fn joined_program_keeps_one_gap_for_implicit_input_and_nul_bytes() {
+    let yaml = FIXTURE.replace("gnu_wordsplit", "posix_shell, join_arguments: true");
+    for implicit in [false, true] {
+        let (mut bound, _) = project(&yaml, "string-fixture printf SAFE");
+        if implicit {
+            bound.bound_parameters[0]
+                .values
+                .push(BoundValue::implicit_input(ImplicitInputSource::StdinData));
+        } else {
+            let BoundValue::Argument {
+                text,
+                materialization,
+                ..
+            } = &mut bound.bound_parameters[0].values[1]
+            else {
+                panic!()
+            };
+            *text = "SAFE\0; rm /opt/file".into();
+            *materialization = BoundArgumentMaterialization::RuntimeData;
+        }
+        let p = collect_dispatch_command_projection(&bound);
+        assert!(p.resolved.is_empty());
+        assert_eq!(p.unresolved.len(), 1);
+    }
+}
+
+#[test]
+fn joined_program_limits_cover_the_entire_region_and_legacy_false_is_unchanged() {
+    let yaml = FIXTURE.replace("gnu_wordsplit", "posix_shell, join_arguments: true");
+    for command in [
+        format!(
+            "string-fixture '{}' '{}'",
+            "a".repeat(32768),
+            "b".repeat(32768)
+        ),
+        format!("string-fixture {}", vec!["a"; 4097].join(" ")),
+    ] {
+        let (_, p) = project(&yaml, &command);
+        assert!(p.resolved.is_empty());
+        assert_eq!(p.unresolved.len(), 1);
+    }
+    let (_, p) = project(&yaml, &format!("string-fixture '{}'", "a".repeat(65536)));
+    assert_eq!(p.resolved.len(), 1);
+    let false_yaml = FIXTURE.replace("gnu_wordsplit", "posix_shell, join_arguments: false");
+    let (_, p) = project(&false_yaml, "string-fixture 'printf SAFE' 'rm /opt/file'");
+    assert_eq!(p.resolved.len(), 2);
+    assert_eq!(p.resolved[0].argv[1].text, "printf SAFE");
+    assert_eq!(p.resolved[1].argv[1].text, "rm /opt/file");
 }

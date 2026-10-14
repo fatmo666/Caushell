@@ -815,6 +815,13 @@ Shell 分析。`gnu_wordsplit` 则按 GNU wordsplit 默认引号与 C 转义产�
 混为一项。解码参数是 runtime data，不再按调用者语法展开。`argv_suffix` 在子参数后
 追加固定 argv 数据，例如解压程序的 `-d`；字符串来源不能同时声明 `argv`／`argv_prefix`。
 
+`command_string: {slot: program_args, syntax: posix_shell, join_arguments: true}`
+可声明工具将该 slot 的全部解码参数用一个 ASCII 空格拼成一段 Shell 程序。
+未知参数、缺失输入、NUL 或超过既有 64 KiB／4096 参数上限时保留一个未解析分派，
+不单独执行已知片段；原操作数保持完整。该选项仅用于 `posix_shell`，省略或 false
+保留原来逐值分派的行为。`watch` 默认使用拼接模式，`--exec` 使用原始包装 argv。
+显示控制不声明交互逃逸；子命令仍进入既有执行语义与风险判断。
+
 `unknown_environment_names` 仅在子环境遮蔽工具生成的同名值，保留无关 exported
 变量，不修改父 Shell。`stdin_from_tool` 表达内容未知的工具输出，与
 `stdin_from_parent` 互斥。内层 Shell 继承输入存在性，但不得用调用者的字面管道填充

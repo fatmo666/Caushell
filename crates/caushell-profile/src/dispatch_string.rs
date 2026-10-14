@@ -5,8 +5,8 @@
 //! caller. Shell programs use the existing /bin/sh -c recursive machinery.
 use crate::DispatchStringSyntax;
 
-const MAX_COMMAND_BYTES: usize = 64 * 1024;
-const MAX_ARGV_WORDS: usize = 4096;
+pub(crate) const MAX_COMMAND_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_ARGV_WORDS: usize = 4096;
 
 pub(crate) fn project_command_string(
     text: &str,

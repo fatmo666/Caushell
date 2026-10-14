@@ -2921,6 +2921,13 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 }
                 (None, None, None, Some(source)) => {
                     ensure_non_empty(&source.slot, "effects.target.command_string.slot")?;
+                    if source.join_arguments
+                        && source.syntax != crate::raw::RawDispatchStringSyntax::PosixShell
+                    {
+                        return Err(NormalizeError::InvalidStructuredProjection(
+                            "join_arguments requires posix_shell command string syntax".into(),
+                        ));
+                    }
                     if !argv.is_empty() || !argv_prefix.is_empty() {
                         return Err(NormalizeError::InvalidStructuredProjection(
                             "command string cannot be combined with argv or argv_prefix".into(),
@@ -2928,6 +2935,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     }
                     crate::DispatchCommandSource::CommandString {
                         slot: SlotName::new(source.slot),
+                        join_arguments: source.join_arguments,
                         syntax: match source.syntax {
                             crate::raw::RawDispatchStringSyntax::PosixShell => {
                                 crate::DispatchStringSyntax::PosixShell

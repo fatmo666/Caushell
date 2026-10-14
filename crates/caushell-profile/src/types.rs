@@ -1097,6 +1097,9 @@ pub enum DispatchCommandSource {
     CommandString {
         slot: SlotName,
         syntax: DispatchStringSyntax,
+        /// Join decoded argv with ASCII spaces into one tool-owned program.
+        /// False preserves the existing one-program-per-value contract.
+        join_arguments: bool,
     },
 }
 

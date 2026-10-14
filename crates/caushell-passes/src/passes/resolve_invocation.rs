@@ -4140,6 +4140,7 @@ fn parallel_template_slot(bound: &caushell_profile::BoundInvocation) -> Option<&
                     caushell_profile::DispatchCommandSource::CommandString {
                         slot,
                         syntax: caushell_profile::DispatchStringSyntax::GnuParallel,
+                        ..
                     } => Some(slot.as_str()),
                     _ => None,
                 }

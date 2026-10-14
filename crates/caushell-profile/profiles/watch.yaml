@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: watch
@@ -18,15 +20,42 @@ platform:
   requires_features: []
 
 forms:
-  - id: repeat_command
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters:
+      - {name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
+  # procps-ng joins decoded argv with spaces, then runs /bin/sh -c. A
+  # fullscreen display does not let the user enter a new command at runtime.
+  - id: repeat_shell_command
     selector:
-      kind: has_positional_at
-      index: 0
+      kind: all
+      items:
+        - &running {kind: not, item: *information}
+        - {kind: not, item: &exec {kind: has_modifier, modifier: exec}}
+        - &command {kind: has_positional_at, index: 0}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: shell_program, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_many}
+    stream_contract: &streams {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command_string: {slot: shell_program, syntax: posix_shell, join_arguments: true}
+          stdin_from_parent: true
+          stdout_to_parent: true
+
+  - id: repeat_exec_command
+    selector: {kind: all, items: [*running, *exec, *command]}
+    remaining_selector: {kind: no_positional_args}
+    stream_contract: *streams
     parameters:
       - name: wrapped_command
         semantic:
           kind: command_ref
-          dispatch: command_name
+          dispatch: wrapper_command
         binding:
           kind: next_positional
         cardinality: required_one
@@ -43,14 +72,8 @@ forms:
           command: wrapped_command
           argv:
             - wrapped_args
-      - kind: open_interactive_escape_surface
-        target:
-          kind: none
-        surface:
-          kind: terminal_ui
-          requires_tty: false
-          capabilities:
-            - run_command
+          stdin_from_parent: true
+          stdout_to_parent: true
 
 modifiers:
   - id: interval
@@ -67,9 +90,22 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_one
+  - {id: exec, matcher: {kind: any_flag, flags: ['-x', '--exec']}}
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '--help', '-v', '--version']}}
+  - {id: display, matcher: {kind: any_flag, flags: ['-b', '--beep', '-c', '--color', '-e', '--errexit', '-g', '--chgexit', '-p', '--precise', '-t', '--no-title', '-w', '--no-wrap']}}
+  - id: differences
+    matcher: {kind: any_flag, flags: ['-d', '--differences']}
+    parameters:
+      - {name: permanent, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}
+  - id: equexit
+    matcher: {kind: any_flag, flags: ['-q', '--equexit']}
+    parameters:
+      - {name: cycles, semantic: {kind: structured_value, context: numeric_quantity}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - https://gitlab.com/procps-ng/procps/-/raw/v4.0.2/src/watch.c
+    - https://manpages.debian.org/bookworm/procps/watch.1.en.html

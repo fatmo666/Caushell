@@ -141,16 +141,38 @@ pub fn collect_dispatch_command_projection(
         };
 
         let encoded_source = match &target.command {
-            crate::DispatchCommandSource::WhitespaceArgv(slot) => Some((slot, None)),
-            crate::DispatchCommandSource::CommandString { slot, syntax } => {
-                Some((slot, Some(*syntax)))
-            }
+            crate::DispatchCommandSource::WhitespaceArgv(slot) => Some((slot, None, false)),
+            crate::DispatchCommandSource::CommandString {
+                slot,
+                syntax,
+                join_arguments,
+            } => Some((slot, Some(*syntax), *join_arguments)),
             _ => None,
         };
-        if let Some((slot, syntax)) = encoded_source {
+        if let Some((slot, syntax, join_arguments)) = encoded_source {
             // Each entry has a distinct identity, including unresolved entries.
             if let Some(parameter) = parameter_for_slot(invocation, slot) {
-                for value in parameter.semantic_values() {
+                let joined_value = if join_arguments {
+                    let Some(value) = joined_command_argument(parameter) else {
+                        unresolved.push(UnresolvedDispatchCommand {
+                            module_runtime: target.module_runtime.clone(),
+                            dispatch_index,
+                            command_slot: slot.clone(),
+                        });
+                        dispatch_index += 1;
+                        continue;
+                    };
+                    Some(value)
+                } else {
+                    None
+                };
+                for value in parameter
+                    .semantic_values()
+                    .take(if join_arguments { 0 } else { usize::MAX })
+                    .chain(joined_value.iter().map(|(source, value)| {
+                        crate::SemanticValueRef::Projected { source, value }
+                    }))
+                {
                     let index = dispatch_index;
                     dispatch_index += 1;
                     let resolution = match value {
@@ -495,6 +517,108 @@ fn parameter_for_slot<'a>(
         .bound_parameters
         .iter()
         .find(|parameter| parameter.name == *slot)
+}
+
+/// A declared tool concatenation consumes the entire argv region atomically.
+/// Unknown fields cannot be skipped or replaced by their shell source spelling.
+fn joined_command_argument(
+    parameter: &BoundParameter,
+) -> Option<(BoundValue, crate::ProjectedSemanticValue)> {
+    let mut text = String::new();
+    let mut span: Option<SourceSpan> = None;
+    let mut count = 0;
+    for value in parameter.semantic_values() {
+        if count >= crate::dispatch_string::MAX_ARGV_WORDS {
+            return None;
+        }
+        let resolution = crate::project_semantic_value(&crate::ValueProjection::Identity, value)?;
+        let word =
+            match resolution {
+                crate::SemanticValueResolution::Known(word) => word,
+                // Identity projections reject empty operand values. Only a
+                // separately proven empty argv word can contribute an empty
+                // fragment; dynamic and projected-unknown input stays unknown.
+                crate::SemanticValueResolution::Unknown(
+                    crate::ProjectionUnknownReason::EmptyValue,
+                ) if known_empty_argument(value) => String::new(),
+                _ => return None,
+            };
+        let source = match value {
+            crate::SemanticValueRef::Original(source)
+            | crate::SemanticValueRef::Projected { source, .. } => source,
+        };
+        let BoundValue::Argument {
+            span: source_span, ..
+        } = source
+        else {
+            return None;
+        };
+        if text
+            .len()
+            .checked_add(word.len())?
+            .checked_add(usize::from(count > 0))?
+            > crate::dispatch_string::MAX_COMMAND_BYTES
+            || word.contains('\0')
+        {
+            return None;
+        }
+        if count > 0 {
+            text.push(' ');
+        }
+        text.push_str(&word);
+        match &mut span {
+            None => span = Some(source_span.clone()),
+            Some(span) => {
+                if source_span.start_byte < span.start_byte {
+                    span.start_byte = source_span.start_byte;
+                    span.start_row = source_span.start_row;
+                    span.start_column = source_span.start_column;
+                }
+                if source_span.end_byte > span.end_byte {
+                    span.end_byte = source_span.end_byte;
+                    span.end_row = source_span.end_row;
+                    span.end_column = source_span.end_column;
+                }
+            }
+        }
+        count += 1;
+    }
+    let source = BoundValue::argument(
+        text.clone(),
+        true,
+        span?,
+        ArgumentBindingSource::RemainingArg,
+    )
+    .with_materialization(BoundArgumentMaterialization::RuntimeData);
+    Some((
+        source,
+        crate::ProjectedSemanticValue {
+            source_index: 0,
+            resolution: crate::SemanticValueResolution::Known(text),
+        },
+    ))
+}
+
+fn known_empty_argument(value: crate::SemanticValueRef<'_>) -> bool {
+    let crate::SemanticValueRef::Original(BoundValue::Argument {
+        text,
+        quoted,
+        node_kind,
+        materialization,
+        ..
+    }) = value
+    else {
+        return false;
+    };
+    match materialization {
+        BoundArgumentMaterialization::Literal => {
+            caushell_parse::decode_static_shell_argument(text, *quoted, node_kind)
+                .is_some_and(|word| word.is_empty())
+        }
+        BoundArgumentMaterialization::RuntimeData
+        | BoundArgumentMaterialization::ResolvedExactScalar { .. }
+        | BoundArgumentMaterialization::ResolvedRuntimeProduced { .. } => text.is_empty(),
+    }
 }
 
 fn argument_from_bound_value(

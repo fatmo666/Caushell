@@ -1148,6 +1148,8 @@ pub enum RawEffectTarget {
 pub struct RawDispatchCommandString {
     pub slot: String,
     pub syntax: RawDispatchStringSyntax,
+    #[serde(default)]
+    pub join_arguments: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
