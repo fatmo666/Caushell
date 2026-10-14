@@ -175,7 +175,23 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 .into(),
         ));
     }
-    validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
+    let exact_option_words = raw
+        .exact_option_words
+        .into_iter()
+        .map(FlagName::new)
+        .collect::<Vec<_>>();
+    if !exact_option_words.is_empty() && !raw.argument_regions.is_empty() {
+        return Err(NormalizeError::InvalidOptionScope(
+            "exact_option_words requires scoped option ownership, not argument_regions".into(),
+        ));
+    }
+    validate_option_scope(
+        option_scope,
+        option_matching,
+        &modifiers,
+        &forms,
+        &exact_option_words,
+    )?;
     if raw.read_only_control_surface {
         let query_effect = |effect: &Effect| {
             matches!(
@@ -303,6 +319,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         option_scope,
         option_matching,
         option_prefixes,
+        exact_option_words,
         option_operand_matcher,
         subcommands,
         extensions: normalize_extensions(raw.extensions)?,
@@ -666,7 +683,13 @@ fn validate_option_scope(
     matching: OptionMatchingPolicy,
     modifiers: &[Modifier],
     forms: &[Form],
+    exact_option_words: &[FlagName],
 ) -> Result<(), NormalizeError> {
+    if policy == OptionScopePolicy::AllArguments && !exact_option_words.is_empty() {
+        return Err(NormalizeError::InvalidOptionScope(
+            "exact_option_words requires scoped option ownership".into(),
+        ));
+    }
     if policy == OptionScopePolicy::AllArguments
         && matching == OptionMatchingPolicy::DeclaredShortWords
     {
@@ -718,7 +741,7 @@ fn validate_option_scope(
         ));
     }
     if policy != OptionScopePolicy::AllArguments {
-        crate::option_scope::validate_declarations(modifiers, forms, matching)
+        crate::option_scope::validate_declarations(modifiers, forms, matching, exact_option_words)
             .map_err(NormalizeError::InvalidOptionScope)?;
     }
     Ok(())
@@ -3186,7 +3209,7 @@ fn normalize_subcommand_node(
         .option_matching
         .map(normalize_option_matching)
         .unwrap_or(inherited_matching);
-    validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
+    validate_option_scope(option_scope, option_matching, &modifiers, &forms, &[])?;
 
     Ok(SubcommandNode {
         name: raw.name,
@@ -3334,6 +3357,7 @@ mod tests {
             read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            exact_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -3520,6 +3544,7 @@ mod tests {
             read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            exact_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -3626,6 +3651,7 @@ mod tests {
             read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            exact_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -3732,6 +3758,7 @@ mod tests {
             read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            exact_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -3946,6 +3973,7 @@ mod tests {
             read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
+            exact_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),

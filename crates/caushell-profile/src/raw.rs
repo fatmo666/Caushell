@@ -21,6 +21,7 @@ pub struct RawCommandProfile {
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
     pub option_matching: RawOptionMatchingPolicy,
+    pub exact_option_words: Vec<String>,
     pub option_prefixes: RawOptionPrefixPolicy,
     pub option_operand_matcher: Option<RawValueMatcher>,
     pub subcommands: Option<RawSubcommandTree>,

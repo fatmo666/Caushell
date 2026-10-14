@@ -1885,6 +1885,9 @@ pub struct CommandProfile {
     pub option_scope: OptionScopePolicy,
     pub option_matching: OptionMatchingPolicy,
     pub option_prefixes: OptionPrefixPolicy,
+    /// Root-scope option words that win over short-cluster decoding. These
+    /// names must also be declared by modifiers; operands keep their grammar.
+    pub exact_option_words: Vec<FlagName>,
     /// Opt-in full-word operand grammar for words beginning with an option
     /// prefix. Tested before option decoding; it does not rewrite argv.
     pub option_operand_matcher: Option<OptionOperandMatcher>,
@@ -1932,6 +1935,7 @@ impl CommandProfile {
             option_scope: OptionScopePolicy::default(),
             option_matching: OptionMatchingPolicy::default(),
             option_prefixes: OptionPrefixPolicy::default(),
+            exact_option_words: Vec::new(),
             option_operand_matcher: None,
             subcommands: None,
             extensions: ExtensionMap::new(),

@@ -46,6 +46,7 @@ fn declarations(
     modifiers: &[Modifier],
     forms: &[Form],
     matching: OptionMatchingPolicy,
+    exact_option_words: &[FlagName],
 ) -> Result<Declarations, String> {
     let mut flags = BTreeMap::new();
     for modifier in modifiers {
@@ -55,13 +56,14 @@ fn declarations(
                 .strip_prefix(['-', '+'])
                 .is_some_and(|tail| tail.len() == 1 && !tail.starts_with(['-', '+']));
             let long = name.starts_with("--") && name.len() > 2 && !name.contains('=');
-            let exact_word = matching == OptionMatchingPolicy::ExactNames
+            let exact_word = (matching == OptionMatchingPolicy::ExactNames
+                || exact_option_words.contains(flag))
                 && name.starts_with(['-', '+'])
                 && name.len() > 1
                 && name != "--"
                 && name != "++"
                 && !name.contains('=')
-                && !name.chars().any(char::is_whitespace);
+                && !name.chars().any(|c| c.is_whitespace() || c == '\0');
             let declared_word = matching == OptionMatchingPolicy::DeclaredShortWords
                 && name.starts_with('-')
                 && !name.starts_with("--")
@@ -75,6 +77,23 @@ fn declarations(
                 ));
             }
             flags.entry(flag.as_str().to_string()).or_insert(None);
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for word in exact_option_words {
+        let name = word.as_str();
+        if !name.starts_with(['-', '+'])
+            || name.starts_with("--")
+            || name.starts_with("++")
+            || name.len() <= 2
+            || name.contains('=')
+            || name.chars().any(|c| c.is_whitespace() || c == '\0')
+            || !flags.contains_key(name)
+            || !seen.insert(name)
+        {
+            return Err(format!(
+                "exact_option_words must contain unique declared single-prefix option words: {name:?}"
+            ));
         }
     }
     let mut add = |flag: &str, mode| -> Result<(), String> {
@@ -148,8 +167,9 @@ pub(crate) fn validate_declarations(
     modifiers: &[Modifier],
     forms: &[Form],
     matching: OptionMatchingPolicy,
+    exact_option_words: &[FlagName],
 ) -> Result<(), String> {
-    declarations(modifiers, forms, matching).map(|_| ())
+    declarations(modifiers, forms, matching, exact_option_words).map(|_| ())
 }
 
 pub(crate) fn scan_leading_options(
@@ -162,6 +182,7 @@ pub(crate) fn scan_leading_options(
     permuted: bool,
     positional_prefix: Option<usize>,
     operand_matcher: Option<&crate::OptionOperandMatcher>,
+    exact_option_words: &[FlagName],
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: false,
@@ -175,7 +196,7 @@ pub(crate) fn scan_leading_options(
         retains_positional_default: false,
         error: None,
     };
-    let declarations = match declarations(modifiers, forms, matching) {
+    let declarations = match declarations(modifiers, forms, matching, exact_option_words) {
         Ok(flags) => flags,
         Err(error) => {
             result.error = Some(error);
@@ -255,7 +276,9 @@ pub(crate) fn scan_leading_options(
                 }
                 None => Err(format!("unknown leading option {name:?}")),
             }
-        } else if matching == OptionMatchingPolicy::ExactNames {
+        } else if matching == OptionMatchingPolicy::ExactNames
+            || exact_option_words.iter().any(|name| name.as_str() == token)
+        {
             match declarations.get(token) {
                 Some(mode) => {
                     token_flags.push(FlagName::new(token));

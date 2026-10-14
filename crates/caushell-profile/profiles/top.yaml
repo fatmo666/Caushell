@@ -1,5 +1,8 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+exact_option_words: [-stats, -pid, -user, -ncols]
+opaque_on_unresolved: true
 
 identity:
   canonical_name: top
@@ -18,23 +21,35 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
   - id: batch
+    selector: {kind: all, items: [ &running {kind: not, item: *information}, &batch {kind: has_modifier, modifier: batch}]}
+    remaining_selector: &no_operands {kind: no_positional_args}
+    stream_contract: *query_stream
+
+  - id: logging
     selector:
-      kind: has_flag
-      flag: "-b"
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
+      kind: all
+      items:
+        - *running
+        - {kind: not, item: *batch}
+        - &logging {kind: has_modifier, modifier: logging}
+        - {kind: not, item: &force_interactive {kind: has_modifier, modifier: force_interactive}}
+    remaining_selector: *no_operands
+    stream_contract: *query_stream
 
   - id: interactive
     selector:
       kind: all
       items:
-        - kind: not
-          item:
-            kind: has_flag
-            flag: "-b"
+        - *running
+        - {kind: not, item: *batch}
+        - {kind: any, items: [{kind: not, item: *logging}, *force_interactive]}
+    remaining_selector: *no_operands
     stream_contract:
       stdin_mode: ignored
       stdout_mode: opaque
@@ -55,11 +70,66 @@ modifiers:
       kind: any_flag
       flags:
         - "-b"
+        - "--batch"
+        - "--batch-mode"
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, -V, --version, --list-fields]}, ends_option_scope: true}
+  - id: logging
+    matcher: {kind: any_flag, flags: [-l]}
+    parameters:
+      - {name: samples, semantic: {kind: plain_value}, binding: &required_value {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  # Older Darwin versions can force terminal interaction again with -L.
+  # Preserve that boundary when both mode controls occur; do not assume order.
+  - {id: force_interactive, matcher: {kind: any_flag, flags: [-L]}}
+  - id: count
+    matcher: {kind: any_flag, flags: [-n, --iterations]}
+    parameters: [{name: count, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: delay
+    matcher: {kind: any_flag, flags: [--delay]}
+    parameters: [{name: delay, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: sort
+    matcher: {kind: any_flag, flags: [-o, --sort-override]}
+    parameters: [{name: sort_key, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: process_filter
+    matcher: {kind: any_flag, flags: [-p, --pid]}
+    parameters: [{name: processes, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: user_filter
+    matcher: {kind: any_flag, flags: [-U, --filter-any-user, --filter-only-euser]}
+    parameters: [{name: user, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: memory_scale
+    matcher: {kind: any_flag, flags: [-E, --scale-summary-mem, --scale-task-mem]}
+    parameters: [{name: scale, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: width
+    matcher: {kind: any_flag, flags: [-w, --width]}
+    parameters: [{name: width, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}]
+  - id: darwin_stats
+    matcher: {kind: any_flag, flags: [-stats]}
+    parameters: [{name: stats, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: darwin_pid
+    matcher: {kind: any_flag, flags: [-pid]}
+    parameters: [{name: darwin_processes, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: darwin_user
+    matcher: {kind: any_flag, flags: [-user]}
+    parameters: [{name: darwin_user, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  - id: darwin_columns
+    matcher: {kind: any_flag, flags: [-ncols]}
+    parameters: [{name: columns, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+  # These short names take values in one dialect but are switches in the
+  # other. Retain supplied display/filter values without inventing a host OS.
+  # None disables an already explicit batch/logging mode.
+  - id: dialect_display_controls
+    matcher: {kind: any_flag, flags: [-c, -d, -e, -i, -s, -u, -O]}
+    parameters: [{name: display_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_next_arg}, cardinality: optional_many}]
+  - {id: display_switches, matcher: {kind: any_flag, flags: [-a, -A, -F, -f, -H, -R, -r, -S, -W, '-1', --apply-defaults, --cmdline-toggle, --threads-show, --idle-toggle, --accum-time-toggle, --secure-mode, --single-cpu-toggle]}}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/D4-security-bash/analysis.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+    - https://gitlab.com/procps-ng/procps/-/raw/master/src/top/top.c
+    - https://gitlab.com/procps-ng/procps/-/raw/master/man/top.1
+    - https://github.com/apple-oss-distributions/top/blob/main/options.c
+    - https://github.com/apple-oss-distributions/top/blob/main/top.1
   caushell.profile/known_limitations:
-    - Config-driven breakout and other startup/control-plane surfaces are intentionally not modeled in this first slice.
+    - Native dialects differ in display-option arity. The declared union preserves known noninteractive mode controls; unresolved ownership and unsupported options require approval. Refresh/process counts alone never prove noninteraction.
+    - Config-defined interactive inspection commands are not decoded; interactive forms retain the existing approval boundary.

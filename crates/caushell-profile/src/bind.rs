@@ -15,6 +15,9 @@ use crate::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InvocationShape {
     pub option_matching: OptionMatchingPolicy,
+    /// Profile context for public shape-only selection; scoped invocations
+    /// already contain decoded canonical flags and need no copy of this list.
+    pub exact_option_words: Vec<FlagName>,
     pub flags: Vec<FlagName>,
     pub matched_modifiers: Vec<crate::ModifierId>,
     pub matched_modifier_parameters: Vec<MatchedModifierParameter>,
@@ -74,17 +77,23 @@ impl InvocationShape {
     }
 
     pub fn has_flag(&self, flag_name: &str) -> bool {
-        self.flags.iter().any(|candidate| {
+        self.flags
+            .iter()
+            .any(|candidate| self.flag_matches(candidate, flag_name))
+    }
+
+    fn flag_matches(&self, candidate: &FlagName, flag_name: &str) -> bool {
+        if self.exact_option_words.contains(candidate) {
+            candidate.as_str() == flag_name
+        } else {
             flag_token_matches_name(candidate.as_str(), flag_name, self.option_matching)
-        })
+        }
     }
 
     pub fn flag_count(&self, flag_name: &str) -> usize {
         self.flags
             .iter()
-            .filter(|candidate| {
-                flag_token_matches_name(candidate.as_str(), flag_name, self.option_matching)
-            })
+            .filter(|candidate| self.flag_matches(candidate, flag_name))
             .count()
     }
 
@@ -257,6 +266,7 @@ fn scoped_options(
     regions: &[crate::ArgumentRegion],
     vocabulary: Option<&crate::ArgumentControlVocabulary>,
     operand_matcher: Option<&crate::OptionOperandMatcher>,
+    exact_option_words: &[FlagName],
 ) -> Option<crate::ScopedOptions> {
     if !regions.is_empty() {
         return Some(crate::argument_regions::scan(
@@ -278,6 +288,7 @@ fn scoped_options(
                 policy != crate::OptionScopePolicy::LeadingOptions,
                 (policy == crate::OptionScopePolicy::LeadingOptionsWithOperand).then_some(1),
                 operand_matcher,
+                exact_option_words,
             ))
         }
     }
@@ -303,7 +314,9 @@ fn match_owned_modifiers<'a>(
     matching: OptionMatchingPolicy,
 ) -> Vec<SelectedModifier<'a>> {
     let shape = InvocationShape {
-        option_matching: matching,
+        // Ownership scanning has already decoded canonical flag names.
+        // Never split a declared complete word a second time as a cluster.
+        option_matching: OptionMatchingPolicy::ExactNames,
         flags: options.flags.iter().map(|(_, flag)| flag.clone()).collect(),
         ..InvocationShape::default()
     };
@@ -367,6 +380,7 @@ pub fn select_invocation<'a>(
         &profile.argument_regions,
         profile.argument_control_vocabulary.as_ref(),
         profile.option_operand_matcher.as_ref(),
+        &profile.exact_option_words,
     );
     ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
     let modifiers = if let Some(options) = &option_scope {
@@ -753,6 +767,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 &profile.argument_regions,
                 profile.argument_control_vocabulary.as_ref(),
                 profile.option_operand_matcher.as_ref(),
+                &profile.exact_option_words,
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -879,6 +894,9 @@ pub fn select_form<'a>(
 ) -> Result<&'a Form, BindError> {
     let mut shape = shape.clone();
     shape.option_matching = profile.option_matching;
+    shape
+        .exact_option_words
+        .clone_from(&profile.exact_option_words);
     select_form_from_forms(profile.primary_name(), &profile.forms, &shape)
 }
 
@@ -891,6 +909,9 @@ pub fn match_modifiers<'a>(
         short_flags_allowing_attached_operands(&profile.modifiers);
     let mut shape = shape.clone();
     shape.option_matching = profile.option_matching;
+    shape
+        .exact_option_words
+        .clone_from(&profile.exact_option_words);
     let candidates: Vec<&Modifier> = profile
         .modifiers
         .iter()
@@ -940,6 +961,7 @@ fn scan_subcommand_path<'p, 'a>(
         &profile.argument_regions,
         profile.argument_control_vocabulary.as_ref(),
         profile.option_operand_matcher.as_ref(),
+        &profile.exact_option_words,
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -1002,6 +1024,7 @@ fn scan_subcommand_path<'p, 'a>(
             &[],
             None,
             None,
+            &[],
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
         let node_modifiers = if let Some(options) = &node_options {
@@ -1596,6 +1619,7 @@ fn shape_for_scope_internal<'a>(
 
     let mut before_dashdash = true;
     if let Some(options) = options {
+        shape.option_matching = OptionMatchingPolicy::ExactNames;
         // Selectors describe option presence, not the scanner's consumption
         // order. Operands have already been excluded by the ownership scan.
         shape.flags = options.flags.iter().map(|(_, flag)| flag.clone()).collect();
@@ -3875,6 +3899,9 @@ fn constraint_flag_matches_in_shape(
     short_flags_allowing_attached_operands: &BTreeSet<String>,
 ) -> bool {
     shape.flags.iter().any(|candidate| {
+        if shape.exact_option_words.contains(candidate) {
+            return candidate.as_str() == flag_name;
+        }
         modifier_flag_token_matches_name(
             candidate.as_str(),
             flag_name,

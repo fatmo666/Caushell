@@ -567,6 +567,10 @@ Profile 可选声明 `selection_failure_effects`，在 form 选择失败时保�
 
 选项名如何匹配由另一个声明控制：`option_matching: exact_names` 按完整声明的名字匹配 NVIDIA 的 `-pl`、`-nic` 等选项，不把字母拆成短选项组合，也不猜测短选项附着值。`--power-limit=200` 这样的长选项内联值仍按参数绑定声明处理。不写此字段时默认 `short_clusters`，保持已有匹配行为。子命令节点继承父节点模式，也可以显式覆盖；继承在 Profile 载入时完成。modifier 匹配与约束、form 及 remaining selector、参数绑定、前置选项扫描、选择失败后的部分绑定均使用相应模式。这不会改变 Bash 语法解析，也不新增风险 pass 或直接决定审批动作。
 
+可选的 `exact_option_words: [-stats, -pid]` 允许在仍支持短选项组合的根作用域中，声明完整的单前缀选项词。列表中的词必须同时是 modifier 声明的选项；精确 argv 词优先于组合拆分，参数仍按该选项自己的绑定规则归属。其余词沿用原语法，不推测列表词的缩写或附着值。此声明要求作用域化选项解析，不能与 argument regions 混用，也不会传给子命令或派生调用。扫描已确认的规范选项名不再被二次拆分。重复、格式错误或未声明的词在加载 Profile 时拒绝；省略字段保留原语法。
+
+top Profile 用此声明处理 Darwin 的 `-stats`、`-pid`、`-user` 和 `-ncols`，同时保留 Linux 的 `-bn1` 等组合。显式批处理或日志模式为非交互数据输出；仅限制刷新次数（如 `top -n1`）不是非交互证明。旧 Darwin 的 `-L` 与日志模式并存时保守保留交互审批。未知参数归属、缺失控制参数继续走已有审批；外层 Shell 副作用和嵌套 wrapper 独立分析。
+
 例如，Profile 声明 `option_matching: exact_names`，再以 `flags: ["-pl", "--power-limit"]` 绑定后面的普通值 `power_watts`。`-pl 200` 只绑定该选项，不激活 `-p` 或 `-l`；`-pl200` 不会被猜成附着参数。这个模式不是通用 CLI 合法性或覆盖检查：既有 `all_arguments` 绑定器不会为每个未知 flag 生成 residual。已知未支持形式、解析缺口动作与成功建模的调用仍须区分。
 
 命令 Profile 可声明 `option_prefixes: dash_and_plus`，让物化后的 CLI 参数识别两种选项前缀，并保留其区别：`+c` 与 `-c` 可以绑定不同的 modifier／操作数，`++` 与 `--` 均为选项终止符，短选项组合及附着参数也保留原来的符号。这个根节点语法适用于同一 Profile 的子命令，不会继承给另行分派的工具。结合 `leading_options`，选项归属仍在第一个非选项操作数处停止；声明过的选项值不会被重新解释成另一个选项或终止符。默认是 `dash_only`，因此 `date +%F`、`chmod +x` 等参数保持原有数据含义。该声明不改 Bash 词法、参数文本／跨度／来源、风险规则或 Harness 协议；默认投影路径直接返回，不扫描或克隆 argv。
