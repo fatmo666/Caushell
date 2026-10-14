@@ -81,6 +81,7 @@ fn schema_accepts_only_typed_state_effects_without_fake_filesystem_targets() {
         "service_manager",
         "cloud_resource",
         "remote_access",
+        "shell_history",
     ] {
         for operation in ["inspect", "mutate", "control", "opaque"] {
             assert!(load_command_profile_from_str(&yaml(domain, operation)).is_ok());

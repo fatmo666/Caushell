@@ -9,6 +9,7 @@ pub enum StateOperationDomain {
     ServiceManager,
     CloudResource,
     RemoteAccess,
+    ShellHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -329,6 +330,24 @@ impl NetworkListener {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_history_state_roundtrips_without_inventing_a_path() {
+        use super::*;
+        let operation = StateOperation {
+            domain: StateOperationDomain::ShellHistory,
+            operation: StateOperationKind::Mutate,
+        };
+        let wire = serde_json::to_value(operation).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"domain":"shell_history","operation":"mutate"})
+        );
+        assert_eq!(
+            serde_json::from_value::<StateOperation>(wire).unwrap(),
+            operation
+        );
+    }
+
     #[test]
     fn shell_termination_is_additive_and_legacy_semantics_still_deserialize() {
         let mut semantics = super::ExecutionSemantics::new("exit", "terminate_shell");

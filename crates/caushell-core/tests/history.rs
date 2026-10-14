@@ -2,8 +2,8 @@
 use caushell_core::ShellQueryCore;
 use caushell_graph::{GraphNode, NodeKind, SessionGraph, SessionRead};
 use caushell_passes::{
-    ComputeEffectiveCwdPass, ExtractPathFactsPass, ExtractPipelineFlowPass, ParseCommandPass,
-    ProjectTopLevelCommandsPass, ResolveInvocationPass,
+    ComputeEffectiveCwdPass, ExtractExecutionSemanticsPass, ExtractPathFactsPass,
+    ExtractPipelineFlowPass, ParseCommandPass, ProjectTopLevelCommandsPass, ResolveInvocationPass,
 };
 use caushell_profile::ProfileRegistry;
 use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
@@ -34,6 +34,7 @@ fn staged(req: CheckRequest) -> Vec<GraphNode> {
     ));
     runner.register_session_transform_pass(ComputeEffectiveCwdPass);
     runner.register_session_transform_pass(ExtractPipelineFlowPass);
+    runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
     let graph = SessionGraph::new();
     let summary = SessionSummary::new();
@@ -207,16 +208,12 @@ fn memory_and_query_operations_do_not_write_files_or_execute_history_text() {
     for command in [
         "history",
         "history 10",
-        "history -c",
-        "history -d 1",
-        "history -d -1",
-        "history -d1",
         "history -p 'rm /opt/shared/file'",
         "history -s 'rm /opt/shared/file'",
-        "history -cw",
         "history -sw /opt/shared/file",
         "history -pw /opt/shared/file",
-        "history -d 1 -w /opt/shared/file",
+        "history -sd 1 'echo recorded'",
+        "history -pd 1 'echo expanded'",
         "history -r /opt/shared/file",
         "history -n /opt/shared/file",
         "history -r",
@@ -237,12 +234,186 @@ fn memory_and_query_operations_do_not_write_files_or_execute_history_text() {
             "{response:#?}"
         );
         assert!(writes(&staged(request(command))).is_empty(), "{command}");
+        assert!(
+            response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .all(|s| s.state_operations.is_empty()),
+            "{command}: {response:#?}"
+        );
     }
     target(
         "history > /opt/shared/file",
         "/opt/shared/file",
         Decision::NeedApproval,
     );
+}
+
+#[test]
+fn history_removal_is_a_state_effect_not_a_fabricated_file_deletion() {
+    for command in [
+        "history -c",
+        "history -cr",
+        "history -cw",
+        "history -c unused",
+        "history -d 1",
+        "history -d -1",
+        "history -d1",
+        "history -d \"$1\"",
+        "history -d 1 -w /opt/shared/ignored",
+        "history -cs 'echo recorded'",
+        "history -cp 'echo expanded'",
+        "unset HISTFILE; history -c",
+        "HISTFILE=./history; history -c",
+        "bash -c 'history -c'",
+        "f() { history -d 1; }; f",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {response:#?}"
+        );
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::StateMutation),
+            "{command}: {response:#?}"
+        );
+        assert!(
+            !response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| matches!(
+                    p.rule_id,
+                    RuleId::FileDeletion | RuleId::OutsideWorkspaceMutation
+                )),
+            "{command}: {response:#?}"
+        );
+        let graph = staged(request(command));
+        assert!(writes(&graph).is_empty(), "{command}: {graph:#?}");
+        assert!(
+            !graph.iter().any(|n| matches!(
+                &n.kind,
+                NodeKind::PathFact { .. } | NodeKind::MutationScopeFact { .. }
+            )),
+            "{command}: {graph:#?}"
+        );
+        assert!(graph.iter().any(|n| matches!(&n.kind, NodeKind::ExecutionSemantics { semantics } if semantics.state_operations == vec![StateOperation { domain: StateOperationDomain::ShellHistory, operation: StateOperationKind::Mutate }])), "{command}: {graph:#?}");
+    }
+}
+
+#[test]
+fn clear_then_file_operations_retain_both_independent_effects() {
+    for (command, role) in [
+        ("history -cw ./history", ResolvedPathRole::Write),
+        ("history -ca ./history", ResolvedPathRole::Write),
+        ("history -cr /opt/shared/history", ResolvedPathRole::Read),
+        ("history -cn /opt/shared/history", ResolvedPathRole::Read),
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {response:#?}"
+        );
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::StateMutation),
+            "{command}: {response:#?}"
+        );
+        let graph = staged(request(command));
+        assert!(graph.iter().any(|n| matches!(&n.kind, NodeKind::PathFact { role: actual, resolution, .. } if *actual == role && resolution.concrete_path() == Some(if role == ResolvedPathRole::Write { "/tmp/project/history" } else { "/opt/shared/history" }))), "{command}: {graph:#?}");
+        assert!(
+            response.decision_trace.execution_semantics.iter().any(|s| s
+                .state_operations
+                .iter()
+                .any(|o| o.domain == StateOperationDomain::ShellHistory)),
+            "{command}: {response:#?}"
+        );
+    }
+}
+
+#[test]
+fn help_and_option_terminators_do_not_acquire_history_removal_effects() {
+    for command in [
+        "history --help -c",
+        "history -c --help",
+        "history -s -- -c",
+        "history -p -- -d",
+        "history -r /opt/shared/history -c",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {response:#?}"
+        );
+        assert!(
+            response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .all(|s| s.state_operations.is_empty()),
+            "{command}: {response:#?}"
+        );
+    }
+}
+
+#[test]
+fn history_state_policy_uses_existing_overrides_and_current_action_scope() {
+    for (action, decision) in [
+        (RuleAction::Observe, Decision::Allow),
+        (RuleAction::NeedApproval, Decision::NeedApproval),
+        (RuleAction::Deny, Decision::Deny),
+    ] {
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            RuleId::StateMutation,
+            RulePolicyEntry {
+                action,
+                trust_sets: vec![],
+            },
+        );
+        let mut core = ShellQueryCore::with_policy(policy.clone());
+        assert_eq!(core.check(request("history -c")).decision, decision);
+        let response =
+            ShellQueryCore::with_policy(policy).check(request("history -cw /opt/shared/history"));
+        assert_eq!(
+            response.decision,
+            if action == RuleAction::Deny {
+                Decision::Deny
+            } else {
+                Decision::NeedApproval
+            }
+        );
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+        let mut next = request("history");
+        next.sequence_no = CommandSequenceNo::new(2);
+        let response = core.check(next);
+        assert_eq!(response.decision, Decision::Allow, "{response:#?}");
+        assert!(
+            !response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::StateMutation),
+            "{response:#?}"
+        );
+    }
 }
 
 #[test]
