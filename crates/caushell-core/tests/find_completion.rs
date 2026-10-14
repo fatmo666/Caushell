@@ -42,6 +42,28 @@ fn assert_allow(command: &str) {
         "{command}: {result:?}"
     );
 }
+fn assert_local_deletion_approval(command: &str) {
+    let result = ShellQueryCore::new().check(request(command));
+    assert_eq!(
+        result.decision,
+        Decision::NeedApproval,
+        "{command}: {result:?}"
+    );
+    assert!(
+        result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::FileDeletion)
+    );
+    assert!(
+        !result.decision_trace.findings.iter().any(|f| matches!(
+            f.rule_id,
+            RuleId::SelectionError | RuleId::OutsideWorkspaceMutation
+        )),
+        "{command}: {result:?}"
+    );
+}
 
 #[test]
 fn interleaved_shell_redirection_keeps_child_delimiters_and_real_write_targets() {
@@ -142,7 +164,7 @@ fn filters_do_not_widen_local_child_domains_with_reference_files_or_expression_o
         r"find . \( -name '*.tmp' -o -size +100M \) -exec rm {} +",
         r"find . -exec printf %s -fprint /opt/noise -mtime -delete \; -exec rm {} \;",
     ] {
-        assert_allow(command);
+        assert_local_deletion_approval(command);
     }
 }
 
@@ -192,7 +214,7 @@ fn workspace_output_and_dev_null_use_existing_write_policy() {
 #[test]
 fn default_cwd_is_a_real_delete_target_and_unknown_cwd_is_not_assumed_local() {
     for command in ["find -mtime -7 -delete", "find -size 0 -delete"] {
-        assert_allow(command);
+        assert_local_deletion_approval(command);
     }
     for command in [
         "cd /opt/shared; find -mtime -7 -delete",
@@ -262,7 +284,7 @@ fn implicit_root_and_output_files_use_effective_cwd_without_widening_explicit_ro
                     if roots == &vec!["/opt/shared".to_string()]))),
         "default deletion must retain the traversal domain"
     );
-    assert_allow("cd /opt/shared; find /tmp/project -mtime -7 -delete");
+    assert_local_deletion_approval("cd /opt/shared; find /tmp/project -mtime -7 -delete");
 }
 
 #[test]
@@ -291,9 +313,9 @@ fn unknown_output_and_unquoted_expansion_boundaries_still_require_approval() {
         );
     }
     // The bounded pattern cannot become a control word. The child deletion
-    // keeps its workspace path domain; there is no blanket workspace-cleanup
-    // approval policy. An outside root must still reach the mutation guard.
-    assert_allow(r"find . -name *.py -exec rm {} \;");
+    // keeps its workspace path domain while the independent deletion rule
+    // asks. An outside root must still reach the mutation guard.
+    assert_local_deletion_approval(r"find . -name *.py -exec rm {} \;");
     let result =
         ShellQueryCore::new().check(request(r"find /opt/shared -name *.py -exec rm {} \;"));
     assert_eq!(result.decision, Decision::NeedApproval, "{result:?}");
@@ -339,13 +361,14 @@ fn additional_filters_clusters_and_confirmation_actions_keep_complete_semantics(
         "find . ! -local -prune -o -print",
         "find -ds . -mindepth 1 -type f -print0",
         "find -EPdsx . -print",
-        r"find . -ok rm {} \;",
-        r"find . -okdir rm {} \;",
         r"find /opt/shared -ok ls -l {} \;",
         r"find . -okdir diff {} /opt/reference \;",
         "find /opt/shared -mmin -$((currtime + 1440)) -mmin +$((${currtime} + 1))",
     ] {
         assert_allow(command);
+    }
+    for command in [r"find . -ok rm {} \;", r"find . -okdir rm {} \;"] {
+        assert_local_deletion_approval(command);
     }
     for command in [
         r"find /opt/shared -ok rm {} \;",

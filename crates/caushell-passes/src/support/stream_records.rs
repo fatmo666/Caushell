@@ -51,7 +51,45 @@ pub(crate) fn stdin_path_records(
         if between.contains("|&") || !stdout_route_is_plain(parsed, upstream.command_index) {
             return None;
         }
-        let resolved = resolve(upstream.command_index)?;
+        let mut resolved = resolve(upstream.command_index)?;
+        // The producer's request home is a positive shell-expansion fact.
+        // Materialize only a literal leading tilde with a fully static suffix
+        // in this owned proof projection. Do not weaken the stream gate for
+        // other dynamic words or assert that filesystem objects exist.
+        for (arg, resolution) in resolved
+            .materialized_projection
+            .invocation
+            .args
+            .iter_mut()
+            .zip(&mut resolved.materialized_projection.arg_resolutions)
+        {
+            if arg.runtime_data
+                || arg.implicit_input_source.is_some()
+                || arg.quoted
+                || !(arg.text == "~" || arg.text.starts_with("~/"))
+            {
+                continue;
+            }
+            let mut suffix = arg.clone();
+            // The prefix proof describes the original whole argv word, not
+            // this temporary substring used to certify a static suffix.
+            suffix.lexical_field_prefix = None;
+            suffix.text = arg.text.strip_prefix("~/").unwrap_or("").to_string();
+            let shape = caushell_profile::argument_structure(&suffix);
+            let Some(value) = shape.exact_value() else {
+                continue;
+            };
+            let spelling = if arg.text == "~" {
+                "~".to_string()
+            } else {
+                format!("~/{value}")
+            };
+            if let Some(value) = crate::path::expand_home_path_spelling(&spelling, home) {
+                arg.text = value;
+                arg.runtime_data = true;
+                *resolution = caushell_profile::ValueMaterialization::Static;
+            }
+        }
         let records = resolved.proven_stdout_records()?;
         match &records.projection {
             StdoutRecordProjection::Paths {
@@ -94,17 +132,32 @@ pub(crate) fn stdin_path_records(
                                     materialization,
                                     BoundArgumentMaterialization::Literal
                                 );
-                                let decoded = if data {
+                                let literal_home =
+                                    !data && !quoted && (text == "~" || text.starts_with("~/"));
+                                let decoded = if literal_home {
+                                    // Decode the static suffix before expanding home.
+                                    // The ordinary literal decoder rightly rejects an
+                                    // unexpanded leading tilde, so it cannot precede
+                                    // the producer-shell home expansion here.
+                                    let spelling = if text == "~" {
+                                        "~".to_string()
+                                    } else {
+                                        let suffix = caushell_parse::decode_static_shell_argument(
+                                            &text[2..],
+                                            false,
+                                            node_kind,
+                                        )?;
+                                        format!("~/{suffix}")
+                                    };
+                                    crate::path::expand_home_path_spelling(&spelling, home)?
+                                } else if data {
                                     text.clone()
                                 } else {
                                     caushell_parse::decode_static_shell_argument(
                                         text, *quoted, node_kind,
                                     )?
                                 };
-                                let tilde = !data
-                                    && !quoted
-                                    && (decoded == "~" || decoded.starts_with("~/"));
-                                (decoded, tilde)
+                                (decoded, false)
                             }
                         };
                         // Keep relative argv roots relative: it is the consumer's
@@ -235,6 +288,27 @@ mod tests {
                 may_escape: false
             }
         );
+    }
+
+    #[test]
+    fn producer_home_expansion_preserves_native_path_spelling_without_runtime_lookup() {
+        let record = proof("arbitrary_paths ~/Library | consumer", 8).unwrap();
+        assert_eq!(
+            record.domain,
+            RuntimeArgumentDomain::PathSet {
+                roots: vec!["/home/alice/Library".into()],
+                may_escape: false
+            }
+        );
+        let record = proof("arbitrary_paths '~/Library' | consumer", 8).unwrap();
+        assert_eq!(
+            record.domain,
+            RuntimeArgumentDomain::PathSet {
+                roots: vec!["~/Library".into()],
+                may_escape: false
+            }
+        );
+        assert!(proof("arbitrary_paths ~/$UNKNOWN | consumer", 8).is_none());
     }
 
     #[test]

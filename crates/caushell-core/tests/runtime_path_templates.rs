@@ -1,5 +1,14 @@
 //! Static guard/Graph checks only: sample commands are never executed.
 use caushell_core::ShellQueryCore;
+fn path_scope_core() -> ShellQueryCore {
+    // Isolate derived path bounds; default deletion decisions have their own suite.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_graph::{GraphNode, NodeKind, SessionGraph, SessionRead};
 use caushell_passes::{
     ComputeEffectiveCwdPass, ExtractPathFactsPass, ParseCommandPass, ProjectTopLevelCommandsPass,
@@ -18,10 +27,10 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("runtime-path-templates"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
         runtime: RuntimeMetadata {
             runtime_name: "static-test".into(),
             tool_name: Some("Bash".into()),
@@ -30,7 +39,7 @@ fn request(command: &str) -> CheckRequest {
     }
 }
 fn expect(command: &str, decision: Decision) {
-    let result = ShellQueryCore::new().check(request(command));
+    let result = path_scope_core().check(request(command));
     assert_eq!(result.decision, decision, "{command}: {result:#?}");
 }
 fn facts(
@@ -105,11 +114,11 @@ fn parent_removal_respects_raw_relative_stopping_points() {
     }
     for command in [
         r"find /opt/shared -type d -exec rmdir -p {} \;",
-        r"find /tmp/project -type d -exec rmdir -p {} \;",
+        r"find /workspace/project -type d -exec rmdir -p {} \;",
         r"find -L . -type d -exec rmdir -p {} \;",
         r#"find "$UNKNOWN" -type d -execdir rmdir -p {} \;"#,
         "rmdir -p ../sub/leaf",
-        "rmdir -p /tmp/project/sub/leaf",
+        "rmdir -p /workspace/project/sub/leaf",
         "rmdir -p \"$UNKNOWN\"",
     ] {
         expect(command, Decision::NeedApproval);
@@ -126,7 +135,11 @@ fn null_delimited_xargs_reuses_the_same_template_semantics() {
         expect(command, Decision::Allow);
     }
     let (nodes, domains) = facts("find . -print0 | xargs -0 -I {} cp {} {}.bk");
-    assert!(has_bound(&nodes, ResolvedPathRole::Write, "/tmp/project"));
+    assert!(has_bound(
+        &nodes,
+        ResolvedPathRole::Write,
+        "/workspace/project"
+    ));
     assert!(domains.iter().any(
         |(source, domain)| matches!(domain, RuntimeArgumentDomain::PathTemplate {prefix, suffix, ..}
         if *source == ImplicitInputSource::StdinData && prefix.is_empty() && suffix == ".bk")
@@ -136,7 +149,11 @@ fn null_delimited_xargs_reuses_the_same_template_semantics() {
 #[test]
 fn graph_and_child_argv_keep_origin_without_inventing_a_filename() {
     let (nodes, domains) = facts(r#"find . -exec cp {} {}.bk \;"#);
-    assert!(has_bound(&nodes, ResolvedPathRole::Write, "/tmp/project"));
+    assert!(has_bound(
+        &nodes,
+        ResolvedPathRole::Write,
+        "/workspace/project"
+    ));
     assert!(domains.contains(&(
         ImplicitInputSource::DispatchOutput,
         RuntimeArgumentDomain::PathTemplate {
@@ -162,27 +179,27 @@ fn inclusive_roots_require_sibling_bounds_not_copied_search_roots() {
     assert!(has_bound(
         &facts(r#"find sub -exec cp {} {}.bak \;"#).0,
         ResolvedPathRole::Write,
-        "/tmp/project"
+        "/workspace/project"
     ));
     expect(
-        r#"find /tmp/project -exec cp {} {}.bak \;"#,
+        r#"find /workspace/project -exec cp {} {}.bak \;"#,
         Decision::NeedApproval,
     );
     assert!(has_bound(
-        &facts(r#"find /tmp/project -exec cp {} {}.bak \;"#).0,
+        &facts(r#"find /workspace/project -exec cp {} {}.bak \;"#).0,
         ResolvedPathRole::Write,
-        "/tmp"
+        "/workspace"
     ));
     expect(
-        r#"find /tmp/project/ -exec cp {} {}.bak \;"#,
+        r#"find /workspace/project/ -exec cp {} {}.bak \;"#,
         Decision::Allow,
     );
     expect(
-        r#"find /tmp/project -exec touch {}/index.html \;"#,
+        r#"find /workspace/project -exec touch {}/index.html \;"#,
         Decision::Allow,
     );
     expect(
-        "find /tmp/project/ -print0 | xargs -0 -I {} cp {} {}.bak",
+        "find /workspace/project/ -print0 | xargs -0 -I {} cp {} {}.bak",
         Decision::Allow,
     );
     assert!(has_bound(
@@ -206,7 +223,7 @@ fn fixed_prefix_is_argv_concatenation_not_absolute_path_join() {
     assert!(has_bound(
         &facts(r#"find /opt/source -exec cp {} dest/{} \;"#).0,
         ResolvedPathRole::Write,
-        "/tmp/project/dest/opt/source"
+        "/workspace/project/dest/opt/source"
     ));
     expect(
         r#"find . -exec cp {} /opt/copies/{} \;"#,
@@ -217,11 +234,11 @@ fn fixed_prefix_is_argv_concatenation_not_absolute_path_join() {
         Decision::NeedApproval,
     );
     expect(
-        r#"find /../../tmp/project -exec cp {} dest/{} \;"#,
+        r#"find /../../workspace/project -exec cp {} dest/{} \;"#,
         Decision::NeedApproval,
     );
     expect(
-        "find /../../tmp/project -print0 | xargs -0 -I {} cp {} dest/{}",
+        "find /../../workspace/project -print0 | xargs -0 -I {} cp {} dest/{}",
         Decision::NeedApproval,
     );
 }
@@ -267,14 +284,14 @@ fn literal_data_bytes_are_not_reexpanded_and_template_outputs_can_be_derived_aga
     assert!(has_bound(
         &facts(r#"find . -exec gzip '{}.bk' \;"#).0,
         ResolvedPathRole::Write,
-        "/tmp/project"
+        "/workspace/project"
     ));
     expect(r#"find . -exec sh -c '{}.sh' \;"#, Decision::NeedApproval);
 }
 
 #[test]
 fn derived_graph_paths_survive_session_snapshot_reload() {
-    let mut core = ShellQueryCore::new();
+    let mut core = path_scope_core();
     core.check(request(r#"find . -exec cp {} {}.bk \;"#));
     let id = SessionId::new("runtime-path-templates");
     let snapshot = core.session_snapshot(&id, 1).unwrap();
@@ -286,5 +303,9 @@ fn derived_graph_paths_survive_session_snapshot_reload() {
         .nodes()
         .cloned()
         .collect::<Vec<_>>();
-    assert!(has_bound(&nodes, ResolvedPathRole::Write, "/tmp/project"));
+    assert!(has_bound(
+        &nodes,
+        ResolvedPathRole::Write,
+        "/workspace/project"
+    ));
 }

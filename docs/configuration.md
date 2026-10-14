@@ -93,6 +93,44 @@ or a supplied, known `TMPDIR` is checked against these roots normally.
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Fallback behavior when Caushell cannot complete analysis |
 | `codex.need_approval_mode` | `block` / `observe` | `block` | How Codex handles `NeedApproval` decisions |
 | `policy.rules.process_control` | `allow` / `need_approval` / `deny` | `need_approval` | Signals or resumes a process/job through a declared control effect |
+| `policy.rules.privilege_boundary` | `allow` / `need_approval` / `deny` | `need_approval` | Declared execution-identity or privilege changes |
+| `policy.rules.network_upload` | `allow` / `need_approval` / `deny` | `need_approval` | Declared outbound data transfers not statically confined to loopback |
+| `policy.rules.file_deletion` | `allow` / `need_approval` / `deny` | `need_approval` | Declared filesystem deletion, irrespective of workspace or temporary-path location |
+
+The upload guard consumes existing `upload_target` endpoint declarations,
+including nested and partial calls. It does not require a sensitive source.
+Ordinary fetch/query endpoints and dry-run forms are not reclassified as
+uploads. An explicit request-byte scope that carries local file content also
+requires approval, even for a GET query or request header. Literal query fields
+and authentication/TLS files not sent as request bytes remain distinct. This
+lineage query uses the existing node/hop budgets; incomplete budget-limited
+analysis requires approval.
+Only an explicit loopback IP or `localhost` destination is exempt; unresolved
+destinations require approval. Recipient email domains do not establish local
+SMTP transport. `allow` disables only this rule's proposal, not sensitive-data,
+filesystem or hard-deny rules. No DNS lookup or connection probe is performed.
+An explicit nonlocal/unresolved `transport_target` (proxy or address override)
+prevents a loopback URL from certifying local transmission. Ordinary proxied
+queries remain queries. Unresolved native routing specifications do not gain
+a local-route exemption merely because the logical URL says `localhost`.
+
+Filesystem deletion uses the existing `delete_path` effects, including nested
+calls and tools that remove their input files. Moves/renames declared as
+`move_path` are not deletion; their existing source/destination path rules remain
+independent. Explicitly empty payload-projection deletion slots do not trigger
+the rule. Unknown deletion targets still require approval. `allow` disables this
+rule's proposal, not outside-workspace or hard-deny rules; catastrophic deletion
+retains its existing hard-deny floor. No filesystem inspection is performed.
+
+The privilege-boundary guard consumes existing `privilege_modifier` effects on
+current graph-backed invocations, including nested calls. It requires approval
+independently of whether the child is read-only or targets the workspace. User,
+group and security-context changes are covered when declared by a Profile;
+query forms such as `sudo -l` have no such effect. With no candidate effect the
+Pass returns before graph queries. No identity lookup or new Harness input is
+needed. `allow` preserves findings but disables only this rule's proposal;
+other rules and hard-deny floors remain independent. The rule belongs to the
+existing `host_safety` family, with per-rule overrides taking precedence.
 
 The process-control guard reads resolved `control_process` effects, including
 nested invocations, without looking up live processes or requiring known action

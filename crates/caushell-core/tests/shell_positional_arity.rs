@@ -1,9 +1,18 @@
 //! Guard checks only: no sample shell commands execute.
 use caushell_core::ShellQueryCore;
+fn binding_core() -> ShellQueryCore {
+    // Keep arity/scope controls meaningful independently of deletion approval.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_types::*;
 
 fn check(command: &str) -> CheckResponse {
-    ShellQueryCore::new().check(CheckRequest {
+    binding_core().check(CheckRequest {
         session_id: SessionId::new("shell-positional-arity"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),

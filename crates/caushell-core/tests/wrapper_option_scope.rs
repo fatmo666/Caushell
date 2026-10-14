@@ -1,4 +1,13 @@
 use caushell_core::ShellQueryCore;
+fn binding_core() -> ShellQueryCore {
+    // Commit argument/path facts for wrapper ownership inspection.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_graph::NodeKind;
 use caushell_types::{
     CheckRequest, CommandSequenceNo, Decision, RuleId, RuntimeMetadata, SessionId, ShellKind,
@@ -40,7 +49,7 @@ fn wrapped_outside_mutations_reach_the_existing_guard() {
         "env A=value timeout -k 1s 2s sshpass -e rm -f /etc/wrapper-test",
         "sshpass -e bash -c 'rm -f /etc/wrapper-test'",
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         let response = core.check(request(command));
         assert_eq!(
             response.decision,
@@ -88,7 +97,7 @@ fn workspace_mutations_keep_complete_child_argv_and_graph() {
         "sshpass -p DUMMY -- rm -- local.txt",
         "env timeout 2s sshpass -e rm -f local.txt",
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         let response = core.check(request(command));
         assert_eq!(
             response.decision,
@@ -112,7 +121,7 @@ fn workspace_mutations_keep_complete_child_argv_and_graph() {
 
 #[test]
 fn child_help_does_not_suppress_child_modelling() {
-    let mut core = ShellQueryCore::new();
+    let mut core = binding_core();
     let response = core.check(request("sshpass -e nice timeout 2s rm --help"));
     assert_eq!(response.decision, Decision::Allow);
     assert!(
@@ -129,7 +138,7 @@ fn child_help_does_not_suppress_child_modelling() {
             .iter()
             .any(|invocation| invocation.raw_text == "rm --help")
     );
-    let response = ShellQueryCore::new().check(request("sshpass -h rm -f /etc/wrapper-test"));
+    let response = binding_core().check(request("sshpass -h rm -f /etc/wrapper-test"));
     assert_eq!(response.decision, Decision::Allow);
     assert!(response.decision_trace.derived_invocations.is_empty());
 }
@@ -137,7 +146,7 @@ fn child_help_does_not_suppress_child_modelling() {
 #[test]
 fn deep_wrapper_chain_obeys_the_existing_configured_expansion_limit() {
     let command = "env A=value nice -n 1 timeout -k 1s 2s sshpass -e rm -f /etc/wrapper-test";
-    let default_response = ShellQueryCore::new().check(request(command));
+    let default_response = binding_core().check(request(command));
     assert_eq!(
         caushell_types::PolicyConfig::default()
             .semantic_expansion

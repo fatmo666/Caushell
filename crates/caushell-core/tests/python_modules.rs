@@ -11,7 +11,7 @@ use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
 use caushell_types::*;
 
 fn request(command: &str) -> CheckRequest {
-    let mut shell = ShellStateSnapshot::new("/tmp/project");
+    let mut shell = ShellStateSnapshot::new("/workspace/project");
     shell.observability.variables = ShellStateKnowledge::Complete;
     CheckRequest {
         session_id: SessionId::new("python-module-test"),
@@ -25,7 +25,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 fn check(command: &str, expected: Decision) -> CheckResponse {
@@ -185,8 +185,6 @@ fn unknown_module_does_not_fall_back_to_executable_profile() {
         "python -m rm /opt/victim",
         "python -m bash -c 'rm -f /opt/victim'",
         "env python -m rm /opt/victim",
-        "python -m \"$MODULE\" /opt/victim",
-        "env python -m \"$MODULE\" /opt/victim",
         "python -m custom \"$ARGS\"",
     ] {
         // Preserve the existing unknown-module/code-load policy; no invented rm/bash subprocess.
@@ -195,12 +193,21 @@ fn unknown_module_does_not_fall_back_to_executable_profile() {
             assert!(!g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {normalized_command_name, ..} if matches!(normalized_command_name.as_deref(), Some("rm" | "bash")))))
         });
     }
+    for c in [
+        "python -m \"$MODULE\" /opt/victim",
+        "env python -m \"$MODULE\" /opt/victim",
+    ] {
+        check(c, Decision::NeedApproval);
+        inspect(c, |g| {
+            assert!(!g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact { normalized_command_name, .. } if matches!(normalized_command_name.as_deref(), Some("rm" | "bash")))))
+        });
+    }
 }
 #[test]
 fn module_load_and_json_file_effects_both_enter_graph() {
     inspect("python -m json.tool in.json /opt/out.json", |g| {
         for (role, path) in [
-            (ResolvedPathRole::Read, "/tmp/project/in.json"),
+            (ResolvedPathRole::Read, "/workspace/project/in.json"),
             (ResolvedPathRole::Write, "/opt/out.json"),
         ] {
             assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role:r, resolution, normalized_command_name, ..} if *r==role && normalized_command_name.as_deref()==Some("json.tool") && resolution.concrete_path()==Some(path))), "{path}");
@@ -213,10 +220,10 @@ fn http_directory_is_a_read_target_not_a_cd_or_mutation() {
         "python -m http.server --bind 127.0.0.1 --directory public --tls-cert cert.pem --tls-key key.pem --tls-password-file pass.txt",
         |g| {
             for path in [
-                "/tmp/project/public",
-                "/tmp/project/cert.pem",
-                "/tmp/project/key.pem",
-                "/tmp/project/pass.txt",
+                "/workspace/project/public",
+                "/workspace/project/cert.pem",
+                "/workspace/project/key.pem",
+                "/workspace/project/pass.txt",
             ] {
                 assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Read, resolution, normalized_command_name, ..} if normalized_command_name.as_deref()==Some("http.server") && resolution.concrete_path()==Some(path))), "{path}");
             }
@@ -282,7 +289,7 @@ fn explicit_compilation_checks_known_outputs_without_executing_sources() {
         "python -m py_compile /opt/source.py",
         "python -m py_compile a.py /etc/b.py",
         "python -m compileall /opt/src",
-        "python -m compileall /tmp/project",
+        "python -m compileall /workspace/project",
         "python -m py_compile \"$SOURCE\"",
         "python -m py_compile ~/source.py",
         "python -m py_compile *.py",
@@ -425,7 +432,7 @@ fn compilation_graph_preserves_sources_and_bounds_but_not_traceback_destinations
             role: ResolvedPathRole::Write,
             resolution: PathResolution::BoundedPathSet { roots, may_escape: false },
             normalized_command_name, ..
-        } if normalized_command_name.as_deref() == Some("compileall") && roots == &vec!["/tmp/project".to_string()])));
+        } if normalized_command_name.as_deref() == Some("compileall") && roots == &vec!["/workspace/project".to_string()])));
         assert!(
             !g.nodes()
                 .any(|n| matches!(&n.kind, NodeKind::PathFact { resolution, .. }
@@ -434,7 +441,7 @@ fn compilation_graph_preserves_sources_and_bounds_but_not_traceback_destinations
     });
     inspect("python -m py_compile .env", |g| {
         assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Read, resolution, normalized_command_name, ..}
-            if normalized_command_name.as_deref() == Some("py_compile") && resolution.concrete_path() == Some("/tmp/project/.env"))));
+            if normalized_command_name.as_deref() == Some("py_compile") && resolution.concrete_path() == Some("/workspace/project/.env"))));
         assert!(!g.nodes().any(
             |n| matches!(&n.kind, NodeKind::ExecutionSemantics {semantics}
             if semantics.normalized_command_name == "py_compile" && semantics.executes_payload)
@@ -446,11 +453,11 @@ fn compilation_graph_preserves_sources_and_bounds_but_not_traceback_destinations
     ] {
         inspect(c, |g| {
             assert_eq!(g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Read, resolution, normalized_command_name, ..}
-                if normalized_command_name.as_deref() == Some("compileall") && resolution.concrete_path() == Some("/tmp/project/paths.txt"))), list_is_file);
+                if normalized_command_name.as_deref() == Some("compileall") && resolution.concrete_path() == Some("/workspace/project/paths.txt"))), list_is_file);
             assert!(
                 !g.nodes()
                     .any(|n| matches!(&n.kind, NodeKind::PathFact { resolution, .. }
-                if resolution.concrete_path() == Some("/tmp/project/-")))
+                if resolution.concrete_path() == Some("/workspace/project/-")))
             );
         });
     }

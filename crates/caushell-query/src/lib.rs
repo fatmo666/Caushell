@@ -5,6 +5,7 @@ mod derived;
 mod execution;
 mod io_target;
 mod nested;
+mod network;
 mod path;
 mod provenance;
 mod sequence;
@@ -26,6 +27,7 @@ pub use execution::{
 };
 pub use io_target::{IoTarget, IoTargetQuery};
 pub use nested::{NestedPayloadHistoryQuery, NestedPayloadHistoryResult, NestedPayloadRef};
+pub use network::{NetworkEndpointQuery, NetworkEndpointRef, endpoint_has_loopback_scope};
 pub use path::{
     PathFactRef, PathFactsQuery, PathFactsResult, PathUsageHistoryQuery, PathUsageHistoryResult,
     PathUsageRef, PathUsageRefIdentity, PathWriteHistoryQuery, PathWriteHistoryResult,

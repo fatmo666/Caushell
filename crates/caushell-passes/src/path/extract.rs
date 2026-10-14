@@ -35,6 +35,8 @@ pub(crate) struct PathFactCandidate {
     pub semantic_slot: Option<SlotName>,
     pub normalized_command_name: String,
     pub resolution: PathResolution,
+    /// Lexical pathname pattern, not an expanded or existing filename.
+    pub content_selector: Option<String>,
     pub cwd_dependent: bool,
     pub role: PathRole,
     pub purpose: Option<PathPurpose>,
@@ -221,6 +223,39 @@ fn semantic_value_text(value: SemanticValueRef<'_>) -> &str {
     }
 }
 
+fn semantic_content_selector(
+    value: SemanticValueRef<'_>,
+    cwd: &str,
+    home: Option<&str>,
+) -> Option<String> {
+    let SemanticValueRef::Original(
+        source @ BoundValue::Argument {
+            text,
+            quoted,
+            node_kind,
+            materialization: BoundArgumentMaterialization::Literal,
+            ..
+        },
+    ) = value
+    else {
+        return None;
+    };
+    if text.len() > 4096 || !text.contains(['*', '?', '[']) {
+        return None;
+    }
+    match super::expression::classify_path_operand_expression_with_tilde(
+        text,
+        *quoted,
+        node_kind,
+        Some(cwd),
+        home,
+        source.allows_shell_tilde_expansion(),
+    ) {
+        super::expression::PathExpression::Pattern(pattern) => Some(pattern.as_str().into()),
+        _ => None,
+    }
+}
+
 /// Positive syntax provenance, not a guessed fd pathname or text match.
 /// Projected/transformed values and literal strings like '>(cat)' are files.
 fn process_substitution_content_channel(value: SemanticValueRef<'_>) -> bool {
@@ -229,7 +264,10 @@ fn process_substitution_content_channel(value: SemanticValueRef<'_>) -> bool {
     }) if node_kind == "process_substitution")
 }
 
-fn path_target_is_inapplicable(invocation: &BoundInvocation, target: &EffectTarget) -> bool {
+pub(crate) fn path_target_is_inapplicable(
+    invocation: &BoundInvocation,
+    target: &EffectTarget,
+) -> bool {
     let slot_is_inapplicable = |slot: &SlotName| {
         bound_parameter(invocation, slot.as_str())
             .is_some_and(BoundParameter::semantic_values_are_inapplicable)
@@ -568,6 +606,9 @@ pub(crate) fn collect_path_facts(
             }
             if !matches!(case, caushell_runner::CwdPathContext::Exact(_)) {
                 for path in &mut paths[start..] {
+                    if path.cwd_dependent {
+                        path.content_selector = None;
+                    }
                     path.resolution = super::cwd::project_path_at_cwd(
                         path.resolution.clone(),
                         path.cwd_dependent,
@@ -660,6 +701,7 @@ fn collect_resolved_record_path_facts(
                 slot_name: parameter.name.as_str().to_string(),
                 semantic_slot: Some(parameter.name.clone()),
                 normalized_command_name: resolved.normalized_command_name.clone(),
+                content_selector: semantic_content_selector(value, cwd, home),
                 resolution,
                 cwd_dependent,
                 role,
@@ -706,6 +748,7 @@ fn collect_selection_error_path_facts(
                 slot_name: parameter.name.as_str().to_string(),
                 semantic_slot: Some(parameter.name.clone()),
                 normalized_command_name: normalized_command_name.to_string(),
+                content_selector: semantic_content_selector(value, cwd, home),
                 resolution,
                 cwd_dependent,
                 role,
@@ -860,6 +903,7 @@ fn collect_effect_target_path_facts(
                         slot_name: format!("configured_path_{effect_index}"),
                         semantic_slot: None,
                         normalized_command_name: normalized_command_name.to_string(),
+                        content_selector: None,
                         resolution: effect_path_scope(effect, invocation, path.resolution),
                         cwd_dependent: path.cwd_dependent,
                         role,
@@ -874,6 +918,7 @@ fn collect_effect_target_path_facts(
                 slot_name: tool_convention_slot_name(effect_index, &target.convention),
                 semantic_slot: None,
                 normalized_command_name: normalized_command_name.to_string(),
+                content_selector: None,
                 resolution: resolve_tool_convention_path(target, cwd),
                 cwd_dependent: !target.path.starts_with('/'),
                 role,
@@ -935,6 +980,11 @@ fn collect_effect_target_path_facts(
                         slot_name: format!("{}_effect_{effect_index}", slot.as_str()),
                         semantic_slot: Some(slot.clone()),
                         normalized_command_name: normalized_command_name.into(),
+                        content_selector: if effect.path_scope.is_none() {
+                            semantic_content_selector(value, cwd, home)
+                        } else {
+                            None
+                        },
                         resolution: effect_path_scope(effect, invocation, resolution),
                         cwd_dependent,
                         role,
@@ -1027,6 +1077,7 @@ fn collect_derived_target_path_facts(
                             slot_name: derived_path_slot_name(effect_index),
                             semantic_slot: None,
                             normalized_command_name: normalized_command_name.to_string(),
+                            content_selector: None,
                             resolution,
                             cwd_dependent,
                             role,
@@ -1067,6 +1118,7 @@ fn collect_derived_target_path_facts(
                         slot_name: derived_path_slot_name(effect_index),
                         semantic_slot: None,
                         normalized_command_name: normalized_command_name.to_string(),
+                        content_selector: None,
                         resolution,
                         cwd_dependent,
                         role,
@@ -1100,6 +1152,7 @@ fn collect_derived_target_path_facts(
                     slot_name: derived_path_slot_name(effect_index),
                     semantic_slot: None,
                     normalized_command_name: normalized_command_name.to_string(),
+                    content_selector: None,
                     resolution,
                     cwd_dependent,
                     role,
@@ -1144,6 +1197,7 @@ fn collect_derived_target_path_facts(
                     slot_name: derived_path_slot_name(effect_index),
                     semantic_slot: None,
                     normalized_command_name: normalized_command_name.to_string(),
+                    content_selector: None,
                     resolution,
                     cwd_dependent,
                     role,

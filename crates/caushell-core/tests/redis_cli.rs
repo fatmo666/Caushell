@@ -7,7 +7,7 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("redis-cli-scope"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "test".into(),
@@ -15,7 +15,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 fn check(command: &str, decision: Decision) -> CheckResponse {
@@ -84,7 +84,7 @@ fn localhost_and_workspace_socket_do_not_authorize_mutation() {
         "redis-cli SET key value",
         "redis-cli -h 127.0.0.1 DEL key",
         "redis-cli -u redis://localhost:6379/0 FLUSHALL",
-        "redis-cli -s /tmp/project/db.sock SET key value",
+        "redis-cli -s /workspace/project/db.sock SET key value",
         "redis-cli GETDEL key",
         "redis-cli --lru-test 10",
     ] {

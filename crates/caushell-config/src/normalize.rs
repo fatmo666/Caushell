@@ -440,6 +440,66 @@ mod tests {
     }
 
     #[test]
+    fn privilege_boundary_policy_supports_default_and_user_overrides() {
+        let default = normalize_config(RawConfigFile::default()).unwrap();
+        assert_eq!(
+            default
+                .policy
+                .rule_policy
+                .action_for(RuleId::PrivilegeBoundary),
+            RuleAction::NeedApproval
+        );
+        for (value, expected) in [
+            ("allow", RuleAction::Observe),
+            ("need_approval", RuleAction::NeedApproval),
+            ("deny", RuleAction::Deny),
+        ] {
+            let raw: RawConfigFile = serde_yaml::from_str(&format!(
+                "version: 1\npolicy:\n  rules:\n    privilege_boundary: {value}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                normalize_config(raw)
+                    .unwrap()
+                    .policy
+                    .rule_policy
+                    .action_for(RuleId::PrivilegeBoundary),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn network_upload_policy_supports_default_and_user_overrides() {
+        assert_eq!(
+            normalize_config(RawConfigFile::default())
+                .unwrap()
+                .policy
+                .rule_policy
+                .action_for(RuleId::NetworkUpload),
+            RuleAction::NeedApproval
+        );
+        for (value, expected) in [
+            ("allow", RuleAction::Observe),
+            ("need_approval", RuleAction::NeedApproval),
+            ("deny", RuleAction::Deny),
+        ] {
+            let raw: RawConfigFile = serde_yaml::from_str(&format!(
+                "version: 1\npolicy:\n  rules:\n    network_upload: {value}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                normalize_config(raw)
+                    .unwrap()
+                    .policy
+                    .rule_policy
+                    .action_for(RuleId::NetworkUpload),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn normalizes_user_actions_and_failure_action() {
         let raw = serde_yaml::from_str::<RawConfigFile>(
             r#"

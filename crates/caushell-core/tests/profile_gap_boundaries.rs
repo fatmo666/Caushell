@@ -7,7 +7,7 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("profile-gap-boundaries"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "static-test".into(),
@@ -15,7 +15,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 
@@ -124,7 +124,7 @@ fn common_entry_boundaries_keep_existing_risk_rules_independent() {
 
     // `exec` with only a redirection mutates the shell's stream state. The shell
     // redirection owns the filesystem write; there is no child process to dispatch.
-    let result = check("exec > /tmp/out");
+    let result = check("exec > /opt/shared/out");
     assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
     assert!(
         !result
@@ -148,7 +148,7 @@ fn filesystem_effects_stay_visible_without_invented_remote_or_cloud_paths() {
     let journal = check("journalctl --vacuum-time=1d");
     assert_eq!(journal.decision, Decision::NeedApproval, "{journal:#?}");
 
-    let archive = check("7z a /tmp/archive.7z /tmp/input");
+    let archive = check("7z a /opt/shared/archive.7z /tmp/input");
     assert_eq!(archive.decision, Decision::NeedApproval, "{archive:#?}");
 
     // Remote commands retain remote execution semantics and never turn their

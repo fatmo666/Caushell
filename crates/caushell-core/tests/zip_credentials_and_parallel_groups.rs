@@ -30,13 +30,13 @@ fn check(command: &str, expected: Decision) -> ShellQueryCore {
 fn zip_native_clusters_do_not_relax_mutation_or_execution_boundaries() {
     for command in [
         "zip -rq cache/out.zip cache/input",
-        "zip -mT cache/out.zip cache/input",
-        "zip -jmT cache/out.zip cache/input",
         "zip -jTT'echo marker' cache/out.zip cache/input",
     ] {
         check(command, Decision::Allow);
     }
     for command in [
+        "zip -mT cache/out.zip cache/input",
+        "zip -jmT cache/out.zip cache/input",
         "zip -mT cache/out.zip /opt/shared/input",
         "zip -rq /opt/shared/out.zip cache/input",
         "zip -mTT'echo marker' -T cache/out.zip cache/input",
@@ -180,7 +180,6 @@ fn untrusted_credentials_keep_operational_provenance_for_code_execution() {
 fn grouped_parallel_produces_real_child_effects_and_keeps_boundaries() {
     for command in [
         "parallel -X echo ::: one two",
-        "parallel -X rm ::: cache/a cache/b",
         "parallel -j1 -X echo pre-{}-post ::: one two",
         "parallel -q -X echo {} ::: 'safe; rm -rf /opt/shared' two",
     ] {
@@ -189,6 +188,7 @@ fn grouped_parallel_produces_real_child_effects_and_keeps_boundaries() {
         assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::DerivedInvocation {command_name: Some(name), ..} if name == "echo" || name == "rm")), "{command}");
     }
     for command in [
+        "parallel -X rm ::: cache/a cache/b",
         "parallel -X rm ::: cache/a /opt/shared/b",
         "parallel -X '{}' ::: 'rm /opt/shared/b'",
         "parallel -X echo ::: \"$UNKNOWN\"",

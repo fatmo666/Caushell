@@ -25,7 +25,7 @@ pub use evidence::{
     NestedPayloadInputEvidence, NestedPayloadInputFragmentEvidence, NestedPayloadLanguageEvidence,
     NestedPayloadOriginEvidence, NestedPayloadParentEvidence, NestedPayloadParsedEvidence,
     NestedPayloadSourceEvidence, NestedPayloadTruncatedEvidence, NestedPayloadUnresolvedEvidence,
-    NestedPayloadUnresolvedReasonEvidence, NetworkListenerExposureEvidence,
+    NestedPayloadUnresolvedReasonEvidence, NetworkListenerExposureEvidence, NetworkUploadEvidence,
     OutsideWorkspacePathEvidence, PriorPathWriteEvidence, RepositoryOperationEvidence,
     TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence, TaintedExecutionSinkEvidence,
     TaintedExecutionSourceEvidence, TaintedExecutionUnresolvedOriginEvidence,

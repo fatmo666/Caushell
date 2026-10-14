@@ -754,6 +754,7 @@ fn taint_source_artifact(
         },
         ProvenanceArtifact::MaterializedValue { .. }
         | ProvenanceArtifact::PathFamily { .. }
+        | ProvenanceArtifact::PathSelectionContent { .. }
         | ProvenanceArtifact::PathContent { .. }
         | ProvenanceArtifact::InlineShellContent { .. }
         | ProvenanceArtifact::CommandSubstitutionOutput { .. }

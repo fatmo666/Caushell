@@ -15,6 +15,8 @@ pub enum ProvenanceEndpointKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceEndpointUsage {
+    /// A declared possible connection route, not a logical upload/download.
+    TransportTarget,
     FetchSource,
     UploadTarget,
     ControlPlane,
@@ -226,6 +228,15 @@ pub enum ProvenanceArtifact {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<u64>,
+    },
+    /// Content selected by a bounded or unresolved path operand. This is not
+    /// an expanded filename, a directory read, or proof that any file exists.
+    PathSelectionContent {
+        resolution: crate::PathResolution,
+        /// Normalized lexical selector when available; shell generation is
+        /// not performed and unknown shell options do not become exact facts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<String>,
     },
     PathFamily {
         directory: String,

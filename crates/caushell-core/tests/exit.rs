@@ -149,7 +149,15 @@ fn isolated_frames_do_not_terminate_the_caller() {
         "target=cache/file; bash -c 'exit; target=/opt/shared/file'; rm -f \"$target\"",
         "target=cache/file; f() { exit; }; (f); target=cache/new; rm -f \"$target\"",
     ] {
-        check(c, Decision::Allow);
+        check(c, Decision::NeedApproval);
+        let r = ShellQueryCore::new().check(request(1, c));
+        assert!(
+            !r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation),
+            "{c}: {r:?}"
+        );
         assert!(!inspect(c).root_shell_terminates(), "{c}");
     }
     check(

@@ -4,8 +4,9 @@ use caushell_graph::NodeKind;
 use caushell_graph::{SessionGraph, SessionRead};
 use caushell_passes::{
     CatastrophicDeleteGuardPass, ComputeEffectiveCwdPass, DecisionAssemblyPass,
-    ExtractPathFactsPass, ExtractPipelineFlowPass, OutsideWorkspaceMutationGuardPass,
-    ParseCommandPass, ProjectTopLevelCommandsPass, ResolveInvocationPass,
+    ExtractPathFactsPass, ExtractPipelineFlowPass, FileDeletionGuardPass,
+    OutsideWorkspaceMutationGuardPass, ParseCommandPass, ProjectTopLevelCommandsPass,
+    ResolveInvocationPass,
 };
 use caushell_profile::ProfileRegistry;
 use caushell_runner::{PassRunner, PendingMutation, RunnerContext, SessionView, StagedSession};
@@ -20,7 +21,7 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("pytest-profile-test"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "test".into(),
@@ -28,7 +29,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 
@@ -71,8 +72,9 @@ fn inspect_request(
         runner.register_session_transform_pass(ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPipelineFlowPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
-        runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
         runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
+        runner.register_session_analysis_pass(FileDeletionGuardPass);
+        runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
         let graph = SessionGraph::new();
         let summary = SessionSummary::new();
@@ -115,7 +117,7 @@ fn default_unknown_cache_allows_but_is_present_in_graph() {
     for command in [
         "pytest",
         "pytest tests/",
-        "pytest --rootdir=/tmp/project tests/",
+        "pytest --rootdir=/workspace/project tests/",
         "pytest -o console_output_style=classic tests/",
     ] {
         let facts = inspect(command, Decision::Allow);
@@ -137,7 +139,7 @@ fn selector_path_is_stripped_but_not_treated_as_a_write() {
     assert!(facts.iter().any(
         |(role, purpose, resolution)| *role == ResolvedPathRole::Read
             && *purpose == Some(ResolvedPathPurpose::InProcessCode)
-            && resolution.concrete_path() == Some("/tmp/project/tests/test_api.py")
+            && resolution.concrete_path() == Some("/workspace/project/tests/test_api.py")
     ));
 }
 
@@ -145,11 +147,11 @@ fn selector_path_is_stripped_but_not_treated_as_a_write() {
 fn explicit_cache_inside_workspace_is_concrete() {
     assert_eq!(
         writes(
-            "pytest -o cache_dir=/tmp/project/cache tests/",
+            "pytest -o cache_dir=/workspace/project/cache tests/",
             Decision::Allow
         )[0]
         .concrete_path(),
-        Some("/tmp/project/cache")
+        Some("/workspace/project/cache")
     );
 }
 
@@ -187,9 +189,9 @@ fn explicit_unknown_cache_is_not_exempt() {
 fn relative_cache_uses_explicit_rootdir_not_cwd() {
     for (command, expected, target) in [
         (
-            "pytest --rootdir=/tmp/project/sub -o cache_dir=cache tests/",
+            "pytest --rootdir=/workspace/project/sub -o cache_dir=cache tests/",
             Decision::Allow,
-            "/tmp/project/sub/cache",
+            "/workspace/project/sub/cache",
         ),
         (
             "pytest --rootdir=/opt/app -o cache_dir=cache tests/",
@@ -199,10 +201,10 @@ fn relative_cache_uses_explicit_rootdir_not_cwd() {
         (
             "pytest --rootdir=sub -o cache_dir=../cache tests/",
             Decision::Allow,
-            "/tmp/project/cache",
+            "/workspace/project/cache",
         ),
         (
-            "pytest --rootdir=/tmp/project -o cache_dir=../../etc/cache tests/",
+            "pytest --rootdir=/workspace/project -o cache_dir=../../etc/cache tests/",
             Decision::NeedApproval,
             "/etc/cache",
         ),
@@ -223,7 +225,7 @@ fn explicit_config_parent_can_anchor_a_relative_cache() {
             Decision::Allow
         )[0]
         .concrete_path(),
-        Some("/tmp/project/config/cache")
+        Some("/workspace/project/config/cache")
     );
 }
 
@@ -231,11 +233,11 @@ fn explicit_config_parent_can_anchor_a_relative_cache() {
 fn rootdir_wins_over_config_parent_without_probing_either() {
     assert_eq!(
         writes(
-            "pytest -c /etc/pytest.ini --rootdir=/tmp/project -o cache_dir=cache tests/",
+            "pytest -c /etc/pytest.ini --rootdir=/workspace/project -o cache_dir=cache tests/",
             Decision::Allow
         )[0]
         .concrete_path(),
-        Some("/tmp/project/cache")
+        Some("/workspace/project/cache")
     );
 }
 
@@ -252,11 +254,11 @@ fn unknown_high_priority_root_does_not_fall_back_to_config_parent() {
 fn absolute_cache_is_independent_of_unknown_rootdir() {
     assert_eq!(
         writes(
-            "pytest --rootdir=\"$ROOT\" -o cache_dir=/tmp/project/cache tests/",
+            "pytest --rootdir=\"$ROOT\" -o cache_dir=/workspace/project/cache tests/",
             Decision::Allow
         )[0]
         .concrete_path(),
-        Some("/tmp/project/cache")
+        Some("/workspace/project/cache")
     );
 }
 
@@ -264,19 +266,19 @@ fn absolute_cache_is_independent_of_unknown_rootdir() {
 fn last_matching_override_wins_without_losing_other_keys() {
     for (command, expected, target) in [
         (
-            "pytest -o cache_dir=/etc/old -o cache_dir=/tmp/project/cache -o console_output_style=classic tests/",
+            "pytest -o cache_dir=/etc/old -o cache_dir=/workspace/project/cache -o console_output_style=classic tests/",
             Decision::Allow,
-            "/tmp/project/cache",
+            "/workspace/project/cache",
         ),
         (
-            "pytest -o cache_dir=/tmp/project/cache -o cache_dir=/etc/new tests/",
+            "pytest -o cache_dir=/workspace/project/cache -o cache_dir=/etc/new tests/",
             Decision::NeedApproval,
             "/etc/new",
         ),
         (
-            "pytest --rootdir=/etc --rootdir=/tmp/project -o cache_dir=cache tests/",
+            "pytest --rootdir=/etc --rootdir=/workspace/project -o cache_dir=cache tests/",
             Decision::Allow,
-            "/tmp/project/cache",
+            "/workspace/project/cache",
         ),
     ] {
         assert_eq!(
@@ -290,7 +292,7 @@ fn last_matching_override_wins_without_losing_other_keys() {
 #[test]
 fn later_unknown_override_remains_unknown() {
     let targets = writes(
-        "pytest -o cache_dir=/tmp/project/cache -o \"cache_dir=$UNKNOWN\" tests/",
+        "pytest -o cache_dir=/workspace/project/cache -o \"cache_dir=$UNKNOWN\" tests/",
         Decision::NeedApproval,
     );
     assert!(targets[0].concrete_path().is_none());
@@ -299,9 +301,9 @@ fn later_unknown_override_remains_unknown() {
 #[test]
 fn tool_environment_expansion_is_not_mistaken_for_literal_path_data() {
     for command in [
-        "pytest -o 'cache_dir=/tmp/project/$CACHE' tests/",
-        "pytest --junitxml='/tmp/project/$REPORT' tests/",
-        "pytest --rootdir='/tmp/project/$ROOT' -o cache_dir=cache tests/",
+        "pytest -o 'cache_dir=/workspace/project/$CACHE' tests/",
+        "pytest --junitxml='/workspace/project/$REPORT' tests/",
+        "pytest --rootdir='/workspace/project/$ROOT' -o cache_dir=cache tests/",
     ] {
         assert!(
             writes(command, Decision::NeedApproval)
@@ -315,11 +317,11 @@ fn tool_environment_expansion_is_not_mistaken_for_literal_path_data() {
 fn known_shell_variables_materialize_without_reading_host_environment() {
     assert!(
         writes(
-            "OVERRIDE=cache_dir=/tmp/project/cache; pytest -o \"$OVERRIDE\" tests/",
+            "OVERRIDE=cache_dir=/workspace/project/cache; pytest -o \"$OVERRIDE\" tests/",
             Decision::Allow
         )
         .iter()
-        .any(|target| target.concrete_path() == Some("/tmp/project/cache"))
+        .any(|target| target.concrete_path() == Some("/workspace/project/cache"))
     );
 }
 
@@ -349,12 +351,12 @@ fn junit_reports_and_aliases_do_not_share_the_cache_exemption() {
         (
             "pytest --junitxml=report.xml tests/",
             Decision::Allow,
-            "/tmp/project/report.xml",
+            "/workspace/project/report.xml",
         ),
         (
             "pytest --rootdir=/etc --junit-xml=report.xml tests/",
             Decision::Allow,
-            "/tmp/project/report.xml",
+            "/workspace/project/report.xml",
         ),
         (
             "pytest --junit-xml=/etc/report.xml tests/",
@@ -380,7 +382,7 @@ fn log_cli_and_override_share_one_view_with_cli_priority() {
         (
             "pytest --rootdir=/etc -o log_file=logs/test.log tests/",
             Decision::Allow,
-            "/tmp/project/logs/test.log",
+            "/workspace/project/logs/test.log",
         ),
         (
             "pytest -o log_file=/etc/test.log tests/",
@@ -388,12 +390,12 @@ fn log_cli_and_override_share_one_view_with_cli_priority() {
             "/etc/test.log",
         ),
         (
-            "pytest --log-file=/tmp/project/log -o log_file=/etc/ignored tests/",
+            "pytest --log-file=/workspace/project/log -o log_file=/etc/ignored tests/",
             Decision::Allow,
-            "/tmp/project/log",
+            "/workspace/project/log",
         ),
         (
-            "pytest --log-file=/etc/log -o log_file=/tmp/project/ignored tests/",
+            "pytest --log-file=/etc/log -o log_file=/workspace/project/ignored tests/",
             Decision::NeedApproval,
             "/etc/log",
         ),
@@ -408,20 +410,20 @@ fn log_cli_and_override_share_one_view_with_cli_priority() {
     assert!(
         writes("pytest --log-file=log tests/", Decision::Allow)
             .iter()
-            .any(|path| path.concrete_path() == Some("/tmp/project/log"))
+            .any(|path| path.concrete_path() == Some("/workspace/project/log"))
     );
 }
 
 #[test]
 fn multiple_override_keys_cannot_hide_an_outside_log_write() {
     let targets = writes(
-        "pytest -o cache_dir=/tmp/project/cache -o log_file=/etc/log tests/",
+        "pytest -o cache_dir=/workspace/project/cache -o log_file=/etc/log tests/",
         Decision::NeedApproval,
     );
     assert!(
         targets
             .iter()
-            .any(|path| path.concrete_path() == Some("/tmp/project/cache"))
+            .any(|path| path.concrete_path() == Some("/workspace/project/cache"))
     );
     assert!(
         targets
@@ -433,7 +435,7 @@ fn multiple_override_keys_cannot_hide_an_outside_log_write() {
 #[test]
 fn basetemp_cleanup_is_independent_of_incidental_cache_writes() {
     for (command, expected) in [
-        ("pytest --basetemp=scratch tests/", Decision::Allow),
+        ("pytest --basetemp=scratch tests/", Decision::NeedApproval),
         ("pytest --basetemp=/opt/old tests/", Decision::NeedApproval),
         ("pytest --basetemp=\"$TMP\" tests/", Decision::NeedApproval),
     ] {
@@ -453,8 +455,8 @@ fn cache_clearing_unknown_or_outside_target_is_not_exempt() {
         Decision::NeedApproval,
     );
     inspect(
-        "pytest --cache-clear -o cache_dir=/tmp/project/cache tests/",
-        Decision::Allow,
+        "pytest --cache-clear -o cache_dir=/workspace/project/cache tests/",
+        Decision::NeedApproval,
     );
 }
 
@@ -491,7 +493,7 @@ fn debug_default_is_a_real_cwd_output_not_an_unknown_cache() {
     assert!(
         writes("pytest --debug tests/", Decision::Allow)
             .iter()
-            .any(|path| path.concrete_path() == Some("/tmp/project/pytestdebug.log"))
+            .any(|path| path.concrete_path() == Some("/workspace/project/pytestdebug.log"))
     );
     writes("pytest --debug=/etc/debug tests/", Decision::NeedApproval);
 }
@@ -511,7 +513,7 @@ fn shell_redirections_and_other_commands_remain_independently_checked() {
 #[test]
 fn unknown_cwd_does_not_contaminate_an_absolute_output() {
     writes(
-        "cd \"$UNKNOWN\"; pytest -o cache_dir=/tmp/project/cache",
+        "cd \"$UNKNOWN\"; pytest -o cache_dir=/workspace/project/cache",
         Decision::Allow,
     );
     writes(
@@ -525,7 +527,7 @@ fn missing_workspace_does_not_grant_an_explicit_output_the_default_exemption() {
     let mut req = request("pytest");
     req.workspace_root = None;
     inspect_request(req, Decision::Allow);
-    let mut req = request("pytest -o cache_dir=/tmp/project/cache");
+    let mut req = request("pytest -o cache_dir=/workspace/project/cache");
     req.workspace_root = None;
     inspect_request(req, Decision::NeedApproval);
 }
@@ -551,14 +553,14 @@ fn disabled_cache_and_cache_display_do_not_hide_explicit_log_outputs() {
 fn separate_option_operands_and_last_cli_outputs_are_checked() {
     for (command, expected, target) in [
         (
-            "pytest --log-file /tmp/project/old --log-file /etc/log tests/",
+            "pytest --log-file /workspace/project/old --log-file /etc/log tests/",
             Decision::NeedApproval,
             "/etc/log",
         ),
         (
-            "pytest --junitxml /etc/old --junit-xml /tmp/project/report.xml tests/",
+            "pytest --junitxml /etc/old --junit-xml /workspace/project/report.xml tests/",
             Decision::Allow,
-            "/tmp/project/report.xml",
+            "/workspace/project/report.xml",
         ),
         (
             "pytest --basetemp /etc/base tests/",

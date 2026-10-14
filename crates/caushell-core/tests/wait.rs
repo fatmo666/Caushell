@@ -1,5 +1,14 @@
 //! Static checks only: shell command strings here are never executed.
 use caushell_core::ShellQueryCore;
+fn binding_core() -> ShellQueryCore {
+    // Compare precise/runtime-unknown state using the path guard independently.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_types::*;
 
 fn request(sequence: u64, command: &str) -> CheckRequest {
@@ -21,7 +30,7 @@ fn request(sequence: u64, command: &str) -> CheckRequest {
     }
 }
 fn check(command: &str, expected: Decision) {
-    let result = ShellQueryCore::new().check(request(1, command));
+    let result = binding_core().check(request(1, command));
     assert_eq!(
         result.decision, expected,
         "{command}: {:?}",
@@ -108,7 +117,7 @@ fn restores_precision_without_polluting_parent_scope() {
 }
 #[test]
 fn runtime_unknown_survives_across_actions_and_fresh_snapshot_wins() {
-    let mut core = ShellQueryCore::new();
+    let mut core = binding_core();
     assert_eq!(
         core.check(request(1, "target=cache/file")).decision,
         Decision::Allow
@@ -159,7 +168,7 @@ fn later_assignment_and_unset_win_in_persisted_state() {
             Decision::NeedApproval,
         ),
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         assert_eq!(
             core.check(request(1, command)).decision,
             Decision::Allow,
@@ -173,7 +182,7 @@ fn later_assignment_and_unset_win_in_persisted_state() {
 
 #[test]
 fn declined_runtime_write_does_not_change_session_state() {
-    let mut core = ShellQueryCore::new();
+    let mut core = binding_core();
     assert_eq!(
         core.check(request(1, "target=cache/file")).decision,
         Decision::Allow
@@ -192,7 +201,7 @@ fn persisted_function_and_alias_runtime_writers_are_seen() {
         ("f() { wait -p target; }", "f"),
         ("alias wk='wait -p target'", "wk"),
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         assert_eq!(
             core.check(request(1, &format!("target=cache/file; {definition}")))
                 .decision,

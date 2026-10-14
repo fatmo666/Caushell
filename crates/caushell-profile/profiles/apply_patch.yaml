@@ -23,6 +23,7 @@ forms:
         reads: patch_reads
         writes: patch_writes
         deletes: patch_deletes
+        moves: patch_moves
     effects:
       - kind: read_path
         target: {kind: slot, name: patch_reads}
@@ -32,6 +33,9 @@ forms:
       - kind: delete_path
         target: {kind: slot, name: patch_deletes}
         catastrophic: {semantic_class: delete_path}
+      - kind: move_path
+        target: {kind: slot, name: patch_moves}
+        host_risk: {semantic_class: move_source_path}
   - id: patch_stdin
     selector: {kind: no_arguments}
     implicit_inputs:
@@ -43,6 +47,7 @@ forms:
         reads: patch_reads
         writes: patch_writes
         deletes: patch_deletes
+        moves: patch_moves
     stream_contract:
       stdin_mode: data_required
       stdout_mode: opaque
@@ -58,3 +63,6 @@ forms:
       - kind: delete_path
         target: {kind: slot, name: patch_deletes}
         catastrophic: {semantic_class: delete_path}
+      - kind: move_path
+        target: {kind: slot, name: patch_moves}
+        host_risk: {semantic_class: move_source_path}

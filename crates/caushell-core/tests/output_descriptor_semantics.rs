@@ -146,20 +146,24 @@ fn csplit_family_provenance_is_precise_across_actions() {
 }
 
 #[test]
-fn awk_programs_share_the_existing_opaque_execution_boundary() {
+fn awk_known_print_programs_are_distinct_from_writes_and_opaque_execution() {
     for command in [
         "awk 'BEGIN { print \"DATA\" > \"/opt/shared/out\" }'",
         "awk 'BEGIN { system(\"rm /opt/shared/out\") }'",
-        "awk -e '{print}' public",
-        "awk --source='{print}' public",
         "awk -f cache/script.awk",
         "awk -f -",
+    ] {
+        expect(command, Decision::NeedApproval);
+    }
+    for command in [
+        "awk -e '{print}' public",
+        "awk --source='{print}' public",
         "awk '{print}' public",
         "gawk '{print}' public",
         "nawk '{print}' public",
         "awk '{print}' /dev/fd/3 3<.env",
     ] {
-        expect(command, Decision::NeedApproval);
+        expect(command, Decision::Allow);
     }
 }
 

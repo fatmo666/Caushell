@@ -2476,7 +2476,7 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_allows_pipeline_xargs_interactive_prompt_rm_root() {
+    fn catastrophic_delete_guard_denies_possible_xargs_interactive_prompt_rm_root() {
         for command in [
             r#"printf '/\n' | xargs -p rm -rf"#,
             r#"printf '/\n' | xargs --interactive rm -rf"#,
@@ -2485,16 +2485,16 @@ mod tests {
 
             assert_eq!(
                 ctx.final_decision,
-                Some(Decision::Allow),
-                "expected allow for {command}, got findings: {:?}",
+                Some(Decision::Deny),
+                "expected deny for the possible confirmed branch of {command}, got findings: {:?}",
                 ctx.findings
             );
             assert!(
-                !ctx.findings.iter().any(|finding| {
+                ctx.findings.iter().any(|finding| {
                     finding.rule_id == RuleId::CatastrophicFileSystemDelete
                         && finding.enforcement_class == FindingEnforcementClass::HardDenyFloor
                 }),
-                "expected no catastrophic xargs finding for {command}, got {:?}",
+                "expected catastrophic xargs finding for {command}, got {:?}",
                 ctx.findings
             );
         }

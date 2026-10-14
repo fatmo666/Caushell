@@ -1,5 +1,14 @@
 //! Static decisions and staged path facts only; samples are never executed.
 use caushell_core::ShellQueryCore;
+fn binding_core() -> ShellQueryCore {
+    // Test positional binding and path scope, not location-independent deletion approval.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_graph::{GraphNode, NodeKind, SessionGraph, SessionRead};
 use caushell_passes::{
     ComputeEffectiveCwdPass, ExtractPathFactsPass, ExtractPipelineFlowPass, ParseCommandPass,
@@ -48,7 +57,7 @@ fn staged_graph(command: &str) -> Vec<GraphNode> {
 }
 
 fn assert_target(command: &str, target: &str, decision: Decision) {
-    let response = ShellQueryCore::new().check(request(command));
+    let response = binding_core().check(request(command));
     assert_eq!(response.decision, decision, "{command}: {response:#?}");
     let graph = staged_graph(command);
     let targets: Vec<_> = graph
@@ -168,7 +177,7 @@ fn literals_missing_parameters_and_read_only_controls_do_not_gain_approval() {
         r#"sh -c 'rm "${10}"' _ /opt/shared/file"#,
         r#"sh -c 'printf "%s\n" "$10" "${10}"' _ /opt/shared/file"#,
     ] {
-        let response = ShellQueryCore::new().check(request(command));
+        let response = binding_core().check(request(command));
         assert_eq!(
             response.decision,
             Decision::Allow,
@@ -184,7 +193,7 @@ fn literals_missing_parameters_and_read_only_controls_do_not_gain_approval() {
     // numeric parameter. This checks the decision only: the older lexical path
     // resolver retains the backslash for this spelling, independently of
     // numeric materialization (a separately recorded normalization issue).
-    let escaped = ShellQueryCore::new().check(request(r#"sh -c 'touch \$10' _ /opt/shared/file"#));
+    let escaped = binding_core().check(request(r#"sh -c 'touch \$10' _ /opt/shared/file"#));
     assert_eq!(escaped.decision, Decision::Allow, "{escaped:#?}");
     assert_target(
         r#"sh -c 'touch "$10"' _ './cache/$literal*'"#,
@@ -201,7 +210,7 @@ fn unknown_width_or_unsafe_splitting_never_manufactures_a_local_scalar() {
         r#"producer | xargs -0 sh -c 'touch "$10"' _"#,
         r#"sh -c 'touch $10' _ './cache/a /opt/shared/file'"#,
     ] {
-        let response = ShellQueryCore::new().check(request(command));
+        let response = binding_core().check(request(command));
         assert_eq!(
             response.decision,
             Decision::NeedApproval,

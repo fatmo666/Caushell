@@ -1,5 +1,14 @@
 //! Static checks: no action under test is executed.
 use caushell_core::ShellQueryCore;
+fn binding_core() -> ShellQueryCore {
+    // Isolate shell-state persistence and scope from deletion approval.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_graph::SessionGraph;
 use caushell_passes::*;
 use caushell_profile::ProfileRegistry;
@@ -61,7 +70,7 @@ fn binding(command: &str, name: &str, value: &str, exported: bool) {
     assert_eq!(b.exported, exported, "{command}");
 }
 fn decision(command: &str, expected: Decision) {
-    let r = ShellQueryCore::new().check(request(1, command));
+    let r = binding_core().check(request(1, command));
     assert_eq!(r.decision, expected, "{command}: {:?}", r.decision_trace);
 }
 
@@ -311,7 +320,7 @@ fn persistent_actions_reuse_unexported_scalar_but_not_removed_values() {
             Decision::Allow,
         ),
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         assert_eq!(
             core.check(request(1, first)).decision,
             Decision::Allow,

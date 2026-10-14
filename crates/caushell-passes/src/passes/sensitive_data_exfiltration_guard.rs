@@ -172,6 +172,12 @@ fn python_static_exfiltrations(
             let Some(endpoint) = first_python_http_url(call.args) else {
                 continue;
             };
+            if caushell_query::endpoint_has_loopback_scope(
+                &endpoint,
+                caushell_types::ProvenanceEndpointKind::Url,
+            ) {
+                continue;
+            }
 
             for path in python_static_sensitive_reads(call.args, policy, cwd, workspace_root, home)
             {
@@ -675,7 +681,7 @@ fn collect_upload_sinks(graph: &dyn GraphRead, sequence_no: CommandSequenceNo) -
                 _ => None,
             };
             let Some(endpoint) =
-                request_endpoint_for_artifact(graph, &edge.to, input_scope.is_some())
+                request_endpoint_for_artifact(graph, &node.id, &edge.to, input_scope.is_some())
             else {
                 continue;
             };
@@ -710,18 +716,28 @@ fn execution_unit_sequence_and_text(kind: &NodeKind) -> Option<(CommandSequenceN
 
 fn request_endpoint_for_artifact(
     graph: &dyn GraphRead,
+    execution: &NodeId,
     node_id: &NodeId,
     declared_request_inputs: bool,
 ) -> Option<String> {
     let node = graph.get_node(node_id)?;
     let NodeKind::ProvenanceArtifact {
-        artifact: ProvenanceArtifact::NetworkEndpoint {
-            endpoint, usage, ..
-        },
+        artifact:
+            ProvenanceArtifact::NetworkEndpoint {
+                endpoint,
+                endpoint_kind,
+                usage,
+            },
     } = &node.kind
     else {
         return None;
     };
+
+    if caushell_query::endpoint_has_loopback_scope(endpoint, *endpoint_kind)
+        && !caushell_query::NetworkEndpointQuery::has_nonlocal_transport_target(graph, execution)
+    {
+        return None;
+    }
 
     // A fetch still sends request bytes. Only an explicit per-edge scope opts
     // it in; legacy unscoped downloads do not become unrestricted uploads.
@@ -789,42 +805,9 @@ fn backward_neighbors(
 
     match current {
         TraceNodeKey::ExecutionUnit(node_id) => {
-            for artifact in caushell_query::DataDependencyQuery::input_artifacts_matching(
-                graph,
-                node_id,
-                |edge| {
-                    let Some((slots, stdin)) = scope else {
-                        return true;
-                    };
-                    let Some(caushell_types::ProvenanceEdgeSemantics::Consume {
-                        slot_name,
-                        consume_kind,
-                        ..
-                    }) = &edge.semantics
-                    else {
-                        return true;
-                    };
-                    let stream_input = matches!(
-                        consume_kind,
-                        caushell_types::ProvenanceConsumeKind::StdinExplicit
-                            | caushell_types::ProvenanceConsumeKind::StdinImplicit
-                            | caushell_types::ProvenanceConsumeKind::PipelineInput
-                            | caushell_types::ProvenanceConsumeKind::TransformInput
-                    );
-                    // Legacy input without a slot must not be silently removed
-                    // by a typed sink contract. Only actual stdin has its gate.
-                    (slot_name.is_none() && !stream_input)
-                        || slot_name.as_ref().is_some_and(|slot| slots.contains(slot))
-                        || (*stdin
-                            && matches!(
-                                consume_kind,
-                                caushell_types::ProvenanceConsumeKind::StdinExplicit
-                                    | caushell_types::ProvenanceConsumeKind::StdinImplicit
-                                    | caushell_types::ProvenanceConsumeKind::PipelineInput
-                                    | caushell_types::ProvenanceConsumeKind::TransformInput
-                            ))
-                },
-            ) {
+            for artifact in
+                caushell_query::DataDependencyQuery::request_input_artifacts(graph, node_id, scope)
+            {
                 neighbors.insert(TraceNodeKey::Artifact(artifact));
             }
         }

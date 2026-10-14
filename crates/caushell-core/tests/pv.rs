@@ -45,8 +45,6 @@ fn ordinary_transfer_and_metadata_watch_are_allowed() {
         "pv input.bin -o out.bin",
         "pv -qL1M -o - input.bin",
         "pv -U stage.bin -o out.bin input.bin",
-        "pv -P run.pid input.bin",
-        "pv -P - input.bin",
         "pv -d 123:3",
         "pv -d 123:3 456:4",
         "pv -s @.env public.bin",
@@ -56,6 +54,9 @@ fn ordinary_transfer_and_metadata_watch_are_allowed() {
         "pv -o /etc/out --help",
     ] {
         check(c, Decision::Allow);
+    }
+    for c in ["pv -P run.pid input.bin", "pv -P - input.bin"] {
+        check(c, Decision::NeedApproval);
     }
 }
 #[test]
@@ -171,14 +172,11 @@ fn unknown_forms_do_not_erase_independent_known_mutations_or_stronger_denials() 
 }
 #[test]
 fn monitor_dispatches_child_mutations_using_real_child_argv_and_cwd() {
-    for c in [
-        "pv -M both -- rm -f example",
-        "pv --monitor=out -- mkdir -p subdir",
-        "pv -M in -- true",
-    ] {
+    for c in ["pv --monitor=out -- mkdir -p subdir", "pv -M in -- true"] {
         check(c, Decision::Allow);
     }
     for c in [
+        "pv -M both -- rm -f example",
         "pv -M both -- rm -f /etc/example",
         "pv --monitor=out -- mkdir -p /etc/subdir",
         "pv -M both -- bash -c 'rm -f /etc/example'",
@@ -191,7 +189,15 @@ fn monitor_dispatches_child_mutations_using_real_child_argv_and_cwd() {
 }
 #[test]
 fn monitor_graph_retains_child_semantics_and_does_not_label_argv_as_input_files() {
-    let (core, r) = check("pv -M out -- rm -f example", Decision::Allow);
+    // Isolate committed child argv/path facts from the independent deletion gate.
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::FileDeletion,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
+    let mut core = ShellQueryCore::with_policy(policy);
+    let r = core.check(request("pv -M out -- rm -f example"));
+    assert_eq!(r.decision, Decision::Allow);
     assert!(
         r.decision_trace
             .execution_semantics
@@ -303,13 +309,10 @@ fn child_stdout_origin_survives_parent_redirect_across_actions() {
 
 #[test]
 fn consumed_option_markers_are_not_terminators_or_help_switches() {
-    for c in [
-        "pv -o -- input.bin",
-        "pv -F -- -o out.bin input.bin",
-        "pv -P -- input.bin",
-    ] {
+    for c in ["pv -o -- input.bin", "pv -F -- -o out.bin input.bin"] {
         check(c, Decision::Allow);
     }
+    check("pv -P -- input.bin", Decision::NeedApproval);
     check("pv -F -- -o /etc/out input.bin", Decision::NeedApproval);
     check("pv input.bin -F --help -o /etc/out", Decision::NeedApproval);
 }

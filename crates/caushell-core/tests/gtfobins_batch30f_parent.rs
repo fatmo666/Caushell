@@ -391,7 +391,22 @@ fn csv_operations_consume_verbs_as_data_and_bind_only_real_file_operands() {
             .iter()
             .any(|d| d.command_name.as_deref() == Some("/bin/sh"))
     );
-    assert_eq!(check(callback).decision, Decision::Allow);
+    let response = check(callback);
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(
+        response
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::TaintedExecution)
+    );
+    assert!(
+        !response
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::FileDeletion)
+    );
     let unsafe_callback = "csvtool call 'rm /opt/shared/victim' ./input.csv";
     assert!(path(
         unsafe_callback,

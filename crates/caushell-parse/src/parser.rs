@@ -17,6 +17,9 @@ use caushell_types::ShellKind;
 /// intentionally not an evaluator: expansions and pathname generation remain
 /// unresolved, while backslash-quoted characters are decoded as shell data.
 pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -> Option<String> {
+    if node_kind == "concatenation" {
+        return with_single_argument(text, |node, source| decode_static_word_node(node, source));
+    }
     if matches!(node_kind, "raw_string" | "ansi_c_string") {
         return Some(text.to_string());
     }
@@ -50,6 +53,130 @@ pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -
         }
     }
     Some(decoded)
+}
+
+// Rare concatenated quote proofs use the existing Bash grammar, not a second
+// ad-hoc substitution parser. No commands or expansion values are evaluated.
+// Ordinary words and whole quoted scalars retain their allocation-free proof.
+fn with_single_argument<T>(
+    text: &str,
+    query: impl FnOnce(Node<'_>, &[u8]) -> Option<T>,
+) -> Option<T> {
+    if text.len() > 65536 {
+        return None;
+    }
+    let source = format!("__argument__ {text}");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return None;
+    }
+    let command = root.named_child(0)?;
+    if command.kind() != "command" || command.named_child_count() != 2 {
+        return None;
+    }
+    let word = command.named_child(1)?;
+    if word.end_byte() != source.len() {
+        return None;
+    }
+    query(word, source.as_bytes())
+}
+
+fn decode_static_word_node(node: Node<'_>, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "word" | "number" => {
+            let text = node.utf8_text(source).ok()?;
+            if text.contains(['~', '\'', '"'])
+                || text.contains(['{', '}']) && (text.contains(',') || text.contains(".."))
+            {
+                return None;
+            }
+            decode_static_shell_argument(text, false, node.kind())
+        }
+        "raw_string" => extract_token_text(node, source).map(|(text, _)| text),
+        "ansi_c_string" => {
+            // The existing standalone decoder supports a wider byte language.
+            // For a new exact concatenation proof, admit only complete ASCII
+            // escapes with unambiguous Rust-string/native-argv correspondence.
+            let text = node.utf8_text(source).ok()?;
+            let inner = text.strip_prefix("$'")?.strip_suffix('\'')?;
+            let mut chars = inner.chars();
+            while let Some(ch) = chars.next() {
+                if ch == '\\'
+                    && !matches!(
+                        chars.next()?,
+                        'a' | 'b'
+                            | 'e'
+                            | 'E'
+                            | 'f'
+                            | 'n'
+                            | 'r'
+                            | 't'
+                            | 'v'
+                            | '\\'
+                            | '\''
+                            | '"'
+                            | '?'
+                    )
+                {
+                    return None;
+                }
+            }
+            Some(decode_ansi_c_string(text.to_string()))
+        }
+        "string" => {
+            let text = extract_interpolated_string(node, source);
+            decode_static_shell_argument(&text, true, "string")
+        }
+        "concatenation" => {
+            let raw = node.utf8_text(source).ok()?;
+            if raw.contains(['{', '}']) && (raw.contains(',') || raw.contains("..")) {
+                return None;
+            }
+            let mut result = String::new();
+            for index in 0..node.named_child_count() {
+                result.push_str(&decode_static_word_node(
+                    node.named_child(index as u32)?,
+                    source,
+                )?);
+            }
+            Some(result)
+        }
+        _ => None,
+    }
+}
+
+pub fn concatenated_argument_is_scalar(text: &str) -> bool {
+    fn quoted_child(node: Node<'_>, source: &[u8]) -> bool {
+        match node.kind() {
+            // Inner shell words never become outer argv fields here.
+            "command_substitution"
+            | "arithmetic_expansion"
+            | "string_content"
+            | "escape_sequence" => true,
+            "simple_expansion" => node.utf8_text(source).is_ok_and(|s| s != "$@"),
+            "expansion" => node
+                .utf8_text(source)
+                .is_ok_and(|s| !s.contains(['@', '!', '['])),
+            _ => false,
+        }
+    }
+    fn scalar(node: Node<'_>, source: &[u8]) -> bool {
+        match node.kind() {
+            "raw_string" | "ansi_c_string" => true,
+            "word" | "number" => decode_static_word_node(node, source).is_some(),
+            "string" => (0..node.named_child_count())
+                .all(|i| quoted_child(node.named_child(i as u32).unwrap(), source)),
+            "concatenation" => (0..node.named_child_count())
+                .all(|i| scalar(node.named_child(i as u32).unwrap(), source)),
+            _ => false,
+        }
+    }
+    with_single_argument(text, |node, source| Some(scalar(node, source))).unwrap_or(false)
 }
 
 pub fn parse_command(

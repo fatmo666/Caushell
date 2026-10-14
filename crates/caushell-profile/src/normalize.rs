@@ -176,6 +176,35 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         ));
     }
     validate_option_scope(option_scope, option_matching, &modifiers, &forms)?;
+    if raw.read_only_control_surface {
+        let query_effect = |effect: &Effect| {
+            matches!(
+                effect.kind,
+                EffectKind::ReadPath
+                    | EffectKind::TargetPath
+                    | EffectKind::ConsumeStdin
+                    | EffectKind::TransformData
+            ) && effect.catastrophic.semantic_class.is_none()
+                && effect.host_risk.semantic_class.is_none()
+        };
+        if subcommands.is_some()
+            || !raw.argument_regions.is_empty()
+            || !argument_files.is_empty()
+            || !selection_failure_effects.is_empty()
+            || forms.iter().any(|form| {
+                form.operation_semantics_unresolved
+                    || !form.payload_projections.is_empty()
+                    || form.effects.iter().any(|effect| !query_effect(effect))
+            })
+            || modifiers
+                .iter()
+                .any(|modifier| modifier.effects.iter().any(|effect| !query_effect(effect)))
+        {
+            return Err(NormalizeError::InvalidOptionScope(
+                "read_only_control_surface requires a flat, fully read-only native grammar without opaque operations, argument files or payload execution".into(),
+            ));
+        }
+    }
     let argument_regions = raw
         .argument_regions
         .into_iter()
@@ -268,6 +297,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         argument_control_vocabulary,
         selection_failure_effects,
         opaque_on_unresolved: raw.opaque_on_unresolved,
+        read_only_control_surface: raw.read_only_control_surface,
         forms,
         modifiers,
         option_scope,
@@ -406,6 +436,12 @@ fn declared_parameter_names(
     for projection in forms.iter().flat_map(|form| &form.payload_projections) {
         names.extend(
             [&projection.reads, &projection.writes, &projection.deletes]
+                .map(|slot| slot.as_str().to_string()),
+        );
+        names.extend(
+            projection
+                .moves
+                .iter()
                 .map(|slot| slot.as_str().to_string()),
         );
     }
@@ -1608,6 +1644,14 @@ fn normalize_payload_projection(
             ));
         }
     }
+    if let Some(name) = &raw.moves {
+        ensure_non_empty(name, "payload_projections.moves")?;
+        if raw.format != crate::RawPayloadFormat::CodexApplyPatch {
+            return Err(NormalizeError::InvalidPayloadProjection(
+                "moves requires a format with native relocation semantics".into(),
+            ));
+        }
+    }
     Ok(crate::PayloadProjection {
         format: match raw.format {
             crate::RawPayloadFormat::CodexApplyPatch => crate::PayloadFormat::CodexApplyPatch,
@@ -1618,6 +1662,7 @@ fn normalize_payload_projection(
         reads: SlotName::new(raw.reads),
         writes: SlotName::new(raw.writes),
         deletes: SlotName::new(raw.deletes),
+        moves: raw.moves.map(SlotName::new),
         executions: raw.executions.map(SlotName::new),
         stdout_emissions: raw.stdout_emissions.map(SlotName::new),
         write_controls: raw.write_controls.into_iter().map(SlotName::new).collect(),
@@ -1697,7 +1742,14 @@ fn validate_payload_projection_references(
                 (&projection.reads, EffectKind::ReadPath),
                 (&projection.writes, EffectKind::WritePath),
                 (&projection.deletes, EffectKind::DeletePath),
-            ] {
+            ]
+            .into_iter()
+            .chain(
+                projection
+                    .moves
+                    .iter()
+                    .map(|slot| (slot, EffectKind::MovePath)),
+            ) {
                 if !names.insert(slot.as_str().to_string()) {
                     return Err(NormalizeError::InvalidPayloadProjection(format!(
                         "projected slot collision: {}",
@@ -2094,6 +2146,7 @@ fn normalize_endpoint_kind(raw: RawEndpointKind) -> EndpointKind {
 fn normalize_endpoint_usage(raw: RawEndpointUsage) -> EndpointUsage {
     match raw {
         RawEndpointUsage::FetchSource => EndpointUsage::FetchSource,
+        RawEndpointUsage::TransportTarget => EndpointUsage::TransportTarget,
         RawEndpointUsage::UploadTarget => EndpointUsage::UploadTarget,
         RawEndpointUsage::ControlPlane => EndpointUsage::ControlPlane,
         RawEndpointUsage::GenericEndpoint => EndpointUsage::GenericEndpoint,
@@ -3270,6 +3323,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
@@ -3455,6 +3509,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
@@ -3560,6 +3615,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
@@ -3665,6 +3721,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),
@@ -3730,6 +3787,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3815,6 +3873,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3840,6 +3899,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -3875,6 +3935,7 @@ mod tests {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             option_prefixes: Default::default(),

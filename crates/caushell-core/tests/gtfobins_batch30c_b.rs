@@ -162,10 +162,10 @@ fn gcc_alias_calls_use_the_real_wrapper_and_preprocessor_forms() {
 }
 
 #[test]
-fn mawk_runs_opaque_awk_input_while_preserving_file_read_provenance() {
+fn mawk_known_print_program_preserves_file_reads_without_opaque_execution() {
     let command = "mawk '//' /opt/shared/.env";
     let semantics = semantic(command, "mawk", "execute_inline_program");
-    assert!(semantics.executes_payload);
+    assert!(!semantics.executes_payload);
     assert!(has_path(
         command,
         "/opt/shared/.env",

@@ -455,21 +455,89 @@ fn arithmetic_field_bounds(arg: &ProjectedArg) -> Option<ArgumentStructure> {
     })
 }
 
+fn native_path_common_prefix(roots: &[String]) -> Option<String> {
+    if roots.is_empty()
+        || roots
+            .iter()
+            .any(|root| root.is_empty() || root.contains('\0'))
+    {
+        return None;
+    }
+    let mut prefix = roots[0].trim_end_matches('/').to_string();
+    if prefix.is_empty() {
+        prefix.push('/');
+    }
+    for root in &roots[1..] {
+        let length = prefix
+            .chars()
+            .zip(root.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum();
+        prefix.truncate(length);
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    Some(prefix)
+}
+
 /// Query existing lexical metadata without parsing another AST, running a
 /// command, or looking up files. Unsupported constructs return Unknown.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
-    if arg.implicit_input_source.is_some() && arg.node_kind == "runtime_scalar" {
+    if let Some(prefix) = &arg.lexical_field_prefix
+        && !arg.runtime_data
+        && arg.implicit_input_source.is_none()
+    {
+        return ArgumentStructure {
+            fields: if arg.text.contains(['*', '?', '[', '{']) {
+                ArgumentFieldCount::ZeroOrMore
+            } else {
+                ArgumentFieldCount::ExactlyOne
+            },
+            static_prefix: prefix.clone(),
+            static_suffix: String::new(),
+            exact: false,
+            spelling: None,
+            pathname_generation: false,
+        };
+    }
+    if arg.implicit_input_source.is_some()
+        && matches!(
+            arg.node_kind.as_str(),
+            "runtime_scalar" | "runtime_argument_list"
+        )
+    {
         // A tool-substituted single argv item is not re-split by a shell.
         // Its bytes may still be ANY control word or an unknown path.
         let mut structure = incomplete_word(String::new(), true);
+        if arg.node_kind == "runtime_argument_list" {
+            // Native batches retain per-item spelling bounds, never scalar
+            // arity. An unbounded list has no usable field/control proof.
+            structure.fields = ArgumentFieldCount::ZeroOrMore;
+            if matches!(
+                arg.runtime_argument_domain,
+                None | Some(caushell_types::RuntimeArgumentDomain::Unbounded)
+            ) {
+                return ArgumentStructure::unknown();
+            }
+        }
         match &arg.runtime_argument_domain {
             Some(caushell_types::RuntimeArgumentDomain::PathTemplate {
-                prefix, suffix, ..
+                roots,
+                may_escape,
+                prefix,
+                suffix,
             }) => {
                 // Decoded tool-argv affixes, not shell source. The tool substitutes
                 // one data field without removing/expanding these bytes again.
                 structure.static_prefix = prefix.clone();
                 structure.static_suffix = suffix.clone();
+                if !may_escape && let Some(root_prefix) = native_path_common_prefix(roots) {
+                    // The affix surrounds a producer path, not an arbitrary
+                    // string. Preserve its common native spelling too.
+                    structure.static_prefix.push_str(&root_prefix);
+                }
             }
             Some(caushell_types::RuntimeArgumentDomain::PathSet {
                 roots,
@@ -482,25 +550,40 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                 // The domain carries producer argv-spelling anchors, not just
                 // normalized containment. Use only a prefix shared by EVERY
                 // root and descendant; no representative path or filename.
-                let mut prefix = roots[0].trim_end_matches('/').to_string();
-                if prefix.is_empty() {
-                    prefix.push('/');
-                }
-                for root in &roots[1..] {
-                    let length = prefix
-                        .chars()
-                        .zip(root.chars())
-                        .take_while(|(a, b)| a == b)
-                        .map(|(a, _)| a.len_utf8())
-                        .sum();
-                    prefix.truncate(length);
-                    if prefix.is_empty() {
-                        break;
-                    }
-                }
-                structure.static_prefix = prefix;
+                structure.static_prefix = native_path_common_prefix(roots).unwrap_or_default();
             }
             _ => {}
+        }
+        if structure.static_prefix.is_empty() {
+            let roots = match &arg.runtime_argument_domain {
+                Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                    roots,
+                    may_escape: false,
+                })
+                | Some(caushell_types::RuntimeArgumentDomain::PathTemplate {
+                    roots,
+                    may_escape: false,
+                    ..
+                }) => Some(roots),
+                _ => None,
+            };
+            if let Some(roots) = roots.filter(|roots| !roots.is_empty()) {
+                // Disjoint native roots need not share a string prefix. Keep
+                // an overapproximation of their FIRST characters instead of
+                // discarding the fact that every item is non-option data.
+                let initial: Option<String> = roots
+                    .iter()
+                    .map(|root| {
+                        root.chars().next().filter(|c| {
+                            c.is_ascii() && !matches!(c, '!' | '^' | '[' | ']' | '-' | '\\')
+                        })
+                    })
+                    .collect();
+                if let Some(initial) = initial {
+                    structure.spelling =
+                        Some(vec![SpellingPart::Class(initial), SpellingPart::Any]);
+                }
+            }
         }
         return structure;
     }
@@ -562,8 +645,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
     let whole_quoted_scalar = initial == Quote::Double && !may_expand_quoted_vector(&arg.text);
     // Keep the legacy literal fast path, except concatenation needs its actual
     // quote transitions and unquoted braces may generate multiple fields.
-    if arg.node_kind != "concatenation"
-        && (initial != Quote::None || !arg.text.contains('{'))
+    if (initial != Quote::None || !arg.text.contains('{'))
         && let Some(value) =
             caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
     {
@@ -629,14 +711,30 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                             ) => {}
                             // Fall back to the whole-quoted scalar proof for
                             // opaque syntax; vectors/indirection stay Unknown.
-                            _ => return incomplete_word(prefix, whole_quoted_scalar),
+                            _ => {
+                                return incomplete_word(
+                                    prefix,
+                                    whole_quoted_scalar
+                                        || arg.node_kind == "concatenation"
+                                            && caushell_parse::concatenated_argument_is_scalar(
+                                                &arg.text,
+                                            ),
+                                );
+                            }
                         }
                     }
                     exact = false;
                     suffix.clear();
                     spelling.push(SpellingPart::Any);
                 }
-                '`' => return incomplete_word(prefix, whole_quoted_scalar),
+                '`' => {
+                    return incomplete_word(
+                        prefix,
+                        whole_quoted_scalar
+                            || arg.node_kind == "concatenation"
+                                && caushell_parse::concatenated_argument_is_scalar(&arg.text),
+                    );
+                }
                 other => literal(other, exact, &mut prefix, &mut suffix, &mut spelling),
             },
             Quote::None => match ch {
@@ -773,6 +871,7 @@ pub fn shell_word_structure(text: &str, quoted: bool, node_kind: &str) -> Argume
         runtime_argument_domain: None,
         runtime_data: false,
         substitution_shape: None,
+        lexical_field_prefix: None,
         kind: crate::ProjectedArgKind::Positional,
         quoted,
         node_kind: node_kind.into(),

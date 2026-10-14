@@ -14,11 +14,11 @@ use caushell_passes::{
     ExtractImportedPackageProvenancePass, ExtractPathFactsPass, ExtractPipelineFlowPass,
     ExtractPipelineStreamProvenancePass, ExtractProcessSubstitutionProvenancePass,
     ExtractRedirectProvenancePass, ExtractValueProvenancePass, ExtractVariableBindingIntentPass,
-    ExtractVariableBindingsPass, GitDestructiveOperationGuardPass,
+    ExtractVariableBindingsPass, FileDeletionGuardPass, GitDestructiveOperationGuardPass,
     ImportedPackageExecutionGuardPass, InteractiveEscapeGuardPass,
     OutsideWorkspaceMutationGuardPass, OutsideWorkspaceScriptSourcePass,
-    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProcessControlGuardPass,
-    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
+    OutsideWorkspaceStartupConfigPass, ParseCommandPass, PrivilegeBoundaryGuardPass,
+    ProcessControlGuardPass, ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
     SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
 use caushell_profile::{BuiltInRegistryError, ProfileRegistry};
@@ -476,14 +476,17 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_request_analysis_pass(ResolvePolicyPass);
     runner.register_request_analysis_pass(CwdWorkspaceBoundaryPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
+    runner.register_session_analysis_pass(FileDeletionGuardPass);
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(DatabaseOperationGuardPass);
     runner.register_session_analysis_pass(StateOperationGuardPass);
     runner.register_session_analysis_pass(ProcessControlGuardPass);
+    runner.register_session_analysis_pass(PrivilegeBoundaryGuardPass);
     runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
     runner.register_session_analysis_pass(caushell_passes::NetworkListenerGuardPass);
+    runner.register_session_analysis_pass(caushell_passes::NetworkUploadGuardPass);
     runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);
     runner.register_session_analysis_pass(TaintedExecutionGuardPass);
     runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -1275,7 +1278,13 @@ mod tests {
 
     #[test]
     fn core_keeps_xargs_wrapper_arguments_as_literal_data() {
-        let mut core = ShellQueryCore::new();
+        // This test checks committed argument provenance, not the deletion gate.
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            caushell_types::RuleId::FileDeletion,
+            caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+        );
+        let mut core = ShellQueryCore::with_policy(policy);
         let request = sample_request(
             "sess-xargs-wrapper-literal",
             1,
@@ -5088,7 +5097,13 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
     #[test]
     fn core_default_runner_does_not_project_pipeline_segments_for_heredoc_and_and_chain() {
-        let mut core = ShellQueryCore::new();
+        // Observe deletion here to commit the Graph whose AST shape is tested.
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            caushell_types::RuleId::FileDeletion,
+            caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+        );
+        let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-heredoc-no-pipeline");
 
         let response = core.check(sample_request(

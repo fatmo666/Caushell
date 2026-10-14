@@ -43,7 +43,7 @@ forms:
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
 
   - id: upload_explicit_url
-    selector: {kind: all, items: [*unconfigured, {kind: has_modifier, modifier: explicit_url}, {kind: any, items: [{kind: has_modifier, modifier: upload_data}, {kind: has_modifier, modifier: upload_binary}, {kind: has_modifier, modifier: upload_file}, {kind: has_modifier, modifier: upload_literal}, {kind: has_modifier, modifier: upload_form}, {kind: has_modifier, modifier: upload_urlencode}]}]}
+    selector: {kind: all, items: [*unconfigured, {kind: not, item: &data_query {kind: all, items: [{kind: has_modifier, modifier: get_query}, {kind: not, item: {kind: has_modifier, modifier: upload_file}}, {kind: not, item: {kind: has_modifier, modifier: upload_form}}]}}, {kind: has_modifier, modifier: explicit_url}, {kind: any, items: [{kind: has_modifier, modifier: upload_data}, {kind: has_modifier, modifier: upload_binary}, {kind: has_modifier, modifier: upload_file}, {kind: has_modifier, modifier: upload_literal}, {kind: has_modifier, modifier: upload_form}, {kind: has_modifier, modifier: upload_urlencode}]}]}
     remaining_selector: {kind: no_positional_args}
     parameters:
       - {name: upload_endpoints, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}, binding: {kind: following_flag, flag: '--url', operand_mode: next_arg}, cardinality: required_many}
@@ -58,6 +58,7 @@ forms:
       kind: all
       items:
         - *unconfigured
+        - {kind: not, item: *data_query}
         - &uploading
           kind: any
           items:
@@ -95,6 +96,22 @@ forms:
 
         input_scope: *request_inputs
       - {kind: network_endpoint, target: {kind: slot, name: response_endpoint}, input_scope: *request_inputs}
+
+  - id: query_data_explicit_url
+    # -G relocates data to the query. Request file/stdin provenance remains
+    # scoped below; it is not a generic POST/upload operation declaration.
+    selector: {kind: all, items: [*unconfigured, *data_query, {kind: has_modifier, modifier: explicit_url}]}
+    remaining_selector: {kind: no_positional_args}
+    # The explicit_url modifier owns and declares its endpoint operands.
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: data}
+
+  - id: query_from_data
+    selector: {kind: all, items: [*unconfigured, *data_query, {kind: has_positional_at, index: 0}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}, input_scope: *request_inputs}]
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: data}
 
   - id: fetch_explicit_url_to_file
     selector:
@@ -593,6 +610,40 @@ modifiers:
       - {kind: write_path, path_access: content_open, target: {kind: slot, name: write_out_paths}}
       - {kind: write_path, target: {kind: slot, name: write_out_unknown_paths}}
 
+  - id: explicit_transport
+    matcher: {kind: any_flag, flags: [-x, --proxy, --proxy1.0, --preproxy, --socks4, --socks4a, --socks5, --socks5-hostname]}
+    parameters:
+      - name: transport_spec
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^$', group: 0}, target: null}
+            - {matcher: {kind: regex_capture, pattern: '^[a-zA-Z][a-zA-Z0-9+.-]*://.+$', group: 0}, target: {name: transport_url, semantic: {kind: endpoint, endpoint_kind: url, usage: transport_target}}}
+            - {matcher: {kind: regex_capture, pattern: '^[^/]+$', group: 0}, target: {name: transport_peer, semantic: {kind: endpoint, endpoint_kind: host_port, usage: transport_target}}}
+          fallback: {name: transport_unknown, unresolved: true, semantic: {kind: endpoint, endpoint_kind: url, usage: transport_target}}
+    effects:
+      # Scope the address/authentication spelling itself, not every request
+      # body. Logical upload/query endpoints retain their own request scope.
+      - {kind: network_endpoint, target: {kind: slot, name: transport_url}, input_scope: &transport_inputs {slots: [transport_spec, transport_url, transport_peer, transport_unknown], stdin: false}}
+      - {kind: network_endpoint, target: {kind: slot, name: transport_peer}, input_scope: *transport_inputs}
+      - {kind: network_endpoint, target: {kind: slot, name: transport_unknown}, input_scope: *transport_inputs}
+
+  - id: explicit_route_override
+    matcher: {kind: any_flag, flags: [--connect-to, --resolve]}
+    parameters:
+      - name: route_spec
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          # These native routing grammars retain a possible, unresolved
+          # connection target. They never certify a local URL's route.
+          branches: []
+          fallback: {name: route_unknown, unresolved: true, semantic: {kind: endpoint, endpoint_kind: url, usage: transport_target}}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: route_unknown}, input_scope: {slots: [route_spec, route_unknown], stdin: false}}]
+
   - id: common_value_option
     matcher:
       kind: any_flag
@@ -602,7 +653,6 @@ modifiers:
         - "--cert-type"
         - "--ciphers"
         - "--connect-timeout"
-        - "--connect-to"
         - "-C"
         - "--continue-at"
         - "--create-file-mode"
@@ -636,12 +686,9 @@ modifiers:
         - "--parallel-max"
         - "--pass"
         - "--pinnedpubkey"
-        - "--preproxy"
         - "--proto"
         - "--proto-default"
         - "--proto-redir"
-        - "-x"
-        - "--proxy"
         - "--proxy-cert-type"
         - "--proxy-ciphers"
         - "--proxy-key-type"
@@ -652,19 +699,13 @@ modifiers:
         - "--proxy-tlsauthtype"
         - "--proxy-tlspassword"
         - "--proxy-tlsuser"
-        - "--proxy1.0"
         - "--rate"
-        - "--resolve"
         - "--retry"
         - "--retry-delay"
         - "--retry-max-time"
         - "--sasl-authzid"
         - "--service-name"
-        - "--socks4"
-        - "--socks4a"
-        - "--socks5"
         - "--socks5-gssapi-service"
-        - "--socks5-hostname"
         - "-Y"
         - "--speed-limit"
         - "-y"

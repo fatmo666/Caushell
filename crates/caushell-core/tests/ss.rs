@@ -12,7 +12,7 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("ss-profile"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "test".into(),
@@ -20,7 +20,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 
@@ -114,7 +114,7 @@ fn workspace_diagnostic_output_is_written_and_external_filter_is_only_read() {
             })
             .collect();
         assert!(
-            paths.contains(&(ResolvedPathRole::Write, "/tmp/project/dump.bin")),
+            paths.contains(&(ResolvedPathRole::Write, "/workspace/project/dump.bin")),
             "{c}: {paths:?}"
         );
         assert!(
@@ -263,11 +263,11 @@ fn compact_operands_remain_file_targets_and_terminated_operands_remain_data() {
         })
         .collect();
     assert!(
-        paths.contains(&(ResolvedPathRole::Write, "/tmp/project/dump")),
+        paths.contains(&(ResolvedPathRole::Write, "/workspace/project/dump")),
         "{paths:?}"
     );
     assert!(
-        paths.contains(&(ResolvedPathRole::Read, "/tmp/project/filter")),
+        paths.contains(&(ResolvedPathRole::Read, "/workspace/project/filter")),
         "{paths:?}"
     );
     for c in [
@@ -307,7 +307,7 @@ fn compact_operands_remain_file_targets_and_terminated_operands_remain_data() {
             _ => None,
         })
         .collect();
-    assert_eq!(writes, ["/tmp/project/dump"]);
+    assert_eq!(writes, ["/workspace/project/dump"]);
     assert_decision(
         "ss -K -D /etc/real-output -- -Ddump",
         Decision::NeedApproval,

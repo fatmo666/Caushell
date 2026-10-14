@@ -4112,6 +4112,7 @@ fn dispatch_argument_scalar(argument: &caushell_profile::DispatchArgument) -> Op
         runtime_argument_domain: None,
         runtime_data: argument.runtime_data,
         substitution_shape: None,
+        lexical_field_prefix: None,
         kind: caushell_profile::ProjectedArgKind::Positional,
     };
     caushell_profile::argument_structure(&projected)
@@ -4443,9 +4444,6 @@ fn expanded_static_xargs_children(
         return Vec::new();
     };
     let config = xargs_static_expansion_config(resolved);
-    if config.requires_confirmation {
-        return Vec::new();
-    }
     let insertion_index = if has_applied_modifier(&resolved.bound, "insert_batch") {
         let Some(token) = config.insert_batch_token.as_deref() else {
             return native_shell_job_children(
@@ -4515,13 +4513,16 @@ fn expanded_static_xargs_children(
     } else {
         &[]
     };
-    let items =
-        xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref())
-            .unwrap_or_default()
-            .into_iter()
-            .map(XargsItem::Known)
-            .collect::<Vec<_>>();
-    if evidence.complete && items.is_empty() && !config.run_if_empty {
+    let decoded_items =
+        xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref());
+    // A failed native input decoder is not proof of an empty argv batch.
+    let input_complete = evidence.complete && decoded_items.is_some();
+    let items = decoded_items
+        .unwrap_or_default()
+        .into_iter()
+        .map(XargsItem::Known)
+        .collect::<Vec<_>>();
+    if input_complete && items.is_empty() && !config.run_if_empty {
         return Vec::new();
     }
 
@@ -4541,16 +4542,19 @@ fn expanded_static_xargs_children(
             *max_lines,
             config.eof_marker.as_deref(),
         )
-        .unwrap_or_default()
-        .into_iter()
-        .map(|group| group.into_iter().map(XargsItem::Known).collect())
-        .collect(),
+        .map(|groups| {
+            groups
+                .into_iter()
+                .map(|group| group.into_iter().map(XargsItem::Known).collect())
+                .collect()
+        })
+        .unwrap_or_else(|| vec![vec![XargsItem::UnknownTail]]),
         _ => return Vec::new(),
     };
-    if groups.is_empty() && evidence.complete && config.run_if_empty {
+    if groups.is_empty() && input_complete && config.run_if_empty {
         groups.push(Vec::new());
     }
-    if !evidence.complete {
+    if !input_complete {
         // The unresolved portion may contain any number of argv items.
         // One typed tail marker keeps the child incomplete without claiming a
         // precise arity or turning input bytes into shell source.
@@ -4620,6 +4624,7 @@ fn expanded_static_xargs_children(
                         runtime_argument_domain: None,
                         runtime_data: false,
                         substitution_shape: None,
+                        lexical_field_prefix: None,
                         kind: caushell_profile::ProjectedArgKind::Positional,
                     };
                     if let Some(value) =
@@ -4699,7 +4704,10 @@ fn expanded_static_xargs_children(
             }
         }
 
-        let command = child_candidate.to_command_fact();
+        let mut command = child_candidate.to_command_fact();
+        // A tool-level confirmation is a possible execution branch, not proof
+        // that the child has no effects. Preserve its conditional status.
+        command.conditional_execution |= config.requires_confirmation;
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
@@ -4812,6 +4820,15 @@ fn static_arg_file_evidence_for_xargs_scope(
     entry: &ExpandedFrontierEntry,
     bound: &caushell_profile::BoundInvocation,
 ) -> StaticInputEvidence {
+    // Historical bytes alone cannot certify an argument file after a current
+    // action prelude. The existing history query does not prove that intervening
+    // writes left those bytes unchanged; retain unknown input, not stale argv.
+    if entry.static_payload_scope.command_index != 0 {
+        return StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: false,
+        };
+    }
     let paths = bound_argument_texts_for_slot(bound, "arg_file");
     if paths.len() != 1 {
         return StaticInputEvidence {
@@ -4909,7 +4926,12 @@ fn append_xargs_data_argument(
         }),
         runtime_data: source.is_none(),
         quoted: true,
-        node_kind: "xargs_input_item".to_string(),
+        node_kind: if source.is_some() {
+            "runtime_argument_list"
+        } else {
+            "xargs_input_item"
+        }
+        .to_string(),
         span: caushell_parse::SourceSpan {
             start_byte: byte,
             end_byte: byte.saturating_add(1),
@@ -5215,10 +5237,40 @@ fn bind_shell_positional_arguments(
                 continue;
             };
 
+            if !token.quoted
+                && argument.implicit_input_source.is_none()
+                && caushell_profile::materialize_exact_shell_parameter_reference_fields(
+                    &token.text,
+                    false,
+                    &initial_frame,
+                )
+                .is_none()
+            {
+                // Literal native argv can contain spaces/globs too. Expanding
+                // it unquoted in a child shell does not preserve one field.
+                // Let ordered materialization retain the original reference.
+                continue;
+            }
             token.text = argument.text.clone();
             token.implicit_input_source = argument.implicit_input_source;
             token.runtime_argument_domain = argument.runtime_argument_domain.clone();
             token.runtime_data = argument.runtime_data || argument.implicit_input_source.is_some();
+            if argument.implicit_input_source.is_some() {
+                // The caller's native scalar is still one field only through
+                // a quoted shell reference. Unquoted splitting can detach a
+                // filename fragment from its producer's path prefix.
+                token.runtime_data = false;
+                token.node_kind = if token.quoted {
+                    "runtime_scalar"
+                } else {
+                    "runtime_argument_list"
+                }
+                .into();
+                if !token.quoted {
+                    token.runtime_argument_domain =
+                        Some(caushell_types::RuntimeArgumentDomain::Unbounded);
+                }
+            }
         }
     }
 }
@@ -5468,26 +5520,16 @@ fn xargs_items_from_payloads(
         XargsItemMode::WhitespaceSeparated => parse_xargs_default_items(payloads),
         XargsItemMode::NullSeparated => Some(
             payloads
-                .iter()
-                .flat_map(|payload| payload.split('\0'))
-                .filter(|item| !item.is_empty())
+                .concat()
+                .split_terminator('\0')
                 .map(str::to_string)
                 .collect(),
         ),
-        XargsItemMode::NewlineSeparated => Some(
-            payloads
-                .iter()
-                .flat_map(|payload| payload.lines())
-                .map(str::trim_end)
-                .filter(|item| !item.is_empty())
-                .map(str::to_string)
-                .collect(),
-        ),
+        XargsItemMode::NewlineSeparated => parse_xargs_items(payloads, true),
         XargsItemMode::Delimited { delimiter } => Some(
             payloads
-                .iter()
-                .flat_map(|payload| payload.split(delimiter.as_str()))
-                .filter(|item| !item.is_empty())
+                .concat()
+                .split_terminator(delimiter.as_str())
                 .map(str::to_string)
                 .collect(),
         ),
@@ -5519,10 +5561,17 @@ fn xargs_grouped_lines(
         );
     }
 
-    let lines: Vec<String> = payloads
-        .iter()
-        .flat_map(|payload| payload.lines())
-        .map(str::trim_end)
+    let payload = payloads.concat();
+    // -L has logical-line continuation rules for trailing blanks. Do not
+    // certify physical-line batches when that grammar is not decoded.
+    if payload
+        .split_terminator('\n')
+        .any(|line| !line.trim().is_empty() && line.ends_with([' ', '\t']))
+    {
+        return None;
+    }
+    let lines: Vec<String> = payload
+        .split_terminator('\n')
         .filter(|line| !line.trim().is_empty())
         .map(str::to_string)
         .collect();
@@ -5532,7 +5581,7 @@ fn xargs_grouped_lines(
         let chunk_payload = vec![chunk.join("\n")];
         let items = match item_mode {
             XargsItemMode::WhitespaceSeparated => parse_xargs_default_items(&chunk_payload)?,
-            XargsItemMode::NewlineSeparated => chunk.to_vec(),
+            XargsItemMode::NewlineSeparated => parse_xargs_items(&chunk_payload, true)?,
             _ => unreachable!("non-line item modes returned above"),
         };
         let saw_eof_marker =
@@ -5566,24 +5615,30 @@ enum XargsDefaultParseState {
     SingleQuoted,
     DoubleQuoted,
     NormalEscape,
-    DoubleQuoteEscape,
 }
 
 fn parse_xargs_default_items(payloads: &[String]) -> Option<Vec<String>> {
+    parse_xargs_items(payloads, false)
+}
+
+fn parse_xargs_items(payloads: &[String], line_separated: bool) -> Option<Vec<String>> {
     let mut items = Vec::new();
     let mut current = String::new();
     let mut in_item = false;
     let mut state = XargsDefaultParseState::Normal;
 
-    let payload = payloads.join("\n");
+    let payload = payloads.concat();
     for ch in payload.chars() {
         match state {
             XargsDefaultParseState::Normal => {
-                if ch.is_whitespace() {
+                if ch == '\n' || !line_separated && matches!(ch, ' ' | '\t') {
                     if in_item {
                         items.push(std::mem::take(&mut current));
                         in_item = false;
                     }
+                    continue;
+                }
+                if line_separated && !in_item && matches!(ch, ' ' | '\t') {
                     continue;
                 }
 
@@ -5607,6 +5662,9 @@ fn parse_xargs_default_items(payloads: &[String]) -> Option<Vec<String>> {
                 }
             }
             XargsDefaultParseState::SingleQuoted => {
+                if ch == '\n' {
+                    return None;
+                }
                 if ch == '\'' {
                     state = XargsDefaultParseState::Normal;
                 } else {
@@ -5615,16 +5673,12 @@ fn parse_xargs_default_items(payloads: &[String]) -> Option<Vec<String>> {
             }
             XargsDefaultParseState::DoubleQuoted => match ch {
                 '"' => state = XargsDefaultParseState::Normal,
-                '\\' => state = XargsDefaultParseState::DoubleQuoteEscape,
+                '\n' => return None,
                 _ => current.push(ch),
             },
             XargsDefaultParseState::NormalEscape => {
                 current.push(ch);
                 state = XargsDefaultParseState::Normal;
-            }
-            XargsDefaultParseState::DoubleQuoteEscape => {
-                current.push(ch);
-                state = XargsDefaultParseState::DoubleQuoted;
             }
         }
     }
@@ -9634,6 +9688,124 @@ modifiers:
     }
 
     #[test]
+    fn native_input_fragments_join_without_invented_separators_and_keep_empty_fields() {
+        use super::{XargsItemMode, parse_xargs_default_items, xargs_items_from_payloads};
+        let parts = vec!["--check".into(), "point=1\0\0input\0".into()];
+        assert_eq!(
+            xargs_items_from_payloads(&parts, &XargsItemMode::NullSeparated, None),
+            Some(vec!["--checkpoint=1".into(), "".into(), "input".into()])
+        );
+        let parts = vec!["--check".into(), "point=1||input|".into()];
+        assert_eq!(
+            xargs_items_from_payloads(
+                &parts,
+                &XargsItemMode::Delimited {
+                    delimiter: "|".into()
+                },
+                None
+            ),
+            Some(vec!["--checkpoint=1".into(), "".into(), "input".into()])
+        );
+        let parts = vec!["--check".into(), "point=1 input".into()];
+        assert_eq!(
+            parse_xargs_default_items(&parts),
+            Some(vec!["--checkpoint=1".into(), "input".into()])
+        );
+        assert_eq!(
+            xargs_items_from_payloads(&["".into()], &XargsItemMode::NullSeparated, None),
+            Some(vec![])
+        );
+        assert_eq!(
+            xargs_items_from_payloads(&["\0".into()], &XargsItemMode::NullSeparated, None),
+            Some(vec!["".into()])
+        );
+    }
+
+    #[test]
+    fn native_replacement_quotes_and_backslashes_match_print_only_oracle() {
+        use super::{XargsItemMode, parse_xargs_default_items, xargs_items_from_payloads};
+        for (payload, expected) in [
+            ("'--flag=one two'\n", vec!["--flag=one two"]),
+            ("  one two  \nnext\n", vec!["one two  ", "next"]),
+            ("\"one\\two\"\n", vec!["one\\two"]),
+            ("one\\\ntwo\n", vec!["one\ntwo"]),
+            ("\n \n\t\n", vec![]),
+        ] {
+            let expected = Some(expected.into_iter().map(str::to_owned).collect::<Vec<_>>());
+            assert_eq!(
+                xargs_items_from_payloads(
+                    &[payload.into()],
+                    &XargsItemMode::NewlineSeparated,
+                    None
+                ),
+                expected,
+                "{payload:?}"
+            );
+        }
+        assert_eq!(
+            parse_xargs_default_items(&["\"one\\two\"\n".into()]),
+            Some(vec!["one\\two".into()])
+        );
+        assert!(
+            xargs_items_from_payloads(
+                &["'unterminated\n".into()],
+                &XargsItemMode::NewlineSeparated,
+                None
+            )
+            .is_none()
+        );
+        assert!(
+            super::xargs_grouped_lines(
+                &["one \nnext\n".into()],
+                &XargsItemMode::WhitespaceSeparated,
+                1,
+                None
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn native_scalar_numeric_forwarding_preserves_only_quoted_path_spelling_bounds() {
+        let argv = caushell_parse::parse_command("worker placeholder", ShellKind::Bash).unwrap();
+        let mut argument = caushell_profile::project_invocation(
+            &argv.commands[0],
+            caushell_profile::InvocationRuntimeContext::new(),
+        )
+        .args
+        .remove(0);
+        argument.text.clear();
+        argument.implicit_input_source = Some(caushell_types::ImplicitInputSource::DispatchOutput);
+        argument.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: vec!["./input".into()],
+            may_escape: false,
+        });
+        argument.node_kind = "runtime_scalar".into();
+        for (body, expected_fields, may_control) in [
+            (
+                "worker \"$0\"",
+                caushell_profile::ArgumentFieldCount::ExactlyOne,
+                false,
+            ),
+            (
+                "worker $0",
+                caushell_profile::ArgumentFieldCount::Unknown,
+                true,
+            ),
+        ] {
+            let mut parsed = caushell_parse::parse_command(body, ShellKind::Bash).unwrap();
+            super::bind_shell_positional_arguments(&mut parsed, &[argument.clone()]);
+            let projection = caushell_profile::project_invocation(
+                &parsed.commands[0],
+                caushell_profile::InvocationRuntimeContext::new(),
+            );
+            let shape = caushell_profile::argument_structure(&projection.args[0]);
+            assert_eq!(shape.fields, expected_fields, "{body}");
+            assert_eq!(shape.may_start_with("-"), may_control, "{body}");
+        }
+    }
+
+    #[test]
     fn resolve_invocation_pass_records_static_xargs_default_quoted_child() {
         let summary = SessionSummary::new();
         let ctx = run_pass(
@@ -9933,7 +10105,7 @@ modifiers:
     }
 
     #[test]
-    fn resolve_invocation_pass_skips_static_xargs_child_with_interactive_prompt() {
+    fn resolve_invocation_pass_models_possible_xargs_child_with_interactive_prompt() {
         let summary = SessionSummary::new();
         for command in [
             "printf '/\\n' | xargs -p rm -rf",
@@ -9941,7 +10113,7 @@ modifiers:
         ] {
             let ctx = run_pass(&summary, ShellKind::Bash, command);
 
-            assert!(!ctx.execution_unit_resolve_records().iter().any(|record| {
+            assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
                 record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
             }));
         }

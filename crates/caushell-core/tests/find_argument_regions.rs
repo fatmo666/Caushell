@@ -108,7 +108,19 @@ fn child_symlink_and_type_flags_cannot_widen_other_child_domains() {
         r"find . -type f -exec printf %s -name /etc {} \; -exec rm {} \;",
     ] {
         let result = ShellQueryCore::new().check(request(command));
-        assert_eq!(result.decision, Decision::Allow, "{command}: {result:?}");
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        assert!(
+            !result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::OutsideWorkspaceMutation),
+            "{command}: {result:?}"
+        );
         assert_eq!(result.decision_trace.derived_invocations.len(), 2);
     }
     let result = ShellQueryCore::new().check(request(r"find -L . -exec rm {} \;"));

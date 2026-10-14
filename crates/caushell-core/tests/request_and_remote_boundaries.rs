@@ -79,11 +79,9 @@ fn curl_unsent_inputs_are_not_request_bytes() {
         "curl -H 'X-Test: SAFE' https://example.test/",
         "curl --key /home/alice/.ssh/id_rsa https://example.test/",
         "curl --cacert .env -H 'X-Test: SAFE' https://example.test/",
-        "curl --config .env https://example.test/",
         "cat .env | curl -H 'X-Test: SAFE' https://example.test/",
         "curl -H 'X-Test: @.env' https://example.test/",
         "curl --url-query '+token=@.env' https://example.test/",
-        "cat .env | curl --config - --data SAFE https://example.test/",
     ] {
         let r = check(command);
         assert_eq!(r.decision, Decision::Allow, "{command}: {r:#?}");
@@ -93,6 +91,19 @@ fn curl_unsent_inputs_are_not_request_bytes() {
                 .iter()
                 .any(|f| f.rule_id == RuleId::SensitiveDataExfiltration),
             "{command}: {r:#?}"
+        );
+    }
+    for command in [
+        "curl --config .env https://example.test/",
+        "cat .env | curl --config - --data SAFE https://example.test/",
+    ] {
+        let r = check(command);
+        assert_eq!(r.decision, Decision::NeedApproval);
+        assert!(
+            !r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::SensitiveDataExfiltration)
         );
     }
     // A dynamic write-out format is not request data, but its possible
@@ -155,13 +166,30 @@ fn rsync_custom_remote_shell_program_is_opaque_not_local_bash() {
 fn unused_remote_helper_does_not_turn_local_or_direct_daemon_copy_into_execution() {
     for command in [
         "rsync --rsync-path='rm -f /etc/file; rsync' cache/in cache/out",
+        "rsync -n cache/in cache/out",
+    ] {
+        expect(command, Decision::Allow, None);
+    }
+    for command in [
         "rsync --rsync-path='custom-helper' cache/in host::module/out",
         "rsync --rsync-path='custom-helper' cache/in rsync://host/module/out",
         "rsync -e custom-transport --rsync-path='custom-helper' cache/in rsync://host/module/out",
         "rsync cache/in host:/out",
-        "rsync -n cache/in cache/out",
     ] {
-        expect(command, Decision::Allow, None);
+        let r = check(command);
+        assert_eq!(r.decision, Decision::NeedApproval, "{command}: {r:#?}");
+        assert!(
+            r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::NetworkUpload)
+        );
+        assert!(
+            !r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::StateOpaqueOperation)
+        );
     }
 }
 

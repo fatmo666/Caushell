@@ -340,12 +340,15 @@ impl RulePolicyEntry {
 fn default_rule_action(rule_id: RuleId) -> RuleAction {
     match rule_id {
         RuleId::NetworkListenerExposure => RuleAction::NeedApproval,
+        RuleId::NetworkUpload => RuleAction::NeedApproval,
         RuleId::CommandParseFailure => RuleAction::NeedApproval,
         RuleId::InteractiveEscapeSurface => RuleAction::Observe,
         RuleId::TerminalSessionOperation => RuleAction::NeedApproval,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
+        RuleId::FileDeletion => RuleAction::NeedApproval,
         RuleId::ProcessControl => RuleAction::NeedApproval,
+        RuleId::PrivilegeBoundary => RuleAction::NeedApproval,
         RuleId::DatabaseStateMutation
         | RuleId::DatabaseAdministration
         | RuleId::DatabaseOpaqueExecution => RuleAction::NeedApproval,

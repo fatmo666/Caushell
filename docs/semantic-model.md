@@ -100,6 +100,32 @@ untyped inputs and all upstream producer lineage remain conservative. Original
 Graph read facts are retained, including authentication keys; an explicit later
 upload of a key still traces to that path. Undeclared scope slots are rejected.
 
+The `network_upload` rule uses declared `upload_target` endpoints independently
+of sensitive-source tracing. The reusable endpoint query works on current
+execution-unit adjacency, including derived calls, and statically exempts
+loopback destinations. An ordinary fetch or dry-run keeps its own declaration.
+Explicit request-byte scopes share the content dependency query with sensitive
+data tracing. A fetch that sends file-derived bytes is still outbound local
+data; literal query fields and unrelated authentication reads are not inferred
+to carry that file's contents. Curl `-G --data` declares a query endpoint and
+retains its actual file/stdin request inputs and downloaded response lineage.
+Profiles may declare possible connection overrides as endpoint usage
+`transport_target`. The shared endpoint query checks these separately from
+logical upload/download targets; nonlocal or unresolved routes prevent a
+loopback transmission exemption. Their input scopes describe only declared
+address/authentication bytes, not an invented response or complete request.
+Bounded and unresolved read operands also produce `PathSelectionContent`
+artifacts. These preserve the read's content dependency and path resolution
+and, when available, its lexical selector (for example a HOME-relative glob),
+without inventing glob expansions, concrete filenames or file existence;
+concrete-only path queries do not treat them as exact `PathContent`.
+
+Structured projection targets not selected by a known branch retain explicit
+inapplicable slots, rather than disappearing as unbound effects. A complete
+empty scalar can match an explicitly declared no-effect regex branch. Missing
+operands, dynamic values and undeclared empty values remain unknown; this does
+not make empty path or executable targets valid.
+
 Presence of a pipeline producer cannot certify unparsed executable stdin.
 Known explicit file stdin keeps its original data edge and an additional
 `script_source` consumption when the Profile declares stdin code. The existing
@@ -237,17 +263,26 @@ payload_projections:
     reads: patch_reads
     writes: patch_writes
     deletes: patch_deletes
+    moves: patch_moves
     max_bytes: 1048576
     max_operations: 4096
 effects:
   - {kind: read_path, target: {kind: slot, name: patch_reads}}
   - {kind: write_path, target: {kind: slot, name: patch_writes}}
   - {kind: delete_path, target: {kind: slot, name: patch_deletes}}
+  - {kind: move_path, target: {kind: slot, name: patch_moves}}
 ```
 
 The source must be an unprojected plain-value parameter. Alternatively, `source: {kind: stdin}` requires a plain `stdin_data` declaration. Output slot names must be distinct, must not collide with existing slots, and must have matching effects in that form. Omitted budgets default to 1 MiB and 4096 operations; both must be positive. `no_arguments` distinguishes no arguments from flags and `--`, unlike `no_positional_args`.
 
-The built-in `apply_patch`/`applypatch` Profile accepts exactly one patch argument, or effective stdin with no arguments. Add emits write; update emits read and write; delete emits deletion; update with move emits source read/deletion and destination write. Multiple operations retain all targets. Empty patches and proven absent effect classes have explicit empty semantic views, not unknown mutations. The existing workspace and catastrophic guards decide the action; no new risk pass or Harness request field is added.
+The built-in `apply_patch`/`applypatch` Profile accepts exactly one patch argument, or effective stdin with no arguments. Add emits write; update emits read and write; delete emits deletion; update with move emits source read/move and destination write. Multiple operations retain all targets. Empty patches and proven absent effect classes have explicit empty semantic views, not unknown mutations. Existing path and catastrophic guards plus the location-independent deletion rule decide the action; no Harness request field is added.
+
+The optional `moves` slot requires a matching `move_path` effect and a format
+with native relocation semantics. It distinguishes a moved source from content
+deletion. Older custom projections without that slot retain their conservative
+source-removal-as-deletion view. Unknown patches retain unknown moves as well as
+writes/deletions when those effects are declared. Ordinary moves remain subject
+to source/destination path policies; they do not acquire a blanket exemption.
 
 The decoder validates the whole envelope, operation headers and update chunks, without applying the patch or interpreting inserted/context lines as commands. It preserves literal path bytes, Unicode and spaces; filenames are not shell-expanded a second time. Materialization of the *outer* shell argument still precedes projection. Truncated, malformed, dynamic, over-budget or environment-tagged payloads retain unknown writes/deletions rather than proving a safe prefix. The pure decoder is linear and copies original source metadata once per effect class, not once per file.
 
@@ -435,6 +470,35 @@ field read as `false`; false is omitted from JSON. Profiles without the declarat
 the previous selection/binding policy. There is no new Pass or command-name exception;
 whole-argv accounting runs only for opted-in Profiles.
 
+`read_only_control_surface: true` is a separate, opt-in contract for a complete
+native CLI whose controls can only query, read or format data (or reject argv).
+Normalization rejects profiles with modifying/executing effects, opaque forms,
+payload projections, argument files or subcommands under this declaration.
+Unknown control ownership still produces binding residuals, so stream modes,
+output shapes and precise provenance are not certified from an uncertain call.
+It does not by itself make the operation risky: the generic control residual
+does not set `operation_semantics_unresolved`, and failed shape selection uses
+its ordinary resolve-gap category. Other residuals and independently modeled
+redirections, substitutions and child actions retain their existing checks.
+The declaration is not a command-name allowlist or a rule-policy override.
+
+A known absolute `HOME` supplies a lexical prefix proof for an unquoted leading
+`~` with a pure pathname suffix. Original argv text is retained; glob cardinality
+remains variable and escaped/quoted tildes or dynamic suffixes do not gain this
+proof. This certifies possible control spellings, not an exact value, existence
+or filesystem containment. There is no named-user or filesystem lookup.
+
+The shared leading-option scan distinguishes a variable-length native batch
+from an arbitrary control surface. Proven non-option items at a trailing
+positional boundary do not need a scalar arity; possible later controls still
+prevent boundary certification if an empty batch could expose them. Disjoint
+path roots retain per-item first-character bounds even without a common prefix.
+Static ANSI-C quote concatenations and concatenations containing quoted scalar
+substitutions retain field proofs. Rare concatenation proofs use a bounded
+lexical query against the existing Bash grammar; ordinary words and whole
+quoted scalars keep their fast path. Neither query evaluates the substituted
+program or invents its output value.
+
 ### Yum: independent package sources and installation targets
 
 The Yum Profile declares `manager: yum`, not Apt or an alias for DNF/DNF5.
@@ -603,6 +667,8 @@ Structured projection branches can use `unless_parameter_matches: {name: CONTROL
 The pv Profile models ordinary file/stdin transfer, explicit output and staging files, PID-file replacement/removal, numeric descriptor progress queries and typed monitor child dispatch. `-o -` means stdout; `-U -` generates temporary storage and retains unknown write/delete targets. Cursor lock storage is also unknown. Remote reconfiguration, query IPC (which can write control files and signal a process), name/list-file watch selectors and unsupported forms use existing unresolved-operation approval. Repeated explicit targets are retained conservatively; no implicit-cache exemption or native execution replay is claimed. Env declares child stdout inheritance too; other dispatch profiles must explicitly declare it before gaining this data-flow bridge. Curl's missing `@file` content-read modeling is a separate coverage gap: pv staging provenance tests use an explicitly modeled file reader, not an unmodeled curl file input.
 
 The `find -exec`/`-execdir` and `xargs` profiles feed the same dispatch and execution-graph machinery. `find` arguments may carry a bounded search-root domain; symlink-following, unresolved roots, and `-execdir` context that cannot be established widen that domain or leave it unknown. `xargs` static input is used only when its source is known complete; partial fragments are advisory, not a proven argv prefix, and incomplete or runtime-generated input leaves arguments unknown. Explicit stdin redirection takes precedence over pipeline input.
+
+Static `printf` input preserves every word after FORMAT, including option-shaped data. Native NUL/delimited parsing keeps empty fields and concatenates output fragments without invented separators; decode failure is not empty-input proof. A runtime batch retains unknown arity and any existing per-item path-spelling bound. Scoped option grammars mark a possible unknown control word or variable-width option operand unresolved while retaining known effects; an explicit option terminator closes that control surface. `xargs -p` retains the possible conditional child. Historical `-a` content is not treated as current exact input after a same-action prelude without a stability proof; unresolved input remains on the existing approval path. None of these operations evaluates input as shell source, probes files, or adds a risk Pass.
 
 Known argv data is never parsed again as shell source. A shell `-c` operand is the intentional exception at the payload boundary: it is parsed once as code, while its positional arguments remain typed data and are bound separately. Recursive inline execution uses the canonical execution frontier so graph expansion is bounded by the configured depth and preserves source relationships. This models common cases conservatively; it is not a complete shell, `find`, or `xargs` interpreter.
 

@@ -558,21 +558,11 @@ fn scoped_stdout_evidence(
             }) {
                 return StaticInputEvidence::unknown();
             }
-            if command.command_name.as_deref() == Some("printf")
-                && command
-                    .tokens
-                    .iter()
-                    .any(|token| token.kind == CommandTokenKind::Flag)
-            {
-                return StaticInputEvidence::unknown();
-            }
             let payloads = static_literal_stdout_payloads_for_command(command, bindings);
             if payloads.is_empty() {
                 // `printf` without a format emits no bytes. `echo` without
                 // operands emits one newline (unless -n is present).
-                if command.command_name.as_deref() == Some("printf")
-                    && arg_tokens(command).is_empty()
-                {
+                if command.command_name.as_deref() == Some("printf") && command.tokens.is_empty() {
                     return StaticInputEvidence {
                         known_fragments: Vec::new(),
                         complete: true,
@@ -2267,17 +2257,65 @@ fn printf_literal_payloads(
     command: &CommandFact,
     bindings: &dyn VariableBindingReplay,
 ) -> Vec<String> {
-    let args: Vec<String> = command
+    let Some(args) = command
         .tokens
         .iter()
-        .filter(|token| token.kind == CommandTokenKind::Arg)
-        .map(|token| materialize_token_text(&token.text, bindings))
-        .collect();
-    if args.is_empty() {
+        .map(|token| {
+            if token.implicit_input_source.is_some() || token.runtime_argument_domain.is_some() {
+                return None;
+            }
+            if !token.runtime_data
+                && !matches!(token.node_kind.as_str(), "raw_string" | "ansi_c_string")
+                && let Some(_value) =
+                    exact_scalar_shell_parameter_reference_value(&token.text, bindings)
+            {
+                // Reuse the field materializer: known unquoted safe scalars
+                // remain exact, but splittable/globbable values do not.
+                let fields = caushell_profile::materialize_exact_shell_parameter_reference_fields(
+                    &token.text,
+                    token.quoted,
+                    bindings.base(),
+                )?;
+                let [field] = fields.as_slice() else {
+                    return None;
+                };
+                return Some(field.text.clone());
+            }
+            let argument = caushell_profile::ProjectedArg {
+                text: token.text.clone(),
+                quoted: token.quoted,
+                node_kind: token.node_kind.clone(),
+                span: token.span.clone(),
+                implicit_input_source: None,
+                runtime_argument_domain: None,
+                runtime_data: token.runtime_data,
+                substitution_shape: None,
+                lexical_field_prefix: None,
+                kind: caushell_profile::ProjectedArgKind::Positional,
+            };
+            caushell_profile::argument_structure(&argument)
+                .exact_value()
+                .map(str::to_owned)
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
         return Vec::new();
-    }
-
-    render_static_printf_payload(&args[0], &args[1..])
+    };
+    // Only the prefix before FORMAT is an option surface. Every later argv
+    // word is data, including --, -v, and option-shaped callback strings.
+    let terminated = args.first().is_some_and(|arg| arg == "--");
+    let args = if terminated {
+        &args[1..]
+    } else {
+        args.as_slice()
+    };
+    let Some(format) = args
+        .first()
+        .filter(|format| terminated || !format.starts_with('-'))
+    else {
+        return Vec::new();
+    };
+    render_static_printf_payload(format, &args[1..])
         .into_iter()
         .collect()
 }
@@ -3207,6 +3245,53 @@ mod tests {
             render_static_printf_payload("%s\\n", &args),
             Some("/\n".to_string())
         );
+    }
+
+    #[test]
+    fn printf_preserves_option_shaped_data_after_the_format() {
+        for source in [
+            r"printf '%s\0' --checkpoint=1 '--checkpoint-action=exec=rm /opt/shared/file' -- -v | xargs -0",
+            r"printf -- '%s\0' --checkpoint=1 '--checkpoint-action=exec=rm /opt/shared/file' -- -v | xargs -0",
+        ] {
+            let evidence = stdin_evidence_for(source, 1);
+            assert!(evidence.complete, "{source}: {evidence:?}");
+            assert_eq!(
+                evidence.known_fragments.concat(),
+                "--checkpoint=1\0--checkpoint-action=exec=rm /opt/shared/file\0--\0-v\0"
+            );
+        }
+        let evidence = stdin_evidence_for(r"printf -- '-%s' value | xargs", 1);
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "-value");
+    }
+
+    #[test]
+    fn printf_does_not_claim_exact_stdout_for_unknown_width_or_output_options() {
+        for source in [
+            "printf -v output '%s' data | xargs",
+            "printf '%s' *.txt | xargs",
+            "printf '%s' $UNKNOWN | xargs",
+            "printf '%s' \"$@\" | xargs",
+            "printf '%d' 1 | xargs",
+        ] {
+            assert!(!stdin_evidence_for(source, 1).complete, "{source}");
+        }
+    }
+
+    #[test]
+    fn printf_reuses_scalar_field_materialization_instead_of_quote_only_checks() {
+        let bindings = SessionBindings::new().with_exact_scalar("VALUE", "--flag=value");
+        let evidence = stdin_evidence_for_with_bindings("printf '%s' $VALUE | xargs", 1, &bindings);
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "--flag=value");
+        let bindings = SessionBindings::new().with_exact_scalar("VALUE", "one two");
+        assert!(
+            !stdin_evidence_for_with_bindings("printf '%s' $VALUE | xargs", 1, &bindings).complete
+        );
+        let evidence =
+            stdin_evidence_for_with_bindings("printf '%s' \"$VALUE\" | xargs", 1, &bindings);
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "one two");
     }
 
     #[test]

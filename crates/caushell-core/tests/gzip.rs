@@ -104,17 +104,14 @@ fn file_outputs_and_unknown_modes_use_existing_mutation_and_resolve_guards() {
         "gzip \"$unknown_file\"",
         "gzip input --suffix=\"$unknown\"",
         "gzip -S\"$unknown\" input",
-    ] {
-        expect(command, Decision::NeedApproval);
-    }
-    for command in [
         "gzip input",
-        "gzip -k input",
         "gzip -d input.gz",
-        "gzip -dk input.gz",
         "gzip -S.gz input",
         "gzip -dS.gz input.gz",
     ] {
+        expect(command, Decision::NeedApproval);
+    }
+    for command in ["gzip -k input", "gzip -dk input.gz"] {
         expect(command, Decision::Allow);
     }
 }
@@ -262,8 +259,15 @@ fn graph_expresses_both_transform_kinds_in_the_original_gtfobins_recipe() {
 
 #[test]
 fn staged_archive_retains_sensitive_origin_across_shell_actions_and_restore() {
+    // This test commits compression facts to test serialization and taint,
+    // independently of the default deletion gate covered by file_deletion_policy.
+    let mut policy = caushell_types::PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
     for stage in ["gzip -c .env >cache.gz", "gzip .env", "gzip -k .env"] {
-        let mut core = ShellQueryCore::new();
+        let mut core = ShellQueryCore::with_policy(policy.clone());
         assert_eq!(
             core.check(request(stage)).decision,
             Decision::Allow,
@@ -272,7 +276,7 @@ fn staged_archive_retains_sensitive_origin_across_shell_actions_and_restore() {
         let id = SessionId::new("gzip-profile");
         let snapshot = core.session_snapshot(&id, 1).unwrap();
         let state = caushell_core::SessionState::from_snapshot(snapshot).unwrap();
-        let mut core = ShellQueryCore::new();
+        let mut core = ShellQueryCore::with_policy(policy.clone());
         core.insert_session_state(id, state);
         let input = if stage.contains("cache.gz") {
             "cache.gz"

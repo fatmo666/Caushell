@@ -1,5 +1,14 @@
 //! Guard checks only. None of these shell commands is executed.
 use caushell_core::ShellQueryCore;
+fn binding_core() -> ShellQueryCore {
+    // Isolate variable/argv precision from the independently tested deletion gate.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_graph::NodeKind;
 use caushell_types::*;
 
@@ -21,7 +30,7 @@ fn request(command: &str) -> CheckRequest {
 }
 
 fn expect(command: &str, decision: Decision) {
-    let result = ShellQueryCore::new().check(request(command));
+    let result = binding_core().check(request(command));
     assert_eq!(result.decision, decision, "{command}: {result:#?}");
 }
 
@@ -52,7 +61,7 @@ fn actual_destinations_are_recorded_in_the_graph() {
         ("read -p prompt", vec!["REPLY"]),
         ("read -a files ignored REPLY", vec!["files"]),
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         assert_eq!(core.check(request(command)).decision, Decision::Allow);
         let mut names = core
             .session_graph(&SessionId::new("read-completion"))
@@ -164,7 +173,7 @@ fn completed_input_actions_invalidate_state_across_session_actions() {
         ("read -p prompt", "rm \"$REPLY\""),
         ("read -a target", "rm \"$target\""),
     ] {
-        let mut core = ShellQueryCore::new();
+        let mut core = binding_core();
         assert_eq!(
             core.check(request("target=./safe/file; REPLY=./safe/file"))
                 .decision,

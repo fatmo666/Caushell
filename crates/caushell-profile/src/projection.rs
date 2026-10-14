@@ -42,6 +42,9 @@ pub struct ProjectedArg {
     /// A proven output shape for a whole quoted scalar substitution. Original
     /// source bytes and dynamic path resolution remain unchanged.
     pub substitution_shape: Option<crate::StdoutScalarShape>,
+    /// Positive lexical spelling bound for every field of a shell expansion.
+    /// Not an exact value or a filesystem containment/provenance assertion.
+    pub lexical_field_prefix: Option<String>,
     pub kind: ProjectedArgKind,
     pub quoted: bool,
     pub node_kind: String,
@@ -149,6 +152,7 @@ pub fn project_invocation(
             runtime_argument_domain: token.runtime_argument_domain.clone(),
             runtime_data: token.runtime_data,
             substitution_shape: None,
+            lexical_field_prefix: None,
             kind: project_arg_kind(&token.kind),
             quoted: token.quoted,
             node_kind: token.node_kind.clone(),

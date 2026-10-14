@@ -508,6 +508,7 @@ pub fn bind_invocation(
     let bound_slots: BTreeSet<_> = bound
         .bound_parameters
         .iter()
+        .filter(|parameter| !parameter.semantic_values_are_inapplicable())
         .map(|parameter| parameter.name.clone())
         .collect();
 
@@ -587,8 +588,11 @@ pub fn bind_invocation(
         ));
     }
     bound.residuals = residuals;
-    bound.operation_semantics_unresolved |=
-        profile.opaque_on_unresolved && !bound.residuals.is_empty();
+    bound.operation_semantics_unresolved |= profile.opaque_on_unresolved
+        && bound.residuals.iter().any(|residual| {
+            !(profile.read_only_control_surface
+                && residual.kind == ResidualKind::UnboundControlSurface)
+        });
     bound.operation_semantics_unresolved |=
         state.group_binding_unresolved || selection.form.operation_semantics_unresolved;
     bound
@@ -822,6 +826,7 @@ pub(crate) fn bind_modifier_only_invocation(
     let bound_slots: BTreeSet<_> = bound
         .bound_parameters
         .iter()
+        .filter(|parameter| !parameter.semantic_values_are_inapplicable())
         .map(|parameter| parameter.name.clone())
         .collect();
     let bound_implicit_sources = BTreeSet::new();

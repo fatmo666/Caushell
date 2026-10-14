@@ -20,12 +20,15 @@ pub enum RuleFamily {
 #[serde(rename_all = "snake_case")]
 pub enum RuleId {
     NetworkListenerExposure,
+    NetworkUpload,
     CommandParseFailure,
     InteractiveEscapeSurface,
     TerminalSessionOperation,
     CwdOutsideWorkspaceRoot,
     OutsideWorkspaceMutation,
+    FileDeletion,
     ProcessControl,
+    PrivilegeBoundary,
     OutsideWorkspaceScriptSource,
     OutsideWorkspaceStartupConfig,
     MissingCommandName,
@@ -63,14 +66,16 @@ pub enum RuleId {
 impl RuleId {
     pub const fn family(self) -> RuleFamily {
         match self {
-            Self::NetworkListenerExposure => RuleFamily::NetworkSafety,
+            Self::NetworkListenerExposure | Self::NetworkUpload => RuleFamily::NetworkSafety,
             Self::CommandParseFailure => RuleFamily::ResolveGap,
             Self::InteractiveEscapeSurface | Self::TerminalSessionOperation => {
                 RuleFamily::InteractiveControl
             }
             Self::CwdOutsideWorkspaceRoot => RuleFamily::Path,
             Self::OutsideWorkspaceMutation => RuleFamily::Path,
+            Self::FileDeletion => RuleFamily::Path,
             Self::ProcessControl => RuleFamily::HostSafety,
+            Self::PrivilegeBoundary => RuleFamily::HostSafety,
             Self::OutsideWorkspaceScriptSource => RuleFamily::Path,
             Self::OutsideWorkspaceStartupConfig => RuleFamily::Path,
             Self::MissingCommandName => RuleFamily::ResolveGap,
@@ -120,6 +125,7 @@ mod tests {
         );
         assert_eq!(RuleId::CwdOutsideWorkspaceRoot.family(), RuleFamily::Path);
         assert_eq!(RuleId::ProcessControl.family(), RuleFamily::HostSafety);
+        assert_eq!(RuleId::PrivilegeBoundary.family(), RuleFamily::HostSafety);
         assert_eq!(
             RuleId::OutsideWorkspaceScriptSource.family(),
             RuleFamily::Path
@@ -235,5 +241,17 @@ mod tests {
             serde_json::from_value(value).expect("expected rule id to deserialize");
 
         assert_eq!(roundtrip, RuleId::InteractiveEscapeSurface);
+    }
+
+    #[test]
+    fn privilege_boundary_rule_has_stable_wire_name() {
+        assert_eq!(
+            serde_json::to_value(RuleId::PrivilegeBoundary).unwrap(),
+            json!("privilege_boundary")
+        );
+        assert_eq!(
+            serde_json::from_value::<RuleId>(json!("privilege_boundary")).unwrap(),
+            RuleId::PrivilegeBoundary
+        );
     }
 }

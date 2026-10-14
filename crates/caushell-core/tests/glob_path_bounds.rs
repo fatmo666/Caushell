@@ -17,10 +17,10 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("glob-path-bounds"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
         runtime: RuntimeMetadata {
             runtime_name: "static-test".into(),
             tool_name: Some("Bash".into()),
@@ -62,25 +62,29 @@ fn stable_local_globs_work_across_existing_mutation_profiles() {
         "chown owner:group ./assets/*",
         "chgrp group ./assets/*",
         "touch -d '30 August 2013' ./*.php",
-        "rmdir ed*",
-        "rmdir -v ./dir*",
         "mv file*.txt destination",
         "cp input.txt out*.txt",
+    ] {
+        expect(command, Decision::Allow);
+    }
+    for command in [
+        "rmdir ed*",
+        "rmdir -v ./dir*",
         "gzip dir/*.txt",
         "bzip2 dir/*",
         "compress file*",
     ] {
-        expect(command, Decision::Allow);
+        expect(command, Decision::NeedApproval);
     }
 }
 
 #[test]
 fn graph_retains_a_bounded_set_instead_of_a_concrete_expansion() {
     let nodes = graph("chmod +x ./tools/*.sh");
-    assert!(nodes.iter().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::MetadataMutation, resolution: PathResolution::BoundedPathSet {roots, may_escape: false}, ..} if roots == &["/tmp/project/"] )));
+    assert!(nodes.iter().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::MetadataMutation, resolution: PathResolution::BoundedPathSet {roots, may_escape: false}, ..} if roots == &["/workspace/project/"] )));
     assert!(!nodes.iter().any(|n| matches!(&n.kind, NodeKind::PathFact {resolution: PathResolution::Concrete {path}, ..} if path.contains('*'))));
     let nodes = graph("gzip dir/*.txt");
-    assert!(nodes.iter().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Write, resolution: PathResolution::BoundedPathSet {roots, may_escape: false}, ..} if roots == &["/tmp/project"] )));
+    assert!(nodes.iter().any(|n| matches!(&n.kind, NodeKind::PathFact {role: ResolvedPathRole::Write, resolution: PathResolution::BoundedPathSet {roots, may_escape: false}, ..} if roots == &["/workspace/project"] )));
 }
 
 #[test]
@@ -94,7 +98,7 @@ fn unsafe_controls_parent_expansion_and_unknown_cwd_keep_approval() {
         "chmod +x dir/*/../*.sh",
         "chmod +x ../*.sh",
         "chmod +x /opt/shared/*.sh",
-        "chmod +x /tmp/project/*.sh",
+        "chmod +x /workspace/project/*.sh",
         "chmod +x ~/cache/*.sh",
         "chmod +x ./$dir/*.sh",
         "chmod +x ./{..,cache}/*",
@@ -111,8 +115,6 @@ fn quoted_patterns_literal_brackets_and_known_runtime_bytes_stay_literal() {
     for command in [
         "chmod +x '*.sh'",
         "chmod +x '.*'",
-        "rm []",
-        "find . -inum 31246 -exec rm [] ';'",
         "target='./*.sh'; chmod +x \"$target\"",
         "target='/opt/shared/*.sh'; chmod +x \"$target\"",
     ] {
@@ -125,7 +127,10 @@ fn quoted_patterns_literal_brackets_and_known_runtime_bytes_stay_literal() {
             },
         );
     }
-    assert!(graph("target='./*.sh'; chmod +x \"$target\"").iter().any(|n| matches!(&n.kind, NodeKind::PathFact {resolution: PathResolution::Concrete {path}, ..} if path == "/tmp/project/*.sh")));
+    for command in ["rm []", "find . -inum 31246 -exec rm [] ';'"] {
+        expect(command, Decision::NeedApproval);
+    }
+    assert!(graph("target='./*.sh'; chmod +x \"$target\"").iter().any(|n| matches!(&n.kind, NodeKind::PathFact {resolution: PathResolution::Concrete {path}, ..} if path == "/workspace/project/*.sh")));
 }
 
 #[test]
@@ -155,7 +160,7 @@ fn parent_removal_is_not_certified_by_the_leaf_glob_bound() {
     ] {
         expect(command, Decision::NeedApproval);
     }
-    expect("rmdir -p ./dir/leaf", Decision::Allow);
+    expect("rmdir -p ./dir/leaf", Decision::NeedApproval);
     let nodes = graph("rmdir -p ./dir*");
     assert!(nodes.iter().any(|n| matches!(
         &n.kind,
@@ -163,6 +168,6 @@ fn parent_removal_is_not_certified_by_the_leaf_glob_bound() {
             role: ResolvedPathRole::Target,
             resolution: PathResolution::BoundedPathSet { roots, may_escape: false },
             ..
-        } if roots == &["/tmp/project/"]
+        } if roots == &["/workspace/project/"]
     )));
 }

@@ -3,7 +3,7 @@ use caushell_core::ShellQueryCore;
 use caushell_types::*;
 
 fn request(command: &str) -> CheckRequest {
-    let mut shell = ShellStateSnapshot::new("/tmp/project");
+    let mut shell = ShellStateSnapshot::new("/workspace/project");
     shell.observability.variables = ShellStateKnowledge::Complete;
     CheckRequest {
         session_id: SessionId::new("listener-test"),
@@ -17,7 +17,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 
@@ -220,8 +220,8 @@ fn repeated_host_last_wins_and_dynamic_is_not_dropped() {
 #[test]
 fn filesystem_sockets_use_path_guard_not_listener_guard() {
     for (path, expected) in [
-        ("service.sock", Decision::Allow),
-        ("/tmp/project/service.sock", Decision::Allow),
+        ("service.sock", Decision::NeedApproval),
+        ("/workspace/project/service.sock", Decision::NeedApproval),
         ("/etc/service.sock", Decision::NeedApproval),
         ("../service.sock", Decision::NeedApproval),
     ] {
@@ -236,7 +236,13 @@ fn filesystem_sockets_use_path_guard_not_listener_guard() {
                 .iter()
                 .any(|f| f.rule_id == RuleId::NetworkListenerExposure)
         );
-        if expected == Decision::NeedApproval {
+        assert!(
+            r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::FileDeletion)
+        );
+        if path == "/etc/service.sock" || path == "../service.sock" {
             assert!(
                 r.decision_trace
                     .findings
@@ -253,7 +259,19 @@ fn env_socket_paths_and_cli_override_are_checked() {
     env(&mut req, "UVICORN_UDS", "/etc/server.sock", true);
     check(req.clone(), Decision::NeedApproval);
     req.command += " --uds=server.sock";
-    check(req, Decision::Allow);
+    let r = check(req, Decision::NeedApproval);
+    assert!(
+        r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::FileDeletion)
+    );
+    assert!(
+        !r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation)
+    );
 }
 
 #[test]
@@ -382,7 +400,12 @@ fn environment_wrappers_cannot_leave_a_phantom_local_socket() {
         "env --unset=UVICORN_UDS python3 -m uvicorn app:app --host=0.0.0.0",
     ] {
         let mut req = request(command);
-        env(&mut req, "UVICORN_UDS", "/tmp/project/service.sock", true);
+        env(
+            &mut req,
+            "UVICORN_UDS",
+            "/workspace/project/service.sock",
+            true,
+        );
         check(req, Decision::NeedApproval);
     }
     let mut req = request("env -i uvicorn app:app");

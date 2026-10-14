@@ -8,10 +8,10 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("pipeline-path-records"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
         runtime: RuntimeMetadata {
             runtime_name: "static-record-test".into(),
             tool_name: Some("Bash".into()),
@@ -35,9 +35,9 @@ fn nul_path_records_reach_known_child_mutation_slots() {
         r"find . -name \*.py -print0 | xargs -0 sed -i '1a Line of text here'",
         "find . -type f -print0 | xargs -0 -I{} mv {} archive",
         "find . -print0 | xargs -0 -I{} mv {} {}.bak",
-        "find /tmp/project/ -print0 | xargs -0 -I{} mv {} {}.bak",
+        "find /workspace/project/ -print0 | xargs -0 -I{} mv {} {}.bak",
         "find './space dir' -print0 | xargs -0 chmod 644",
-        "find ./src /tmp/project/lib -print0 | xargs -0 chmod 644",
+        "find ./src /workspace/project/lib -print0 | xargs -0 chmod 644",
         "root=./src; find \"$root\" -print0 | xargs -0 chmod 644",
         "find . -print0 | tee cache.paths | xargs -0 chmod 644",
         "find . -print0 2>/dev/null | xargs -0 chmod 644",
@@ -53,7 +53,7 @@ fn bounded_domain_is_retained_in_graph_not_just_the_decision() {
     assert_eq!(response.decision, Decision::Allow);
     assert!(core.session_graph(&SessionId::new("pipeline-path-records")).unwrap().nodes().any(|node| matches!(&node.kind,
         NodeKind::PathFact { resolution, normalized_command_name: Some(name), .. } if name == "chmod" && matches!(resolution,
-            PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &vec!["/tmp/project".to_string()])
+            PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &vec!["/workspace/project".to_string()])
     )), "{:#?}", response.decision_trace);
 }
 
@@ -69,9 +69,9 @@ fn outside_unknown_or_escaping_roots_are_not_laundered() {
         "cd /opt/shared; find . -print0 | xargs -0 chmod 644",
         "find . -print0 | xargs -0 -I{} mv {} /opt/shared",
         "find /opt/shared -print0 | xargs -0 -I{} mv {} {}.bak",
-        // The inclusive named root may itself become /tmp/project.bak;
+        // The inclusive named root may itself become /workspace/project.bak;
         // unlike a root spelled with a trailing '/', this can escape.
-        "find /tmp/project -print0 | xargs -0 -I{} mv {} {}.bak",
+        "find /workspace/project -print0 | xargs -0 -I{} mv {} {}.bak",
         "find -L . -print0 | xargs -0 -I{} mv {} {}.bak",
         "find \"$unknown\" -print0 | xargs -0 -I{} mv {} {}.bak",
         "find . -print0 | tee /opt/shared/paths | xargs -0 chmod 644",

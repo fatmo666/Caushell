@@ -47,7 +47,6 @@ fn local_known_effects_and_read_only_forms_stay_allowed() {
         "openssl dgst -sha256 /etc/passwd",
         "chown --reference=/etc/passwd -- cache/file",
         "ln -s ../config/init cache/init",
-        "zip -m cache/archive.zip cache/input",
         "ln -s ../config/init",
         "cpio -it < /opt/archive.cpio",
         "cpio -i --to-stdout member < /opt/archive.cpio",
@@ -57,6 +56,10 @@ fn local_known_effects_and_read_only_forms_stay_allowed() {
         expect(command, Decision::Allow);
     }
     expect("mount -a", Decision::NeedApproval);
+    expect(
+        "zip -m cache/archive.zip cache/input",
+        Decision::NeedApproval,
+    );
 }
 
 #[test]

@@ -1,8 +1,7 @@
 use crate::support::{ExecutionResolveRecordRef, graph_backed_execution_resolve_records};
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_profile::{
-    BoundParameter, BoundValue, EffectKind, EffectTarget, EndpointKind, EndpointUsage,
-    ResolveInvocationArtifactResult, SemanticType,
+    BoundParameter, BoundValue, EffectKind, EffectTarget, EndpointKind, EndpointUsage, SemanticType,
 };
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
@@ -33,11 +32,11 @@ fn collect_endpoint_provenance_mutations(
     let mut mutations = Vec::new();
 
     for record in records {
-        let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
+        let Some(bound) = crate::support::bound_invocation(record.result()) else {
             continue;
         };
 
-        for effect in &resolved.bound.effects {
+        for effect in &bound.effects {
             if effect.kind != EffectKind::NetworkEndpoint {
                 continue;
             }
@@ -46,8 +45,7 @@ fn collect_endpoint_provenance_mutations(
                 continue;
             };
 
-            let Some(parameter) = resolved
-                .bound
+            let Some(parameter) = bound
                 .bound_parameters
                 .iter()
                 .find(|parameter| parameter.name == *slot_name)
@@ -61,7 +59,7 @@ fn collect_endpoint_provenance_mutations(
 
             mutations.extend(parameter_endpoint_provenance_mutations(
                 record.source_node_id(),
-                &resolved.normalized_command_name,
+                bound.command_name.as_str(),
                 parameter,
                 *endpoint_semantic,
                 effect.input_scope.as_ref().map(|scope| {
@@ -74,7 +72,7 @@ fn collect_endpoint_provenance_mutations(
                     }
                     caushell_types::ProvenanceDomainLabel::EndpointInputScope {
                         slots,
-                        stdin: scope.stdin && bound_consumes_stdin(&resolved.bound, &scope.slots),
+                        stdin: scope.stdin && bound_consumes_stdin(bound, &scope.slots),
                     }
                 }),
             ));
@@ -178,6 +176,7 @@ fn provenance_endpoint_kind(kind: EndpointKind) -> ProvenanceEndpointKind {
 fn provenance_endpoint_usage(usage: EndpointUsage) -> ProvenanceEndpointUsage {
     match usage {
         EndpointUsage::FetchSource => ProvenanceEndpointUsage::FetchSource,
+        EndpointUsage::TransportTarget => ProvenanceEndpointUsage::TransportTarget,
         EndpointUsage::UploadTarget => ProvenanceEndpointUsage::UploadTarget,
         EndpointUsage::ControlPlane => ProvenanceEndpointUsage::ControlPlane,
         EndpointUsage::GenericEndpoint => ProvenanceEndpointUsage::GenericEndpoint,
@@ -197,6 +196,7 @@ fn endpoint_kind_slug(kind: ProvenanceEndpointKind) -> &'static str {
 fn endpoint_usage_slug(usage: ProvenanceEndpointUsage) -> &'static str {
     match usage {
         ProvenanceEndpointUsage::FetchSource => "fetch_source",
+        ProvenanceEndpointUsage::TransportTarget => "transport_target",
         ProvenanceEndpointUsage::UploadTarget => "upload_target",
         ProvenanceEndpointUsage::ControlPlane => "control_plane",
         ProvenanceEndpointUsage::GenericEndpoint => "generic_endpoint",

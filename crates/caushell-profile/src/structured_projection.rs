@@ -57,6 +57,23 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
             continue;
         };
         let source = parameter;
+        // A declared branch that does not select a target makes that target
+        // inapplicable, not unbound. Unknown/missing sources still populate
+        // every possible active target below; never clear earlier values.
+        for target in grammar
+            .branches
+            .iter()
+            .filter_map(|branch| branch.target.as_ref())
+            .chain(grammar.fallback.iter())
+        {
+            generated.entry(target.name.clone()).or_insert_with(|| {
+                let mut projected =
+                    BoundParameter::new(target.name.clone(), target.semantic.clone());
+                projected.projected_values = Some(Vec::new());
+                projected.structured_source = Some(parameter.name.clone());
+                projected
+            });
+        }
         if source.values.is_empty() {
             // The owning modifier was selected, but no operand was bound.
             // A missing operand is not proof of a missing write or child.
@@ -133,6 +150,14 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
                         project_item(invocation, grammar, value, &text, &mut generated)
                     }
                 }
+                Some(SemanticValueResolution::Unknown(
+                    crate::ProjectionUnknownReason::EmptyValue,
+                )) if grammar.native_syntax.is_none() && grammar.separator.is_none() => {
+                    // Identity reports EmptyValue only for a complete decoded
+                    // scalar. An explicit no-effect branch may recognize it;
+                    // missing operands and dynamic prefixes never enter here.
+                    project_item(invocation, grammar, value, "", &mut generated)
+                }
                 _ => {
                     emit_unknown(invocation, grammar, value, &mut generated);
                     native_unresolved |= grammar.native_syntax.is_some();
@@ -166,6 +191,15 @@ fn project_item(
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
 ) -> bool {
     if item.is_empty() {
+        if let Some(branch) = grammar.branches.iter().find(|branch| {
+            !branch_disabled(invocation, branch)
+                && matches!(&branch.matcher,
+                StructuredProjectionMatcher::RegexCapture {regex, ..} if regex.regex().is_match(""))
+        }) {
+            if branch.target.is_none() {
+                return true;
+            }
+        }
         emit_unknown(invocation, grammar, source, generated);
         return true;
     }

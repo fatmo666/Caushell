@@ -72,14 +72,14 @@ fn find_and_nul_xargs_compression_keep_proven_scope_in_graph() {
             format!("find . -type f -print0 | xargs -0 {tool}"),
             format!("find ./ -type f -exec {tool} {{}} +"),
         ] {
-            expect(&command, Decision::Allow);
+            expect(&command, Decision::NeedApproval);
             assert!(writes(&command).iter().any(|p| matches!(p, PathResolution::BoundedPathSet {roots, may_escape: false} if roots == &["/tmp/project"])), "{command}");
         }
     }
 }
 #[test]
 fn output_bounds_include_sibling_of_a_named_search_root() {
-    expect("find sub -type f -exec gzip {} \\;", Decision::Allow);
+    expect("find sub -type f -exec gzip {} \\;", Decision::NeedApproval);
     assert!(writes("find sub -type f -exec gzip {} \\;").iter().any(|p| matches!(p, PathResolution::BoundedPathSet {roots, may_escape: false} if roots == &["/tmp/project"])));
     // Absolute roots may denote files too. Appending a suffix to the root
     // itself can name a sibling outside the workspace, unlike './'.
@@ -108,14 +108,17 @@ fn bounded_decompression_does_not_assume_every_output_stays_below_root() {
         "find . -name '*.gz' -exec gunzip {} \\;",
         Decision::NeedApproval,
     );
-    expect("find sub -name '*.gz' -exec gunzip {} \\;", Decision::Allow);
+    expect(
+        "find sub -name '*.gz' -exec gunzip {} \\;",
+        Decision::NeedApproval,
+    );
     expect(
         "find . -name '*.bz2' -exec bzip2 -d {} \\;",
         Decision::NeedApproval,
     );
     expect(
         "find sub -name '*.bz2' -exec bzip2 -d {} \\;",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
 }
 #[test]
@@ -149,7 +152,7 @@ fn default_and_keep_modes_preserve_real_output_and_possible_input_deletion() {
                 .any(|p| p.concrete_path() == Some(output)),
             "{command}"
         );
-        expect(&command, Decision::Allow);
+        expect(&command, Decision::NeedApproval);
         expect(&format!("{tool} /opt/{input}"), Decision::NeedApproval);
         let response = ShellQueryCore::new().check(request(&command));
         assert!(!response.decision_trace.execution_semantics.is_empty());
@@ -159,6 +162,7 @@ fn default_and_keep_modes_preserve_real_output_and_possible_input_deletion() {
                 .iter()
                 .any(|p| p.concrete_path() == Some(output))
         );
+        expect(&format!("{tool} -k {input}"), Decision::Allow);
     }
 }
 #[test]
@@ -196,7 +200,7 @@ fn literal_runtime_filename_bytes_do_not_receive_a_second_shell_expansion() {
         "file='$NAME'; bzip2 \"$file\"",
         "file='~literal'; compress \"$file\"",
     ] {
-        expect(command, Decision::Allow);
+        expect(command, Decision::NeedApproval);
     }
     assert!(
         writes("file='$NAME'; bzip2 \"$file\"")

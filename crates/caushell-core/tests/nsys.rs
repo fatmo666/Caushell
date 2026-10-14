@@ -74,7 +74,7 @@ fn workspace_and_external_child_mutations_use_existing_guards() {
     for (command, decision) in [
         (
             "nsys stats -o '@rm -f result.txt' report.sqlite",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "nsys stats -o '@rm -f /opt/example' report.sqlite",
@@ -114,7 +114,7 @@ fn graph_keeps_parent_preparation_child_delete_and_stdin_provenance() {
                 .any(|e| e.to == streams[0].id && e.kind == EdgeKind::Produces)
         );
         assert!(
-            graph
+            !graph
                 .edges()
                 .any(|e| e.to == streams[0].id && e.kind == EdgeKind::Consumes)
         );
@@ -219,11 +219,15 @@ fn literal_shell_symbols_and_inner_quotes_remain_argv_data() {
         "nsys stats -o '@echo $TOKEN ; rm -f /opt/example >out' report.sqlite",
         "nsys stats -o '@echo $(rm -f /opt/example)' report.sqlite",
         "nsys stats -o '@echo * ~' report.sqlite",
-        "nsys stats -o '@rm -f \"/opt/example\"' report.sqlite",
         "nsys stats -o '@sh -c true' report.sqlite",
     ] {
         check(command, Decision::Allow);
     }
+    // Native inner quotes are filename bytes, but the declared rm is still deletion.
+    check(
+        "nsys stats -o '@rm -f \"/opt/example\"' report.sqlite",
+        Decision::NeedApproval,
+    );
 }
 
 #[test]
@@ -339,7 +343,7 @@ fn ordinary_collection_runs_the_same_child_guards_as_direct_commands() {
         ),
         (
             "nsys profile -o reports/run rm -f result.txt",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "nsys profile -o reports/run rm -f /opt/example",
@@ -572,7 +576,7 @@ fn explicit_child_environment_changes_only_the_child_analysis() {
         ),
         (
             "nsys profile --env-var=TARGET=result.txt bash -c 'rm -f \"$TARGET\"'",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "nsys profile -e 'TARGET=/opt/example,EMPTY=' env bash -c 'rm -f \"$TARGET\"'",
@@ -627,7 +631,13 @@ fn decoded_environment_data_is_not_expanded_a_second_time_or_leaked_to_parent() 
             true,
         ),
     ]);
-    let mut core = ShellQueryCore::new();
+    // Isolate committed environment/path provenance from deletion approval.
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::FileDeletion,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
+    let mut core = ShellQueryCore::with_policy(policy);
     let r = core.check(req);
     assert_eq!(r.decision, Decision::Allow, "{:?}", r.decision_trace);
     let graph = core.session_graph(&SessionId::new("nsys-test")).unwrap();

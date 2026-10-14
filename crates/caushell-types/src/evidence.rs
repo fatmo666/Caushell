@@ -455,6 +455,7 @@ impl Evidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    NetworkUpload(NetworkUploadEvidence),
     NetworkListenerExposure(NetworkListenerExposureEvidence),
     CatastrophicShellProcessExplosion(CatastrophicShellProcessExplosionEvidence),
     ImportedPackageExecution(ImportedPackageExecutionEvidence),
@@ -469,6 +470,18 @@ pub enum EvidenceKind {
     TaintedExecutionSource(TaintedExecutionSourceEvidence),
     TaintedExecutionUnresolvedOrigin(TaintedExecutionUnresolvedOriginEvidence),
     TaintedExecutionBudgetExceeded(TaintedExecutionBudgetExceededEvidence),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkUploadEvidence {
+    pub node_id: String,
+    pub command: String,
+    pub endpoint: String,
+    pub endpoint_kind: crate::ProvenanceEndpointKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_source: Option<String>,
+    #[serde(default)]
+    pub lineage_unresolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

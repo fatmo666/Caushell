@@ -61,7 +61,7 @@ fn definition_filename_changes_do_not_change_the_decision() {
         );
         assert_source(
             &format!("conda env create -p env -f {name}"),
-            Decision::Allow,
+            Decision::NeedApproval,
             "requirement_file",
         );
     }

@@ -413,7 +413,7 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         }
         Err(error) => ResolveInvocationResult::SelectionError {
             normalized_command_name,
-            gap_kind: if profile.opaque_on_unresolved {
+            gap_kind: if profile.opaque_on_unresolved && !profile.read_only_control_surface {
                 ResolveGapKind::OpaqueInvocation
             } else {
                 gap_kind_for_bind_error(&error)
@@ -441,7 +441,8 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                     })
             })
             .map(|mut bound| {
-                bound.operation_semantics_unresolved = profile.opaque_on_unresolved;
+                bound.operation_semantics_unresolved =
+                    profile.opaque_on_unresolved && !profile.read_only_control_surface;
                 bound
                     .effects
                     .extend(profile.selection_failure_effects.iter().cloned());
@@ -11933,15 +11934,12 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ReadPath,
-                        EffectKind::ReadPath,
-                        EffectKind::WritePath,
-                        EffectKind::DeletePath,
-                        EffectKind::ExecutePayload,
-                        EffectKind::WritePath,
-                    ]
+                    vec![EffectKind::ReadPath, EffectKind::WritePath]
                 );
+                assert!(resolved.bound.effects.iter().all(|effect| matches!(
+                    &effect.target,
+                    EffectTarget::Slot(slot) if slot.as_str() == "input_paths"
+                )));
                 for slot in [
                     "script_reads",
                     "script_writes",
@@ -12029,15 +12027,24 @@ mod tests {
                         .iter()
                         .all(|parameter| parameter.name.as_str() != "input_paths")
                 );
-                assert_eq!(
-                    effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ReadPath,
-                        EffectKind::WritePath,
-                        EffectKind::DeletePath,
-                        EffectKind::ExecutePayload,
-                    ]
-                );
+                assert_eq!(effect_kinds(&resolved.bound), Vec::<EffectKind>::new());
+                for slot in [
+                    "program_reads",
+                    "program_writes",
+                    "program_deletes",
+                    "program_executions",
+                ] {
+                    let parameter = resolved
+                        .bound
+                        .bound_parameters
+                        .iter()
+                        .find(|p| p.name.as_str() == slot)
+                        .expect("decoded program slot");
+                    assert!(
+                        parameter.payload_generated && parameter.semantic_values_are_inapplicable(),
+                        "{slot}: {parameter:?}"
+                    );
+                }
                 assert!(crate::collect_recursive_payload_candidates(&resolved.bound).is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -12798,7 +12805,8 @@ mod tests {
                         .bound
                         .bound_parameters
                         .iter()
-                        .all(|parameter| parameter.name.as_str() != "pattern_files")
+                        .all(|parameter| parameter.name.as_str() != "pattern_files"
+                            || parameter.semantic_values_are_inapplicable())
                 );
                 assert_eq!(
                     argument_texts(&resolved.bound, "input_paths"),

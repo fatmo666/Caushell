@@ -132,6 +132,45 @@ impl DataDependencyQuery {
             .collect()
     }
 
+    /// One endpoint's declared request bytes, not every read by its process.
+    pub fn request_input_artifacts(
+        graph: &dyn GraphRead,
+        execution: &NodeId,
+        scope: Option<&(Vec<String>, bool)>,
+    ) -> Vec<NodeId> {
+        Self::input_artifacts_matching(graph, execution, |edge| {
+            let Some((slots, stdin)) = scope else {
+                return true;
+            };
+            let Some(ProvenanceEdgeSemantics::Consume {
+                slot_name,
+                consume_kind,
+                ..
+            }) = &edge.semantics
+            else {
+                return true;
+            };
+            use caushell_types::ProvenanceConsumeKind as Kind;
+            let stream = matches!(
+                consume_kind,
+                Kind::StdinExplicit
+                    | Kind::StdinImplicit
+                    | Kind::PipelineInput
+                    | Kind::TransformInput
+            );
+            (slot_name.is_none() && !stream)
+                || slot_name.as_ref().is_some_and(|slot| slots.contains(slot))
+                || (*stdin
+                    && matches!(
+                        consume_kind,
+                        Kind::StdinExplicit
+                            | Kind::StdinImplicit
+                            | Kind::PipelineInput
+                            | Kind::TransformInput
+                    ))
+        })
+    }
+
     pub fn input_producers(graph: &dyn GraphRead, artifact: &NodeId) -> Vec<NodeId> {
         let mut artifacts = vec![artifact.clone()];
         if let Some(NodeKind::ProvenanceArtifact {

@@ -95,14 +95,20 @@ fn source_entrypoints_register_and_dispatch_the_documented_child() {
     ];
     for (index, (command, executable, form)) in cases.into_iter().enumerate() {
         let (_, response) = check(command, index as u64 + 1);
-        // Interactive surfaces alone use the existing observe policy; this
-        // test validates the capability record, not an invented deny policy.
-        let expected = if matches!(executable, "chroot" | "sg" | "openvt") {
+        // Interactive surfaces alone remain Observe; a declared identity
+        // change has its own independent approval policy.
+        let expected = if matches!(executable, "chroot" | "openvt") {
             Decision::Allow
         } else {
             Decision::NeedApproval
         };
         assert_eq!(response.decision, expected, "{command}: {response:#?}");
+        if matches!(executable, "pkexec" | "ksu" | "sg") {
+            assert!(
+                has_rule(&response, RuleId::PrivilegeBoundary),
+                "{command}: {response:#?}"
+            );
+        }
         assert!(
             has_execution(&response, executable, form),
             "{command}: {response:#?}"
@@ -151,7 +157,9 @@ fn nested_child_paths_reach_the_existing_outside_workspace_guard() {
 #[test]
 fn pkexec_and_chroot_do_not_map_unknown_namespaces_to_the_workspace() {
     let (core, kept_cwd) = check("pkexec --keep-cwd /usr/bin/touch relative", 201);
-    assert_eq!(kept_cwd.decision, Decision::Allow, "{kept_cwd:#?}");
+    assert_eq!(kept_cwd.decision, Decision::NeedApproval, "{kept_cwd:#?}");
+    assert!(has_rule(&kept_cwd, RuleId::PrivilegeBoundary));
+    assert!(!has_rule(&kept_cwd, RuleId::OutsideWorkspaceMutation));
     assert!(has_execution(
         &kept_cwd,
         "pkexec",

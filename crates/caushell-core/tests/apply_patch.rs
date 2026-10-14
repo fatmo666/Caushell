@@ -105,13 +105,13 @@ fn workspace_operations_allow_and_external_operations_require_approval() {
     for body in [
         "*** Add File: new\n+x",
         "*** Update File: old\n-old\n+new",
-        "*** Delete File: gone",
         "*** Update File: src\n*** Move to: dest\n x",
     ] {
         inspect(&argv(body), Decision::Allow);
         inspect(&stdin(body), Decision::Allow);
     }
     for body in [
+        "*** Delete File: gone",
         "*** Add File: /etc/new\n+x",
         "*** Update File: /etc/old\n-old\n+new",
         "*** Delete File: /etc/gone",
@@ -124,7 +124,7 @@ fn workspace_operations_allow_and_external_operations_require_approval() {
     }
 }
 #[test]
-fn graph_retains_read_write_and_move_source_deletion() {
+fn graph_retains_read_write_and_move_source() {
     let paths = inspect(
         &argv("*** Update File: src\n*** Move to: dest\n-old\n+new"),
         Decision::Allow,

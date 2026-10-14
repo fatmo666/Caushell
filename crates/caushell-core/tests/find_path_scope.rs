@@ -47,6 +47,18 @@ fn expect(command: &str, decision: Decision, rule: Option<RuleId>) {
         "{command}: {result:#?}"
     );
 }
+fn expect_local_deletion(command: &str) {
+    expect(command, Decision::NeedApproval, Some(RuleId::FileDeletion));
+    let result = ShellQueryCore::new().check(request(command));
+    assert!(
+        !result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation),
+        "{command}: {result:#?}"
+    );
+}
 fn path_facts(command: &str) -> Vec<(Option<String>, ResolvedPathRole, PathResolution)> {
     let mut runner = PassRunner::new();
     runner.register_request_transform_pass(ParseCommandPass);
@@ -100,7 +112,7 @@ fn implicit_and_explicit_catastrophic_roots_have_the_same_hard_deny() {
         "cd /; find /tmp/project -delete",
         "cd /opt/shared; find /tmp/project -delete",
     ] {
-        expect(command, Decision::Allow, None);
+        expect_local_deletion(command);
     }
     for command in ["cd /opt/shared; find -delete", "find /opt/shared -delete"] {
         expect(
@@ -140,10 +152,11 @@ fn symlink_traversal_is_part_of_direct_deletion_not_only_child_dispatch() {
         "find . -delete",
         "find -P . -delete",
         "find ./src ./cache -delete",
-        "find -L . -print",
-        "find -H . -print",
         "find . -name '-follow' -delete",
     ] {
+        expect_local_deletion(command);
+    }
+    for command in ["find -L . -print", "find -H . -print"] {
         expect(command, Decision::Allow, None);
     }
     for command in [
@@ -186,7 +199,7 @@ fn graph_keeps_traversal_bounds_and_escape_without_replacing_root_reads() {
 #[test]
 fn supplemental_defaults_do_not_replace_or_widen_explicit_glob_roots() {
     for command in ["find ./* -delete", "find ./src/* -delete"] {
-        expect(command, Decision::Allow, None);
+        expect_local_deletion(command);
     }
     for command in [
         "find /opt/shared/* -delete",
@@ -310,6 +323,10 @@ fn file_output_aliases_cannot_manufacture_a_pure_stdout_record_domain() {
     for command in [
         "find . -print0 | xargs -0 rm --",
         "find . -print0 | tee ./paths | xargs -0 rm --",
+    ] {
+        expect_local_deletion(command);
+    }
+    for command in [
         "find . -fprintf ./out '%p\\0'",
         "find . -fprintf /dev/null '%p\\0'",
     ] {

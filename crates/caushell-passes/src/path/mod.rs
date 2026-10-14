@@ -19,8 +19,8 @@ pub(crate) use extract::{
     MutationTargetCandidate, collect_effect_mutation_targets, collect_mutation_scope_facts,
     collect_path_facts, collect_redirection_path_facts, derived_path_slot_name,
     edge_kind_for_mutation_scope_operation, edge_kind_for_path_role, mutation_scope_fact_node_id,
-    path_fact_node_id, path_operand_depends_on_cwd, provenance_artifact_for_path,
-    provenance_edge_for_path_fact, provenance_path_artifact_node_id,
+    path_fact_node_id, path_operand_depends_on_cwd, path_target_is_inapplicable,
+    provenance_artifact_for_path, provenance_edge_for_path_fact, provenance_path_artifact_node_id,
     resolved_path_purpose_for_profile_purpose, resolved_path_role_for_profile_role,
 };
 pub(crate) use normalize::{

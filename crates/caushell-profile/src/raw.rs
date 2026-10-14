@@ -16,6 +16,7 @@ pub struct RawCommandProfile {
     pub argument_control_vocabulary: Option<RawArgumentControlVocabulary>,
     pub selection_failure_effects: Vec<RawEffect>,
     pub opaque_on_unresolved: bool,
+    pub read_only_control_surface: bool,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
@@ -208,6 +209,8 @@ pub struct RawPayloadProjection {
     pub reads: String,
     pub writes: String,
     pub deletes: String,
+    #[serde(default)]
+    pub moves: Option<String>,
     #[serde(default)]
     pub executions: Option<String>,
     #[serde(default)]
@@ -773,6 +776,7 @@ pub enum RawEndpointKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawEndpointUsage {
+    TransportTarget,
     FetchSource,
     UploadTarget,
     ControlPlane,

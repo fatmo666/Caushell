@@ -1,5 +1,14 @@
 //! Container static checks. The sample commands never execute.
 use caushell_core::ShellQueryCore;
+fn path_scope_core() -> ShellQueryCore {
+    // Preserve environment/source/cwd controls independently of deletion approval.
+    let mut p = caushell_types::PolicyConfig::default();
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    ShellQueryCore::with_policy(p)
+}
 use caushell_graph::{NodeKind, SessionGraph, SessionRead};
 use caushell_passes::{
     ComputeEffectiveCwdPass, DecisionAssemblyPass, ExtractExecutionSemanticsPass,
@@ -35,7 +44,7 @@ fn request(command: &str) -> CheckRequest {
 }
 
 fn check(req: CheckRequest, expected: Decision) -> CheckResponse {
-    let response = ShellQueryCore::new().check(req.clone());
+    let response = path_scope_core().check(req.clone());
     assert_eq!(
         response.decision, expected,
         "{}: {:?}",

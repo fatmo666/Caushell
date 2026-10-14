@@ -1662,6 +1662,7 @@ fn path_content_artifact(node: &caushell_graph::GraphNode) -> Option<(&str, Opti
     match artifact {
         ProvenanceArtifact::PathContent { path, version } => Some((path.as_str(), *version)),
         ProvenanceArtifact::PathFamily { .. }
+        | ProvenanceArtifact::PathSelectionContent { .. }
         | ProvenanceArtifact::VariableValue { .. }
         | ProvenanceArtifact::InheritedEnvValue { .. }
         | ProvenanceArtifact::PipelineStream { .. }
@@ -1691,6 +1692,7 @@ fn runtime_input_artifact(
             version,
         } => Some((*source, capture, *version)),
         ProvenanceArtifact::PathFamily { .. }
+        | ProvenanceArtifact::PathSelectionContent { .. }
         | ProvenanceArtifact::PathContent { .. }
         | ProvenanceArtifact::VariableValue { .. }
         | ProvenanceArtifact::InheritedEnvValue { .. }

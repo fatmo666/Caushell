@@ -18,10 +18,10 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("dispatch-cwd-bounds"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
         runtime: RuntimeMetadata {
             runtime_name: "static-test".into(),
             tool_name: Some("Bash".into()),
@@ -144,29 +144,33 @@ fn local_directory_sets_allow_relative_effects_and_survive_wrappers() {
     for command in [
         r"find . -mindepth 1 -execdir touch marker \;",
         r"find . -execdir touch marker \;",
-        r"find /tmp/project -mindepth '1' -execdir touch marker \;",
+        r"find /workspace/project -mindepth '1' -execdir touch marker \;",
         r"find ./sub -execdir touch marker \;",
-        r"find . -mindepth 1 -execdir rm -- {} \;",
         r"find . -execdir env sh -c 'touch marker' \;",
         r"find . -execdir sh -c 'cd sub && touch marker' \;",
         r"find . -execdir sh -c 'f() { touch marker; }; f' \;",
-        r"find /opt/shared -mindepth 1 -execdir sh -c 'cd /tmp/project && touch marker' \;",
+        r"find /opt/shared -mindepth 1 -execdir sh -c 'cd /workspace/project && touch marker' \;",
         r"find . -execdir tar -cf archive.tar ./input \;",
         r"find . -execdir tar -C sub -cf archive.tar ./input \;",
         r"find . -execdir cp {} {}.bak \;",
-        r"find '$UNKNOWN' -type d -execdir rmdir -p {} \;",
         r"find . -execdir sh -c 'echo x > marker' \;",
     ] {
         decision(command, Decision::Allow);
+    }
+    for command in [
+        r"find . -mindepth 1 -execdir rm -- {} \;",
+        r"find '$UNKNOWN' -type d -execdir rmdir -p {} \;",
+    ] {
+        decision(command, Decision::NeedApproval);
     }
 }
 
 #[test]
 fn root_events_escapes_unknowns_and_absolute_overrides_keep_approval() {
     for command in [
-        r"find /tmp/project -execdir touch marker \;",
-        r"find /tmp/project -mindepth 1 -mindepth 0 -execdir touch marker \;",
-        r#"find /tmp/project -mindepth 1 -mindepth "$DEPTH" -execdir touch marker \;"#,
+        r"find /workspace/project -execdir touch marker \;",
+        r"find /workspace/project -mindepth 1 -mindepth 0 -execdir touch marker \;",
+        r#"find /workspace/project -mindepth 1 -mindepth "$DEPTH" -execdir touch marker \;"#,
         r"find /opt/shared -mindepth 1 -execdir touch marker \;",
         r"find . /opt/shared -mindepth 1 -execdir touch marker \;",
         r"find -L . -mindepth 1 -execdir touch marker \;",
@@ -228,7 +232,7 @@ fn derived_functions_keep_local_parameters_and_do_not_hide_unresolved_launches()
     for command in [
         r#"find . -execdir sh -c 'f() { touch "$1"; }; f /opt/shared/out' \;"#,
         r#"find . -execdir sh -c 'f() { touch "$@"; }; f marker /opt/shared/out' \;"#,
-        r#"find . -execdir sh -c 'f() { touch "$1"; }; f /opt/shared/out' _ /tmp/project/marker \;"#,
+        r#"find . -execdir sh -c 'f() { touch "$1"; }; f /opt/shared/out' _ /workspace/project/marker \;"#,
         r#"find . -execdir sh -c 'f() { touch "$1"; }; f "$UNKNOWN"' \;"#,
         r#"find . -execdir sh -c 'f() { shift; touch "$2"; }; f $UNKNOWN marker local' \;"#,
         r#"find . -execdir sh -c 'f() { target=$2; }; f $UNKNOWN marker; touch "$target"' \;"#,
@@ -264,11 +268,11 @@ fn scope_is_anchored_after_cd_not_at_request_entry_and_does_not_change_caller() 
         Decision::NeedApproval,
     );
     decision(
-        r"cd /opt/shared; find /tmp/project -mindepth 1 -execdir touch marker \;",
+        r"cd /opt/shared; find /workspace/project -mindepth 1 -execdir touch marker \;",
         Decision::Allow,
     );
     decision(
-        r"cd /opt/shared; find /tmp/project -mindepth 1 -execdir echo {} \; > outer",
+        r"cd /opt/shared; find /workspace/project -mindepth 1 -execdir echo {} \; > outer",
         Decision::NeedApproval,
     );
     decision(
@@ -279,7 +283,7 @@ fn scope_is_anchored_after_cd_not_at_request_entry_and_does_not_change_caller() 
         r"find /opt/shared -mindepth 1 -execdir echo {} \; ; touch marker",
         ProfileRegistry::built_in().unwrap(),
     );
-    assert_eq!(ctx.known_request_exit_cwd(), Some("/tmp/project"));
+    assert_eq!(ctx.known_request_exit_cwd(), Some("/workspace/project"));
 }
 
 #[test]
@@ -293,7 +297,7 @@ fn graph_contains_bounds_not_invented_filenames_and_cwd_is_not_exact() {
     let cwd = ctx.execution_cwd_for_node(&child.source_node_id).unwrap();
     assert!(matches!(cwd, EffectiveCwd::Bounded { unknown: false, .. }));
     assert_eq!(cwd.as_known(), None);
-    assert_eq!(cwd.bounded_roots(), &["/tmp/project".to_string()]);
+    assert_eq!(cwd.bounded_roots(), &["/workspace/project".to_string()]);
     let graph = SessionGraph::new();
     let summary = SessionSummary::new();
     let staged = StagedSession::new(&graph, ctx.request(), &summary, ctx.pending_mutations());
@@ -313,7 +317,7 @@ fn graph_contains_bounds_not_invented_filenames_and_cwd_is_not_exact() {
     assert!(
         writes.iter().all(
             |p| matches!(p, PathResolution::BoundedPathSet { roots, may_escape: false }
-        if roots == &["/tmp/project".to_string()])
+        if roots == &["/workspace/project".to_string()])
         ),
         "{writes:?}"
     );

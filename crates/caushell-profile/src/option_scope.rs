@@ -190,8 +190,29 @@ pub(crate) fn scan_leading_options(
         .map(|flag| flag.as_str())
         .collect();
     while index < scope.end_index {
+        let structure = crate::argument_structure(&projection.args[index]);
+        if !structure.exact {
+            // Quotes certify at most field width, not native option ownership.
+            // Keep known effects, but do not bless a tail that may introduce
+            // another option or a terminator. A proven data prefix is distinct
+            // from an unbounded runtime list.
+            result.ownership_unresolved |= structure.may_start_with("-")
+                || prefixes == OptionPrefixPolicy::DashAndPlus && structure.may_start_with("+");
+            // A non-option batch can end the leading option phase without
+            // knowing its length. Its disappearance matters only if later
+            // words could then become options/terminators instead of data.
+            result.ownership_unresolved |= !permuted
+                && structure.fields != crate::ArgumentFieldCount::ExactlyOne
+                && projection.args[index + 1..scope.end_index]
+                    .iter()
+                    .any(|arg| {
+                        let later = crate::argument_structure(arg);
+                        later.may_start_with("-")
+                            || prefixes == OptionPrefixPolicy::DashAndPlus
+                                && later.may_start_with("+")
+                    });
+        }
         if positional_prefix.is_some() {
-            let structure = crate::argument_structure(&projection.args[index]);
             // This grammar's boundary is counted in actual argv fields, not
             // source words. Dynamic option words/field width cannot certify it.
             result.ownership_unresolved |= !structure.exact;
@@ -396,12 +417,20 @@ pub(crate) fn scan_leading_options(
             result.error = Some(format!("missing operand for {token:?}"));
             return result;
         }
-        if positional_prefix.is_some() {
-            result.ownership_unresolved |= projection.args[index + 1..index + 1 + extra]
+        // Consuming one source token does not prove consuming one argv word.
+        // A disappearing/multi-field operand can expose following words as
+        // controls, even for grammars without a positional-prefix boundary.
+        result.ownership_unresolved |=
+            projection.args[index + 1..index + 1 + extra]
                 .iter()
                 .any(|arg| {
                     crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne
                 });
+        if mode == Some(FlagOperandMode::OptionalNextArg) && extra == 1 {
+            let operand = crate::argument_structure(&projection.args[index + 1]);
+            result.ownership_unresolved |= !operand.exact
+                && (operand.may_start_with("-")
+                    || prefixes == OptionPrefixPolicy::DashAndPlus && operand.may_start_with("+"));
         }
         index += 1 + extra;
         result.scope.end_index = index;

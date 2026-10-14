@@ -155,7 +155,7 @@ fn known_workspace_prefix_is_checked_normally_and_stored_as_write_and_delete() {
         "conda env update -p env --prune",
         "conda env remove -p env",
     ] {
-        let facts = inspect(command, Decision::Allow);
+        let facts = inspect(command, Decision::NeedApproval);
         assert_eq!(facts.mutations().len(), 2, "{command}");
         assert!(
             facts
@@ -223,7 +223,7 @@ fn last_prefix_wins_without_losing_unknowns() {
     for (command, expected, target) in [
         (
             "conda install -p /opt/old -p env numpy",
-            Decision::Allow,
+            Decision::NeedApproval,
             Some("/tmp/project/env"),
         ),
         (
@@ -265,7 +265,7 @@ fn prefix_expansion_uses_request_facts_not_host_environment() {
     req.shell_state_before =
         req.shell_state_before
             .with_exact_scalar_variable("PREFIX", "/tmp/project/env", true);
-    let facts = inspect_request(req, Decision::Allow);
+    let facts = inspect_request(req, Decision::NeedApproval);
     assert!(
         facts
             .mutations()
@@ -341,7 +341,7 @@ fn download_only_distinguishes_cache_acquisition_from_create_prefix_removal() {
     }
     inspect(
         "conda create --download-only -p env python",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
 }
 
@@ -358,7 +358,7 @@ fn env_update_with_prune_preserves_environment_mutation_effects() {
 fn definition_input_is_not_an_environment_write_target() {
     let facts = inspect(
         "conda env create -p env -f /opt/definitions/dev.yml",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
     assert!(
         facts
@@ -456,7 +456,26 @@ fn common_registry_local_file_and_channel_qualified_locators_keep_shared_policy(
         ),
         ("./numpy.conda", PackageLocatorKind::LocalPath),
     ] {
-        let facts = inspect(&format!("conda install -p env {locator}"), Decision::Allow);
+        let command = format!("conda install -p env {locator}");
+        let facts = inspect(&command, Decision::NeedApproval);
+        let response = ShellQueryCore::new().check(request(&command));
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::FileDeletion)
+        );
+        assert!(
+            !response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|f| matches!(
+                    f.rule_id,
+                    RuleId::ImportedPackageExecution | RuleId::OutsideWorkspaceMutation
+                ))
+        );
         assert!(
             facts
                 .packages

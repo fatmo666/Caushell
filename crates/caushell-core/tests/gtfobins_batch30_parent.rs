@@ -8,7 +8,13 @@ use caushell_types::{
 
 fn graph(command: &str) -> Vec<GraphNode> {
     let id = SessionId::new("gtfo30-parent-xz");
-    let mut core = ShellQueryCore::new();
+    // Isolate committed suffix/path facts from the independent deletion policy.
+    let mut policy = caushell_types::PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    let mut core = ShellQueryCore::with_policy(policy);
     let response = core.check(CheckRequest {
         session_id: id.clone(),
         sequence_no: CommandSequenceNo::new(1),

@@ -1198,6 +1198,23 @@ pub fn materialize_projected_invocation(
                 implicit_input_source: arg.implicit_input_source,
                 runtime_argument_domain: arg.runtime_argument_domain.clone(),
                 substitution_shape: arg.substitution_shape,
+                lexical_field_prefix: arg.lexical_field_prefix.clone().or_else(|| {
+                    if arg.runtime_data
+                        || arg.implicit_input_source.is_some()
+                        || arg.quoted
+                        || !matches!(arg.node_kind.as_str(), "word" | "concatenation")
+                        || !(arg.text == "~" || arg.text.starts_with("~/"))
+                        || arg.text[1..].contains(['$', '`', '\'', '"', '\\', '~'])
+                    {
+                        return None;
+                    }
+                    // Tilde's value is not field-split or glob-expanded. A pure
+                    // pathname suffix may generate many fields, all retaining
+                    // this spelling prefix. Use supplied bindings, no lookup.
+                    let binding = bindings.get("HOME")?;
+                    let prefix = exact_scalar_session_value(binding.value)?;
+                    (prefix.starts_with('/') && !prefix.contains('\0')).then_some(prefix)
+                }),
                 // A resolved field is argv data, not shell source to decode
                 // again. Its binding origin stays in arg_resolutions below.
                 runtime_data: arg.runtime_data

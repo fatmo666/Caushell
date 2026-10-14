@@ -262,10 +262,49 @@ fn collect_resolved_path_mutations(
                         semantics,
                     });
                 }
+            } else if path.role == PathRole::Read {
+                mutations.extend(selection_content_mutations(
+                    &source_node_id,
+                    &slot_name,
+                    &resolution,
+                    path.purpose,
+                    Some(&normalized_command_name),
+                    path.content_selector.as_deref(),
+                ));
             }
         }
     }
     mutations
+}
+
+fn selection_content_mutations(
+    source: &caushell_graph::NodeId,
+    slot: &str,
+    resolution: &PathResolution,
+    purpose: Option<caushell_profile::PathPurpose>,
+    command: Option<&str>,
+    selector: Option<&str>,
+) -> Vec<PendingMutation> {
+    let Some((relation, semantics)) =
+        provenance_edge_for_path_fact(PathRole::Read, purpose, slot, command)
+    else {
+        return Vec::new();
+    };
+    vec![PendingMutation::AddProvenanceArtifact {
+        source_node_id: source.clone(),
+        node_id: caushell_graph::NodeId::new(format!(
+            "artifact:path-selection:{}:{}:{}:{resolution:?}:{selector:?}",
+            source.0.len(),
+            source.0,
+            slot
+        )),
+        artifact: caushell_types::ProvenanceArtifact::PathSelectionContent {
+            resolution: resolution.clone(),
+            selector: selector.map(str::to_string),
+        },
+        relation,
+        semantics,
+    }]
 }
 
 fn project_plain_path_mutations(
@@ -299,6 +338,10 @@ fn project_plain_path_mutations(
                 semantics,
             });
         }
+    } else if role == PathRole::Read {
+        mutations.extend(selection_content_mutations(
+            source, slot, resolution, purpose, name, None,
+        ));
     }
     mutations
 }

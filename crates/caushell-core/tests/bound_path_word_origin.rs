@@ -213,15 +213,27 @@ fn attached_literal_tilde_does_not_require_home_but_standalone_tilde_does() {
 
 #[test]
 fn catastrophic_target_check_does_not_expand_literal_or_variable_tildes() {
-    for command in [
-        "rm -rf '~'",
-        r"rm -rf \~",
-        "p='~'; rm -rf \"$p\"",
-        "cp --target-directory=~ input",
-    ] {
+    for command in ["rm -rf '~'", r"rm -rf \~", "p='~'; rm -rf \"$p\""] {
         let result = ShellQueryCore::new().check(request(command, Some("/usr")));
-        assert_eq!(result.decision, Decision::Allow, "{command}: {result:#?}");
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:#?}"
+        );
+        assert!(
+            !result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete)
+        );
     }
+    assert_eq!(
+        ShellQueryCore::new()
+            .check(request("cp --target-directory=~ input", Some("/usr")))
+            .decision,
+        Decision::Allow
+    );
     let result = ShellQueryCore::new().check(request("rm -rf ~", Some("/usr")));
     assert_eq!(result.decision, Decision::Deny, "{result:#?}");
 }

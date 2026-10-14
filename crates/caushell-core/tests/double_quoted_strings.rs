@@ -84,7 +84,7 @@ fn multiline_nested_shell_does_not_hide_external_mutations_in_first_command() {
 
 #[test]
 fn multiline_workspace_nested_shell_keeps_child_command_and_path() {
-    let core = inspect("bash -c \"echo ok\nrm -f local\"", Decision::Allow);
+    let core = inspect("bash -c \"echo ok\nrm -f local\"", Decision::NeedApproval);
     assert!(has_path(&core, "/tmp/project/local"));
     assert!(core.iter().any(
         |node| matches!(&node.kind, NodeKind::DerivedInvocation { command_name, .. }
@@ -95,7 +95,7 @@ fn multiline_workspace_nested_shell_keeps_child_command_and_path() {
 #[test]
 fn single_and_double_quoted_multiline_scripts_retain_the_same_modification() {
     for (target, expected) in [
-        ("local", Decision::Allow),
+        ("local", Decision::NeedApproval),
         ("/etc/quoted-outside", Decision::NeedApproval),
     ] {
         let script = format!("echo ok\nrm -f {target}");
@@ -160,7 +160,7 @@ fn escaped_script_argv_retains_one_child_mutation_and_the_real_target() {
     for shell in ["bash", "sh"] {
         for (target, expected) in [
             ("/etc/quoted-outside", Decision::NeedApproval),
-            ("/tmp/project/local", Decision::Allow),
+            ("/tmp/project/local", Decision::NeedApproval),
         ] {
             let script = format!("TARGET={target}\nrm -f \"$TARGET\"");
             let command = format!("{shell} -c {}", double_quote(&script));
@@ -220,7 +220,7 @@ fn escaped_child_variable_does_not_expand_in_the_outer_shell() {
         "TARGET=/etc/quoted-outside; bash -c {}",
         double_quote(script)
     );
-    let graph = inspect(&command, Decision::Allow);
+    let graph = inspect(&command, Decision::NeedApproval);
     assert!(has_path(&graph, "/tmp/project/local"));
     assert!(!has_path(&graph, "/etc/quoted-outside"));
 }
@@ -230,7 +230,7 @@ fn escaped_dollar_inside_child_quotes_is_not_decoded_a_second_time() {
     let script = "TARGET=/etc/quoted-outside\nrm -f \"\\$TARGET\"";
     let graph = inspect(
         &format!("bash -c {}", double_quote(script)),
-        Decision::Allow,
+        Decision::NeedApproval,
     );
     assert!(!has_path(&graph, "/etc/quoted-outside"));
     assert!(graph.iter().any(|node| matches!(&node.kind,

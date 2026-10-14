@@ -58,14 +58,10 @@ fn information_modes_and_ignored_stdin_do_not_claim_file_modification_or_leakage
     for command in [
         "mkdir cache/dir",
         "mkdir -v cache/dir",
-        "rmdir cache/dir",
-        "rmdir -v cache/dir",
         "mkfifo cache/pipe",
         "mknod cache/pipe p",
         "ln public cache/link",
         "ln -sv public cache/link",
-        "rm cache/file",
-        "rm -v cache/file",
         "truncate -s0 cache/file",
         "chmod 600 cache/file",
         "chmod -v 600 cache/file",
@@ -74,6 +70,29 @@ fn information_modes_and_ignored_stdin_do_not_claim_file_modification_or_leakage
         "truncate --help -s0 cache/file",
     ] {
         expect(&format!("cat .env | {command}{SINK}"), Decision::Allow);
+    }
+    for command in [
+        "rmdir cache/dir",
+        "rmdir -v cache/dir",
+        "rm cache/file",
+        "rm -v cache/file",
+    ] {
+        let r = expect(
+            &format!("cat .env | {command}{SINK}"),
+            Decision::NeedApproval,
+        );
+        assert!(
+            r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::FileDeletion)
+        );
+        assert!(
+            !r.decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::SensitiveDataExfiltration)
+        );
     }
 }
 

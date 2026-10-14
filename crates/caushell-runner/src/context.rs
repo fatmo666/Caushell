@@ -932,6 +932,7 @@ mod tests {
                 runtime_taint: caushell_types::RuntimeTaintPolicy::default(),
                 sensitive_paths: caushell_types::SensitivePathPolicy::default(),
                 path_trust_sets: std::collections::BTreeMap::new(),
+                mutation_path_exemptions: caushell_types::default_mutation_path_exemptions(),
             },
         );
 

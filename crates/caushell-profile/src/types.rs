@@ -411,6 +411,7 @@ pub enum EndpointKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointUsage {
+    TransportTarget,
     FetchSource,
     UploadTarget,
     ControlPlane,
@@ -795,6 +796,8 @@ pub struct PayloadProjection {
     pub reads: SlotName,
     pub writes: SlotName,
     pub deletes: SlotName,
+    /// Optional native relocation sources, distinct from deleted content.
+    pub moves: Option<SlotName>,
     /// Opaque executable boundary, present only when the grammar declares it.
     pub executions: Option<SlotName>,
     /// Possible explicit stdout emissions. Empty only after complete decoding.
@@ -1855,6 +1858,9 @@ pub struct CommandProfile {
     /// Opt in to operation uncertainty for failed selection or binding residuals.
     /// The action is supplied by ResolvePolicy, not by the Profile.
     pub opaque_on_unresolved: bool,
+    /// Complete native control vocabulary only queries/reads/formats data.
+    /// Unknown argv ownership remains a residual, not unknown operation risk.
+    pub read_only_control_surface: bool,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
@@ -1901,6 +1907,7 @@ impl CommandProfile {
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
+            read_only_control_surface: false,
             forms: Vec::new(),
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),

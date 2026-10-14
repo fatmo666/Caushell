@@ -8,6 +8,7 @@ pub(crate) struct PatchTargets {
     pub reads: Vec<String>,
     pub writes: Vec<String>,
     pub deletes: Vec<String>,
+    pub moves: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -70,7 +71,7 @@ pub(crate) fn decode(
                 let source = update_source.take().ok_or(InvalidPayload)?;
                 targets.reads.push(source.clone());
                 if let Some(dest) = move_target.take() {
-                    targets.deletes.push(source);
+                    targets.moves.push(source);
                     targets.writes.push(dest);
                 } else {
                     targets.writes.push(source);
@@ -171,7 +172,8 @@ mod tests {
         let p = parse("*** Begin Patch\n*** Add File: 新 file\n+x\n*** Delete File: gone\n*** Update File: old\n*** Move to: /tmp/new\n@@ context\n-old\n+new\n*** Update File: same\n x\n*** End of File\n*** End Patch").unwrap();
         assert_eq!(p.reads, ["old", "same"]);
         assert_eq!(p.writes, ["新 file", "/tmp/new", "same"]);
-        assert_eq!(p.deletes, ["gone", "old"]);
+        assert_eq!(p.deletes, ["gone"]);
+        assert_eq!(p.moves, ["old"]);
     }
     #[test]
     fn content_headers_and_shell_syntax_are_data() {

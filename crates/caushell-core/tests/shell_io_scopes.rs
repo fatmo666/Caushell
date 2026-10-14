@@ -25,7 +25,13 @@ fn request(command: &str, sequence: u64) -> CheckRequest {
 }
 
 fn expect(command: &str, exfil: bool) {
-    let response = ShellQueryCore::new().check(request(command, 1));
+    // Test stream/launch provenance independently of deletion approval.
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::FileDeletion,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
+    let response = ShellQueryCore::with_policy(policy).check(request(command, 1));
     assert_eq!(
         response.decision,
         if exfil {

@@ -63,6 +63,92 @@ fn values<'a>(b: &'a BoundInvocation, name: &str) -> Vec<&'a str> {
         .collect()
 }
 
+fn selection_for(policy: OptionScopePolicy, command: &str) -> BoundInvocation {
+    let p = profile(policy);
+    let parsed = parse_command(command, ShellKind::Bash).unwrap();
+    let projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let selection = select_invocation(&p, &projection).unwrap();
+    bind_invocation(&p, &projection, &selection)
+}
+
+fn unresolved(b: &BoundInvocation) -> bool {
+    b.residuals
+        .iter()
+        .any(|r| r.kind == ResidualKind::UnboundControlSurface)
+}
+
+#[test]
+fn unknown_words_before_native_option_boundary_are_not_proven_file_operands() {
+    for c in [
+        "synthetic-transfer file $DATA",
+        "synthetic-transfer file \"$DATA\"",
+        "synthetic-transfer -f value \"$DATA\"",
+    ] {
+        let b = selection_for(OptionScopePolicy::PermutedOptions, c);
+        assert!(unresolved(&b), "{c}: {b:?}");
+    }
+    for c in [
+        "synthetic-transfer -- \"$DATA\"",
+        "synthetic-transfer file -- $DATA",
+        "synthetic-transfer ./\"$DATA\"",
+        "synthetic-transfer -f \"$DATA\" file",
+    ] {
+        let b = selection_for(OptionScopePolicy::PermutedOptions, c);
+        assert!(!unresolved(&b), "{c}: {b:?}");
+    }
+}
+
+#[test]
+fn disappearing_or_multiword_option_operands_keep_known_semantics_but_not_ownership() {
+    for policy in [
+        OptionScopePolicy::LeadingOptions,
+        OptionScopePolicy::PermutedOptions,
+    ] {
+        let b = selection_for(policy, "synthetic-transfer -f $DATA -o out file");
+        assert!(unresolved(&b), "{policy:?}: {b:?}");
+        assert_eq!(values(&b, "output"), ["out"]);
+        let b = selection_for(policy, "synthetic-transfer -f \"$DATA\" -o out file");
+        assert!(!unresolved(&b), "{policy:?}: {b:?}");
+    }
+}
+
+#[test]
+fn bounded_native_batches_keep_per_item_path_proof_without_claiming_scalar_arity() {
+    let p = profile(OptionScopePolicy::PermutedOptions);
+    let parsed = parse_command("synthetic-transfer file placeholder", ShellKind::Bash).unwrap();
+    let mut projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let tail = &mut projection.args[1];
+    tail.text.clear();
+    tail.implicit_input_source = Some(caushell_types::ImplicitInputSource::StdinData);
+    tail.node_kind = "runtime_argument_list".into();
+    tail.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
+        roots: vec!["./input".into()],
+        may_escape: false,
+    });
+    let shape = argument_structure(tail);
+    assert_eq!(shape.fields, ArgumentFieldCount::ZeroOrMore);
+    assert!(!shape.may_start_with("-"));
+    let selected = select_invocation(&p, &projection).unwrap();
+    assert!(!unresolved(&bind_invocation(&p, &projection, &selected)));
+    projection.args[1].node_kind = "runtime_scalar".into();
+    projection.args[1].runtime_argument_domain =
+        Some(caushell_types::RuntimeArgumentDomain::PathTemplate {
+            roots: vec!["./input".into()],
+            may_escape: false,
+            prefix: "".into(),
+            suffix: ".bak".into(),
+        });
+    let shape = argument_structure(&projection.args[1]);
+    assert_eq!(shape.fields, ArgumentFieldCount::ExactlyOne);
+    assert!(!shape.may_start_with("-"));
+    let selected = select_invocation(&p, &projection).unwrap();
+    assert!(!unresolved(&bind_invocation(&p, &projection, &selected)));
+    projection.args[1].runtime_argument_domain =
+        Some(caushell_types::RuntimeArgumentDomain::Unbounded);
+    let selected = select_invocation(&p, &projection).unwrap();
+    assert!(unresolved(&bind_invocation(&p, &projection, &selected)));
+}
+
 #[test]
 fn options_after_files_preserve_operand_order_without_rewriting_argv() {
     for c in [

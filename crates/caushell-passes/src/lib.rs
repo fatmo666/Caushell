@@ -3,6 +3,7 @@ mod path;
 mod support;
 
 pub use passes::NetworkListenerGuardPass;
+pub use passes::NetworkUploadGuardPass;
 pub use passes::StateOperationGuardPass;
 pub use passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, ComputeEffectiveCwdPass,
@@ -13,10 +14,10 @@ pub use passes::{
     ExtractImportedPackageProvenancePass, ExtractPathFactsPass, ExtractPipelineFlowPass,
     ExtractPipelineStreamProvenancePass, ExtractProcessSubstitutionProvenancePass,
     ExtractRedirectProvenancePass, ExtractValueProvenancePass, ExtractVariableBindingIntentPass,
-    ExtractVariableBindingsPass, GitDestructiveOperationGuardPass,
+    ExtractVariableBindingsPass, FileDeletionGuardPass, GitDestructiveOperationGuardPass,
     ImportedPackageExecutionGuardPass, InteractiveEscapeGuardPass,
     OutsideWorkspaceMutationGuardPass, OutsideWorkspaceScriptSourcePass,
-    OutsideWorkspaceStartupConfigPass, ParseCommandPass, ProcessControlGuardPass,
-    ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
+    OutsideWorkspaceStartupConfigPass, ParseCommandPass, PrivilegeBoundaryGuardPass,
+    ProcessControlGuardPass, ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
     SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };

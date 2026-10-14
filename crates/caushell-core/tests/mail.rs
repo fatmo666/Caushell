@@ -4,7 +4,7 @@ use caushell_graph::{EdgeKind, NodeKind, SessionGraph};
 use caushell_types::*;
 
 fn request(command: &str) -> CheckRequest {
-    let mut state = ShellStateSnapshot::new("/tmp/project");
+    let mut state = ShellStateSnapshot::new("/workspace/project");
     state.observability.variables = ShellStateKnowledge::Complete;
     state.observability.aliases = ShellStateKnowledge::Complete;
     state.observability.functions = ShellStateKnowledge::Complete;
@@ -20,7 +20,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 fn check(command: &str, expected: Decision) -> CheckResponse {
@@ -42,12 +42,15 @@ fn has_rule(r: &CheckResponse, rule: RuleId) -> bool {
             .iter()
             .any(|p| p.rule_id == rule)
 }
-// Isolate Graph acceptance from unknown spill storage and the separately
-// diagnosed upload-target/config taint overapproximation. These are explicit
-// TEST overrides, not product defaults; the default diagnostic is tested below.
+// Isolate Graph acceptance from spill/deletion and execution approval.
+// These are test overrides; default decisions are checked separately.
 fn graph_core() -> ShellQueryCore {
     let mut policy = PolicyConfig::default();
-    for rule in [RuleId::OutsideWorkspaceMutation, RuleId::TaintedExecution] {
+    for rule in [
+        RuleId::OutsideWorkspaceMutation,
+        RuleId::FileDeletion,
+        RuleId::TaintedExecution,
+    ] {
         policy
             .rule_policy
             .rules
@@ -244,7 +247,7 @@ fn graph_records_email_destination_without_url_or_file_coercion_and_roundtrips()
         }} if endpoint == address)));
     }
     assert!(!graph.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, .. }} if endpoint == "./local")));
-    assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact { role: ResolvedPathRole::Write, resolution, .. } if resolution.concrete_path() == Some("/tmp/project/local"))));
+    assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact { role: ResolvedPathRole::Write, resolution, .. } if resolution.concrete_path() == Some("/workspace/project/local"))));
     assert!(graph.edges().iter().any(|e| e.kind == EdgeKind::Consumes));
     assert!(graph.edges().iter().any(|e| e.kind == EdgeKind::Produces));
     let snapshot = graph.to_snapshot();
@@ -328,20 +331,22 @@ fn mail_local_output_preserves_cross_action_sensitive_origin() {
     );
 }
 
-// Freeze an observed existing limitation, not a declaration that the recipient
-// truly supplies config code. This remains a separate policy/data-flow issue.
 #[test]
-fn existing_config_taint_overapproximation_reports_an_upload_destination_as_source() {
+fn upload_destination_is_not_a_config_taint_source() {
     let mut policy = PolicyConfig::default();
     policy.rule_policy.rules.insert(
         RuleId::OutsideWorkspaceMutation,
         RulePolicyEntry::new(RuleAction::Observe),
     );
+    policy.rule_policy.rules.insert(
+        RuleId::FileDeletion,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
     let r = ShellQueryCore::with_policy(policy).check(request("mail receiver@example.test"));
-    assert_eq!(r.decision, Decision::NeedApproval);
-    assert!(has_rule(&r, RuleId::TaintedExecution));
+    assert_eq!(r.decision, Decision::Allow);
+    assert!(!has_rule(&r, RuleId::TaintedExecution));
     assert!(!has_rule(&r, RuleId::SensitiveDataExfiltration));
-    assert!(r.decision_trace.evidence.iter().any(|e| matches!(&e.kind,
+    assert!(!r.decision_trace.evidence.iter().any(|e| matches!(&e.kind,
         EvidenceKind::TaintedExecutionSource(source)
         if source.source_summary == "receiver@example.test"
             && source.source_node_id.contains(":email_address:upload_target:"))));

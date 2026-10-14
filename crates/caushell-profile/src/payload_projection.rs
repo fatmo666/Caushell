@@ -6,6 +6,57 @@ use crate::{
     SemanticValueResolution, SlotName, ValueProjection, project_value,
 };
 
+#[cfg(test)]
+mod move_slot_tests {
+    use super::*;
+    use crate::load_command_profile_from_str;
+
+    const PROFILE: &str = include_str!("../profiles/apply_patch.yaml");
+    const MOVE_EFFECT: &str = "      - kind: move_path\n        target: {kind: slot, name: patch_moves}\n        host_risk: {semantic_class: move_source_path}\n";
+
+    #[test]
+    fn move_slots_require_distinct_names_matching_effects_and_native_format() {
+        for invalid in [
+            PROFILE.replace(MOVE_EFFECT, ""),
+            PROFILE.replace("moves: patch_moves", "moves: patch_reads"),
+            PROFILE.replace("format: codex_apply_patch", "format: sed_program"),
+        ] {
+            assert!(load_command_profile_from_str(&invalid).is_err());
+        }
+        assert!(load_command_profile_from_str(PROFILE).is_ok());
+    }
+
+    #[test]
+    fn native_moves_are_distinct_but_legacy_projection_retains_source_removal() {
+        let profile = load_command_profile_from_str(PROFILE).unwrap();
+        let mut projection = profile.forms[1].payload_projections[0].clone();
+        let patch = "*** Begin Patch\n*** Update File: old\n*** Move to: new\n@@\n-x\n+y\n*** Delete File: gone\n*** End Patch";
+        let targets = decode_targets(&projection, &[], Some(patch)).unwrap();
+        assert_eq!(
+            targets.deletes,
+            vec![(0, SemanticValueResolution::Known("gone".into()))]
+        );
+        assert_eq!(
+            targets.moves,
+            vec![(0, SemanticValueResolution::Known("old".into()))]
+        );
+        projection.moves = None;
+        let targets = decode_targets(&projection, &[], Some(patch)).unwrap();
+        assert!(targets.moves.is_empty());
+        assert_eq!(
+            targets.deletes,
+            vec![
+                (0, SemanticValueResolution::Known("gone".into())),
+                (0, SemanticValueResolution::Known("old".into()))
+            ]
+        );
+        let legacy = PROFILE
+            .replace("        moves: patch_moves\n", "")
+            .replace(MOVE_EFFECT, "");
+        assert!(load_command_profile_from_str(&legacy).is_ok());
+    }
+}
+
 /// `complete_stdin` must describe the complete effective stdin stream, not a
 /// known prefix/fragment. None keeps unknown writes/deletions for existing guards.
 pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: Option<&str>) {
@@ -26,11 +77,12 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             PayloadInputSource::Stdin => vec![missing_input()],
         };
         let targets = decode_targets(projection, &sources, complete_stdin);
-        let (reads, mut writes, deletes, executions, stdout_emissions) = match targets {
+        let (reads, mut writes, deletes, moves, executions, stdout_emissions) = match targets {
             Ok(targets) => (
                 targets.reads,
                 targets.writes,
                 targets.deletes,
+                targets.moves,
                 targets.executions,
                 targets.stdout_emissions,
             ),
@@ -41,7 +93,12 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
                 } else {
                     Vec::new()
                 };
-                (unknown.clone(), unknown, deletes, vec![0], vec![0])
+                let moves = if projection.moves.is_some() {
+                    unknown.clone()
+                } else {
+                    Vec::new()
+                };
+                (unknown.clone(), unknown, deletes, moves, vec![0], vec![0])
             }
         };
         for control in &projection.write_controls {
@@ -66,6 +123,9 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             (&projection.deletes, PathRole::Target, deletes),
         ] {
             generated.push(target_parameter(name, role, &sources, values));
+        }
+        if let Some(name) = &projection.moves {
+            generated.push(target_parameter(name, PathRole::Target, &sources, moves));
         }
         if let Some(name) = &projection.executions {
             let mut p = BoundParameter::new(
@@ -110,6 +170,7 @@ struct Targets {
     reads: Resolutions,
     writes: Resolutions,
     deletes: Resolutions,
+    moves: Resolutions,
     executions: Vec<usize>,
     stdout_emissions: Vec<usize>,
 }
@@ -159,11 +220,16 @@ fn decode_targets(
     let index = |offset| starts.partition_point(|s| *s <= offset).saturating_sub(1);
     match projection.format {
         PayloadFormat::CodexApplyPatch => {
-            let t = crate::patch_payload::decode(
+            let mut t = crate::patch_payload::decode(
                 &text,
                 projection.max_bytes,
                 projection.max_operations,
             )?;
+            // Older profiles retain their conservative source-removal view.
+            // Opt-in move slots use the existing relocation semantics instead.
+            if projection.moves.is_none() {
+                t.deletes.append(&mut t.moves);
+            }
             let known = |v: Vec<String>| {
                 v.into_iter()
                     .map(|s| (0, SemanticValueResolution::Known(s)))
@@ -173,6 +239,7 @@ fn decode_targets(
                 reads: known(t.reads),
                 writes: known(t.writes),
                 deletes: known(t.deletes),
+                moves: known(t.moves),
                 executions: vec![],
                 stdout_emissions: vec![],
             })
@@ -189,6 +256,7 @@ fn decode_targets(
                 reads: known(t.reads),
                 writes: known(t.writes),
                 deletes: vec![],
+                moves: vec![],
                 executions: t.executions.into_iter().map(index).collect(),
                 stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
             })
@@ -214,6 +282,7 @@ fn decode_targets(
                 reads: values(t.reads),
                 writes: values(t.writes),
                 deletes: vec![],
+                moves: vec![],
                 executions: t.executions.into_iter().map(index).collect(),
                 stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
             })

@@ -205,7 +205,14 @@ fn child_execution_cwd_is_not_unconditionally_the_parent_workspace() {
         RuleId::OutsideWorkspaceMutation
     ));
     let preserved = ShellQueryCore::new().check(request("pkexec --keep-cwd touch relative"));
-    assert_eq!(preserved.decision, Decision::Allow, "{preserved:#?}");
+    assert_eq!(preserved.decision, Decision::NeedApproval, "{preserved:#?}");
+    assert!(
+        preserved
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::PrivilegeBoundary)
+    );
     assert!(!finding(
         "pkexec --keep-cwd touch relative",
         RuleId::OutsideWorkspaceMutation

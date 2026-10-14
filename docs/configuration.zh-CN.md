@@ -88,6 +88,34 @@ mutation_path_exemptions:
 | `failure_action` | `allow` / `need_approval` / `deny` | `need_approval` | Caushell 无法完成分析时的回退行为 |
 | `codex.need_approval_mode` | `block` / `observe` | `block` | Codex 遇到 `NeedApproval` 时的处理方式 |
 | `policy.rules.process_control` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的进程／作业发信号或恢复操作 |
+| `policy.rules.privilege_boundary` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的执行身份或权限切换 |
+| `policy.rules.network_upload` | `allow` / `need_approval` / `deny` | `need_approval` | 无法静态限定为回环目标的已声明数据上传 |
+| `policy.rules.file_deletion` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的文件系统删除，不因工作区或临时目录位置豁免 |
+
+上传护栏消费已有的 `upload_target` 端点声明，包括嵌套调用和保留的部分解析效果，
+不要求源文件敏感。普通下载、查询及 dry-run 不改判为上传；显式请求数据范围中
+实际携带本地文件内容时仍审批，包括 GET 查询及请求头。字面查询条件、未作为
+请求数据发送的认证／TLS 文件独立区分。复用既有节点／跳数预算，超限审批。
+明确的回环 IP 或
+`localhost` 目标豁免，未知目标审批。邮件收件域名不等于 SMTP 传输目标。
+`allow` 仅关闭本规则审批，不覆盖敏感数据、文件系统或硬拒绝规则；不做 DNS
+解析或连接探测。无上传候选时，Pass 在图查询前返回。
+
+显式非本地或未知 `transport_target`（代理或地址重定向）会阻止仅凭
+`localhost` URL 豁免上传；普通代理查询仍按查询处理。未解析的原生路由规格
+不能证明连接只留在本地。
+
+权限边界护栏消费当前执行图中已有的 `privilege_modifier` 效果，包括嵌套调用。
+子命令只读或目标位于工作区，不会豁免这条审批。Profile 已声明的用户、组和安全
+上下文切换都适用；`sudo -l` 等无该效果的查询不触发。没有候选效果时，Pass 在
+图查询之前直接返回，不探测实际身份，也不新增 Harness 输入。`allow` 保留
+finding，仅关闭本规则的审批提议，不覆盖其他规则和硬拒绝底线。规则归属已有的
+`host_safety` 家族，单规则配置优先于家族配置。
+
+删除护栏复用现有 `delete_path` 效果，包括嵌套调用、压缩等工具删除输入文件的
+效果。`move_path` 移动／重命名不当作删除，其源路径及目标路径规则独立保留。
+明确为空的程序／补丁删除投影不触发规则；未知删除目标仍审批。`allow` 只关闭
+本规则的审批提案，不覆盖工作区外规则或灾难性删除的硬拒绝底线。不探测磁盘。
 
 进程护栏直接读取已解析的 `control_process` Effect，包括嵌套调用，不查询运行中
 进程，也不要求动作元数据已知。`allow` 保留发现但取消本规则审批，不能覆盖其他

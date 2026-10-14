@@ -15,7 +15,7 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("yum-static-scope"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "test".into(),
@@ -23,7 +23,7 @@ fn request(command: &str) -> CheckRequest {
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
         home: Some("/home/alice".into()),
-        workspace_root: Some("/tmp/project".into()),
+        workspace_root: Some("/workspace/project".into()),
     }
 }
 fn check(command: &str, expected: Decision) -> CheckResponse {
@@ -150,17 +150,20 @@ fn system_transactions_require_workspace_approval_not_root_delete_denial() {
 #[test]
 fn workspace_installation_roots_and_last_overrides_use_existing_path_guard() {
     for c in [
-        "yum --installroot /tmp/project/rootfs install curl",
-        "yum install --installroot=/tmp/project/rootfs -y curl",
-        "yum --installroot /opt/old install --installroot /tmp/project/rootfs curl",
-        "yum --installroot=/tmp/project/rootfs update",
-        "yum remove --installroot=/tmp/project/rootfs curl",
-        "yum --installroot=/tmp/project/rootfs autoremove",
+        "yum --installroot /workspace/project/rootfs install curl",
+        "yum install --installroot=/workspace/project/rootfs -y curl",
+        "yum --installroot /opt/old install --installroot /workspace/project/rootfs curl",
+        "yum --installroot=/workspace/project/rootfs update",
+        "yum remove --installroot=/workspace/project/rootfs curl",
+        "yum --installroot=/workspace/project/rootfs autoremove",
     ] {
         let r = check(c, Decision::Allow);
         assert!(!proposed(&r, RuleId::OutsideWorkspaceMutation));
         let (paths, _) = facts(request(c));
-        assert!(has_write(&paths, "/tmp/project/rootfs"), "{c}: {paths:?}");
+        assert!(
+            has_write(&paths, "/workspace/project/rootfs"),
+            "{c}: {paths:?}"
+        );
         assert!(!has_write(&paths, "/opt/old"));
     }
 }
@@ -169,31 +172,31 @@ fn workspace_installation_roots_and_last_overrides_use_existing_path_guard() {
 fn remote_and_ambiguous_sources_remain_independent_of_a_workspace_root() {
     for (c, kind) in [
         (
-            "yum --installroot=/tmp/project/rootfs install https://example.test/pkg.rpm",
+            "yum --installroot=/workspace/project/rootfs install https://example.test/pkg.rpm",
             PackageLocatorKind::DirectUrl,
         ),
         (
-            "yum --installroot=/tmp/project/rootfs install curl https://example.test/pkg",
+            "yum --installroot=/workspace/project/rootfs install curl https://example.test/pkg",
             PackageLocatorKind::DirectUrl,
         ),
         (
-            "yum --installroot=/tmp/project/rootfs install package.rpm",
+            "yum --installroot=/workspace/project/rootfs install package.rpm",
             PackageLocatorKind::UnknownDynamic,
         ),
         (
-            "yum --installroot=/tmp/project/rootfs install ./package.rpm",
+            "yum --installroot=/workspace/project/rootfs install ./package.rpm",
             PackageLocatorKind::UnknownDynamic,
         ),
         (
-            "yum --installroot=/tmp/project/rootfs install /usr/bin/cc",
+            "yum --installroot=/workspace/project/rootfs install /usr/bin/cc",
             PackageLocatorKind::UnknownDynamic,
         ),
         (
-            "yum --installroot=/tmp/project/rootfs install \"$PACKAGE\"",
+            "yum --installroot=/workspace/project/rootfs install \"$PACKAGE\"",
             PackageLocatorKind::UnknownDynamic,
         ),
         (
-            "yum --installroot=/tmp/project/rootfs localinstall s3://bucket/pkg.rpm",
+            "yum --installroot=/workspace/project/rootfs localinstall s3://bucket/pkg.rpm",
             PackageLocatorKind::UnknownDynamic,
         ),
     ] {
@@ -213,7 +216,7 @@ fn localinstall_role_not_extension_records_actual_local_provenance() {
         "./package.rpm",
         "/opt/package.rpm",
     ] {
-        let c = format!("yum --installroot=/tmp/project/rootfs localinstall {operand}");
+        let c = format!("yum --installroot=/workspace/project/rootfs localinstall {operand}");
         check(&c, Decision::Allow);
         let (_, packages) = facts(request(&c));
         assert!(
@@ -291,7 +294,10 @@ fn explicit_download_output_is_not_exempt_even_on_a_query() {
     ] {
         check(c, Decision::Allow);
         let (paths, _) = facts(request(c));
-        assert!(has_write(&paths, "/tmp/project/out"), "{c}: {paths:?}");
+        assert!(
+            has_write(&paths, "/workspace/project/out"),
+            "{c}: {paths:?}"
+        );
         assert!(!has_write(&paths, "/etc/old"));
     }
     check("yum list --downloaddir \"$OUTPUT\"", Decision::NeedApproval);
@@ -325,10 +331,10 @@ fn unknown_relative_outside_and_lexically_escaping_roots_do_not_fall_back() {
         "yum --installroot \"$ROOT\" install curl",
         "yum --installroot rootfs install curl",
         "yum --installroot '' install curl",
-        "yum --installroot /tmp/project-other install curl",
-        "yum --installroot /tmp/project/../../etc install curl",
-        "yum --installroot /tmp/project/rootfs install curl --installroot /opt/root",
-        "yum --installroot /tmp/project/rootfs install curl --installroot \"$ROOT\"",
+        "yum --installroot /workspace/project-other install curl",
+        "yum --installroot /workspace/project/../../etc install curl",
+        "yum --installroot /workspace/project/rootfs install curl --installroot /opt/root",
+        "yum --installroot /workspace/project/rootfs install curl --installroot \"$ROOT\"",
     ] {
         assert!(
             proposed(
@@ -349,9 +355,9 @@ fn explicit_config_plugins_and_non_bash_languages_use_resolve_gap_approval() {
         "yum history redo 1",
         "yum groups install core",
         "yum clean plugins",
-        "yum --setopt=installroot=/tmp/project/rootfs install curl",
+        "yum --setopt=installroot=/workspace/project/rootfs install curl",
         "yum --setopt=cachedir=/etc/output list",
-        "yum --installroot=/tmp/project/rootfs --config=config install curl",
+        "yum --installroot=/workspace/project/rootfs --config=config install curl",
         "yum -cconfig list",
         "yum --enableplugin custom list",
         "yum --noplugins --setopt=plugins=1 list",
@@ -384,7 +390,7 @@ fn unknown_cache_deletion_is_not_an_incidental_write_or_root_deletion() {
     for c in [
         "yum clean all",
         "yum clean metadata",
-        "yum --installroot=/tmp/project/rootfs clean packages",
+        "yum --installroot=/workspace/project/rootfs clean packages",
     ] {
         assert!(
             proposed(
@@ -429,12 +435,12 @@ fn nested_dispatch_keeps_sources_targets_and_stronger_decisions() {
     for c in [
         "env yum install curl",
         "bash -c 'yum install curl'",
-        "bash -c 'yum --installroot=/tmp/project/rootfs install https://example.test/pkg.rpm'",
+        "bash -c 'yum --installroot=/workspace/project/rootfs install https://example.test/pkg.rpm'",
     ] {
         check(c, Decision::NeedApproval);
     }
     check(
-        "bash -c 'yum --installroot=/tmp/project/rootfs install curl'",
+        "bash -c 'yum --installroot=/workspace/project/rootfs install curl'",
         Decision::Allow,
     );
     check("yum list; rm -rf /", Decision::Deny);
@@ -443,7 +449,7 @@ fn nested_dispatch_keeps_sources_targets_and_stronger_decisions() {
 #[test]
 fn option_terminator_does_not_turn_package_data_into_download_mode() {
     let r = check(
-        "yum --installroot=/tmp/project/rootfs install -- --downloadonly",
+        "yum --installroot=/workspace/project/rootfs install -- --downloadonly",
         Decision::NeedApproval,
     );
     assert!(proposed(&r, RuleId::ImportedPackageExecution));
@@ -460,14 +466,14 @@ fn supplied_runtime_values_are_not_reexpanded_as_shell_text() {
     let mut req = request("yum --installroot \"$ROOT\" localinstall \"$FILE\"");
     req.shell_state_before = req
         .shell_state_before
-        .with_exact_scalar_variable("ROOT", "/tmp/project/root$LITERAL", true)
+        .with_exact_scalar_variable("ROOT", "/workspace/project/root$LITERAL", true)
         .with_exact_scalar_variable("FILE", "./input$LITERAL", true);
     check_request(req.clone(), Decision::Allow);
     let (paths, packages) = facts(req);
-    assert!(has_write(&paths, "/tmp/project/root$LITERAL"));
+    assert!(has_write(&paths, "/workspace/project/root$LITERAL"));
     assert!(packages.iter().any(|p| matches!(p,
         ProvenanceArtifact::ImportedPackage { locator_kind: PackageLocatorKind::LocalPath,
-            source_path: Some(path), .. } if path == "/tmp/project/input$LITERAL")));
+            source_path: Some(path), .. } if path == "/workspace/project/input$LITERAL")));
 }
 
 #[test]
@@ -481,7 +487,7 @@ fn source_policy_can_deny_a_package_without_changing_destination_policy() {
         },
     );
     let r = ShellQueryCore::with_policy(policy).check(request(
-        "yum --installroot=/tmp/project/rootfs install https://example.test/pkg.rpm",
+        "yum --installroot=/workspace/project/rootfs install https://example.test/pkg.rpm",
     ));
     assert_eq!(r.decision, Decision::Deny, "{:?}", r.decision_trace);
     assert!(proposed(&r, RuleId::ImportedPackageExecution));
