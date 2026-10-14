@@ -621,6 +621,11 @@ pub enum RawBindingSpec {
     PositionalsMatching {
         matcher: RawValueMatcher,
     },
+    PositionalsNotPrefixed {
+        prefix: String,
+        #[serde(default)]
+        except_literals: Vec<String>,
+    },
     LeadingPositionalsBeforeModifier {
         modifier: String,
     },

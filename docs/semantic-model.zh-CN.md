@@ -608,6 +608,20 @@ required cardinality 仍要求实际值。显式空内联值不是缺失，被�
 正则每次绑定只编译一次，未选择该 Profile 时不运行这一绑定。
 旧 `args_with_prefix` 继续提取前缀之后的负载，不改变原有语义。
 
+`binding: {kind: positionals_not_prefixed, prefix: '-', except_literals: ['-']}`
+是显式启用的参数形态筛选，与字面值／正则匹配分开。仅当现有参数形态 Query
+证明每一个可能的 argv 字段都不以此前缀开头，或实际值是声明的精确字面例外时，
+才绑定未消费的位置参数。原 argv 元数据、符号来源、路径范围和单值／批量宽度
+均保留，不选取代表文件名，也不把未知值改成已知字符串。字面排除约束同样要求
+对每个可能字段证明成立。未知、无界或可能含控制词的输入继续留给后续绑定及
+既有未解析流程。空／含 NUL 前缀，以及重复、含 NUL 或不以前缀开头的例外，
+在加载 Profile 时拒绝；不新增 AST 解析、执行、文件探测、风险 Pass 或 Harness 字段。
+
+dos2unix 以此绑定非选项文件参数，并保留独立的 `--` 后参数绑定。
+原生 `find -exec` 和 NUL 分隔 `xargs` 的路径范围进入已有读／写效果，
+包括工作区外范围。文本 `xargs` 重新分词、可能包含控制词的未知输入和后置模式
+开关仍未解析；检查／标准输出模式保留只读效果，成对转换沿用原分组和字段宽度检查。
+
 ## GNU Mailutils mail
 
 `mail` Profile 固定 GNU Mailutils 3.21，不等同于 BSD mail/mailx 或 s-nail。

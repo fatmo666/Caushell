@@ -566,6 +566,12 @@ pub enum BindingSpec {
     LeadingPositionalsWhile(ValueMatcher),
     /// Select matching unconsumed positionals without stripping or rewriting argv.
     PositionalsMatching(ValueMatcher),
+    /// Bind only when every possible field excludes this prefix. Exceptions
+    /// require an exact literal; original data and runtime bounds are retained.
+    PositionalsNotPrefixed {
+        prefix: String,
+        except_literals: Vec<String>,
+    },
     LeadingPositionalsBeforeModifier(ModifierId),
 }
 

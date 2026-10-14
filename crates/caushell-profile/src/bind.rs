@@ -2095,6 +2095,11 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
         BindingSpec::PositionalsMatching(_) => {
             "unconsumed positional arguments matching a semantic pattern".to_string()
         }
+        BindingSpec::PositionalsNotPrefixed { prefix, .. } => {
+            format!(
+                "unconsumed positionals proven not to start with {prefix:?}, or declared exact literal exceptions"
+            )
+        }
         BindingSpec::LeadingPositionalsBeforeModifier(modifier_id) => format!(
             "leading positional arguments before modifier {}",
             modifier_id.as_str()
@@ -2352,6 +2357,15 @@ impl<'p, 'm> BindingState<'p, 'm> {
             BindingSpec::PositionalsMatching(matcher) => {
                 self.consume_positionals_matching(target.scope, matcher, value_constraints)
             }
+            BindingSpec::PositionalsNotPrefixed {
+                prefix,
+                except_literals,
+            } => self.consume_positionals_not_prefixed(
+                target.scope,
+                prefix,
+                except_literals,
+                value_constraints,
+            ),
             BindingSpec::LeadingPositionalsBeforeModifier(modifier_id) => self
                 .consume_leading_positionals_before_modifier(
                     target.scope,
@@ -3551,6 +3565,55 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 self.consumed[index] = true;
                 values.push(value);
             }
+        }
+        values
+    }
+
+    fn consume_positionals_not_prefixed(
+        &mut self,
+        scope: ArgumentScope,
+        prefix: &str,
+        except_literals: &[String],
+        value_constraints: &[ValueConstraint],
+    ) -> Vec<BoundValue> {
+        let mut values = Vec::new();
+        for index in scope.start_index..scope.end_index {
+            if self.consumed[index] || !self.is_positional(index) {
+                continue;
+            }
+            let arg = &self.projection.args[index];
+            // This query covers EVERY possible argv field, including bounded
+            // native batches. It does not use an unknown value's placeholder
+            // text, choose a representative filename, or enumerate expansions.
+            let structure = crate::argument_structure(arg);
+            let admitted = !structure.may_start_with(prefix)
+                || structure
+                    .exact_value()
+                    .is_some_and(|text| except_literals.iter().any(|v| v == text));
+            if !admitted
+                || !value_constraints.iter().all(|constraint| match constraint {
+                    ValueConstraint::ExcludeLiteral(value) => !structure.may_equal(value),
+                })
+            {
+                continue;
+            }
+            let mut value = BoundValue::argument_with_node_kind(
+                arg.text.clone(),
+                arg.quoted,
+                arg.node_kind.clone(),
+                arg.span.clone(),
+                ArgumentBindingSource::Positional {
+                    kind: PositionalBindingSource::MatchingPositionals,
+                },
+            );
+            if arg.runtime_data {
+                value =
+                    value.with_materialization(crate::BoundArgumentMaterialization::RuntimeData);
+            }
+            // The normal runtime-source binder converts this original source
+            // into ImplicitInput with its unchanged domain and field width.
+            self.consumed[index] = true;
+            values.push(value);
         }
         values
     }

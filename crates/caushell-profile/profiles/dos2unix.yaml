@@ -25,7 +25,11 @@ forms:
         - {kind: not, item: {kind: has_modifier, modifier: to_stdout}}
         - {kind: has_positional_at, index: 0}
     parameters: &files
-      - {name: input_files, semantic: &read_path {kind: path, role: read, purpose: generic_operand}, binding: {kind: positionals_matching, matcher: {kind: regex_pattern, pattern: '^([^-].*|-)$'}}, cardinality: optional_many}
+      - name: input_files
+        semantic: &read_path {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: positionals_not_prefixed, prefix: '-', except_literals: ['-']}
+        cardinality: optional_many
+        value_constraints: [{kind: exclude_literal, value: ''}]
       - {name: literal_files, semantic: *read_path, binding: {kind: remaining_positionals_after_dash_dash}, cardinality: optional_many}
     effects: &reads [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: literal_files}}, {kind: transform_data, target: {kind: none}}]
     stream_contract: &file_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
@@ -77,6 +81,7 @@ modifiers:
 extensions:
   caushell.profile/source_research: [https://dos2unix.sourceforge.io/dos2unix/man1/dos2unix.htm, https://downloads.sourceforge.net/project/dos2unix/dos2unix/7.5.7/dos2unix-7.5.7.tar.gz]
   caushell.profile/known_limitations:
+    - Symbolic native path operands bind only with a proven non-control spelling; their original path domain and field width are preserved. Ordinary textual xargs splitting is not a path-spelling guarantee.
     - Options before file operands define a stable mode. Interspersed mode/help options and mixed conversion modes remain unresolved rather than erasing earlier file effects.
     - Paired mode preserves each input/output member. Incomplete groups and variable-width shell expansion remain unresolved; quoted single-field unknown paths retain their role only with a proven non-option prefix or after the owned -- marker.
     - Symlink-follow/replace modes and Windows-only display/GB18030 options remain unresolved without assuming filesystem topology or a Windows build.

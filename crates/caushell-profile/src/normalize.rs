@@ -67,6 +67,7 @@ pub enum NormalizeError {
     InvalidOptionScope(String),
     InvalidArgumentRegion(String),
     InvalidPositionalGroup(String),
+    InvalidPositionalFilter(String),
     InvalidValueProjection(String),
     InvalidConfiguredPath(String),
     InvalidPathAccess(String),
@@ -1943,6 +1944,25 @@ fn normalize_binding(raw: RawBindingSpec) -> Result<BindingSpec, NormalizeError>
         RawBindingSpec::PositionalsMatching { matcher } => Ok(BindingSpec::PositionalsMatching(
             normalize_value_matcher(matcher)?,
         )),
+        RawBindingSpec::PositionalsNotPrefixed {
+            prefix,
+            except_literals,
+        } => {
+            ensure_non_empty(&prefix, "binding.prefix")?;
+            let mut seen = BTreeSet::new();
+            if prefix.contains('\0')
+                || except_literals.iter().any(|value| {
+                    !value.starts_with(&prefix) || value.contains('\0') || !seen.insert(value)
+                })
+            {
+                return Err(NormalizeError::InvalidPositionalFilter(
+                    "prefix must exclude NUL; literal exceptions must be unique, NUL-free and start with the excluded prefix".into()));
+            }
+            Ok(BindingSpec::PositionalsNotPrefixed {
+                prefix,
+                except_literals,
+            })
+        }
         RawBindingSpec::LeadingPositionalsBeforeModifier { modifier } => {
             ensure_non_empty(&modifier, "binding.modifier")?;
             Ok(BindingSpec::LeadingPositionalsBeforeModifier(

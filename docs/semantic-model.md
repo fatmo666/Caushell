@@ -775,6 +775,26 @@ positionals. Unmatched arguments stay available to later bindings. Regex matchin
 compiles once per binding; unselected profiles do not execute this binding.
 Legacy `args_with_prefix` still extracts the payload after its prefix.
 
+`binding: {kind: positionals_not_prefixed, prefix: '-', except_literals: ['-']}`
+is an opt-in shape filter, separate from literal/regex matching. It binds an
+unconsumed positional only when the existing argument-structure query proves
+that EVERY possible argv field excludes the prefix, or its exact value is a
+declared literal exception. It preserves argv metadata, symbolic source, path
+domain and scalar/batch width; it never substitutes a representative filename
+or turns an unknown value into a known string. Literal exclusions must also be
+proved absent from every possible field. Unknown/unbounded or control-capable
+fields remain available to later bindings and normal unresolved handling.
+Empty/NUL prefixes and duplicate, NUL-containing or unrelated exceptions are
+rejected when loading the Profile. The query adds no AST parsing, execution,
+filesystem discovery, risk Pass or shell/Harness protocol field.
+
+Dos2unix uses this binding for non-option file operands and retains a separate
+post-`--` binding. Native `find -exec` and NUL-delimited `xargs` path bounds
+therefore become the existing read/write effects, including external roots.
+Textual `xargs` splitting, unknown control-capable input and late mode switches
+remain unresolved. Inspection/stdout forms retain read-only effects; paired
+conversion retains its existing group-size and argv-width checks.
+
 ## GNU Mailutils mail
 
 The `mail` Profile models GNU Mailutils 3.21, not BSD mail/mailx or s-nail.
