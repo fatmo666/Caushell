@@ -1810,6 +1810,31 @@ slot/configured filesystem targets, validates modifier references, and cannot
 be combined with a single-file `content_open` declaration. No filesystem
 enumeration or symlink resolution is performed.
 
+`narrowing_modifiers: [...]` additionally declares selection controls. They
+retain the same possible subtree bounds, but do not establish whole-tree
+coverage for catastrophic deletion or relocation. `find` predicates such as
+`-name`, `-mtime`, `-size` and depth restrictions use this distinction. An
+inherited traversal root applies only to a child consuming its whole dispatched
+path value, not an unrelated literal target or a transformed `{}.bak` target.
+Starting another declared traversal replaces the ancestor's selection scope.
+Filtered deletion still reaches ordinary deletion/mutation approval; narrowing
+is not an exemption from those rules. Explicit catastrophic child targets remain
+independently classified.
+
+The relocation regression also binds `rename`'s expression, replacement and
+targets sequentially: positional indices are relative to unconsumed operands,
+not original absolute argv indices. Missing target/variant-ambiguous short forms
+retain unresolved invocation approval instead of silently losing their target.
+
+Structured path projections record whether every applicable route preserves
+the complete source operand. Full-match group zero and whole-operand fallback
+can retain an existing runtime `PathSet` or `PathTemplate`; prefix removal,
+nonzero captures, splitting and native operand decoding cannot borrow that
+bound. The projected value remains unknown, and the original argv is unchanged.
+Path facts and derived sidecar paths use the retained bounds, not fabricated
+filenames or a guessed scalar. This supports bounded `find`/`xargs` output paths
+through `sort -o` without allowing unknown or external write destinations.
+
 `configured_path.only_when_sources_absent: true` declares a supplemental
 literal default. Provided or unknown source operands suppress this effect;
 an incomplete invocation cannot prove absence. It requires source slots and
@@ -1836,6 +1861,13 @@ files too; it does not change their own local-file/sink write policy. Repeated
 References: [GNU Findutils starting points](https://www.gnu.org/software/findutils/manual/html_node/find_html/Starting-points.html),
 [symlinks](https://www.gnu.org/software/findutils/manual/html_node/find_html/Symbolic-Links.html),
 [file output](https://www.gnu.org/software/findutils/manual/html_node/find_html/Print-File-Name.html).
+
+The `tmux` profile separates version/environment/options inspection and bounded
+session metadata changes from shell-capable controls. The benign option-setting
+forms recognize `history-limit` and `renumber-windows` only. Format expansion,
+opaque options, destructive window replacement, extra commands and shell/session
+creation keep approval. These are declarative invocation forms, not a new risk
+Pass. Reference: [tmux manual](https://man.openbsd.org/tmux.1).
 
 ## Bounded query and conversion forms
 
