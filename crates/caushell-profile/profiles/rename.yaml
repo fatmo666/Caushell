@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+opaque_on_unresolved: true
 
 identity:
   canonical_name: rename
@@ -28,16 +29,14 @@ forms:
           kind: structured_value
           context: path_expression
         binding:
-          kind: positional_at
-          index: 0
+          kind: next_positional
         cardinality: required_one
       - name: replacement
         semantic:
           kind: plain_value
         binding:
-          kind: positional_at
-          index: 1
-        cardinality: optional_one
+          kind: next_positional
+        cardinality: required_one
       - name: path_targets
         semantic:
           kind: path
@@ -45,7 +44,7 @@ forms:
           purpose: generic_operand
         binding:
           kind: remaining_positionals
-        cardinality: optional_many
+        cardinality: required_many
     effects:
       - kind: move_path
         target:
@@ -67,4 +66,4 @@ extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
   caushell.profile/known_limitations:
-    - Perl rename and util-linux rename have different argument conventions; both are modeled as path move surfaces.
+    - Sequential expression/replacement/files operands model the util-linux form. Shorter variant-ambiguous forms remain unresolved; Perl expressions are not decoded as ordinary rename paths.
