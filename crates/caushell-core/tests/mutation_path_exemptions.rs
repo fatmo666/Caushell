@@ -66,9 +66,6 @@ fn deletion_move_source_and_generic_attributes_are_not_exempt() {
         "find /tmp -type f -delete",
         "chattr +i /tmp/output",
         "chattr -i /tmp/output",
-        "chmod 4755 /tmp/output",
-        "chmod u+s /private/tmp/output",
-        "chmod --reference=input /tmp/output",
     ] {
         expect(command, Decision::NeedApproval);
     }
@@ -91,6 +88,65 @@ fn unknown_targets_and_path_boundaries_do_not_acquire_exemption() {
         "TMPDIR=\"$UNKNOWN\" mktemp -d",
     ] {
         expect(command, Decision::NeedApproval);
+    }
+}
+
+#[test]
+fn special_and_reference_permission_modes_use_default_temporary_roots() {
+    for command in [
+        "chmod 4755 /tmp/output",
+        "chmod 6755 /tmp/output",
+        "chmod 2775 /private/tmp/output",
+        "chmod u+s /private/tmp/output",
+        "chmod g+s /tmp/output",
+        "chmod --reference=input /tmp/output",
+        "chmod --reference=input ./output",
+        "find /tmp -type d -exec chmod 2775 {} +",
+        "find /tmp -type f -print0 | xargs -0 chmod u+s",
+        "bash -c 'chmod 4755 /private/tmp/output'",
+        "cp -p input /tmp/output",
+        "cp --preserve=mode input /private/tmp/output",
+    ] {
+        expect(command, Decision::Allow);
+    }
+    for command in [
+        "chmod 4755 /tmp-other/output",
+        "chmod u+s /tmp/../etc/output",
+        "chmod 2775 /opt/output",
+        "chmod --reference=input /opt/output",
+        "chmod 4755 /tmp/output /opt/output",
+        "chmod u+s \"$UNKNOWN\"",
+        "chattr +i /private/tmp/output",
+    ] {
+        expect(command, Decision::NeedApproval);
+    }
+}
+
+#[test]
+fn permission_metadata_is_explicit_and_ordinary_metadata_keeps_its_old_scope() {
+    for (operation, special) in [
+        ("ordinary_metadata", Decision::NeedApproval),
+        ("permission_metadata", Decision::Allow),
+    ] {
+        let policy = load_config_from_str(&format!(
+            "version: 1\nmutation_path_exemptions:\n  - root: /opt/scratch\n    operations: [{operation}]\n"
+        )).unwrap().policy;
+        for (command, expected) in [
+            ("chmod 600 /opt/scratch/output", Decision::Allow),
+            ("chown alice:staff /opt/scratch/output", Decision::Allow),
+            ("chmod 4755 /opt/scratch/output", special),
+            ("chmod --reference=input /opt/scratch/output", special),
+            ("touch /opt/scratch/output", Decision::NeedApproval),
+            ("chattr +i /opt/scratch/output", Decision::NeedApproval),
+            ("rm /opt/scratch/output", Decision::NeedApproval),
+            ("chmod 4755 /tmp/output", Decision::NeedApproval),
+        ] {
+            let response = ShellQueryCore::with_policy(policy.clone()).check(request(command));
+            assert_eq!(
+                response.decision, expected,
+                "{operation}: {command}: {response:#?}"
+            );
+        }
     }
 }
 

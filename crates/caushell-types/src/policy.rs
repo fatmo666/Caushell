@@ -74,6 +74,9 @@ impl Default for PolicyConfig {
 pub enum MutationExemptionOperation {
     Write,
     OrdinaryMetadata,
+    /// Mode, owner and group changes, including special/reference modes.
+    /// Does not include generic attributes such as immutable.
+    PermissionMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,7 +93,7 @@ pub fn default_mutation_path_exemptions() -> Vec<MutationPathExemption> {
             root: root.into(),
             operations: BTreeSet::from([
                 MutationExemptionOperation::Write,
-                MutationExemptionOperation::OrdinaryMetadata,
+                MutationExemptionOperation::PermissionMetadata,
             ]),
         })
         .collect()

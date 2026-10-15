@@ -57,15 +57,17 @@ caushell config validate
 ```yaml
 mutation_path_exemptions:
   - root: /tmp
-    operations: [write, ordinary_metadata]
+    operations: [write, permission_metadata]
   - root: /private/tmp
-    operations: [write, ordinary_metadata]
+    operations: [write, permission_metadata]
 ```
 
 `write` 包括已建模的文件／目录写入和 Shell 输出重定向。
-`ordinary_metadata` 只包括已确认的普通权限、属主和属组修改；增加 setuid/setgid、
-引用文件或未知权限模式、immutable 等通用属性修改不豁免。此字段不支持删除和移动源
-操作，也不将目录变成可信脚本目录、可信启动配置目录或工作区。其他风险规则按原配置生效。
+`permission_metadata` 包括已建模的权限、属主和属组修改，也包括 setuid/setgid
+及引用文件的权限模式；不取消未解析参数或控制语义的审批，不豁免 immutable 等通用属性。
+更窄的 `ordinary_metadata` 保留原行为：不豁免特殊权限、引用文件或未知权限模式。
+此字段不支持删除和移动源操作，也不将目录变成可信脚本目录、可信启动配置目录或工作区。
+其他风险规则按原配置生效。
 
 路径根必须为绝对路径，操作列表不能为空。使用规范化后的目录边界判断，不做字符串包含
 匹配。未知目标、未知相对 cwd、可能逃逸或空的路径集合不豁免。复用既有路径事实，

@@ -368,18 +368,25 @@ fn exemption_operation_for_target(
     }
     let mutation = target.metadata_mutation.as_ref()?;
     if mutation.mutation_kinds.is_empty()
-        || !mutation.mutation_kinds.iter().all(|kind| match kind {
-            PathMetadataMutationKind::ChangeMode => mutation
-                .raw_operand
-                .as_deref()
-                .is_some_and(ordinary_permission_mode),
-            PathMetadataMutationKind::ChangeOwner | PathMetadataMutationKind::ChangeGroup => true,
-            PathMetadataMutationKind::Generic => false,
-        })
+        || mutation
+            .mutation_kinds
+            .iter()
+            .any(|kind| *kind == PathMetadataMutationKind::Generic)
     {
         return None;
     }
-    Some(MutationExemptionOperation::OrdinaryMetadata)
+    if mutation
+        .mutation_kinds
+        .contains(&PathMetadataMutationKind::ChangeMode)
+        && !mutation
+            .raw_operand
+            .as_deref()
+            .is_some_and(ordinary_permission_mode)
+    {
+        Some(MutationExemptionOperation::PermissionMetadata)
+    } else {
+        Some(MutationExemptionOperation::OrdinaryMetadata)
+    }
 }
 
 fn resolution_is_exempt(
@@ -392,7 +399,11 @@ fn resolution_is_exempt(
             && exemptions.iter().any(|entry| {
                 entry.root.starts_with('/')
                     && !entry.root.contains('\0')
-                    && entry.operations.contains(&operation)
+                    && (entry.operations.contains(&operation)
+                        || operation == MutationExemptionOperation::OrdinaryMetadata
+                            && entry
+                                .operations
+                                .contains(&MutationExemptionOperation::PermissionMetadata))
                     && path_is_within_root(path, &entry.root)
             })
     };

@@ -58,16 +58,18 @@ outside-workspace mutation rule. Defaults:
 ```yaml
 mutation_path_exemptions:
   - root: /tmp
-    operations: [write, ordinary_metadata]
+    operations: [write, permission_metadata]
   - root: /private/tmp
-    operations: [write, ordinary_metadata]
+    operations: [write, permission_metadata]
 ```
 
 `write` covers declared file/directory writes and shell output redirections.
-`ordinary_metadata` covers modeled permission, owner and group changes;
-setuid/setgid additions, reference/unknown permission modes, and generic
-attributes such as immutable are not exempt. Delete and move-source operations
-cannot be granted here. Other risk rules keep their configured behavior;
+`permission_metadata` covers modeled mode, owner and group changes, including
+setuid/setgid and reference-derived modes. It does not suppress unresolved
+argument/control checks or exempt generic attributes such as immutable.
+The narrower `ordinary_metadata` remains available with its original behavior:
+it excludes special/reference/unknown permission modes. Delete and move-source
+operations cannot be granted here. Other risk rules keep their configured behavior;
 these roots do not become trusted script/startup locations or workspace roots.
 
 Entries require absolute roots and a nonempty operation list. Paths are checked
