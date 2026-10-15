@@ -1598,6 +1598,16 @@ recursive output names, unsupported options and order-sensitive conflicting
 `bzip2` modes retain existing resolution/mutation approval. Environment defaults
 and filesystem/header contents are not probed or claimed as certified CLI facts.
 
+The native `bunzip2` Profile distinguishes default decompression, explicit
+`-z` compression, keep, stdout, integrity-test and help modes. Default file
+operations declare source deletion through the existing guard; `-k` removes
+only deletion, not output writes. Decompression partitions each operand by
+the tool's documented output-name rule (`.bz2`, `.bz`, `.tbz2`, `.tbz`);
+mixed lists retain each original operand and output, while symbolic names
+keep the existing bounded sibling-file family. This is native naming grammar,
+not a safety classification by suffix. `-V`/`-L` print information but do not
+exit; file effects remain. No new decoder, risk Pass or protocol field is added.
+
 ## Lexically bounded shell pathname generation
 
 Pure static pathname patterns can yield a `BoundedPathSet` rather than a

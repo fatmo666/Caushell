@@ -7577,7 +7577,12 @@ mod tests {
             "bunzip2 data.txt.bz2",
             "bunzip2",
             "decompress_files",
-            &[EffectKind::ReadPath, EffectKind::WritePath],
+            &[
+                EffectKind::ReadPath,
+                EffectKind::WritePath,
+                EffectKind::DeletePath,
+                EffectKind::TransformData,
+            ],
         );
     }
 
@@ -14345,7 +14350,12 @@ mod tests {
                 "bunzip2 data.txt.bz2",
                 "bunzip2",
                 "decompress_files",
-                &[EffectKind::ReadPath, EffectKind::WritePath],
+                &[
+                    EffectKind::ReadPath,
+                    EffectKind::WritePath,
+                    EffectKind::DeletePath,
+                    EffectKind::TransformData,
+                ],
             ),
             ("vdir src", "vdir", "list_paths", &[EffectKind::ReadPath]),
             (
