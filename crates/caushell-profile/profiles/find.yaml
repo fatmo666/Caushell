@@ -134,11 +134,16 @@ forms:
       stderr_mode: opaque
     effects: &dispatch_effects
       - kind: read_path
+        path_scope: &search_scope
+          kind: subtree
+          escape_modifiers: [follow_symlinks]
+          narrowing_modifiers: [name_pattern, numeric_filter, permission_filter, owner_filter, filesystem_filter, timestamp_filter, reference_file_filter, alternate_type_filter, traversal_control, minimum_traversal_depth, operand_free_tests, expression_control]
         target:
           kind: slot
           name: search_roots
       - &default_root_read
         kind: read_path
+        path_scope: *search_scope
         target:
           kind: configured_path
           sources: [{slot: search_roots, projection: {kind: identity}}]
@@ -200,6 +205,7 @@ forms:
       excluded_modifiers: [line_output, information_options, file_output, formatted_file_output, legacy_archive_output]
     effects: &enumerate_effects
       - kind: read_path
+        path_scope: *search_scope
         target:
           kind: slot
           name: search_roots
@@ -440,7 +446,7 @@ modifiers:
         - "-delete"
     effects:
       - kind: delete_path
-        path_scope: {kind: subtree, escape_modifiers: [follow_symlinks]}
+        path_scope: *search_scope
         target:
           kind: slot
           name: search_roots
@@ -450,7 +456,7 @@ modifiers:
       # configured target supplements it with find's implicit cwd when the
       # slot is empty; an unresolved explicit root must not become '.'.
       - kind: delete_path
-        path_scope: {kind: subtree, escape_modifiers: [follow_symlinks]}
+        path_scope: *search_scope
         target:
           kind: configured_path
           sources: [{slot: search_roots, projection: {kind: identity}}]

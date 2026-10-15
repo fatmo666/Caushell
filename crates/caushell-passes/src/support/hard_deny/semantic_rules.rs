@@ -107,9 +107,8 @@ pub(crate) fn collect_execution_unit_scoped_reason_buckets(
         let Some(resolved) = resolved_from_execution_record(record) else {
             continue;
         };
-        let semantics = collect_dispatch_scoped_path_semantics(resolved);
-
         for scope in &record.inherited_scope.catastrophic_search_roots {
+            let semantics = collect_dispatch_scoped_path_semantics(resolved);
             for semantic in &semantics {
                 match semantic.semantic_class {
                     DestructivePathSemanticClass::DeletePath => buckets.floor_reasons.push(format!(
@@ -144,26 +143,6 @@ pub(crate) fn collect_execution_unit_scoped_reason_buckets(
     }
 
     buckets
-}
-
-pub(crate) fn collect_destructive_path_semantics(
-    resolved: &ResolvedInvocationArtifact,
-) -> Vec<DestructivePathSemantic> {
-    let mut semantics = Vec::new();
-    each_resolved_host_risk_sink(resolved, |sink| {
-        let Some(semantic_class) = destructive_path_semantic_class(sink.semantic_class) else {
-            return;
-        };
-
-        let semantic = DestructivePathSemantic {
-            semantic_class,
-            command_name: sink.normalized_command_name.to_string(),
-        };
-        if !semantics.contains(&semantic) {
-            semantics.push(semantic);
-        }
-    });
-    semantics
 }
 
 fn destructive_path_semantic_class(
@@ -753,7 +732,32 @@ fn resolved_from_execution_record(
 fn collect_dispatch_scoped_path_semantics(
     resolved: &ResolvedInvocationArtifact,
 ) -> Vec<DestructivePathSemantic> {
-    collect_destructive_path_semantics(resolved)
+    let mut semantics = Vec::new();
+    each_resolved_host_risk_sink(resolved, |sink| {
+        let Some(semantic_class) = destructive_path_semantic_class(sink.semantic_class) else {
+            return;
+        };
+        // A search root is not a child target. The inherited traversal scope
+        // applies only when the child actually consumes a whole dispatch value.
+        // A transformed placeholder (e.g. {}.bak) is a different target family.
+        if !sink.runtime_targets.iter().any(|target| {
+            target.source == caushell_profile::ImplicitInputSource::DispatchOutput
+                && !matches!(
+                    &target.domain,
+                    Some(caushell_types::RuntimeArgumentDomain::PathTemplate { .. })
+                )
+        }) {
+            return;
+        }
+        let semantic = DestructivePathSemantic {
+            semantic_class,
+            command_name: sink.normalized_command_name.to_owned(),
+        };
+        if !semantics.contains(&semantic) {
+            semantics.push(semantic);
+        }
+    });
+    semantics
 }
 
 fn collect_dispatch_scoped_block_device_semantics(

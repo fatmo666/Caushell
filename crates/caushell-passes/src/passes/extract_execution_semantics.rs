@@ -636,6 +636,7 @@ forms:
             assert_eq!(payload_mode_for_invocation(&invocation), None);
             invocation.bound_parameters[0].projected_values = Some(vec![ProjectedSemanticValue {
                 source_index: 0,
+                preserves_source: false,
                 resolution: SemanticValueResolution::Unknown(
                     ProjectionUnknownReason::DynamicArgument,
                 ),

@@ -16,7 +16,7 @@ fn traversal_scope_is_opt_in_and_keeps_typed_modifier_references() {
     assert_eq!(old.forms[0].effects[0].path_scope, None);
     let new=load_command_profile_from_str(&profile("kind: delete_path\n        target: {kind: slot, name: roots}\n        path_scope: {kind: subtree, escape_modifiers: [follow]}")).unwrap();
     assert!(matches!(&new.forms[0].effects[0].path_scope,
-        Some(PathScope::Subtree {escape_modifiers}) if escape_modifiers[0].as_str()=="follow"));
+        Some(PathScope::Subtree {escape_modifiers, ..}) if escape_modifiers[0].as_str()=="follow"));
 }
 
 #[test]
@@ -35,6 +35,7 @@ fn traversal_declarations_reject_invalid_targets_access_and_references() {
     }
     for scope in [
         "{kind: subtree, escape_modifiers: [missing]}",
+        "{kind: subtree, narrowing_modifiers: [missing]}",
         "{kind: subtree, unknown: true}",
     ] {
         assert!(load_command_profile_from_str(&profile(&format!("kind: delete_path\n        target: {{kind: slot, name: roots}}\n        path_scope: {scope}"))).is_err());

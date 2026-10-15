@@ -416,6 +416,7 @@ modifiers:
             .unwrap();
         parameter.projected_values = Some(vec![caushell_profile::ProjectedSemanticValue {
             source_index: 0,
+            preserves_source: false,
             resolution: SemanticValueResolution::Known("/outside/a'$VAR".into()),
         }]);
         let original = bound.clone();
@@ -556,6 +557,7 @@ modifiers:
         bound.bound_parameters[0].projected_values =
             Some(vec![caushell_profile::ProjectedSemanticValue {
                 source_index: 0,
+                preserves_source: false,
                 resolution: SemanticValueResolution::Known("/outside/a.py".into()),
             }]);
         assert_eq!(

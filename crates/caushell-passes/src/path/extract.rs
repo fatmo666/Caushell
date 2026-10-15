@@ -190,6 +190,9 @@ fn semantic_path_resolution(
                 },
                 !text.starts_with('/'),
             ),
+            SemanticValueResolution::Unknown(_) if value.preserves_source => {
+                semantic_path_resolution(SemanticValueRef::Original(source), resolved, cwd, home)
+            }
             SemanticValueResolution::Unknown(reason) => (
                 PathResolution::UnsupportedDynamicText {
                     text: format!("unresolved value projection ({reason:?}) from {source:?}"),
@@ -341,7 +344,10 @@ fn effect_path_scope(
     invocation: &BoundInvocation,
     resolution: PathResolution,
 ) -> PathResolution {
-    let Some(caushell_profile::PathScope::Subtree { escape_modifiers }) = &effect.path_scope else {
+    let Some(caushell_profile::PathScope::Subtree {
+        escape_modifiers, ..
+    }) = &effect.path_scope
+    else {
         return resolution;
     };
     let escape = escape_modifiers
@@ -1312,6 +1318,23 @@ fn derive_semantic_slot_path_resolution(
     slot_name: &str,
     rule: &DerivedPathRule,
 ) -> Option<PathResolution> {
+    if let SemanticValueRef::Projected {
+        source,
+        value: projected,
+    } = value
+        && projected.preserves_source
+        && matches!(projected.resolution, SemanticValueResolution::Unknown(_))
+    {
+        return derive_semantic_slot_path_resolution(
+            parameter,
+            SemanticValueRef::Original(source),
+            resolved,
+            cwd,
+            home,
+            slot_name,
+            rule,
+        );
+    }
     if matches!(
         rule,
         DerivedPathRule::SiblingFiles | DerivedPathRule::FileNamePrefix

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::{
     BoundInvocation, BoundParameter, BoundValue, Parameter, ProjectedSemanticValue,
@@ -294,16 +294,17 @@ fn project_item(
             emit(target, source, unknown(), generated);
         }
         for value in values {
-            let (source, resolution) = match value {
+            let (source, resolution, preserves_source) = match value {
                 crate::SemanticValueRef::Original(source) => (
                     source,
                     project_value(&ValueProjection::Identity, source).unwrap_or_else(unknown),
+                    true,
                 ),
                 crate::SemanticValueRef::Projected { source, value } => {
-                    (source, value.resolution.clone())
+                    (source, value.resolution.clone(), value.preserves_source)
                 }
             };
-            emit(target, source, resolution, generated);
+            emit_value(target, source, resolution, preserves_source, generated);
         }
     } else {
         emit(target, source, unknown(), generated);
@@ -398,17 +399,38 @@ fn emit_unknown(
     source: &BoundValue,
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
 ) {
-    let mut emitted = BTreeSet::new();
-    for target in grammar
+    let whole_operand = grammar.separator.is_none() && grammar.native_syntax.is_none();
+    let mut targets = BTreeMap::new();
+    for (target, identity) in grammar
         .branches
         .iter()
         .filter(|b| !branch_disabled(invocation, b))
-        .filter_map(|b| b.target.as_ref())
-        .chain(grammar.fallback.iter())
+        .filter_map(|b| {
+            b.target.as_ref().map(|t| {
+                (
+                    t,
+                    matches!(
+                        b.matcher,
+                        StructuredProjectionMatcher::Literal(_)
+                            | StructuredProjectionMatcher::RegexCapture { group: 0, .. }
+                    ),
+                )
+            })
+        })
+        .chain(grammar.fallback.iter().map(|t| (t, true)))
     {
-        if emitted.insert(target.name.as_str()) {
-            emit(target, source, unknown(), generated);
-        }
+        let identity = whole_operand && identity && !target.unresolved && target.sources.is_empty();
+        targets
+            .entry(&target.name)
+            .and_modify(
+                |(_, all_identity): &mut (&StructuredProjectionTarget, bool)| {
+                    *all_identity &= identity
+                },
+            )
+            .or_insert((target, identity));
+    }
+    for (_, (target, identity)) in targets {
+        emit_value(target, source, unknown(), identity, generated);
     }
 }
 
@@ -416,6 +438,16 @@ fn emit(
     target: &StructuredProjectionTarget,
     source: &BoundValue,
     resolution: SemanticValueResolution,
+    generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
+) {
+    emit_value(target, source, resolution, false, generated);
+}
+
+fn emit_value(
+    target: &StructuredProjectionTarget,
+    source: &BoundValue,
+    resolution: SemanticValueResolution,
+    preserves_source: bool,
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
 ) {
     let parameter = generated.entry(target.name.clone()).or_insert_with(|| {
@@ -432,6 +464,100 @@ fn emit(
         .unwrap()
         .push(ProjectedSemanticValue {
             source_index,
+            preserves_source,
             resolution,
         });
+}
+
+#[cfg(test)]
+mod source_preservation_tests {
+    use super::*;
+    use crate::*;
+    #[test]
+    fn only_whole_unsplit_unmodified_values_retain_source_bounds() {
+        for (grammar, expected) in [
+            (
+                "{branches: [{matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, target: {name: paths, semantic: {kind: path, role: write}}}]}",
+                true,
+            ),
+            (
+                "{branches: [{matcher: {kind: literal, value: ':memory:'}}], fallback: {name: paths, semantic: {kind: path, role: write}}}",
+                true,
+            ),
+            (
+                "{branches: [{matcher: {kind: regex_capture, pattern: '^(.*)$', group: 1}, target: {name: paths, semantic: {kind: path, role: write}}}]}",
+                false,
+            ),
+            (
+                "{branches: [{matcher: {kind: prefix, value: 'path:'}, target: {name: paths, semantic: {kind: path, role: write}}}]}",
+                false,
+            ),
+            (
+                "{separator: ';', branches: [], fallback: {name: paths, semantic: {kind: path, role: write}}}",
+                false,
+            ),
+            (
+                "{branches: [{matcher: {kind: prefix, value: 'path:'}, target: {name: paths, semantic: {kind: path, role: write}}}], fallback: {name: paths, semantic: {kind: path, role: write}}}",
+                false,
+            ),
+            (
+                "{branches: [], fallback: {name: paths, semantic: {kind: path, role: write}, unresolved: true}}",
+                false,
+            ),
+        ] {
+            let yaml = format!(
+                "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {{canonical_name: bounds-fixture}}\nforms:\n  - id: write\n    selector: {{kind: has_positional_at, index: 0}}\n    parameters:\n      - name: raw\n        semantic: {{kind: plain_value}}\n        binding: {{kind: next_positional}}\n        cardinality: required_one\n        structured_projection: {grammar}\n    effects: [{{kind: write_path, target: {{kind: slot, name: paths}}}}]\n"
+            );
+            let registry =
+                ProfileRegistry::from_profiles(vec![load_command_profile_from_str(&yaml).unwrap()])
+                    .unwrap();
+            let parsed = caushell_parse::parse_command(
+                "bounds-fixture file",
+                caushell_types::ShellKind::Bash,
+            )
+            .unwrap();
+            let ResolveInvocationResult::Resolved(resolved) = resolve_invocation_with_bindings(
+                &registry,
+                &parsed.commands[0],
+                InvocationRuntimeContext::new(),
+                &SessionBindings::new(),
+            ) else {
+                panic!("fixture failed")
+            };
+            let mut bound = resolved.bound;
+            let source = BoundValue::ImplicitInput {
+                source: ImplicitInputSource::DispatchOutput,
+                domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                    roots: vec!["/workspace".into()],
+                    may_escape: false,
+                }),
+                origin: None,
+            };
+            bound
+                .bound_parameters
+                .iter_mut()
+                .find(|p| p.name.as_str() == "raw")
+                .unwrap()
+                .values = vec![source.clone()];
+            refresh_structured_parameters(&mut bound);
+            let paths = bound
+                .bound_parameters
+                .iter()
+                .find(|p| p.name.as_str() == "paths")
+                .unwrap();
+            let SemanticValueRef::Projected {
+                source: actual,
+                value,
+            } = paths.semantic_values().next().unwrap()
+            else {
+                panic!("missing projected view")
+            };
+            assert_eq!(actual, &source);
+            assert_eq!(value.preserves_source, expected, "{grammar}");
+            assert!(matches!(
+                value.resolution,
+                SemanticValueResolution::Unknown(_)
+            ));
+        }
+    }
 }

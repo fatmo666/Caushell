@@ -43,6 +43,9 @@ pub(crate) fn each_resolved_host_risk_sink<'a, F>(
         if !required_modifiers_satisfied(resolved, effect) {
             continue;
         }
+        if !whole_tree_risk_applies(resolved, effect) {
+            continue;
+        }
         let target_operands = bound_argument_operands_for_slot(&resolved.bound, slot_name);
         let runtime_targets = bound_runtime_targets_for_slot(&resolved.bound, slot_name);
         if target_operands.is_empty() && runtime_targets.is_empty() {
@@ -87,6 +90,9 @@ pub(crate) fn each_configured_host_risk_sink(
         if !required_modifiers_satisfied(resolved, effect) {
             continue;
         }
+        if !whole_tree_risk_applies(resolved, effect) {
+            continue;
+        }
         let Some(path) = crate::path::resolve_configured_path(
             &resolved.bound,
             target,
@@ -128,12 +134,12 @@ fn bound_runtime_targets_for_slot(
                 })
             }
             SemanticValueRef::Projected {
-                source: BoundValue::ImplicitInput { source, .. },
-                ..
-            } => Some(ResolvedRuntimeHostTarget {
+                source: BoundValue::ImplicitInput { source, domain, .. },
+                value,
+            } if value.preserves_source => Some(ResolvedRuntimeHostTarget {
                 source: source.clone(),
                 // Bounds on a whole operand do not bound a substring.
-                domain: None,
+                domain: domain.clone(),
             }),
             _ => None,
         })
@@ -160,6 +166,22 @@ fn required_modifiers_satisfied(
                 .iter()
                 .any(|modifier| modifier == required_modifier)
         })
+}
+
+fn whole_tree_risk_applies(
+    resolved: &ResolvedInvocationArtifact,
+    effect: &caushell_profile::Effect,
+) -> bool {
+    !matches!(
+        effect_semantic_class(effect),
+        Some(
+            ResolvedHostRiskSemanticClass::Catastrophic(CatastrophicSemanticClass::DeletePath)
+                | ResolvedHostRiskSemanticClass::HostRisk(HostRiskSemanticClass::MoveSourcePath)
+        )
+    ) || effect
+        .path_scope
+        .as_ref()
+        .is_none_or(|s| s.covers_whole_subtree(&resolved.bound))
 }
 
 fn effect_semantic_class(

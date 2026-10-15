@@ -594,6 +594,7 @@ fn joined_command_argument(
         source,
         crate::ProjectedSemanticValue {
             source_index: 0,
+            preserves_source: false,
             resolution: crate::SemanticValueResolution::Known(text),
         },
     ))

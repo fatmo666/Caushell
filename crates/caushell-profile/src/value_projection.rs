@@ -20,6 +20,7 @@ pub fn refresh_parameter_semantic_values(parameter: &mut BoundParameter) {
             .filter_map(|(source_index, source)| {
                 project_value(projection, source).map(|resolution| ProjectedSemanticValue {
                     source_index,
+                    preserves_source: *projection == ValueProjection::Identity,
                     resolution,
                 })
             })

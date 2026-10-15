@@ -93,9 +93,6 @@ fn implicit_and_explicit_catastrophic_roots_have_the_same_hard_deny() {
     for command in [
         "find / -delete",
         "cd /; find -delete",
-        "cd /; find -mtime -7 -delete",
-        "find / -mindepth 1 -delete",
-        "cd /; find -mindepth 1 -delete",
         "root=/; cd \"$root\"; find -delete",
         "bash -c 'cd /; find -delete'",
     ] {
@@ -103,6 +100,22 @@ fn implicit_and_explicit_catastrophic_roots_have_the_same_hard_deny() {
             command,
             Decision::Deny,
             Some(RuleId::CatastrophicFileSystemDelete),
+        );
+    }
+    // Predicates keep a broad possible range, not proof of whole-tree deletion.
+    for command in [
+        "cd /; find -mtime -7 -delete",
+        "find / -mindepth 1 -delete",
+        "cd /; find -mindepth 1 -delete",
+    ] {
+        expect(command, Decision::NeedApproval, Some(RuleId::FileDeletion));
+        let response = ShellQueryCore::new().check(request(command));
+        assert!(
+            !response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::CatastrophicFileSystemDelete)
         );
     }
     for command in [
@@ -253,8 +266,11 @@ forms:
           kind: configured_path
           sources: [{slot: roots, projection: {kind: identity}}]
           default_value: '.'
-        path_scope: {kind: subtree}
+        path_scope: {kind: subtree, narrowing_modifiers: [select]}
         catastrophic: {semantic_class: delete_path}
+modifiers:
+  - id: select
+    matcher: {kind: any_flag, flags: ['--selected-only']}
 "#,
     )
     .unwrap();
@@ -262,6 +278,11 @@ forms:
         ("/", "arbitrary_tree_tool", true),
         ("/tmp/project", "arbitrary_tree_tool", false),
         ("/tmp/project", "arbitrary_tree_tool /", true),
+        (
+            "/tmp/project",
+            "arbitrary_tree_tool --selected-only /",
+            false,
+        ),
         ("/tmp/project", "arbitrary_tree_tool \"$unknown\"", false),
     ] {
         let mut runner = PassRunner::new();

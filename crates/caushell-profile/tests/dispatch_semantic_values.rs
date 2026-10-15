@@ -55,6 +55,12 @@ modifiers:
 "#;
 
 fn resolve(command: &str, bindings: &SessionBindings) -> BoundInvocation {
+    let bound = resolve_with_residuals(command, bindings);
+    assert!(bound.residuals.is_empty(), "{:?}", bound.residuals);
+    bound
+}
+
+fn resolve_with_residuals(command: &str, bindings: &SessionBindings) -> BoundInvocation {
     let registry =
         ProfileRegistry::from_profiles(vec![load_command_profile_from_str(PROFILE).unwrap()])
             .unwrap();
@@ -65,10 +71,7 @@ fn resolve(command: &str, bindings: &SessionBindings) -> BoundInvocation {
         InvocationRuntimeContext::new(),
         bindings,
     ) {
-        ResolveInvocationResult::Resolved(r) => {
-            assert!(r.bound.residuals.is_empty(), "{:?}", r.bound.residuals);
-            r.bound
-        }
+        ResolveInvocationResult::Resolved(r) => r.bound,
         r => panic!("{r:?}"),
     }
 }
@@ -164,9 +167,15 @@ fn projected_source_operands_and_spans_are_preserved() {
 
 #[test]
 fn unknown_projected_command_never_falls_back_to_source_text() {
-    let bound = resolve(
+    let bound = resolve_with_residuals(
         "projection-fixture \"$COMMAND\" skip skip",
         &SessionBindings::new(),
+    );
+    assert!(
+        bound
+            .residuals
+            .iter()
+            .any(|r| r.kind == ResidualKind::UnboundControlSurface)
     );
     let projection = collect_dispatch_command_projection(&bound);
     assert!(projection.resolved.is_empty());
@@ -267,6 +276,7 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
     };
     parameter.projected_values = Some(vec![ProjectedSemanticValue {
         source_index: 0,
+        preserves_source: false,
         resolution: SemanticValueResolution::Unknown(ProjectionUnknownReason::DynamicArgument),
     }]);
     let child = collect_dispatch_command_projection(&bound)

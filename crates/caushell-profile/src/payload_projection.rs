@@ -332,6 +332,7 @@ fn target_parameter(
             .into_iter()
             .map(|(source_index, resolution)| ProjectedSemanticValue {
                 source_index,
+                preserves_source: false,
                 resolution,
             })
             .collect(),

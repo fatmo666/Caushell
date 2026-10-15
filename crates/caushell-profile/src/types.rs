@@ -837,6 +837,9 @@ pub struct ProjectedSemanticValue {
     /// Index into the untouched BoundParameter::values; retains spans,
     /// binding source and materialization provenance without copying them.
     pub source_index: usize,
+    /// This semantic value is the whole source operand, not a substring,
+    /// decoded payload, split item or replacement from another source.
+    pub preserves_source: bool,
     pub resolution: SemanticValueResolution,
 }
 
@@ -1364,7 +1367,26 @@ pub struct EndpointInputScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathScope {
-    Subtree { escape_modifiers: Vec<ModifierId> },
+    Subtree {
+        escape_modifiers: Vec<ModifierId>,
+        /// Selection controls retain a subtree bound but do not prove that
+        /// the operation covers the whole tree.
+        narrowing_modifiers: Vec<ModifierId>,
+    },
+}
+
+impl PathScope {
+    pub fn covers_whole_subtree(&self, invocation: &BoundInvocation) -> bool {
+        let Self::Subtree {
+            escape_modifiers,
+            narrowing_modifiers,
+        } = self;
+        !invocation.operation_semantics_unresolved
+            && !escape_modifiers
+                .iter()
+                .chain(narrowing_modifiers)
+                .any(|id| invocation.applied_modifiers.contains(id))
+    }
 }
 
 /// How a path is accessed, not a safety classification or a path whitelist.

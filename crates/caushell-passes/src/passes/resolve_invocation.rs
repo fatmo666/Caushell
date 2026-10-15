@@ -5395,16 +5395,36 @@ fn inherited_scope_for_dispatch(
     let mut scope = inherited_scope.clone();
     let via_command_name = resolved.normalized_command_name.to_string();
 
-    for root in bound_argument_operands_for_slot(&resolved.bound, "search_roots")
-        .into_iter()
-        .filter_map(|operand| catastrophic_delete_target_for_arg(operand, cwd, home))
-    {
-        let entry = CatastrophicSearchRootScope {
-            root,
-            via_command_name: via_command_name.clone(),
+    // A new traversal supplies its own selection; an ancestor's broad tree
+    // must not contaminate unrelated descendant dispatches.
+    if resolved.bound.effects.iter().any(|effect| {
+        effect.kind == caushell_profile::EffectKind::ReadPath && effect.path_scope.is_some()
+    }) {
+        scope.catastrophic_search_roots.clear();
+    }
+    for effect in &resolved.bound.effects {
+        if effect.kind != caushell_profile::EffectKind::ReadPath
+            || !effect
+                .path_scope
+                .as_ref()
+                .is_some_and(|s| s.covers_whole_subtree(&resolved.bound))
+        {
+            continue;
+        }
+        let caushell_profile::EffectTarget::Slot(slot) = &effect.target else {
+            continue;
         };
-        if !scope.catastrophic_search_roots.contains(&entry) {
-            scope.catastrophic_search_roots.push(entry);
+        for root in bound_argument_operands_for_slot(&resolved.bound, slot.as_str())
+            .into_iter()
+            .filter_map(|operand| catastrophic_delete_target_for_arg(operand, cwd, home))
+        {
+            let entry = CatastrophicSearchRootScope {
+                root,
+                via_command_name: via_command_name.clone(),
+            };
+            if !scope.catastrophic_search_roots.contains(&entry) {
+                scope.catastrophic_search_roots.push(entry);
+            }
         }
     }
 

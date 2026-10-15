@@ -873,6 +873,8 @@ pub enum RawPathScope {
     Subtree {
         #[serde(default)]
         escape_modifiers: Vec<String>,
+        #[serde(default)]
+        narrowing_modifiers: Vec<String>,
     },
 }
 

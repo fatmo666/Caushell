@@ -512,11 +512,15 @@ fn validate_configured_path_references(
                 }
             }
         }
-        if let Some(crate::PathScope::Subtree { escape_modifiers }) = &effect.path_scope {
-            for modifier in escape_modifiers {
+        if let Some(crate::PathScope::Subtree {
+            escape_modifiers,
+            narrowing_modifiers,
+        }) = &effect.path_scope
+        {
+            for modifier in escape_modifiers.iter().chain(narrowing_modifiers) {
                 if !modifier_names.contains(modifier.as_str()) {
                     return Err(NormalizeError::InvalidPathScope(format!(
-                        "undeclared traversal escape modifier: {}",
+                        "undeclared traversal scope modifier: {}",
                         modifier.as_str()
                     )));
                 }
@@ -2387,8 +2391,15 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         target,
         path_access: raw.path_access,
         path_scope: raw.path_scope.map(|scope| match scope {
-            crate::RawPathScope::Subtree { escape_modifiers } => crate::PathScope::Subtree {
+            crate::RawPathScope::Subtree {
+                escape_modifiers,
+                narrowing_modifiers,
+            } => crate::PathScope::Subtree {
                 escape_modifiers: escape_modifiers.into_iter().map(ModifierId::new).collect(),
+                narrowing_modifiers: narrowing_modifiers
+                    .into_iter()
+                    .map(ModifierId::new)
+                    .collect(),
             },
         }),
         interactive_escape_surface: surface,
