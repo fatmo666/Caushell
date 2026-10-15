@@ -196,6 +196,9 @@ pub struct RedirectionFact {
     pub content: Option<RedirectionOperandFact>,
     pub parent_command_name: Option<String>,
     pub parent_command_span: Option<SourceSpan>,
+    /// Shell statement that opens an unowned redirect, before its body runs.
+    /// This is syntax/context metadata, not an external command invocation.
+    pub opening_statement: Option<CommandFact>,
     pub top_level_span: SourceSpan,
     pub span: SourceSpan,
 }

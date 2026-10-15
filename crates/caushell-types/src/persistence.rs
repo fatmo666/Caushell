@@ -78,6 +78,10 @@ pub enum DerivedInvocationOrigin {
     PipelineSegment {
         command_index: usize,
     },
+    ShellRedirection {
+        scope_index: usize,
+        statement_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

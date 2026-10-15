@@ -439,9 +439,36 @@ fn collect_redirection_path_mutations(
         }
     }
 
-    // Bare top-level redirections do not have a resolved execution record, so they remain a
-    // direct top-level parse projection.
-    if let Some(parsed_command) = ctx.parsed_command() {
+    for syntax in crate::support::shell_syntax_redirections(ctx) {
+        let role = syntax.path.role;
+        match syntax.io {
+            IoTarget::Path { resolution, .. } => {
+                mutations.extend(project_redirection_path_mutations(
+                    syntax.source,
+                    syntax.path.redirection_index,
+                    syntax.path.slot_name,
+                    resolution,
+                    role,
+                ))
+            }
+            target => mutations.extend(stream_provenance_mutations(
+                ctx,
+                None,
+                &syntax.source,
+                &target,
+                role,
+                &syntax.path.slot_name,
+                None,
+            )),
+        }
+    }
+
+    if !ctx
+        .shell_redirection_scopes()
+        .iter()
+        .any(|s| s.is_request_scope)
+        && let Some(parsed_command) = ctx.parsed_command()
+    {
         for path in collect_redirection_path_facts(parsed_command, cwd, home) {
             if redirection_parent_command_index(parsed_command, &path.fact).is_some() {
                 continue;

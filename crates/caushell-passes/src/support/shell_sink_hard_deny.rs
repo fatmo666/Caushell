@@ -34,7 +34,7 @@ pub(crate) fn collect_shell_sink_hard_deny_reasons_for_command(
         .collect()
 }
 
-fn shell_sink_hard_deny_reason(
+pub(crate) fn shell_sink_hard_deny_reason(
     redirection: &caushell_parse::RedirectionFact,
     cwd: Option<&str>,
     home: Option<&str>,

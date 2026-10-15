@@ -662,25 +662,32 @@ pub(crate) fn collect_redirection_path_facts(
     let mut paths = Vec::new();
 
     for (redirection_index, redirection) in parsed_command.redirections.iter().enumerate() {
-        let Some((role, slot_name, resolution)) =
-            redirection_path_fact(redirection, redirection_index, cwd, home)
-        else {
-            continue;
-        };
-
-        paths.push(RedirectionPathFactCandidate {
-            fact: redirection.clone(),
-            redirection_index,
-            slot_name,
-            resolution,
-            cwd_dependent: redirection.target.as_ref().is_none_or(|target| {
-                path_operand_depends_on_cwd(&target.text, target.quoted, &target.node_kind, None)
-            }),
-            role,
-        });
+        if let Some(path) = collect_redirection_path_fact(redirection, redirection_index, cwd, home)
+        {
+            paths.push(path);
+        }
     }
-
     paths
+}
+
+pub(crate) fn collect_redirection_path_fact(
+    redirection: &RedirectionFact,
+    redirection_index: usize,
+    cwd: &str,
+    home: Option<&str>,
+) -> Option<RedirectionPathFactCandidate> {
+    let (role, slot_name, resolution) =
+        redirection_path_fact(redirection, redirection_index, cwd, home)?;
+    Some(RedirectionPathFactCandidate {
+        fact: redirection.clone(),
+        redirection_index,
+        slot_name,
+        resolution,
+        cwd_dependent: redirection.target.as_ref().is_none_or(|target| {
+            path_operand_depends_on_cwd(&target.text, target.quoted, &target.node_kind, None)
+        }),
+        role,
+    })
 }
 
 fn collect_resolved_record_path_facts(

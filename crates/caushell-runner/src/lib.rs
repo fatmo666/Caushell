@@ -11,7 +11,7 @@ pub use context::{
     EffectiveCwd, ExecutionUnitInheritedScope, ExecutionUnitOriginKind, ExecutionUnitOriginLocator,
     ExecutionUnitResolveRecord, NativeTemplateInput, ParsedCommandRef, ParsedCommandScope,
     ProcessSubstitutionLocationKind, ProcessSubstitutionOuterRelation, RunnerContext,
-    ShellSourceCwdAnchor, UnresolvedDispatchRecord,
+    ShellRedirectionScope, ShellRedirectionUnit, ShellSourceCwdAnchor, UnresolvedDispatchRecord,
 };
 pub use mutation::{MutationGraphError, PendingMutation};
 pub use nested::{

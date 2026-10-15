@@ -60,7 +60,32 @@ pub(crate) fn collect_block_device_destructive_reasons(
     let max_nested_parse_depth = ctx.policy().semantic_expansion.max_nested_parse_depth;
     let mut reasons = Vec::new();
 
-    if let Some(parsed) = ctx.parsed_command() {
+    for syntax in crate::support::shell_syntax_redirections(ctx) {
+        let caushell_query::IoTarget::Path { resolution, .. } = syntax.io else {
+            continue;
+        };
+        let mut redirect = syntax.path.fact;
+        if let Some(path) = resolution.concrete_path()
+            && let Some(target) = &mut redirect.target
+        {
+            target.text = path.to_owned();
+            target.quoted = true;
+            target.node_kind = "raw_string".into();
+        }
+        if let Some(reason) = super::shell_sink_hard_deny::shell_sink_hard_deny_reason(
+            &redirect,
+            syntax.exact_cwd.as_deref(),
+            syntax.home.as_deref(),
+        ) {
+            reasons.push(reason);
+        }
+    }
+    if !ctx
+        .shell_redirection_scopes()
+        .iter()
+        .any(|s| s.is_request_scope)
+        && let Some(parsed) = ctx.parsed_command()
+    {
         reasons.extend(
             collect_bare_shell_sink_hard_deny_reasons(parsed, Some(cwd), home)
                 .into_iter()

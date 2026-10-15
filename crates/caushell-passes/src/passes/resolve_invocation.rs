@@ -132,21 +132,25 @@ impl SessionTransformPass for ResolveInvocationPass {
         let mut derived_records = dispatch_derived_records.clone();
         derived_records.extend(function_derived_records.clone());
         derived_records.extend(nested_derived_records);
-        let (execution_unit_resolve_records, expansion_limit_evidence, derived_unresolved_payloads) =
-            collect_execution_unit_resolve_records(
-                &self.registry,
-                staged_view,
-                &binding_request,
-                &parsed,
-                &records,
-                &function_derived_commands,
-                &function_derived_records,
-                &function_scopes,
-                &dispatch_derived_commands,
-                &dispatch_derived_records,
-                &nested_payload_records,
-                ctx.policy().semantic_expansion.max_nested_parse_depth,
-            );
+        let (
+            execution_unit_resolve_records,
+            expansion_limit_evidence,
+            derived_unresolved_payloads,
+            shell_redirection_scopes,
+        ) = collect_execution_unit_resolve_records(
+            &self.registry,
+            staged_view,
+            &binding_request,
+            &parsed,
+            &records,
+            &function_derived_commands,
+            &function_derived_records,
+            &function_scopes,
+            &dispatch_derived_commands,
+            &dispatch_derived_records,
+            &nested_payload_records,
+            ctx.policy().semantic_expansion.max_nested_parse_depth,
+        );
         nested_payload_records.extend(derived_unresolved_payloads);
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
@@ -174,6 +178,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         }
         ctx.set_unresolved_dispatch_records(unresolved_records);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
+        ctx.set_shell_redirection_scopes(shell_redirection_scopes);
         ctx.set_parsed_command_scopes(project_parsed_command_scopes(
             ctx.request(),
             &function_derived_commands,
@@ -222,6 +227,39 @@ impl SessionTransformPass for ResolveInvocationPass {
             ctx.pending_mutations(),
             ctx.execution_unit_resolve_records(),
         ) {
+            ctx.stage_mutation(mutation);
+        }
+
+        let syntax_sequence_no = ctx.request().sequence_no;
+        let syntax_mutations = ctx
+            .shell_redirection_scopes()
+            .iter()
+            .enumerate()
+            .flat_map(|(scope_index, scope)| {
+                scope
+                    .units
+                    .iter()
+                    .enumerate()
+                    .map(
+                        move |(statement_index, unit)| PendingMutation::AddDerivedInvocation {
+                            node_id: unit.source_node_id.clone(),
+                            root_command_sequence_no: syntax_sequence_no,
+                            origin: DerivedInvocationOrigin::ShellRedirection {
+                                scope_index,
+                                statement_index,
+                            },
+                            derived_command_index: statement_index,
+                            raw_text: unit.opening_statement.text.clone(),
+                            command_name: None,
+                            shell_kind: scope.parsed.shell_kind,
+                            depth: scope.depth,
+                            parent_node_id: scope.parent_execution_node_id.clone(),
+                            relation_from_parent: caushell_graph::EdgeKind::ExpandsTo,
+                        },
+                    )
+            })
+            .collect::<Vec<_>>();
+        for mutation in syntax_mutations {
             ctx.stage_mutation(mutation);
         }
 
@@ -1799,8 +1837,10 @@ fn collect_execution_unit_resolve_records(
     Vec<ExecutionUnitResolveRecord>,
     Vec<Evidence>,
     Vec<NestedPayloadRecord>,
+    Vec<caushell_runner::ShellRedirectionScope>,
 ) {
     let mut records = Vec::new();
+    let mut syntax_scopes = Vec::new();
     let mut expansion_limit_evidence = Vec::new();
     let mut derived_unresolved_payloads = Vec::new();
     let first_payload_id = nested_payload_records
@@ -1810,6 +1850,43 @@ fn collect_execution_unit_resolve_records(
         .map_or(0, |id| id + 1);
     let mut frontier = Vec::new();
     let request_scope_base_bindings = request_bindings(session.summary(), request);
+    register_shell_redirection_scope(
+        registry,
+        request,
+        &mut syntax_scopes,
+        parsed_request,
+        &request_scope_base_bindings,
+        caushell_runner::request_anchor_node_id(request),
+        None,
+        ExecutionUnitOriginKind::TopLevel,
+        ExecutionUnitOriginLocator::None,
+        0,
+        0,
+        true,
+        max_nested_parse_depth,
+    );
+    for scope in function_scopes
+        .iter()
+        .filter(|s| s.parsed_body.commands.is_empty())
+    {
+        register_shell_redirection_scope(
+            registry,
+            request,
+            &mut syntax_scopes,
+            &scope.parsed_body,
+            &scope.bindings,
+            scope.parent_node_id.clone(),
+            None,
+            ExecutionUnitOriginKind::FunctionExpansion,
+            ExecutionUnitOriginLocator::FunctionExpansion {
+                function_name: scope.function_name.clone(),
+            },
+            1,
+            scope.source_command_index,
+            false,
+            max_nested_parse_depth,
+        );
+    }
 
     for record in top_level_records {
         let Some(command) = parsed_request
@@ -1902,6 +1979,7 @@ fn collect_execution_unit_resolve_records(
         });
         frontier.extend(
             expanded_assignment_command_substitution_body_children_for_scope(
+                &mut syntax_scopes,
                 registry,
                 request,
                 &scope.parsed_body,
@@ -1968,12 +2046,14 @@ fn collect_execution_unit_resolve_records(
             inherited_scope: ExecutionUnitInheritedScope::default(),
         };
         frontier.extend(expanded_command_substitution_body_children(
+            &mut syntax_scopes,
             registry,
             request,
             &call_entry,
             max_nested_parse_depth,
         ));
         frontier.extend(expanded_process_substitution_body_children(
+            &mut syntax_scopes,
             registry,
             request,
             &call_entry,
@@ -2001,6 +2081,32 @@ fn collect_execution_unit_resolve_records(
         let NestedPayloadResolution::Parsed { shell_kind, parsed } = &record.resolution else {
             continue;
         };
+
+        if parsed.commands.is_empty() {
+            let parent = match &record.parent_ref {
+                NestedPayloadParentRef::DerivedInvocation { node_id } => node_id.clone(),
+                NestedPayloadParentRef::RootCommand { command_index } => top_level_records
+                    .iter()
+                    .find(|r| r.command_ref.command_index == *command_index)
+                    .map(|r| r.source_node_id.clone())
+                    .unwrap_or_else(|| caushell_runner::request_anchor_node_id(request)),
+            };
+            register_shell_redirection_scope(
+                registry,
+                request,
+                &mut syntax_scopes,
+                parsed,
+                &record.bindings,
+                parent,
+                None,
+                ExecutionUnitOriginKind::NestedPayload,
+                ExecutionUnitOriginLocator::None,
+                record.depth,
+                record.root_command_index,
+                false,
+                max_nested_parse_depth,
+            );
+        }
 
         for (derived_command_index, command) in parsed.commands.iter().enumerate() {
             let source_node_id = derived_invocation_node_id(
@@ -2058,6 +2164,7 @@ fn collect_execution_unit_resolve_records(
     }
 
     frontier.extend(expanded_assignment_command_substitution_body_roots(
+        &mut syntax_scopes,
         registry,
         session,
         request,
@@ -2111,6 +2218,24 @@ fn collect_execution_unit_resolve_records(
                 1,
             ));
             continue;
+        }
+
+        if entry.origin_kind != ExecutionUnitOriginKind::TopLevel {
+            register_shell_redirection_scope(
+                registry,
+                request,
+                &mut syntax_scopes,
+                &entry.parsed_scope,
+                &entry.static_payload_scope.scope_base_bindings,
+                entry.parent_execution_node_id.clone(),
+                Some(entry.source_node_id.clone()),
+                entry.origin_kind,
+                entry.origin_locator.clone(),
+                entry.depth,
+                entry.root_command_index,
+                false,
+                max_nested_parse_depth,
+            );
         }
 
         refresh_execution_payload_projections(
@@ -2217,8 +2342,13 @@ fn collect_execution_unit_resolve_records(
         // lacking a Profile (or an executable sharing the function's name).
         // Top-level calls already enter as FunctionExpansion seeds. Derived
         // calls use the same frontier and its ordinary depth admission gate.
-        let function_children =
-            expanded_function_body_children(registry, request, &entry, max_nested_parse_depth);
+        let function_children = expanded_function_body_children(
+            registry,
+            request,
+            &entry,
+            max_nested_parse_depth,
+            &mut syntax_scopes,
+        );
         if let Some((name, _, incomplete)) = &function_children {
             let native_scope_unresolved = entry
                 .inherited_scope
@@ -2325,6 +2455,7 @@ fn collect_execution_unit_resolve_records(
         // of its Profile coverage or selection success. Already-expanded argv
         // data is excluded by the producer query, not reparsed as shell code.
         let mut children = expanded_command_substitution_body_children(
+            &mut syntax_scopes,
             registry,
             request,
             &entry,
@@ -2335,6 +2466,7 @@ fn collect_execution_unit_resolve_records(
             _ => None,
         };
         children.extend(expanded_process_substitution_body_children(
+            &mut syntax_scopes,
             registry,
             request,
             &entry,
@@ -2351,6 +2483,7 @@ fn collect_execution_unit_resolve_records(
                 &entry,
                 resolved,
                 max_nested_parse_depth,
+                &mut syntax_scopes,
             ));
             children.extend(expanded_recursive_payload_children(
                 registry,
@@ -2361,8 +2494,10 @@ fn collect_execution_unit_resolve_records(
                 max_nested_parse_depth,
                 first_payload_id,
                 &mut derived_unresolved_payloads,
+                &mut syntax_scopes,
             ));
             children.extend(expanded_command_substitution_materialization_children(
+                &mut syntax_scopes,
                 registry,
                 session,
                 request,
@@ -2419,7 +2554,99 @@ fn collect_execution_unit_resolve_records(
         records,
         expansion_limit_evidence,
         derived_unresolved_payloads,
+        syntax_scopes,
     )
+}
+
+/// Register only syntax actually admitted by the normal expansion budget.
+/// Plain-command scopes take the cheap no-orphan branch; no second parse.
+fn register_shell_redirection_scope(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    base_bindings: &SessionBindings,
+    parent: caushell_graph::NodeId,
+    representative: Option<caushell_graph::NodeId>,
+    origin_kind: ExecutionUnitOriginKind,
+    origin_locator: ExecutionUnitOriginLocator,
+    depth: u8,
+    root_command_index: usize,
+    is_request_scope: bool,
+    max_depth: u8,
+) {
+    if depth > max_depth
+        || !parsed
+            .redirections
+            .iter()
+            .any(|r| r.opening_statement.is_some())
+    {
+        return;
+    }
+    if let Some(scope) = scopes.iter_mut().find(|s| {
+        s.parent_execution_node_id == parent
+            && s.origin_kind == origin_kind
+            && s.origin_locator == origin_locator
+            && s.parsed.raw_command == parsed.raw_command
+            && s.root_command_index == root_command_index
+    }) {
+        if scope.representative_record_node_id.is_none() {
+            scope.representative_record_node_id = representative;
+        }
+        return;
+    }
+    let scope_index = scopes.len();
+    let mut units: Vec<caushell_runner::ShellRedirectionUnit> = Vec::new();
+    for (index, redirect) in parsed.redirections.iter().enumerate() {
+        if redirection_parent_command_index(parsed, redirect).is_some() {
+            continue;
+        }
+        let Some(statement) = &redirect.opening_statement else {
+            continue;
+        };
+        if let Some(unit) = units
+            .iter_mut()
+            .find(|u| u.opening_statement.span == statement.span)
+        {
+            unit.redirection_indexes.push(index);
+            continue;
+        }
+        let bindings = apply_runtime_variable_bindings_before_span(
+            registry,
+            request,
+            base_bindings.clone(),
+            parsed,
+            statement.span.start_byte,
+            request.sequence_no,
+        );
+        let source_node_id = caushell_graph::NodeId::new(format!(
+            "shell-redirection:{}:{}:{}:{}:{}",
+            request.session_id.0.len(),
+            request.session_id.0,
+            request.sequence_no.0,
+            scope_index,
+            units.len()
+        ));
+        units.push(caushell_runner::ShellRedirectionUnit {
+            source_node_id,
+            opening_statement: statement.clone(),
+            redirection_indexes: vec![index],
+            bindings,
+        });
+    }
+    if !units.is_empty() {
+        scopes.push(caushell_runner::ShellRedirectionScope {
+            parent_execution_node_id: parent,
+            representative_record_node_id: representative,
+            origin_kind,
+            origin_locator,
+            parsed: parsed.clone(),
+            depth,
+            root_command_index,
+            is_request_scope,
+            units,
+        });
+    }
 }
 
 /// Native replacement inputs passed into another shell frame currently lack
@@ -2472,6 +2699,7 @@ fn expanded_function_body_children(
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
     max_nested_parse_depth: u8,
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
 ) -> Option<(String, Vec<ExpandedFrontierEntry>, Option<String>)> {
     if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
         return None;
@@ -2507,6 +2735,25 @@ fn expanded_function_body_children(
     // Functions keep the caller's variables and shell namespace, unlike an
     // executable shell. Only their positional parameters are replaced.
     let bindings = crate::support::function_call_bindings(&environment, &projection);
+    if body.commands.is_empty() {
+        register_shell_redirection_scope(
+            registry,
+            request,
+            syntax_scopes,
+            &body,
+            &bindings,
+            entry.source_node_id.clone(),
+            None,
+            ExecutionUnitOriginKind::FunctionExpansion,
+            ExecutionUnitOriginLocator::FunctionExpansion {
+                function_name: name.clone(),
+            },
+            entry.depth.saturating_add(1),
+            entry.root_command_index,
+            false,
+            max_nested_parse_depth,
+        );
+    }
     // Unknown bytes are data, not unanalysed code. Unknown argv width is a
     // separate fact: never pin a later literal to the wrong $n or treat an
     // unresolved $@ as a proven empty list, including after shift.
@@ -2562,6 +2809,7 @@ fn expanded_function_body_children(
         .collect();
     children.extend(
         expanded_assignment_command_substitution_body_children_for_scope(
+            syntax_scopes,
             registry,
             request,
             &body,
@@ -2584,12 +2832,14 @@ fn expanded_function_body_children(
     // Shell substitutions in the call run before the function, independently
     // of whether its body ever consumes their resulting argument bytes.
     children.extend(expanded_command_substitution_body_children(
+        syntax_scopes,
         registry,
         request,
         entry,
         max_nested_parse_depth,
     ));
     children.extend(expanded_process_substitution_body_children(
+        syntax_scopes,
         registry,
         request,
         entry,
@@ -2844,6 +3094,7 @@ impl AssignmentCwdSource<'_> {
 }
 
 fn expanded_assignment_command_substitution_body_roots(
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
     registry: &ProfileRegistry,
     session: SessionView<'_>,
     request: &CheckRequest,
@@ -2876,6 +3127,7 @@ fn expanded_assignment_command_substitution_body_roots(
 
         children.extend(
             expanded_assignment_command_substitution_body_children_for_scope(
+                syntax_scopes,
                 registry,
                 request,
                 parsed_request,
@@ -2898,6 +3150,7 @@ fn expanded_assignment_command_substitution_body_roots(
 }
 
 fn expanded_assignment_command_substitution_body_children_for_scope(
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
     registry: &ProfileRegistry,
     request: &CheckRequest,
     parsed_scope: &caushell_parse::ParsedCommandArtifact,
@@ -2949,6 +3202,33 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                     "command substitution body",
                 );
 
+                if parsed_substitution.commands.is_empty() {
+                    register_shell_redirection_scope(
+                        registry,
+                        request,
+                        syntax_scopes,
+                        &parsed_substitution,
+                        &assignment_bindings,
+                        parent_execution_node_id.clone(),
+                        None,
+                        ExecutionUnitOriginKind::CommandSubstitutionBody,
+                        ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+                            assignment_scope_key: source_suffix_prefix.map(str::to_string),
+                            source_cwd_anchor: source_cwd_anchor.clone(),
+                            assignment_command_index,
+                            assignment_index,
+                            substitution_index,
+                            assignment_name: assignment.name.clone(),
+                            assignment_value_text: assignment.value.text.clone(),
+                            substitution_text: substitution.text.clone(),
+                            substitution_body_text: substitution.body_text.clone(),
+                        },
+                        depth,
+                        root_command_index,
+                        false,
+                        max_nested_parse_depth,
+                    );
+                }
                 let scope_records_start = children.len();
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
@@ -3030,7 +3310,7 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
                         .get(scope_records_start)
                         .filter(|_| !parsed_substitution.commands.is_empty())
                         .map(|e| e.source_node_id.clone());
-                    children.extend(expanded_assignment_command_substitution_body_children_for_scope(
+                    children.extend(expanded_assignment_command_substitution_body_children_for_scope(syntax_scopes,
                         registry, request, &parsed_substitution, shell_kind,
                         parent_execution_node_id, history_anchor_node_id, root_command_index,
                         depth.saturating_add(1), &assignment_bindings, inherited_scope, None,
@@ -3162,6 +3442,7 @@ fn expanded_shell_payload_children(
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     max_nested_parse_depth: u8,
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
 ) -> Vec<ExpandedFrontierEntry> {
     let shell_kind = match resolved.normalized_command_name.as_str() {
         "bash" => caushell_types::ShellKind::Bash,
@@ -3186,6 +3467,23 @@ fn expanded_shell_payload_children(
     );
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
+    if parsed_payload.commands.is_empty() {
+        register_shell_redirection_scope(
+            registry,
+            request,
+            syntax_scopes,
+            &parsed_payload,
+            &shell_bindings,
+            entry.source_node_id.clone(),
+            None,
+            ExecutionUnitOriginKind::ShellCommandStringPayload,
+            ExecutionUnitOriginLocator::None,
+            entry.depth.saturating_add(1),
+            entry.root_command_index,
+            false,
+            max_nested_parse_depth,
+        );
+    }
 
     let mut children: Vec<ExpandedFrontierEntry> = parsed_payload
         .commands
@@ -3239,7 +3537,7 @@ fn expanded_shell_payload_children(
                     parsed_scope: parsed_payload.clone(),
                     command_index,
                     bindings: command_bindings,
-                    scope_base_bindings: entry.bindings.clone(),
+                    scope_base_bindings: shell_bindings.clone(),
                     stdin_is_parent_output: false,
                 },
                 history_anchor_node_id: entry.history_anchor_node_id.clone(),
@@ -3253,6 +3551,7 @@ fn expanded_shell_payload_children(
 
     children.extend(
         expanded_assignment_command_substitution_body_children_for_scope(
+            syntax_scopes,
             registry,
             request,
             &parsed_payload,
@@ -3261,7 +3560,7 @@ fn expanded_shell_payload_children(
             &entry.history_anchor_node_id,
             entry.root_command_index,
             entry.depth.saturating_add(2),
-            &entry.bindings,
+            &shell_bindings,
             &entry.inherited_scope,
             None,
             Some("shell-payload"),
@@ -3285,6 +3584,7 @@ fn expanded_recursive_payload_children(
     max_nested_parse_depth: u8,
     first_payload_id: usize,
     unresolved_payloads: &mut Vec<NestedPayloadRecord>,
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
 ) -> Vec<ExpandedFrontierEntry> {
     if matches!(
         entry.origin_kind,
@@ -3414,6 +3714,23 @@ fn expanded_recursive_payload_children(
         };
         let shell_kind = parsed_payload.shell_kind;
         let parsed = parsed_payload.artifact;
+        if parsed.commands.is_empty() {
+            register_shell_redirection_scope(
+                registry,
+                request,
+                syntax_scopes,
+                &parsed,
+                &entry.bindings,
+                entry.source_node_id.clone(),
+                None,
+                ExecutionUnitOriginKind::RecursivePayload,
+                ExecutionUnitOriginLocator::None,
+                entry.depth.saturating_add(1),
+                entry.root_command_index,
+                false,
+                max_nested_parse_depth,
+            );
+        }
 
         for (command_index, command) in parsed.commands.iter().enumerate() {
             let command_bindings = apply_runtime_variable_bindings_before_span(
@@ -3464,6 +3781,7 @@ fn expanded_recursive_payload_children(
 }
 
 fn expanded_command_substitution_body_children(
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
     registry: &ProfileRegistry,
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
@@ -3490,6 +3808,26 @@ fn expanded_command_substitution_body_children(
                 "command substitution body",
             );
 
+            if parsed_substitution.commands.is_empty() {
+                register_shell_redirection_scope(
+                    registry,
+                    request,
+                    syntax_scopes,
+                    &parsed_substitution,
+                    &entry.bindings,
+                    entry.source_node_id.clone(),
+                    None,
+                    ExecutionUnitOriginKind::CommandSubstitutionBody,
+                    ExecutionUnitOriginLocator::CommandSubstitutionBody {
+                        token_index,
+                        substitution_index,
+                    },
+                    entry.depth.saturating_add(1),
+                    entry.root_command_index,
+                    false,
+                    max_nested_parse_depth,
+                );
+            }
             for (command_index, child_command) in parsed_substitution.commands.iter().enumerate() {
                 let command_bindings = apply_runtime_variable_bindings_before_span(
                     registry,
@@ -3556,6 +3894,7 @@ fn expanded_command_substitution_body_children(
             });
             children.extend(
                 expanded_assignment_command_substitution_body_children_for_scope(
+                    syntax_scopes,
                     registry,
                     request,
                     &parsed_substitution,
@@ -3582,6 +3921,7 @@ fn expanded_command_substitution_body_children(
 }
 
 fn expanded_command_substitution_materialization_children(
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
     registry: &ProfileRegistry,
     session: SessionView<'_>,
     request: &CheckRequest,
@@ -3615,6 +3955,24 @@ fn expanded_command_substitution_materialization_children(
     else {
         return Vec::new();
     };
+
+    if parsed_command.commands.is_empty() {
+        register_shell_redirection_scope(
+            registry,
+            request,
+            syntax_scopes,
+            &parsed_command,
+            &entry.bindings,
+            entry.source_node_id.clone(),
+            None,
+            ExecutionUnitOriginKind::CommandSubstitutionMaterialization,
+            ExecutionUnitOriginLocator::CommandSubstitutionMaterialization,
+            entry.depth.saturating_add(1),
+            entry.root_command_index,
+            false,
+            max_nested_parse_depth,
+        );
+    }
 
     parsed_command
         .commands
@@ -3671,6 +4029,7 @@ fn expanded_command_substitution_materialization_children(
 }
 
 fn expanded_process_substitution_body_children(
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
     registry: &ProfileRegistry,
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
@@ -3703,6 +4062,29 @@ fn expanded_process_substitution_body_children(
                     entry.depth.saturating_add(1) > max_nested_parse_depth,
                     "process substitution body",
                 );
+
+                if parsed_substitution.commands.is_empty() {
+                    register_shell_redirection_scope(
+                        registry,
+                        request,
+                        syntax_scopes,
+                        &parsed_substitution,
+                        &entry.bindings,
+                        entry.source_node_id.clone(),
+                        None,
+                        ExecutionUnitOriginKind::ProcessSubstitutionBody,
+                        ExecutionUnitOriginLocator::ProcessSubstitutionBody {
+                            location_kind: ProcessSubstitutionLocationKind::Argument,
+                            outer_index: token_index,
+                            location_subindex: 0,
+                            substitution_index,
+                        },
+                        entry.depth.saturating_add(1),
+                        entry.root_command_index,
+                        false,
+                        max_nested_parse_depth,
+                    );
+                }
 
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
@@ -3781,6 +4163,7 @@ fn expanded_process_substitution_body_children(
                 });
                 children.extend(
                     expanded_assignment_command_substitution_body_children_for_scope(
+                        syntax_scopes,
                         registry,
                         request,
                         &parsed_substitution,
@@ -3834,6 +4217,29 @@ fn expanded_process_substitution_body_children(
                     entry.depth.saturating_add(1) > max_nested_parse_depth,
                     "process substitution body",
                 );
+
+                if parsed_substitution.commands.is_empty() {
+                    register_shell_redirection_scope(
+                        registry,
+                        request,
+                        syntax_scopes,
+                        &parsed_substitution,
+                        &entry.bindings,
+                        entry.source_node_id.clone(),
+                        None,
+                        ExecutionUnitOriginKind::ProcessSubstitutionBody,
+                        ExecutionUnitOriginLocator::ProcessSubstitutionBody {
+                            location_kind: ProcessSubstitutionLocationKind::Argument,
+                            outer_index: parameter_index,
+                            location_subindex: value_index,
+                            substitution_index,
+                        },
+                        entry.depth.saturating_add(1),
+                        entry.root_command_index,
+                        false,
+                        max_nested_parse_depth,
+                    );
+                }
 
                 for (command_index, child_command) in
                     parsed_substitution.commands.iter().enumerate()
@@ -3910,6 +4316,7 @@ fn expanded_process_substitution_body_children(
                 });
                 children.extend(
                     expanded_assignment_command_substitution_body_children_for_scope(
+                        syntax_scopes,
                         registry,
                         request,
                         &parsed_substitution,
@@ -3962,6 +4369,28 @@ fn expanded_process_substitution_body_children(
                 entry.depth.saturating_add(1) > max_nested_parse_depth,
                 "process substitution body",
             );
+            if parsed_substitution.commands.is_empty() {
+                register_shell_redirection_scope(
+                    registry,
+                    request,
+                    syntax_scopes,
+                    &parsed_substitution,
+                    &entry.bindings,
+                    entry.source_node_id.clone(),
+                    None,
+                    ExecutionUnitOriginKind::ProcessSubstitutionBody,
+                    ExecutionUnitOriginLocator::ProcessSubstitutionBody {
+                        location_kind: ProcessSubstitutionLocationKind::Redirection,
+                        outer_index: redirection_index,
+                        location_subindex: 0,
+                        substitution_index,
+                    },
+                    entry.depth.saturating_add(1),
+                    entry.root_command_index,
+                    false,
+                    max_nested_parse_depth,
+                );
+            }
 
             for (command_index, child_command) in parsed_substitution.commands.iter().enumerate() {
                 let command_bindings = apply_runtime_variable_bindings_before_span(
@@ -4033,6 +4462,7 @@ fn expanded_process_substitution_body_children(
             });
             children.extend(
                 expanded_assignment_command_substitution_body_children_for_scope(
+                    syntax_scopes,
                     registry,
                     request,
                     &parsed_substitution,

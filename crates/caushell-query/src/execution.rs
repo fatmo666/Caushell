@@ -150,7 +150,8 @@ fn derived_origin_root_command_index(origin: &DerivedInvocationOrigin) -> Option
         | DerivedInvocationOrigin::ProcessSubstitution { .. }
         | DerivedInvocationOrigin::ProcessSubstitutionBody { .. }
         | DerivedInvocationOrigin::RecursivePayload { .. }
-        | DerivedInvocationOrigin::StaticXargs { .. } => None,
+        | DerivedInvocationOrigin::StaticXargs { .. }
+        | DerivedInvocationOrigin::ShellRedirection { .. } => None,
     }
 }
 
@@ -169,6 +170,7 @@ fn derived_origin_rank(origin: &DerivedInvocationOrigin) -> u8 {
         DerivedInvocationOrigin::StaticXargs { .. } => 11,
         DerivedInvocationOrigin::RecursivePayload { .. } => 12,
         DerivedInvocationOrigin::NestedPayload { .. } => 13,
+        DerivedInvocationOrigin::ShellRedirection { .. } => 14,
     }
 }
 

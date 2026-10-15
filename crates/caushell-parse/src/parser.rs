@@ -556,6 +556,25 @@ fn restore_descriptor_ownership(
             .into_owned();
         }
         restore_start(&mut redirection.top_level_span);
+        if let Some(statement) = &mut redirection.opening_statement {
+            restore_start(&mut statement.span);
+            restore_start(&mut statement.top_level_span);
+            for span in [
+                &mut statement.pipeline_span,
+                &mut statement.shell_scope_span,
+                &mut statement.subshell_span,
+                &mut statement.control_flow_span,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                restore_start(span);
+            }
+            statement.text = String::from_utf8_lossy(
+                &source[statement.span.start_byte..statement.span.end_byte],
+            )
+            .into_owned();
+        }
         if let Some(span) = &mut redirection.parent_command_span {
             restore_start(span);
         }
@@ -862,6 +881,27 @@ fn restore_static_brace_command_spans(
             &mut redirection.top_level_span,
             &span_start_repairs,
         );
+
+        if let Some(statement) = &mut redirection.opening_statement {
+            repair_span_start(raw_command, &mut statement.span, &span_start_repairs);
+            repair_span_start(
+                raw_command,
+                &mut statement.top_level_span,
+                &span_start_repairs,
+            );
+            for span in [
+                &mut statement.pipeline_span,
+                &mut statement.shell_scope_span,
+                &mut statement.subshell_span,
+                &mut statement.control_flow_span,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                repair_span_start(raw_command, span, &span_start_repairs);
+            }
+            statement.text = raw_command[statement.span.start_byte..statement.span.end_byte].into();
+        }
 
         if let Some(parent_command_span) = &mut redirection.parent_command_span {
             if let Some((_, replacement)) = command_span_repairs
@@ -2011,6 +2051,7 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         content: None,
         parent_command_name,
         parent_command_span,
+        opening_statement: redirection_opening_statement(node, source),
         top_level_span: top_level_command_span(node),
         span,
     }
@@ -2053,6 +2094,7 @@ fn parse_herestring(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         content,
         parent_command_name,
         parent_command_span,
+        opening_statement: redirection_opening_statement(node, source),
         top_level_span: top_level_command_span(node),
         span: span_for(node),
     }
@@ -2102,6 +2144,7 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         content,
         parent_command_name,
         parent_command_span,
+        opening_statement: redirection_opening_statement(node, source),
         top_level_span: top_level_command_span(node),
         span: span_for(node),
     }
@@ -2142,6 +2185,44 @@ fn parent_command_info(node: Node<'_>, source: &[u8]) -> (Option<String>, Option
         command.and_then(|command| extract_command_name(command, source)),
         command.map(|command| span_for(simple_command_scope(command))),
     )
+}
+
+fn redirection_opening_statement(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
+    if parent_command_info(node, source).1.is_some() {
+        return None;
+    }
+    let owner = node
+        .parent()
+        .filter(|p| p.kind() == "redirected_statement")
+        .unwrap_or(node);
+    let pipeline = find_ancestor_kind(owner, "pipeline");
+    Some(CommandFact {
+        command_name: None,
+        command_name_runtime_data: false,
+        text: source_text(owner, source),
+        prefix_assignments: Vec::new(),
+        tokens: Vec::new(),
+        in_pipeline: pipeline.is_some(),
+        pipeline_position: pipeline.and_then(|p| pipeline_position_for_command(owner, p)),
+        pipeline_span: pipeline.map(span_for),
+        terminator: statement_terminator_for(owner),
+        guarded: is_guarded_command(owner),
+        conditional_execution: conditionally_executed_in_shell(owner),
+        shell_scope_span: enclosing_shell_scope(owner),
+        subshell_span: nearest_ancestor_span(owner, &["subshell"]),
+        control_flow_span: outermost_ancestor_span(
+            owner,
+            &[
+                "if_statement",
+                "while_statement",
+                "for_statement",
+                "c_style_for_statement",
+                "case_statement",
+            ],
+        ),
+        top_level_span: top_level_command_span(owner),
+        span: span_for(owner),
+    })
 }
 
 fn extract_command_name(node: Node<'_>, source: &[u8]) -> Option<String> {

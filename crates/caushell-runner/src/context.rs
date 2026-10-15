@@ -64,6 +64,29 @@ pub struct ParsedCommandScope {
     pub command_node_ids: Vec<NodeId>,
 }
 
+/// Resolver-admitted shell syntax with no simple-command owner. It is not
+/// sent to Profile resolution and never represents a fabricated executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellRedirectionScope {
+    pub parent_execution_node_id: NodeId,
+    pub representative_record_node_id: Option<NodeId>,
+    pub origin_kind: ExecutionUnitOriginKind,
+    pub origin_locator: ExecutionUnitOriginLocator,
+    pub parsed: ParsedCommandArtifact,
+    pub depth: u8,
+    pub root_command_index: usize,
+    pub is_request_scope: bool,
+    pub units: Vec<ShellRedirectionUnit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellRedirectionUnit {
+    pub source_node_id: NodeId,
+    pub opening_statement: caushell_parse::CommandFact,
+    pub redirection_indexes: Vec<usize>,
+    pub bindings: SessionBindings,
+}
+
 impl ParsedCommandScope {
     pub fn new(
         scope_node_id: NodeId,
@@ -382,6 +405,7 @@ pub struct RunnerContext {
     pending_mutation_index: HashSet<(PendingMutation, Option<usize>)>,
     parsed_command: Option<ParsedCommandArtifact>,
     parsed_command_scopes: Vec<ParsedCommandScope>,
+    shell_redirection_scopes: Vec<ShellRedirectionScope>,
     unresolved_dispatch_records: Vec<UnresolvedDispatchRecord>,
     nested_payload_records: Vec<NestedPayloadRecord>,
     execution_unit_resolve_records: Vec<ExecutionUnitResolveRecord>,
@@ -413,6 +437,7 @@ impl RunnerContext {
             pending_mutation_index: HashSet::new(),
             parsed_command: None,
             parsed_command_scopes: Vec::new(),
+            shell_redirection_scopes: Vec::new(),
             unresolved_dispatch_records: Vec::new(),
             nested_payload_records: Vec::new(),
             execution_unit_resolve_records: Vec::new(),
@@ -449,6 +474,7 @@ impl RunnerContext {
     pub fn set_parsed_command(&mut self, parsed_command: ParsedCommandArtifact) {
         self.parsed_command = Some(parsed_command);
         self.parsed_command_scopes.clear();
+        self.shell_redirection_scopes.clear();
         self.unresolved_dispatch_records.clear();
         self.nested_payload_records.clear();
         self.execution_unit_resolve_records.clear();
@@ -534,6 +560,14 @@ impl RunnerContext {
 
     pub fn parsed_command_scopes(&self) -> &[ParsedCommandScope] {
         &self.parsed_command_scopes
+    }
+
+    pub fn shell_redirection_scopes(&self) -> &[ShellRedirectionScope] {
+        &self.shell_redirection_scopes
+    }
+
+    pub fn set_shell_redirection_scopes(&mut self, scopes: Vec<ShellRedirectionScope>) {
+        self.shell_redirection_scopes = scopes;
     }
 
     pub fn set_parsed_command_scopes(&mut self, scopes: Vec<ParsedCommandScope>) {

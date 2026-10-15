@@ -26,6 +26,8 @@ pub(crate) use shell_state_options::{
     ExportMode, UnsetMode, export_mode, scalar_identifier, state_visible, unset_mode,
 };
 mod shell_io_scope;
+mod shell_redirections;
+pub(crate) use shell_redirections::shell_syntax_redirections;
 mod static_payload;
 mod substitution_shape;
 pub(crate) use substitution_shape::substitution_shapes;

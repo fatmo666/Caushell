@@ -142,7 +142,8 @@ impl<'a> DerivedInvocationRef<'a> {
             | DerivedInvocationOrigin::ShellCommandStringPayload { .. }
             | DerivedInvocationOrigin::StaticXargs { .. }
             | DerivedInvocationOrigin::RecursivePayload { .. }
-            | DerivedInvocationOrigin::PipelineSegment { .. } => None,
+            | DerivedInvocationOrigin::PipelineSegment { .. }
+            | DerivedInvocationOrigin::ShellRedirection { .. } => None,
         }
     }
 
@@ -160,7 +161,8 @@ impl<'a> DerivedInvocationRef<'a> {
             | DerivedInvocationOrigin::FunctionExpansion { .. }
             | DerivedInvocationOrigin::ShellCommandStringPayload { .. }
             | DerivedInvocationOrigin::RecursivePayload { .. }
-            | DerivedInvocationOrigin::StaticXargs { .. } => None,
+            | DerivedInvocationOrigin::StaticXargs { .. }
+            | DerivedInvocationOrigin::ShellRedirection { .. } => None,
         }
     }
 
@@ -279,6 +281,10 @@ impl<'a> DerivedInvocationRef<'a> {
             DerivedInvocationOrigin::PipelineSegment { command_index } => {
                 (13, *command_index, 0, 0, "")
             }
+            DerivedInvocationOrigin::ShellRedirection {
+                scope_index,
+                statement_index,
+            } => (14, *scope_index, *statement_index, 0, ""),
         }
     }
 }

@@ -2291,6 +2291,21 @@ a byte-content `ReadPath`. The target's existing content origins remain tracked
 across resize and permission changes. These are declarative Profile contracts,
 not filesystem probes or new risk Passes.
 
+### Shell syntax redirections
+
+A redirection attached to a compound statement or standing alone is an effect
+of shell syntax, not of a Profile-resolved executable. The normal semantic
+expansion frontier retains these opening statements in each admitted shell
+scope, including functions, command/process substitutions and empty command
+bodies. Graph records give them distinct syntax origins without inventing a
+tool invocation. The existing expansion budget still applies.
+
+Each target uses the variable frame and cwd at the opening statement, before
+its body runs. Path extraction and mutation guards share this projection and
+the existing FD/discard resolution. Workspace/temporary-path policy and
+block-device rules remain in their existing Passes; no command-name exception
+or extra risk Pass is needed.
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

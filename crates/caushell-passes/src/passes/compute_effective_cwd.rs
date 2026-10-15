@@ -61,6 +61,15 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                 &mut effective_cwds,
                 &mut execution_cwd_overrides,
             );
+            compute_shell_redirection_cwds(
+                ctx,
+                initial_cwd,
+                &records_by_node,
+                &function_records_by_parent,
+                &known_existing_dirs,
+                &mut effective_cwds,
+                &execution_cwd_overrides,
+            );
             (effective_cwds, execution_cwd_overrides, request_exit_cwd)
         };
 
@@ -1105,6 +1114,14 @@ fn cwd_source_events(
     for event in &parsed.function_definitions {
         position(&event.span, &event.top_level_span, &event.shell_scope_span);
     }
+    let mut opening_spans = BTreeSet::new();
+    for redirect in &parsed.redirections {
+        if let Some(statement) = &redirect.opening_statement
+            && opening_spans.insert((statement.span.start_byte, statement.span.end_byte))
+        {
+            events.push((None, std::borrow::Cow::Borrowed(statement)));
+        }
+    }
     events.sort_by_key(|(_, command)| (command.span.start_byte, command.span.end_byte));
     events
 }
@@ -1167,6 +1184,28 @@ fn assignment_source_cwd(
             .collect::<BTreeMap<_, _>>();
         (parsed, CwdState::known(initial_cwd), records)
     };
+    cwd_at_scope_position(
+        ctx,
+        parsed,
+        initial,
+        &scoped_records,
+        source_start_byte,
+        scope_record_node_id.is_none(),
+        function_records_by_parent,
+        known_existing_dirs,
+    )
+}
+
+fn cwd_at_scope_position(
+    ctx: &RunnerContext,
+    parsed: &ParsedCommandArtifact,
+    initial: CwdState,
+    scoped_records: &BTreeMap<usize, &ExecutionUnitResolveRecord>,
+    source_start_byte: usize,
+    is_request_scope: bool,
+    function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
+    known_existing_dirs: &BTreeSet<String>,
+) -> CwdState {
     if source_start_byte == 0 {
         return initial;
     }
@@ -1182,8 +1221,24 @@ fn assignment_source_cwd(
             return cwd_state_for_scoped_states(&states);
         }
         let resolved = command_index.and_then(|index| scoped_records.get(&index).copied());
+        // An unconditional declared termination stops later source positions
+        // only in its own shell frame, not in a containing shell/job.
+        if let Some(record) = resolved
+            && !command.guarded
+            && !command.conditional_execution
+            && command.terminator != Some(StatementTerminator::Background)
+            && events
+                .iter()
+                .find(|(_, target)| target.span.start_byte == source_start_byte)
+                .is_some_and(|(_, target)| target.shell_scope_span == command.shell_scope_span)
+            && matches!(&record.result, ResolveInvocationArtifactResult::Resolved(r)
+                if !r.bound.operation_semantics_unresolved && r.bound.effects.iter()
+                    .any(|e|e.kind == EffectKind::TerminateCurrentShell))
+        {
+            return CwdState::empty();
+        }
         let outcome = if let Some(resolved) = resolved {
-            if scope_record_node_id.is_none() {
+            if is_request_scope {
                 request_command_outcome_for_scoped_states(
                     ctx,
                     command_index.unwrap(),
@@ -1242,6 +1297,141 @@ fn assignment_source_cwd(
         flow.record_outcome(outcome, connector);
     }
     CwdState::unknown()
+}
+
+fn compute_shell_redirection_cwds(
+    ctx: &RunnerContext,
+    initial_cwd: &str,
+    records_by_node: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
+    functions: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
+    known_dirs: &BTreeSet<String>,
+    cwds: &mut BTreeMap<NodeId, EffectiveCwd>,
+    overrides: &BTreeMap<NodeId, EffectiveCwd>,
+) {
+    for scope in ctx.shell_redirection_scopes() {
+        let representative = scope
+            .representative_record_node_id
+            .as_ref()
+            .and_then(|id| records_by_node.get(id).copied());
+        let initial = if scope.is_request_scope {
+            CwdState::known(initial_cwd)
+        } else if let Some(record) = representative {
+            base_cwd_for_record(
+                ctx,
+                record,
+                initial_cwd,
+                records_by_node,
+                cwds,
+                overrides,
+                functions,
+                known_dirs,
+            )
+        } else if let ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
+            source_cwd_anchor,
+            ..
+        } = &scope.origin_locator
+        {
+            match source_cwd_anchor {
+                ShellSourceCwdAnchor::RequestPosition { start_byte } => {
+                    let records = ctx
+                        .execution_unit_resolve_records()
+                        .iter()
+                        .filter(|r| r.origin_kind == ExecutionUnitOriginKind::TopLevel)
+                        .map(|r| (r.command_ref.command_index, r))
+                        .collect();
+                    ctx.parsed_command()
+                        .map(|parsed| {
+                            cwd_at_scope_position(
+                                ctx,
+                                parsed,
+                                CwdState::known(initial_cwd),
+                                &records,
+                                *start_byte,
+                                true,
+                                functions,
+                                known_dirs,
+                            )
+                        })
+                        .unwrap_or_else(CwdState::unknown)
+                }
+                ShellSourceCwdAnchor::RecordScopePosition {
+                    source_node_id,
+                    start_byte,
+                } => {
+                    if let Some(record) = records_by_node.get(source_node_id).copied() {
+                        let initial = base_cwd_for_record(
+                            ctx,
+                            record,
+                            initial_cwd,
+                            records_by_node,
+                            cwds,
+                            overrides,
+                            functions,
+                            known_dirs,
+                        );
+                        let records = ctx
+                            .execution_unit_resolve_records()
+                            .iter()
+                            .filter(|r| scope_key_for_record(r) == scope_key_for_record(record))
+                            .map(|r| (r.command_ref.command_index, r))
+                            .collect();
+                        cwd_at_scope_position(
+                            ctx,
+                            &record.parsed_scope,
+                            initial,
+                            &records,
+                            *start_byte,
+                            false,
+                            functions,
+                            known_dirs,
+                        )
+                    } else {
+                        CwdState::unknown()
+                    }
+                }
+                ShellSourceCwdAnchor::InvocationEntry => overrides
+                    .get(&scope.parent_execution_node_id)
+                    .or_else(|| cwds.get(&scope.parent_execution_node_id))
+                    .map(CwdState::from)
+                    .unwrap_or_else(CwdState::unknown),
+            }
+        } else {
+            overrides
+                .get(&scope.parent_execution_node_id)
+                .or_else(|| cwds.get(&scope.parent_execution_node_id))
+                .map(CwdState::from)
+                .unwrap_or_else(CwdState::unknown)
+        };
+        let records = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .filter(|r| {
+                if scope.is_request_scope {
+                    r.origin_kind == ExecutionUnitOriginKind::TopLevel
+                } else {
+                    r.parent_execution_node_id == scope.parent_execution_node_id
+                        && r.origin_kind == scope.origin_kind
+                        && r.origin_locator == scope.origin_locator
+                        && r.parsed_scope.raw_command == scope.parsed.raw_command
+                        && r.root_command_index == scope.root_command_index
+                }
+            })
+            .map(|r| (r.command_ref.command_index, r))
+            .collect();
+        for unit in &scope.units {
+            let state = cwd_at_scope_position(
+                ctx,
+                &scope.parsed,
+                initial.clone(),
+                &records,
+                unit.opening_statement.span.start_byte,
+                scope.is_request_scope,
+                functions,
+                known_dirs,
+            );
+            cwds.insert(unit.source_node_id.clone(), state.to_effective());
+        }
+    }
 }
 
 /// Process-local chdir affects tool operands and descendants, while the caller

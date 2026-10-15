@@ -133,8 +133,40 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
             }
         }
 
-        // A standalone redirection has no command invocation record.
-        if let Some(parsed) = ctx.parsed_command() {
+        for syntax in crate::support::shell_syntax_redirections(ctx) {
+            if !syntax
+                .path
+                .fact
+                .operator
+                .as_deref()
+                .is_some_and(|op| is_file_write_redirection_operator(op) || op == "<>")
+            {
+                continue;
+            }
+            let Some((resolution, cwd_dependent)) = mutation_path_for_io(syntax.io) else {
+                continue;
+            };
+            add_reason_for_target(
+                &mut reasons,
+                EffectKind::WritePath,
+                &syntax.path.slot_name,
+                &resolution,
+                cwd_dependent,
+                syntax.unknown_cwd,
+                workspace_root.as_deref(),
+                exemptions,
+                Some(MutationExemptionOperation::Write),
+            );
+        }
+
+        // Legacy callers without resolver-owned syntax scopes retain their
+        // top-level parse fallback. Normal runs use the shared scoped query.
+        if !ctx
+            .shell_redirection_scopes()
+            .iter()
+            .any(|s| s.is_request_scope)
+            && let Some(parsed) = ctx.parsed_command()
+        {
             for target in
                 collect_redirection_mutation_targets(parsed, None, &fallback_cwd, home.as_deref())
             {
