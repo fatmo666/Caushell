@@ -228,6 +228,32 @@ fn semantic_value_text(value: SemanticValueRef<'_>) -> &str {
     }
 }
 
+fn semantic_code_path_resolution(
+    semantic: &SemanticType,
+    value: SemanticValueRef<'_>,
+    resolved: Option<&ResolvedInvocationArtifact>,
+    cwd: &str,
+    home: Option<&str>,
+) -> (PathResolution, bool) {
+    if matches!(semantic, SemanticType::InProcessCodeLoad(load)
+        if load.load_kind == InProcessCodeLoadKind::LibraryPath)
+        && let Some(SemanticValueResolution::Known(name)) = caushell_profile::project_semantic_value(
+            &caushell_profile::ValueProjection::Identity,
+            value,
+        )
+        && !name.contains('/')
+    {
+        // A bare dynamic-library name follows loader search, not execution cwd.
+        return (
+            PathResolution::UnsupportedDynamicText {
+                text: format!("library name {name:?} has an unresolved loader search location"),
+            },
+            false,
+        );
+    }
+    semantic_path_resolution(value, resolved, cwd, home)
+}
+
 fn semantic_content_selector(
     value: SemanticValueRef<'_>,
     cwd: &str,
@@ -710,8 +736,13 @@ fn collect_resolved_record_path_facts(
             else {
                 continue;
             };
-            let (resolution, cwd_dependent) =
-                semantic_path_resolution(value, Some(resolved), cwd, home);
+            let (resolution, cwd_dependent) = semantic_code_path_resolution(
+                &parameter.semantic,
+                value,
+                Some(resolved),
+                cwd,
+                home,
+            );
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
@@ -758,7 +789,13 @@ fn collect_selection_error_path_facts(
             else {
                 continue;
             };
-            let (resolution, cwd_dependent) = semantic_path_resolution(value, None, cwd, home);
+            let (resolution, cwd_dependent) = semantic_code_path_resolution(
+                &parameter.semantic,
+                value,
+                None,
+                cwd,
+                home,
+            );
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),

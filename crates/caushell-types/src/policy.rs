@@ -349,6 +349,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::TerminalSessionOperation => RuleAction::NeedApproval,
         RuleId::CwdOutsideWorkspaceRoot => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
+        RuleId::CodeLoadPath => RuleAction::NeedApproval,
         RuleId::FileDeletion => RuleAction::NeedApproval,
         RuleId::ProcessControl => RuleAction::NeedApproval,
         RuleId::PrivilegeBoundary => RuleAction::NeedApproval,
@@ -432,6 +433,7 @@ pub enum PathTrustScope {
     Read,
     Write,
     ScriptSourceExecute,
+    InProcessCodeLoad,
     StartupConfigLoad,
 }
 
@@ -469,6 +471,25 @@ impl PathTrustGrant {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn code_file_loading_requires_approval_and_has_separate_trust_scope() {
+        let policy = super::RulePolicy::default();
+        assert_eq!(
+            policy.action_for(crate::RuleId::CodeLoadPath),
+            super::RuleAction::NeedApproval,
+        );
+        let grant = super::PathTrustGrant::Scoped {
+            scopes: [super::PathTrustScope::Read, super::PathTrustScope::Write]
+                .into_iter()
+                .collect(),
+        };
+        assert!(!grant.trusts_scope(super::PathTrustScope::InProcessCodeLoad));
+        assert_eq!(
+            serde_json::to_string(&crate::RuleId::CodeLoadPath).unwrap(),
+            "\"code_load_path\"",
+        );
+    }
+
     use super::{
         FamilyPolicy, NoProfilePolicy, PathTrustGrant, PathTrustScope, PathTrustSet, PolicyConfig,
         ResolveGapKind, ResolveGapPolicy, RuleAction, RulePolicy, RulePolicyEntry,

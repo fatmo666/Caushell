@@ -1,5 +1,6 @@
 mod catastrophic_delete_guard;
 mod catastrophic_shell_effects;
+mod code_load_path_guard;
 mod compute_effective_cwd;
 mod cwd_workspace_boundary;
 mod database_operation_guard;
@@ -45,6 +46,7 @@ mod tainted_execution_guard;
 
 pub use catastrophic_delete_guard::CatastrophicDeleteGuardPass;
 pub use catastrophic_shell_effects::CatastrophicShellEffectsPass;
+pub use code_load_path_guard::CodeLoadPathGuardPass;
 pub use compute_effective_cwd::ComputeEffectiveCwdPass;
 pub use cwd_workspace_boundary::CwdWorkspaceBoundaryPass;
 pub use database_operation_guard::DatabaseOperationGuardPass;

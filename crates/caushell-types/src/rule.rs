@@ -30,6 +30,7 @@ pub enum RuleId {
     ProcessControl,
     PrivilegeBoundary,
     OutsideWorkspaceScriptSource,
+    CodeLoadPath,
     OutsideWorkspaceStartupConfig,
     MissingCommandName,
     SelectionError,
@@ -77,6 +78,7 @@ impl RuleId {
             Self::ProcessControl => RuleFamily::HostSafety,
             Self::PrivilegeBoundary => RuleFamily::HostSafety,
             Self::OutsideWorkspaceScriptSource => RuleFamily::Path,
+            Self::CodeLoadPath => RuleFamily::Path,
             Self::OutsideWorkspaceStartupConfig => RuleFamily::Path,
             Self::MissingCommandName => RuleFamily::ResolveGap,
             Self::SelectionError => RuleFamily::ResolveGap,
@@ -124,6 +126,7 @@ mod tests {
             RuleFamily::InteractiveControl
         );
         assert_eq!(RuleId::CwdOutsideWorkspaceRoot.family(), RuleFamily::Path);
+        assert_eq!(RuleId::CodeLoadPath.family(), RuleFamily::Path);
         assert_eq!(RuleId::ProcessControl.family(), RuleFamily::HostSafety);
         assert_eq!(RuleId::PrivilegeBoundary.family(), RuleFamily::HostSafety);
         assert_eq!(

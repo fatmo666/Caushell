@@ -6,8 +6,9 @@ use caushell_config::{LoadConfigError, load_config_from_path};
 use caushell_graph::SessionGraph;
 use caushell_passes::StateOperationGuardPass;
 use caushell_passes::{
-    CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, ComputeEffectiveCwdPass,
-    CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass, DecisionAssemblyPass,
+    CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, CodeLoadPathGuardPass,
+    ComputeEffectiveCwdPass, CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass,
+    DecisionAssemblyPass,
     ExtractAliasBindingsPass, ExtractCommandSubstitutionProvenancePass,
     ExtractCurrentWorkingDirectoryPass, ExtractEndpointProvenancePass,
     ExtractExecutionSemanticsPass, ExtractFunctionBindingsPass, ExtractImplicitStartupConfigPass,
@@ -478,6 +479,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
     runner.register_session_analysis_pass(FileDeletionGuardPass);
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
+    runner.register_session_analysis_pass(CodeLoadPathGuardPass);
     runner.register_session_analysis_pass(CatastrophicShellEffectsPass);
     runner.register_session_analysis_pass(GitDestructiveOperationGuardPass);
     runner.register_session_analysis_pass(DatabaseOperationGuardPass);
