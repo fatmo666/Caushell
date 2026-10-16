@@ -31,3 +31,14 @@ fn state_metadata_roundtrips_and_rejects_misspelled_fields() {
         .is_err()
     );
 }
+
+#[test]
+fn connection_verification_control_roundtrips_without_filesystem_metadata() {
+    let operation = StateOperation {
+        domain: StateOperationDomain::ConnectionVerification,
+        operation: StateOperationKind::Control,
+    };
+    let json = serde_json::to_string(&operation).unwrap();
+    assert_eq!(serde_json::from_str::<StateOperation>(&json).unwrap(), operation);
+    assert!(json.contains("connection_verification"));
+}

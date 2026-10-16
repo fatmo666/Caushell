@@ -541,6 +541,14 @@ pub fn bind_invocation(
 
     if !form_suppresses_modifier_effects(selection.form) {
         for selected_modifier in &selection.modifiers {
+            if !modifier_effects_apply(
+                selected_modifier,
+                &selection.modifiers,
+                projection,
+                &bound.form_id,
+            ) {
+                continue;
+            }
             emit_effects(
                 &selected_modifier.modifier.effects,
                 &bound_slots,
@@ -847,6 +855,14 @@ pub(crate) fn bind_modifier_only_invocation(
     let bound_implicit_sources = BTreeSet::new();
 
     for selected_modifier in &modifiers {
+        if !modifier_effects_apply(
+            selected_modifier,
+            &modifiers,
+            projection,
+            &bound.form_id,
+        ) {
+            continue;
+        }
         emit_effects(
             &selected_modifier.modifier.effects,
             &bound_slots,
@@ -1569,6 +1585,23 @@ fn consume_flag_only_modifiers_for_binding(
 ) {
     for selected_modifier in modifiers {
         if !selected_modifier.modifier.parameters.is_empty() {
+            // A modifier may declare different arities for different aliases.
+            // Only consume scanner-owned, parameterless names here; leave
+            // every operand-taking occurrence to its parameter binding.
+            if let Some(occurrences) = &selected_modifier.option_flag_occurrences {
+                for (index, flag) in occurrences {
+                    let takes_operand = selected_modifier.parameters.iter().any(|parameter| {
+                        match &parameter.binding {
+                            BindingSpec::FollowingMatchedFlag { .. } => true,
+                            BindingSpec::FollowingFlag { flag_name, .. } => flag_name == flag,
+                            _ => false,
+                        }
+                    });
+                    if !takes_operand {
+                        state.consumed[*index] = true;
+                    }
+                }
+            }
             continue;
         }
 
@@ -1884,6 +1917,62 @@ fn form_suppresses_modifier_effects(form: &Form) -> bool {
         form.id.as_str(),
         "show_help" | "show_version" | "show_usage"
     )
+}
+
+fn modifier_effects_apply(
+    selected: &SelectedModifier<'_>,
+    modifiers: &[SelectedModifier<'_>],
+    projection: &ProjectedInvocation,
+    form: &FormId,
+) -> bool {
+    let Some(condition) = &selected.effects_when else {
+        return true;
+    };
+    if condition.unless_forms.contains(form) {
+        return false;
+    }
+    if condition
+        .unless_modifiers
+        .iter()
+        .any(|id| modifiers.iter().any(|m| m.id == *id))
+    {
+        return false;
+    }
+    let Some(matcher) = &condition.last_option_not_matching else {
+        return true;
+    };
+    // Only the ownership scanner can prove that this is an option rather
+    // than an operand, child argument, or data after the option terminator.
+    let Some((index, flag)) = selected
+        .option_flag_occurrences
+        .as_ref()
+        .and_then(|v| v.last())
+    else {
+        return true;
+    };
+    let Some(argument) = projection.args.get(*index) else {
+        return true;
+    };
+    let Some(decoded) = crate::argument_regions::argv_value(argument) else {
+        return true;
+    };
+    let word = if flag.as_str().starts_with("--")
+        && decoded
+            .strip_prefix(flag.as_str())
+            .is_some_and(|tail| tail.starts_with('='))
+    {
+        decoded.as_ref()
+    } else {
+        flag.as_str()
+    };
+    let matches = match &matcher.regex {
+        Some(regex) => regex
+            .regex()
+            .find(word)
+            .is_some_and(|m| m.start() == 0 && m.end() == word.len()),
+        None => argument_matches_value_matcher(word, &matcher.matcher),
+    };
+    !matches
 }
 
 fn emit_effects(

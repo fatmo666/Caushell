@@ -165,6 +165,15 @@ forms:
           purpose: generic_operand
 
 modifiers:
+  - id: peer_verification
+    matcher: {kind: any_flag, flags: [--no-check-certificate, --check-certificate]}
+    parameters:
+      - {name: certificate_check_setting, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: --check-certificate, operand_mode: optional_inline_only}, cardinality: optional_many}
+    effects_when:
+      unless_modifiers: [information]
+      last_option_not_matching: {kind: regex_pattern, pattern: '^--check-certificate(?:=(?i:on|yes|1))?$'}
+    effects:
+      - {kind: state_operation, state_operation: {domain: connection_verification, operation: control}, target: {kind: none}}
   - id: output_document
     matcher:
       kind: any_flag
@@ -231,7 +240,7 @@ modifiers:
   - {id: spider, matcher: {kind: any_flag, flags: [--spider]}}
   - {id: recursive, matcher: {kind: any_flag, flags: [-r, --recursive, -m, --mirror, -p, --page-requisites]}}
   - id: ordinary_flags
-    matcher: {kind: any_flag, flags: [-d, --debug, -v, --verbose, -S, --server-response, -c, --continue, -N, --timestamping, -nc, --no-clobber, -nd, --no-directories, -nH, --no-host-directories, -np, --no-parent, -nv, --no-verbose, -k, --convert-links, -K, --backup-converted, -E, --adjust-extension, -F, --force-html, '-4', --inet4-only, '-6', --inet6-only, --no-check-certificate, --no-cookies, --keep-session-cookies, --no-proxy, --no-cache, --content-disposition, --trust-server-names, --no-netrc, --no-config, --warc-cdx, --no-warc-compression, --no-warc-digests, --no-warc-keep-log]}
+    matcher: {kind: any_flag, flags: [-d, --debug, -v, --verbose, -S, --server-response, -c, --continue, -N, --timestamping, -nc, --no-clobber, -nd, --no-directories, -nH, --no-host-directories, -np, --no-parent, -nv, --no-verbose, -k, --convert-links, -K, --backup-converted, -E, --adjust-extension, -F, --force-html, '-4', --inet4-only, '-6', --inet6-only, --no-cookies, --keep-session-cookies, --no-proxy, --no-cache, --content-disposition, --trust-server-names, --no-netrc, --no-config, --warc-cdx, --no-warc-compression, --no-warc-digests, --no-warc-keep-log]}
   - {id: hsts_disabled, matcher: {kind: any_flag, flags: [--no-hsts]}}
   - id: rejection_log
     matcher: {kind: any_flag, flags: [--rejected-log]}
@@ -437,5 +446,6 @@ modifiers:
 
 subcommands: null
 extensions:
+  caushell.profile/sources: [https://www.gnu.org/software/wget/manual/wget.html, https://github.com/mirror/wget/blob/master/src/main.c, https://github.com/mirror/wget/blob/master/src/init.c, https://github.com/mirror/wget/blob/master/src/openssl.c]
   caushell.profile/known_limitations:
     - URL lists from -i are modeled as a read path, not expanded into endpoint artifacts without reading file content.

@@ -12,6 +12,8 @@ pub enum StateOperationDomain {
     ShellHistory,
     NetworkConfiguration,
     HostIdentity,
+    /// Explicit peer-verification configuration for this invocation's connections.
+    ConnectionVerification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

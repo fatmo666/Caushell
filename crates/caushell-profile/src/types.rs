@@ -1404,6 +1404,7 @@ pub struct Modifier {
     pub ends_option_scope: bool,
     pub parameters: Vec<Parameter>,
     pub effects: Vec<Effect>,
+    pub effects_when: Option<ModifierEffectCondition>,
     pub constraints: Vec<ModifierConstraint>,
     pub extensions: ExtensionMap,
 }
@@ -1416,6 +1417,7 @@ impl Modifier {
             ends_option_scope: false,
             parameters: Vec::new(),
             effects: Vec::new(),
+            effects_when: None,
             constraints: Vec::new(),
             extensions: ExtensionMap::new(),
         }
@@ -1445,6 +1447,17 @@ impl Modifier {
         self.constraints.push(constraint);
         self
     }
+}
+
+/// Opt-in effect gating; matching and operand ownership are never suppressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModifierEffectCondition {
+    pub unless_modifiers: Vec<ModifierId>,
+    pub unless_forms: Vec<FormId>,
+    /// Compare the last owned occurrence, including a long option's inline
+    /// value. A proven match suppresses effects; unknown input retains them.
+    /// Short clusters use the scanner's decoded flag name.
+    pub last_option_not_matching: Option<OptionOperandMatcher>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

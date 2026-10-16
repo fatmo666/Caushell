@@ -690,6 +690,37 @@ fn validate_option_scope(
     forms: &[Form],
     exact_option_words: &[FlagName],
 ) -> Result<(), NormalizeError> {
+    for modifier in modifiers {
+        if let Some(condition) = &modifier.effects_when {
+            if condition.last_option_not_matching.is_some()
+                && (policy == OptionScopePolicy::AllArguments
+                    || !matches!(modifier.matcher, ModifierMatcher::AnyFlag(_)))
+            {
+                return Err(NormalizeError::InvalidOptionScope(
+                    "effects_when.last_option_not_matching requires scoped any_flag ownership"
+                        .into(),
+                ));
+            }
+            if condition
+                .unless_modifiers
+                .iter()
+                .any(|id| !modifiers.iter().any(|m| m.id == *id))
+            {
+                return Err(NormalizeError::InvalidOptionScope(
+                    "effects_when.unless_modifiers references an undeclared modifier".into(),
+                ));
+            }
+            if condition
+                .unless_forms
+                .iter()
+                .any(|id| !forms.iter().any(|f| f.id == *id))
+            {
+                return Err(NormalizeError::InvalidOptionScope(
+                    "effects_when.unless_forms references an undeclared form".into(),
+                ));
+            }
+        }
+    }
     if policy == OptionScopePolicy::AllArguments && !exact_option_words.is_empty() {
         return Err(NormalizeError::InvalidOptionScope(
             "exact_option_words requires scoped option ownership".into(),
@@ -1166,6 +1197,47 @@ fn normalize_modifier(raw: RawModifier) -> Result<Modifier, NormalizeError> {
     Ok(Modifier {
         id: ModifierId::new(raw.id),
         matcher: normalize_modifier_matcher(raw.matcher)?,
+        effects_when: raw
+            .effects_when
+            .map(|condition| {
+                let unless_modifiers = condition
+                    .unless_modifiers
+                    .into_iter()
+                    .map(|id| {
+                        ensure_non_empty(&id, "modifiers.effects_when.unless_modifiers")?;
+                        Ok(ModifierId::new(id))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?;
+                let unless_forms = condition
+                    .unless_forms
+                    .into_iter()
+                    .map(|id| {
+                        ensure_non_empty(&id, "modifiers.effects_when.unless_forms")?;
+                        Ok(FormId::new(id))
+                    })
+                    .collect::<Result<Vec<_>, NormalizeError>>()?;
+                let last_option_not_matching = condition
+                    .last_option_not_matching
+                    .map(|raw| {
+                        let matcher = normalize_value_matcher(raw)?;
+                        let regex = match &matcher {
+                            ValueMatcher::RegexPattern(pattern) => {
+                                Some(crate::CompiledOperandRegex::compile(pattern).map_err(
+                                    |e| NormalizeError::InvalidOptionScope(e.to_string()),
+                                )?)
+                            }
+                            _ => None,
+                        };
+                        Ok(crate::OptionOperandMatcher { matcher, regex })
+                    })
+                    .transpose()?;
+                Ok(crate::ModifierEffectCondition {
+                    unless_modifiers,
+                    unless_forms,
+                    last_option_not_matching,
+                })
+            })
+            .transpose()?,
         ends_option_scope: raw.ends_option_scope,
         parameters: raw
             .parameters
@@ -3458,6 +3530,7 @@ mod tests {
             }],
             modifiers: vec![RawModifier {
                 id: "rcfile".to_string(),
+                effects_when: None,
                 ends_option_scope: false,
                 matcher: RawModifierMatcher::AnyFlag {
                     flags: vec!["--rcfile".to_string()],
@@ -3637,6 +3710,7 @@ mod tests {
             }],
             modifiers: vec![RawModifier {
                 id: "set_security_context".to_string(),
+                effects_when: None,
                 ends_option_scope: false,
                 matcher: RawModifierMatcher::AnyFlag {
                     flags: vec!["--context".to_string()],
@@ -3744,6 +3818,7 @@ mod tests {
             }],
             modifiers: vec![RawModifier {
                 id: "compatibility".to_string(),
+                effects_when: None,
                 ends_option_scope: false,
                 matcher: RawModifierMatcher::AnyFlag {
                     flags: vec!["-c".to_string(), "--compatibility".to_string()],

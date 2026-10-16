@@ -114,6 +114,8 @@ pub use types::ArgumentControlVocabulary;
 pub use types::CompiledOperandRegex;
 pub use types::EndpointInputScope;
 pub use types::OptionOperandMatcher;
+pub use types::ModifierEffectCondition;
+pub use raw::RawModifierEffectCondition;
 pub use types::PathAccessKind;
 pub use types::PathScope;
 pub use types::StdoutScalarShape;

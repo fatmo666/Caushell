@@ -380,8 +380,17 @@ pub struct RawModifier {
     pub ends_option_scope: bool,
     pub parameters: Vec<RawParameter>,
     pub effects: Vec<RawEffect>,
+    pub effects_when: Option<RawModifierEffectCondition>,
     pub constraints: Vec<RawModifierConstraint>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RawModifierEffectCondition {
+    pub unless_modifiers: Vec<String>,
+    pub unless_forms: Vec<String>,
+    pub last_option_not_matching: Option<RawValueMatcher>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

@@ -267,6 +267,28 @@ forms:
         input_scope: *request_inputs
 
 modifiers:
+  - id: peer_verification
+    matcher: {kind: any_flag, flags: [-k, --insecure, --no-insecure]}
+    effects_when:
+      unless_modifiers: [information]
+      unless_forms: [list_engines]
+      last_option_not_matching: {kind: literal, value: --no-insecure}
+    effects: &verification_control
+      - {kind: state_operation, state_operation: {domain: connection_verification, operation: control}, target: {kind: none}}
+  - id: proxy_peer_verification
+    matcher: {kind: any_flag, flags: [--proxy-insecure, --no-proxy-insecure]}
+    effects_when:
+      unless_modifiers: [information]
+      unless_forms: [list_engines]
+      last_option_not_matching: {kind: literal, value: --no-proxy-insecure}
+    effects: *verification_control
+  - id: doh_peer_verification
+    matcher: {kind: any_flag, flags: [--doh-insecure, --no-doh-insecure]}
+    effects_when:
+      unless_modifiers: [information]
+      unless_forms: [list_engines]
+      last_option_not_matching: {kind: literal, value: --no-doh-insecure}
+    effects: *verification_control
   - id: disable_default_config
     matcher: {kind: any_flag, flags: [-q, --disable]}
   # -G changes where -d payload bytes are sent, not whether they are sent.
@@ -278,7 +300,7 @@ modifiers:
   # Flag-only declarations are required by scoped ownership: do not infer
   # arity or discard unknown flags merely to make a download match.
   - id: common_flag_option
-    matcher: {kind: any_flag, flags: [-f, --fail, --fail-with-body, -s, --silent, -S, --show-error, -L, --location, -k, --insecure, -I, --head, -i, --show-headers, --include, -v, --verbose, -g, --globoff, -N, --no-buffer, '-4', --ipv4, '-6', --ipv6, --compressed, --compressed-ssh, --path-as-is, --http1.0, --http1.1, --http2, --http2-prior-knowledge, --http3, --http3-only, --retry-all-errors, --retry-connrefused, --no-progress-meter, --tcp-nodelay, --tcp-fastopen, --netrc, -n, --netrc-optional, --anyauth, --basic, --digest, --ntlm, --negotiate, --sasl-ir, --tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3]}
+    matcher: {kind: any_flag, flags: [-f, --fail, --fail-with-body, -s, --silent, -S, --show-error, -L, --location, -I, --head, -i, --show-headers, --include, -v, --verbose, -g, --globoff, -N, --no-buffer, '-4', --ipv4, '-6', --ipv6, --compressed, --compressed-ssh, --path-as-is, --http1.0, --http1.1, --http2, --http2-prior-knowledge, --http3, --http3-only, --retry-all-errors, --retry-connrefused, --no-progress-meter, --tcp-nodelay, --tcp-fastopen, --netrc, -n, --netrc-optional, --anyauth, --basic, --digest, --ntlm, --negotiate, --sasl-ir, --tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3]}
 
   - id: output
     matcher:

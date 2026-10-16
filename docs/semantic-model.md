@@ -46,7 +46,7 @@ A Profile may declare a non-filesystem effect explicitly:
 
 Domains are `system_clock`, `filesystem_mount`, `service_manager`,
 `cloud_resource`, `remote_access`, `shell_history`, `network_configuration` and
-`host_identity`; operations are `inspect`, `mutate`,
+`host_identity`, and `connection_verification`; operations are `inspect`, `mutate`,
 `control` and `opaque`. The typed declarations are retained in execution
 semantics and exposed by the public execution-semantics Query. They do not
 invent local files, remote resource ownership, successful execution or live
@@ -57,6 +57,36 @@ overrides and decision precedence. Filesystem and other guards remain
 independent. Commands without a state-operation candidate return before
 the state guard queries the Graph; candidate queries cover the current action,
 not a scan of all session history.
+
+`connection_verification` describes explicit connection peer-verification
+overrides, not persistent host configuration. Disabling verification is a
+`control` operation, handled by the existing state guard. curl declares direct,
+HTTPS-proxy and DoH verification overrides independently; wget also recognizes
+inline certificate-check settings, including its verification-bypassing `quiet`
+mode. An override value that does not prove verification enabled retains the
+control effect.
+
+Modifiers may opt into conditional effect emission without changing option
+ownership, bound operands, or the presence of the modifier itself:
+
+```yaml
+matcher: {kind: any_flag, flags: [-k, --insecure, --no-insecure]}
+effects_when:
+  unless_modifiers: [information]
+  last_option_not_matching: {kind: literal, value: --no-insecure}
+```
+
+`unless_modifiers` names modifiers in the same scope; optional `unless_forms`
+names informational forms whose selected operation does not use those effects
+(for example, listing curl engines). `last_option_not_matching`
+requires scoped `any_flag` ownership and compares the last owned occurrence of
+that modifier, not an argv substring. The compared word is the decoded flag
+name (also in short clusters), with any long inline `=value` preserved. Regexes
+are compiled at Profile load and must match the whole word. Only a proven match
+suppresses the effects; missing ownership evidence retains them. Option
+operands and data after `--` cannot restore a setting. Omission preserves the
+existing unconditional modifier behavior. Informational forms may suppress the
+effects by declaring their informational modifier in `unless_modifiers`.
 
 Interface configuration and ARP entry updates declare `network_configuration`
 mutations; setting a hostname, loading a name file or requesting a boot fallback

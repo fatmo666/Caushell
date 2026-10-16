@@ -53,6 +53,30 @@ Query 将它与逻辑上传／下载目标分开，非本地或未知路由阻�
 
 ## 命令建模
 
+连接对端校验的显式覆盖通过 `state_operation` 的
+`connection_verification` 域表达；关闭校验声明为 `control`，沿用既有状态审批
+Pass 与 Graph／Query，不代表主机持久配置。curl 分别声明直连、HTTPS 代理和 DoH
+的校验开关；wget 同时识别内联校验值及绕过验证的 `quiet` 模式。覆盖值无法证明
+已启用校验时保留控制效果。
+
+Modifier 可通过可选的 `effects_when` 控制效果发射，不改变选项归属、绑定参数
+或 Modifier 自身的存在。例如：
+
+```yaml
+matcher: {kind: any_flag, flags: [-k, --insecure, --no-insecure]}
+effects_when:
+  unless_modifiers: [information]
+  last_option_not_matching: {kind: literal, value: --no-insecure}
+```
+
+`unless_modifiers` 引用同一作用域的 Modifier；可选的 `unless_forms` 引用不使用
+这些效果的信息类调用形式（如 curl 列出引擎）。`last_option_not_matching` 仅支持
+已声明作用域的 `any_flag`：比较该 Modifier 最后一次拥有的选项，而不是搜索
+原始 argv 子串。短选项组合使用解码后的选项名，长选项保留内联 `=value`。
+正则在加载 Profile 时编译，并要求整词匹配；仅证明匹配时抑制效果，归属证据
+缺失时保留效果。其他选项的操作数和 `--` 后的数据不能恢复开关。未声明此条件
+时保持原有行为；帮助等信息模式可通过 `unless_modifiers` 排除。
+
 非文件系统状态通过 `state_operation` 声明。网络接口配置和 ARP 表修改使用
 `network_configuration`，主机名、名称文件设置和启动回退使用 `host_identity`。
 这些声明复用既有状态审批 Pass 与 Graph／Query，不伪造无目标的文件元数据修改，
