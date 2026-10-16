@@ -5,7 +5,7 @@ use caushell_parse::{CommandFact, CommandTokenKind, ParsedCommandArtifact, Redir
 use caushell_profile::{SessionBindings, exact_scalar_shell_parameter_reference_value};
 use caushell_query::{
     CommandInvocationRef, ExecutionUnitHistoryQuery, ExecutionUnitRef, PathContentProduceQuery,
-    QuerySession,
+    IoTarget, QuerySession,
 };
 use caushell_types::{CommandSequenceNo, ProvenanceProduceKind, SessionId};
 
@@ -498,6 +498,24 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
         };
     }
 
+    static_pipeline_input_evidence(
+        session, parsed, command_index, sequence_no, bindings, scope_base_bindings,
+        cwd, cwd_reliable, home, remaining_depth,
+    )
+}
+
+fn static_pipeline_input_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence_no: CommandSequenceNo,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
     let Some(upstream_index) = pipeline_upstream_by_consumer(parsed)
         .get(&command_index)
         .copied()
@@ -777,7 +795,7 @@ fn cat_scoped_stdout_evidence(
     evidence
 }
 
-fn process_substitution_evidence(
+pub(crate) fn process_substitution_evidence(
     session: QuerySession<'_>,
     text: &str,
     shell_kind: caushell_types::ShellKind,
@@ -800,14 +818,29 @@ fn process_substitution_evidence(
     if inner_parsed.commands.is_empty() || remaining_depth == 0 {
         return StaticInputEvidence::unknown();
     }
-    if !is_linear_static_output_sequence(&inner_parsed) {
+    if inner_parsed.commands.iter().any(|command| {
+        command.guarded
+            || command.control_flow_span.is_some()
+            || command.terminator == Some(caushell_parse::StatementTerminator::Background)
+    }) || inner_parsed
+        .redirections
+        .iter()
+        .any(|redirection| !redirection_targets_stdin_payload(redirection))
+    {
         return StaticInputEvidence::unknown();
     }
+    let piped_outputs: std::collections::BTreeSet<_> = pipeline_upstream_by_consumer(&inner_parsed)
+        .into_values()
+        .collect();
     let mut evidence = StaticInputEvidence {
         known_fragments: Vec::new(),
         complete: true,
     };
     for index in 0..inner_parsed.commands.len() {
+        // An upstream stage supplies the next stage, not the outer stream.
+        if piped_outputs.contains(&index) {
+            continue;
+        }
         let current = RebasedBindingReplay {
             parent: bindings,
             bindings: bindings.apply_before(
@@ -835,6 +868,188 @@ fn process_substitution_evidence(
     evidence
 }
 
+/// Complete-byte evidence for an already classified content-open target.
+/// Descriptor routing is supplied by the shared I/O query, not guessed here.
+pub(crate) fn static_io_target_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    target: &IoTarget,
+    sequence_no: CommandSequenceNo,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
+    cwd: &str,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
+    let cwd_reliable = !scope_has_prior_directory_transition(parsed, command_index);
+    match target {
+        IoTarget::Closed | IoTarget::Discard => StaticInputEvidence {
+            known_fragments: Vec::new(),
+            complete: true,
+        },
+        IoTarget::InheritedDescriptor { descriptor } if descriptor == "0" => {
+            // The snapshot selected the entry stream. Re-reading current fd 0
+            // would incorrectly observe redirections applied after an fd copy.
+            static_pipeline_input_evidence(
+                session,
+                parsed,
+                command_index,
+                sequence_no,
+                bindings,
+                scope_base_bindings,
+                cwd,
+                cwd_reliable,
+                home,
+                remaining_depth,
+            )
+        }
+        IoTarget::InlineContent { redirection_index } => {
+            let Some(redirection) = parsed.redirections.get(*redirection_index) else {
+                return StaticInputEvidence::unknown();
+            };
+            match static_inline_stdin_payload(
+                session,
+                parsed.shell_kind,
+                redirection,
+                sequence_no,
+                bindings,
+                cwd,
+                home,
+                remaining_depth,
+            ) {
+                Some(payload) => StaticInputEvidence {
+                    known_fragments: vec![if redirection.kind == RedirectionKind::HereString {
+                        format!("{payload}\n")
+                    } else {
+                        payload
+                    }],
+                    complete: true,
+                },
+                None => StaticInputEvidence::unknown(),
+            }
+        }
+        IoTarget::ProcessSubstitution { redirection_index } => {
+            let Some(token) = parsed
+                .redirections
+                .get(*redirection_index)
+                .and_then(|redirection| redirection.target.as_ref())
+            else {
+                return StaticInputEvidence::unknown();
+            };
+            process_substitution_evidence(
+                session,
+                &token.text,
+                parsed.shell_kind,
+                sequence_no,
+                bindings,
+                cwd,
+                cwd_reliable,
+                home,
+                remaining_depth,
+            )
+        }
+        IoTarget::Path {
+            resolution,
+            cwd_dependent,
+        } => {
+            if *cwd_dependent && !cwd_reliable {
+                return StaticInputEvidence::unknown();
+            }
+            let Some(path) = resolution.concrete_path() else {
+                return StaticInputEvidence::unknown();
+            };
+            immediate_file_write_evidence(
+                session,
+                parsed,
+                command_index,
+                path,
+                sequence_no,
+                scope_base_bindings,
+                cwd,
+                home,
+                remaining_depth,
+            )
+        }
+        IoTarget::InheritedDescriptor { .. } | IoTarget::UnknownDescriptor { .. } => {
+            StaticInputEvidence::unknown()
+        }
+    }
+}
+
+fn immediate_file_write_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    consumer: usize,
+    path: &str,
+    sequence_no: CommandSequenceNo,
+    scope_base_bindings: &dyn VariableBindingReplay,
+    cwd: &str,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticInputEvidence {
+    // Only a complete immediate replacement certifies this version. Older
+    // literal fragments cannot certify bytes after an intervening writer.
+    let Some(writer) = consumer.checked_sub(1) else {
+        return StaticInputEvidence::unknown();
+    };
+    let command = &parsed.commands[writer];
+    if remaining_depth == 0
+        || command.in_pipeline
+        || command.guarded
+        || command.control_flow_span.is_some()
+        || command.terminator == Some(caushell_parse::StatementTerminator::Background)
+        || parsed.redirections.iter().any(|redirection| {
+            redirection_parent_command_index(parsed, redirection) == Some(writer)
+                && matches!(redirection.operator.as_deref(), Some(">>" | "&>>"))
+        })
+    {
+        return StaticInputEvidence::unknown();
+    }
+    let target = super::content_io_target(
+        parsed,
+        Some(writer),
+        None,
+        &caushell_types::PathResolution::Concrete {
+            path: "/dev/stdout".into(),
+        },
+        false,
+        cwd,
+        home,
+    );
+    if !matches!(target, IoTarget::Path { ref resolution, .. }
+        if resolution.concrete_path() == Some(path))
+    {
+        return StaticInputEvidence::unknown();
+    }
+    let current = RebasedBindingReplay {
+        parent: scope_base_bindings,
+        bindings: scope_base_bindings.apply_before(
+            scope_base_bindings.base().clone(),
+            parsed,
+            command.span.start_byte,
+            sequence_no,
+        ),
+    };
+    let mut output = parsed.clone();
+    output.redirections.retain(|redirection| {
+        redirection_parent_command_index(parsed, redirection) != Some(writer)
+            || redirection_targets_stdin_payload(redirection)
+    });
+    scoped_stdout_evidence(
+        session,
+        &output,
+        writer,
+        sequence_no,
+        &current,
+        scope_base_bindings,
+        cwd,
+        true,
+        home,
+        remaining_depth.saturating_sub(1),
+    )
+}
+
 fn token_has_unresolved_expansion(
     token: &caushell_parse::CommandToken,
     bindings: &dyn VariableBindingReplay,
@@ -856,6 +1071,7 @@ fn is_linear_static_output_sequence(parsed: &ParsedCommandArtifact) -> bool {
     parsed.redirections.is_empty()
         && parsed.commands.iter().all(|command| {
             !command.in_pipeline && !command.guarded && command.control_flow_span.is_none()
+                && command.terminator != Some(caushell_parse::StatementTerminator::Background)
         })
 }
 
@@ -3206,10 +3422,20 @@ mod tests {
     }
 
     #[test]
-    fn process_substitution_pipeline_is_not_flattened_as_exact_output() {
+    fn process_substitution_pipeline_traces_only_the_final_stage_output() {
         let evidence = stdin_evidence_for("cat <(printf known | cat) | xargs", 1);
 
-        assert!(!evidence.complete);
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "known");
+        for command in [
+            "cat <(printf known | unknown-command) | xargs",
+            "cat <(printf known | cat -n) | xargs",
+            "cat <(printf known > /tmp/out | cat) | xargs",
+            "cat <(printf known & printf other) | xargs",
+            "cat <(bash -c 'printf known & printf other') | xargs",
+        ] {
+            assert!(!stdin_evidence_for(command, 1).complete, "{command}");
+        }
     }
 
     #[test]

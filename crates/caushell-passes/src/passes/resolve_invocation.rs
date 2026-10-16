@@ -36,11 +36,12 @@ use crate::support::{
     known_literal_path_content_before_scoped_command as static_known_literal_path_content_before_scoped_command,
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
+    process_substitution_evidence, static_io_target_evidence,
     pipeline_has_upstream, redirection_parent_command_index, redirection_targets_stdin_payload,
     request_variable_bindings, runtime_variable_overlay,
     runtime_visible_variable_bindings_before_span, source_node_id_for_command,
     static_stdin_evidence_for_scoped_command, static_stdin_payloads_for_scoped_command,
-    static_stdout_payloads_for_process_substitution_text, top_level_unit_for_command,
+    top_level_unit_for_command,
     top_level_unit_for_span,
 };
 
@@ -3630,7 +3631,9 @@ fn expanded_recursive_payload_children(
             max_nested_parse_depth.saturating_sub(entry.depth),
         )
         .into_iter()
-        .filter(|candidate| candidate.source == PayloadSource::Stdin)
+        .filter(|candidate| {
+            matches!(candidate.source, PayloadSource::Stdin | PayloadSource::ScriptFileRef)
+        })
         .collect::<Vec<_>>();
         candidates.extend(script_file_candidates);
         candidates
@@ -7355,6 +7358,8 @@ fn classify_implicit_input_payload(
     };
     if source.to_runtime_input_source().is_some() {
         UnresolvedExecutionPayloadSubtype::RuntimeInputPayload
+    } else if record.candidate.candidate.source == PayloadSource::ScriptFileRef {
+        UnresolvedExecutionPayloadSubtype::ExternalStreamPayload
     } else if record.candidate.candidate.source == caushell_profile::PayloadSource::InlineString {
         UnresolvedExecutionPayloadSubtype::DynamicInlinePayload
     } else {
@@ -7913,7 +7918,7 @@ fn script_file_payload_candidates_from_literal_writes(
     command_index: usize,
     scope_base_bindings: &SessionBindings,
     history_anchor_node_id: &caushell_graph::NodeId,
-    max_nested_parse_depth: u8,
+    _max_nested_parse_depth: u8,
 ) -> Vec<caushell_profile::RecursivePayloadCandidate> {
     let Some(language) = script_payload_language(
         resolved.normalized_command_name.as_str(),
@@ -7935,51 +7940,46 @@ fn script_file_payload_candidates_from_literal_writes(
             }
 
             let query_session = caushell_query::QuerySession::from_session(&session);
-            let text = process_substitution_script_source_payload_text(
-                query_session,
-                parsed_scope,
+            let path = resolved_parameter_path(
                 parameter,
-                request.sequence_no,
                 bindings,
                 request.shell_state_before.cwd(),
                 request.home.as_deref(),
-                max_nested_parse_depth,
+            )?;
+            // Streams are handled in the shared recursive-payload entry,
+            // including an unresolved candidate when their bytes are unknown.
+            if path == "/dev/null"
+                || caushell_query::IoTargetQuery::descriptor_alias(&path).is_some()
+            {
+                return None;
+            }
+            let text = static_known_literal_path_content_before_scoped_command(
+                query_session,
+                parsed_scope,
+                command_index,
+                &path,
+                request.sequence_no,
+                &runtime_binding_replay(registry, request, scope_base_bindings),
+                request.shell_state_before.cwd(),
+                request.home.as_deref(),
             )
             .or_else(|| {
-                let path = resolved_parameter_path(
-                    parameter,
-                    bindings,
-                    request.shell_state_before.cwd(),
-                    request.home.as_deref(),
-                )?;
-                static_known_literal_path_content_before_scoped_command(
+                static_known_literal_path_content_before_execution_unit(
                     query_session,
-                    parsed_scope,
-                    command_index,
                     &path,
-                    request.sequence_no,
-                    &runtime_binding_replay(registry, request, scope_base_bindings),
+                    history_anchor_node_id,
                     request.shell_state_before.cwd(),
                     request.home.as_deref(),
                 )
-                .or_else(|| {
-                    static_known_literal_path_content_before_execution_unit(
-                        query_session,
-                        &path,
-                        history_anchor_node_id,
-                        request.shell_state_before.cwd(),
-                        request.home.as_deref(),
-                    )
-                })
-                .or_else(|| {
-                    static_known_literal_path_content_before_sequence(
-                        query_session,
-                        &path,
-                        request.sequence_no,
-                        request.shell_state_before.cwd(),
-                        request.home.as_deref(),
-                    )
-                })
+            })
+            .or_else(|| {
+                static_known_literal_path_content_before_sequence(
+                    query_session,
+                    &path,
+                    request.sequence_no,
+                    request.shell_state_before.cwd(),
+                    request.home.as_deref(),
+                )
             })?;
 
             Some(caushell_profile::RecursivePayloadCandidate {
@@ -7992,40 +7992,117 @@ fn script_file_payload_candidates_from_literal_writes(
         .collect()
 }
 
-fn process_substitution_script_source_payload_text(
+fn script_stream_payload_candidates(
+    registry: &ProfileRegistry,
     session: caushell_query::QuerySession<'_>,
+    request: &CheckRequest,
     parsed_scope: &caushell_parse::ParsedCommandArtifact,
-    parameter: &BoundParameter,
-    sequence_no: caushell_types::CommandSequenceNo,
+    command_index: usize,
+    bound: &caushell_profile::BoundInvocation,
     bindings: &SessionBindings,
-    cwd: &str,
-    home: Option<&str>,
+    scope_base_bindings: &SessionBindings,
     max_nested_parse_depth: u8,
-) -> Option<String> {
-    let payloads = parameter
-        .values
-        .iter()
-        .filter_map(|value| match value {
-            BoundValue::Argument {
-                text, node_kind, ..
-            } if node_kind == "process_substitution" => {
-                Some(static_stdout_payloads_for_process_substitution_text(
+) -> Vec<RecursivePayloadCandidate> {
+    let Some(language) = script_payload_language(bound.command_name.as_str(), request.shell_kind)
+    else {
+        return Vec::new();
+    };
+    let cwd = request.shell_state_before.cwd();
+    let home = bindings.tilde_home_with_default(request.home.as_deref());
+    script_payload_slots(bound)
+        .into_iter()
+        .filter_map(|slot| {
+            let parameter = bound.bound_parameters.iter().find(|p| p.name == slot)?;
+            if !parameter_is_script_source_path(parameter) {
+                return None;
+            }
+            let replay = runtime_binding_replay(registry, request, bindings);
+            let base_replay = runtime_binding_replay(registry, request, scope_base_bindings);
+            let evidence = if let Some(text) = parameter.values.iter().find_map(|value| match value
+            {
+                BoundValue::Argument {
+                    text,
+                    node_kind,
+                    materialization,
+                    ..
+                } if node_kind == "process_substitution"
+                    && *materialization
+                        == caushell_profile::BoundArgumentMaterialization::Literal =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            }) {
+                process_substitution_evidence(
                     session,
                     text,
                     parsed_scope.shell_kind,
-                    sequence_no,
-                    bindings,
+                    request.sequence_no,
+                    &replay,
+                    cwd,
+                    !crate::support::scope_has_prior_directory_transition(
+                        parsed_scope,
+                        command_index,
+                    ),
+                    home,
+                    max_nested_parse_depth,
+                )
+            } else {
+                let path = resolved_parameter_path(parameter, bindings, cwd, home)?;
+                if path != "/dev/null"
+                    && caushell_query::IoTargetQuery::descriptor_alias(&path).is_none()
+                {
+                    return None;
+                }
+                let io = crate::support::content_io_target(
+                    parsed_scope,
+                    Some(command_index),
+                    None,
+                    &caushell_types::PathResolution::Concrete { path },
+                    false,
+                    cwd,
+                    home,
+                );
+                let evidence = static_io_target_evidence(
+                    session,
+                    parsed_scope,
+                    command_index,
+                    &io,
+                    request.sequence_no,
+                    &replay,
+                    &base_replay,
                     cwd,
                     home,
                     max_nested_parse_depth,
-                ))
-            }
-            _ => None,
+                );
+                // A descriptor opened on a concrete filesystem pathname retains
+                // the existing file-source policy, not a blanket stream gap.
+                // Known bytes may still expose concrete nested shell effects.
+                if !evidence.complete
+                    && matches!(&io, caushell_query::IoTarget::Path { resolution, .. }
+                        if resolution.concrete_path().is_some())
+                {
+                    return None;
+                }
+                evidence
+            };
+            Some(RecursivePayloadCandidate {
+                language,
+                source: PayloadSource::ScriptFileRef,
+                origin: RecursivePayloadOrigin::Parameter { slot },
+                input: if evidence.complete {
+                    RecursivePayloadInput::LiteralText {
+                        text: evidence.known_fragments.join(""),
+                    }
+                } else {
+                    RecursivePayloadInput::ImplicitInput {
+                        source: caushell_profile::ImplicitInputSource::DispatchOutput,
+                        domain: None,
+                    }
+                },
+            })
         })
-        .flatten()
-        .collect::<Vec<_>>();
-
-    (!payloads.is_empty()).then(|| payloads.join(""))
+        .collect()
 }
 
 fn script_payload_language(
@@ -8145,6 +8222,17 @@ fn recursive_payload_candidates_for_scoped_command(
         max_nested_parse_depth,
         &mut candidates,
     );
+    candidates.extend(script_stream_payload_candidates(
+        registry,
+        caushell_query::QuerySession::from_session(&session),
+        request,
+        parsed_command,
+        command_index,
+        bound,
+        bindings,
+        scope_base_bindings,
+        max_nested_parse_depth,
+    ));
     candidates
 }
 

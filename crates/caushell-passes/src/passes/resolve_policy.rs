@@ -317,7 +317,7 @@ fn concise(text: &str) -> String {
 fn unresolved_execution_payload_evidence(
     ctx: &RunnerContext,
 ) -> impl Iterator<Item = &caushell_types::Evidence> {
-    let resolved_execution_payloads: BTreeSet<(usize, String)> = ctx
+    let resolved_execution_payloads: BTreeSet<(usize, String, String)> = ctx
         .evidence
         .iter()
         .filter_map(|evidence| match &evidence.kind {
@@ -330,6 +330,7 @@ fn unresolved_execution_payload_evidence(
             {
                 Some((
                     parsed.context.root_command_index,
+                    nested_payload_owner_key(&parsed.context),
                     nested_payload_origin_key(&parsed.context.origin),
                 ))
             }
@@ -354,6 +355,7 @@ fn unresolved_execution_payload_evidence(
                     == Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell)
                     || !resolved_execution_payloads.contains(&(
                         unresolved.context.root_command_index,
+                        nested_payload_owner_key(&unresolved.context),
                         nested_payload_origin_key(&unresolved.context.origin),
                     ))
             }
@@ -379,6 +381,14 @@ fn unresolved_execution_payload_action(
         });
 
     decision_for_rule_action(action).map(|_| action)
+}
+
+fn nested_payload_owner_key(context: &caushell_types::NestedPayloadContextEvidence) -> String {
+    // Same-named slots in distinct execution units are not the same payload.
+    format!(
+        "{:?}:{:?}:{:?}",
+        context.parent_ref, context.language, context.source
+    )
 }
 
 fn nested_payload_origin_key(origin: &caushell_types::NestedPayloadOriginEvidence) -> String {
@@ -883,6 +893,36 @@ mod tests {
                 ),
             ],
             "opaque-fixture ...",
+        );
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
+    }
+
+    #[test]
+    fn parsed_payload_cannot_resolve_another_execution_units_same_named_slot() {
+        let mut parsed = sample_nested_payload_context("script_path");
+        parsed.parent_ref = NestedPayloadParentEvidence::DerivedInvocation {
+            node_id: "child:1".into(),
+        };
+        parsed.source = NestedPayloadSourceEvidence::ScriptFileRef;
+        let mut unresolved = parsed.clone();
+        unresolved.record_id += 1;
+        unresolved.parent_ref = NestedPayloadParentEvidence::DerivedInvocation {
+            node_id: "child:2".into(),
+        };
+        let ctx = run_pass(
+            PolicyConfig::default(), Vec::new(), Vec::new(),
+            vec![
+                Evidence::nested_payload_parsed(parsed, ShellKind::Bash, 1),
+                Evidence::nested_payload_unresolved(
+                    unresolved,
+                    NestedPayloadUnresolvedReasonEvidence::RequiresImplicitInput {
+                        source: caushell_types::ImplicitInputSource::DispatchOutput,
+                    },
+                    Some(UnresolvedExecutionPayloadSubtype::ExternalStreamPayload),
+                ),
+            ],
+            "bash -c 'source known; source unknown'",
         );
         assert_eq!(ctx.decision_proposals.len(), 1);
         assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);

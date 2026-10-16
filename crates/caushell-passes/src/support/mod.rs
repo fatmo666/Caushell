@@ -72,7 +72,8 @@ pub(crate) use node_ids::{
     transform_output_artifact_node_id, variable_binding_intent_node_id,
 };
 pub(crate) use outside_workspace::{
-    collect_outside_workspace_path_consumes, decision_for_rule_action, push_unique_reason,
+    collect_outside_workspace_path_consumes, decision_for_rule_action, path_is_trusted_for_scope,
+    push_unique_reason,
 };
 pub(crate) use payload_hard_deny::{
     collect_block_device_destructive_reasons, collect_block_device_session_reasons,
@@ -90,8 +91,8 @@ pub(crate) use static_payload::{
     StaticInputEvidence, known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command, known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
+    process_substitution_evidence, static_io_target_evidence,
     static_stdin_evidence_for_scoped_command, static_stdin_payloads_for_scoped_command,
-    static_stdout_payloads_for_process_substitution_text,
 };
 pub(crate) use top_level_units::{
     collect_top_level_units, top_level_node_id_for_command, top_level_node_id_for_span,

@@ -43,6 +43,23 @@ Each Finding has an `enforcement_class` field with a value of either `Normal` or
 
 The `outside_workspace_mutation` rule requires approval for file writes, deletions, moves, and metadata changes whose resolved targets are outside the workspace. It also covers shell output redirections. When a mutation target or its effective working directory cannot be resolved, the rule requires approval rather than assuming the target is inside. Read-only paths do not trigger this rule. There is currently no allowlist or session-created-file exemption.
 
+The `code_load_path` rule checks explicitly modeled in-process code-file inputs,
+such as dynamic libraries. Paths inside the workspace, `/tmp`, or `/private/tmp`
+are exempt; other paths and unresolved path bounds require approval by default.
+Named modules and tool-owned code loading retain their existing module/resolve
+policy. Additional trusted roots must grant the `in_process_code_load` scope;
+read or write trust alone does not authorize loading code. This path exemption
+does not override findings from tainted-code provenance.
+
+Shell script references supplied by process substitutions or descriptor aliases
+also enter nested-payload analysis. Only complete byte evidence is parsed as
+shell code; unknown or partially recovered streams produce an
+`external_stream_payload` approval gap. This does not make ordinary local script
+references require approval. Descriptor aliases resolved to concrete filesystem
+paths retain the existing file-source policy. Payload resolution is scoped to its owning
+execution unit, and descriptor copies retain their selected stream even if the
+original descriptor is subsequently redirected.
+
 ## Decision Assembly
 
 After all analysis modules complete, Decision Assembly produces one final decision according to the following priority:
