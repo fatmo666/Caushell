@@ -161,6 +161,58 @@ fn options_after_files_preserve_operand_order_without_rewriting_argv() {
         assert_eq!(values(&b, "output"), ["out"]);
     }
 }
+
+#[test]
+fn native_text_templates_prove_ownership_without_fabricating_values() {
+    use caushell_types::{ImplicitInputSource, RuntimeArgumentDomain};
+    let p = profile(OptionScopePolicy::PermutedOptions);
+    for (template, control) in [
+        ("data:{}", false),
+        ("{}", true),
+        ("{} END", true),
+        ("-{}", true),
+    ] {
+        let parsed = parse_command("synthetic-transfer placeholder", ShellKind::Bash).unwrap();
+        let mut projection =
+            project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+        let arg = &mut projection.args[0];
+        arg.text.clear();
+        arg.implicit_input_source = Some(ImplicitInputSource::StdinData);
+        arg.node_kind = "runtime_scalar".into();
+        arg.runtime_argument_domain =
+            Some(RuntimeArgumentDomain::Unbounded.substitute_into(template, "{}"));
+        let selected = select_invocation(&p, &projection).unwrap();
+        let b = bind_invocation(&p, &projection, &selected);
+        assert_eq!(unresolved(&b), control, "{template}: {b:?}");
+        assert!(
+            b.bound_parameters
+                .iter()
+                .flat_map(|p| &p.values)
+                .any(|v| matches!(v, BoundValue::ImplicitInput { .. })),
+            "{template}: {b:?}"
+        );
+    }
+    // A required option owns its following single field, even when the field
+    // begins with a dash. It remains runtime input, not another option.
+    let parsed = parse_command("synthetic-transfer -f placeholder", ShellKind::Bash).unwrap();
+    let mut projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let arg = &mut projection.args[1];
+    arg.text.clear();
+    arg.implicit_input_source = Some(ImplicitInputSource::StdinData);
+    arg.node_kind = "runtime_scalar".into();
+    arg.runtime_argument_domain =
+        Some(RuntimeArgumentDomain::Unbounded.substitute_into("--{}", "{}"));
+    let selected = select_invocation(&p, &projection).unwrap();
+    let b = bind_invocation(&p, &projection, &selected);
+    assert!(!unresolved(&b), "{b:?}");
+    assert!(
+        b.bound_parameters
+            .iter()
+            .filter(|p| p.name.as_str() == "format")
+            .flat_map(|p| &p.values)
+            .any(|v| matches!(v, BoundValue::ImplicitInput { .. }))
+    );
+}
 #[test]
 fn flag_shaped_option_values_are_never_modifiers() {
     for value in ["--help", "-o", "--", "-q"] {

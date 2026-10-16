@@ -523,6 +523,10 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
             }
         }
         match &arg.runtime_argument_domain {
+            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix }) => {
+                structure.static_prefix = prefix.clone();
+                structure.static_suffix = suffix.clone();
+            }
             Some(caushell_types::RuntimeArgumentDomain::PathTemplate {
                 roots,
                 may_escape,

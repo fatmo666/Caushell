@@ -21,6 +21,7 @@ mod rename_payload;
 mod registry;
 mod resolve;
 mod runtime_variables;
+mod runtime_matcher;
 mod sed_payload;
 mod structured_projection;
 mod types;

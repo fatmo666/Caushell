@@ -97,12 +97,25 @@ impl ProjectedInvocation {
         let mut shape = InvocationShape::new();
         let mut before_dashdash = true;
 
-        for arg in &self.args {
+        for (index, arg) in self.args.iter().enumerate() {
+            let template = matches!(
+                arg.runtime_argument_domain,
+                Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. })
+            )
+            .then(|| crate::argument_structure(arg));
+            if let Some(structure) = &template {
+                shape.argument_templates.insert(index, structure.clone());
+            }
             match arg.kind {
                 ProjectedArgKind::Flag => {
                     shape.flags.push(FlagName::new(arg.text.clone()));
                 }
                 ProjectedArgKind::Positional => {
+                    if let Some(structure) = template {
+                        shape
+                            .positional_templates
+                            .insert(shape.positional_args.len(), structure);
+                    }
                     shape.positional_args.push(arg.text.clone());
                     if before_dashdash {
                         shape.positional_args_before_dashdash.push(arg.text.clone());

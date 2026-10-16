@@ -744,7 +744,10 @@ fn collect_dispatch_scoped_path_semantics(
             target.source == caushell_profile::ImplicitInputSource::DispatchOutput
                 && !matches!(
                     &target.domain,
-                    Some(caushell_types::RuntimeArgumentDomain::PathTemplate { .. })
+                    Some(
+                        caushell_types::RuntimeArgumentDomain::PathTemplate { .. }
+                            | caushell_types::RuntimeArgumentDomain::TextTemplate { .. }
+                    )
                 )
         }) {
             return;

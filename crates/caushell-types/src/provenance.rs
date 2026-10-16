@@ -98,6 +98,12 @@ pub enum ImplicitInputSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeArgumentDomain {
     Unbounded,
+    /// Unknown native argv data surrounded by already-decoded literal bytes.
+    /// This is a spelling bound only, not a path containment or content proof.
+    TextTemplate {
+        prefix: String,
+        suffix: String,
+    },
     /// Producer argv-spelling anchors, including the root itself and emitted
     /// descendant spellings. Preserve slashes/dots until string transforms
     /// finish; normalized containment alone is not this stronger contract.
@@ -117,8 +123,9 @@ pub enum RuntimeArgumentDomain {
 
 impl RuntimeArgumentDomain {
     /// Preserve a single replacement relation without evaluating filenames.
-    /// Repeated placeholders and unbounded input remain unbounded. Nested
-    /// affixes flatten, so the metadata cannot grow a recursive domain tree.
+    /// Repeated placeholders remain unbounded. Unknown input retains literal
+    /// affixes without acquiring path bounds. Nested affixes flatten, so the
+    /// metadata cannot grow a recursive domain tree.
     pub fn substitute_into(&self, template: &str, placeholder: &str) -> Self {
         if placeholder.is_empty() || template.len() > 4096 {
             return Self::Unbounded;
@@ -152,7 +159,24 @@ impl RuntimeArgumentDomain {
                     format!("{inner_suffix}{suffix}"),
                 )
             }
-            Self::Unbounded => return Self::Unbounded,
+            Self::Unbounded => {
+                return Self::TextTemplate {
+                    prefix: prefix.to_string(),
+                    suffix: suffix.to_string(),
+                };
+            }
+            Self::TextTemplate {
+                prefix: inner_prefix,
+                suffix: inner_suffix,
+            } => {
+                if prefix.len() + suffix.len() + inner_prefix.len() + inner_suffix.len() > 4096 {
+                    return Self::Unbounded;
+                }
+                return Self::TextTemplate {
+                    prefix: format!("{prefix}{inner_prefix}"),
+                    suffix: format!("{inner_suffix}{suffix}"),
+                };
+            }
         };
         Self::PathTemplate {
             roots: roots.clone(),

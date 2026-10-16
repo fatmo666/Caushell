@@ -23,6 +23,14 @@ pub struct InvocationShape {
     pub matched_modifier_parameters: Vec<MatchedModifierParameter>,
     pub positional_args: Vec<String>,
     pub positional_args_before_dashdash: Vec<String>,
+    // Native text templates are not their empty diagnostic spelling. Keep
+    // their bounds separate from exact values used by legacy shape callers.
+    #[doc(hidden)]
+    pub positional_templates: BTreeMap<usize, crate::ArgumentStructure>,
+    #[doc(hidden)]
+    pub argument_templates: BTreeMap<usize, crate::ArgumentStructure>,
+    #[doc(hidden)]
+    pub template_modifier_parameters: BTreeSet<(crate::ModifierId, crate::SlotName)>,
     /// Only original tool argv positions explicitly requested by selectors.
     /// Missing/unknown values are not populated; no full argv copy is made.
     pub argument_values: BTreeMap<usize, String>,
@@ -913,6 +921,19 @@ pub fn select_form<'a>(
     shape
         .exact_option_words
         .clone_from(&profile.exact_option_words);
+    if shape
+        .argument_templates
+        .values()
+        .any(|s| s.fields != crate::ArgumentFieldCount::ExactlyOne)
+        || profile.forms.iter().any(|form| {
+            scoped_selector_certainty(&form.selector, &shape).is_none()
+        })
+    {
+        return Err(BindError::UnsupportedProfileFeature {
+            command_name: profile.primary_name().to_owned(),
+            reason: "runtime argv content cannot determine the invocation form".into(),
+        });
+    }
     select_form_from_forms(profile.primary_name(), &profile.forms, &shape)
 }
 
@@ -1019,6 +1040,26 @@ fn scan_subcommand_path<'p, 'a>(
     ) {
         if error.is_some() {
             break;
+        }
+        let argument = &projection.args[index];
+        if matches!(
+            argument.runtime_argument_domain,
+            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. })
+        ) {
+            let structure = crate::argument_structure(argument);
+            if !children.is_empty()
+                && (structure.fields != crate::ArgumentFieldCount::ExactlyOne
+                    || children.iter().any(|node| {
+                        structure.may_equal(&node.name)
+                            || node.aliases.iter().any(|alias| structure.may_equal(alias))
+                    }))
+            {
+                error = Some(BindError::UnsupportedProfileFeature {
+                    command_name: profile.primary_name().to_owned(),
+                    reason: "runtime argv content cannot determine the subcommand".into(),
+                });
+                break;
+            }
         }
         let Some(node) = find_subcommand_node(children, text) else {
             break;
@@ -1236,41 +1277,48 @@ fn select_form_for_scope<'a>(
         options,
         matching,
     );
+    if shape
+        .argument_templates
+        .values()
+        .any(|s| s.fields != crate::ArgumentFieldCount::ExactlyOne)
+    {
+        return Err(BindError::UnsupportedProfileFeature {
+            command_name: command_name.to_owned(),
+            reason: "native template batch has unresolved argv width".into(),
+        });
+    }
     for form in forms {
         populate_argument_selector(&form.selector, projection, &mut shape);
     }
-    let matched_forms: Vec<FormConsumptionPreview<'a>> = forms
-        .iter()
-        .filter(|form| form_matches(form, &shape))
-        .map(|form| {
-            preview_form_consumption(
-                form, projection, scope, consumed, modifiers, options, matching,
-            )
-        })
-        .filter(|preview| {
-            let mut remaining_shape = shape_for_scope_with_consumed(
-                projection,
-                scope,
-                &preview.consumed,
-                modifiers,
-                subcommand_path,
-                options,
-                matching,
-            );
-            populate_argument_selector(
-                &preview.form.remaining_selector,
-                projection,
-                &mut remaining_shape,
-            );
-
-            remaining_selector_matches(preview.form, &remaining_shape)
-        })
-        .collect();
-
-    resolve_matched_forms(
-        command_name,
-        matched_forms.into_iter().map(|preview| preview.form),
-    )
+    let unresolved = || BindError::UnsupportedProfileFeature {
+        command_name: command_name.to_owned(),
+        reason: "runtime argv content cannot determine the invocation form".into(),
+    };
+    let mut matched_forms = Vec::new();
+    for form in forms {
+        if !scoped_selector_certainty(&form.selector, &shape).ok_or_else(unresolved)? {
+            continue;
+        }
+        let preview = preview_form_consumption(
+            form, projection, scope, consumed, modifiers, options, matching,
+        );
+        let mut remaining_shape = shape_for_scope_with_consumed(
+            projection,
+            scope,
+            &preview.consumed,
+            modifiers,
+            subcommand_path,
+            options,
+            matching,
+        );
+        populate_argument_selector(&form.remaining_selector, projection, &mut remaining_shape);
+        if scoped_selector_certainty(&form.remaining_selector, &remaining_shape)
+            .ok_or_else(unresolved)?
+        {
+            matched_forms.push(form);
+        }
+    }
+    resolve_matched_forms(command_name, matched_forms)
 }
 
 fn populate_argument_selector(
@@ -1659,6 +1707,14 @@ fn shape_for_scope_internal<'a>(
         shape.has_dashdash = options.terminator.is_some();
     }
     for (index, arg) in args_in_scope(projection, scope) {
+        let native_template = matches!(
+            arg.runtime_argument_domain,
+            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. })
+        )
+        .then(|| crate::argument_structure(arg));
+        if let Some(structure) = &native_template {
+            shape.argument_templates.insert(index, structure.clone());
+        }
         if options.is_some_and(|options| options.terminator == Some(index)) {
             before_dashdash = false;
         }
@@ -1673,6 +1729,11 @@ fn shape_for_scope_internal<'a>(
 
         if options.is_some() {
             // After the option prefix every token is argv data, even `--`.
+            if let Some(structure) = native_template {
+                shape
+                    .positional_templates
+                    .insert(shape.positional_args.len(), structure);
+            }
             shape.positional_args.push(arg.text.clone());
             if before_dashdash {
                 shape.positional_args_before_dashdash.push(arg.text.clone());
@@ -1683,6 +1744,11 @@ fn shape_for_scope_internal<'a>(
         match arg.kind {
             ProjectedArgKind::Flag => shape.flags.push(FlagName::new(arg.text.clone())),
             ProjectedArgKind::Positional => {
+                if let Some(structure) = native_template {
+                    shape
+                        .positional_templates
+                        .insert(shape.positional_args.len(), structure);
+                }
                 shape.positional_args.push(arg.text.clone());
                 if before_dashdash {
                     shape.positional_args_before_dashdash.push(arg.text.clone());
@@ -1719,6 +1785,14 @@ fn populate_modifier_parameters_for_shape(
             state.set_option_scope(options);
             let values = state.bind_parameter_values(&target);
             for value in values {
+                if matches!(&value, BoundValue::ImplicitInput {
+                    domain: Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. }), ..
+                }) {
+                    shape.template_modifier_parameters.insert((
+                        selected_modifier.modifier.id.clone(),
+                        parameter.name.clone(),
+                    ));
+                }
                 if let BoundValue::Argument { text, .. } = value {
                     shape
                         .matched_modifier_parameters
@@ -1804,8 +1878,7 @@ fn projection_parameter_context<'a>(
     (target.parameter, flag_present)
 }
 
-struct FormConsumptionPreview<'a> {
-    form: &'a Form,
+struct FormConsumptionPreview {
     consumed: Vec<bool>,
 }
 
@@ -1881,7 +1954,7 @@ fn preview_form_consumption<'a>(
     modifiers: &[SelectedModifier<'a>],
     options: Option<&crate::ScopedOptions>,
     matching: OptionMatchingPolicy,
-) -> FormConsumptionPreview<'a> {
+) -> FormConsumptionPreview {
     let targets = collect_form_parameter_targets(form, scope, matching);
     let mut state = BindingState::with_consumed(projection, base_consumed, modifiers);
     state.set_option_scope(options);
@@ -1903,13 +1976,8 @@ fn preview_form_consumption<'a>(
     }
 
     FormConsumptionPreview {
-        form,
         consumed: state.consumed,
     }
-}
-
-fn remaining_selector_matches(form: &Form, shape: &InvocationShape) -> bool {
-    selector_matches(&form.remaining_selector, shape)
 }
 
 fn form_suppresses_modifier_effects(form: &Form) -> bool {
@@ -3777,7 +3845,114 @@ fn argument_satisfies_value_constraints(text: &str, value_constraints: &[ValueCo
 }
 
 fn form_matches(form: &Form, shape: &InvocationShape) -> bool {
-    selector_matches(&form.selector, shape)
+    scoped_selector_certainty(&form.selector, shape) == Some(true)
+}
+
+// A known argv boundary does not prove the value-dependent native operation.
+// Keep the legacy exact-shape path allocation-free when no text template exists.
+fn scoped_selector_certainty(selector: &SelectorExpr, shape: &InvocationShape) -> Option<bool> {
+    if shape.argument_templates.is_empty() && shape.template_modifier_parameters.is_empty() {
+        return Some(selector_matches(selector, shape));
+    }
+    match selector {
+        SelectorExpr::All(items) => {
+            let mut unknown = false;
+            for item in items {
+                match scoped_selector_certainty(item, shape) {
+                    Some(false) => return Some(false),
+                    None => unknown = true,
+                    _ => {}
+                }
+            }
+            (!unknown).then_some(true)
+        }
+        SelectorExpr::Any(items) => {
+            let mut unknown = false;
+            for item in items {
+                match scoped_selector_certainty(item, shape) {
+                    Some(true) => return Some(true),
+                    None => unknown = true,
+                    _ => {}
+                }
+            }
+            (!unknown).then_some(false)
+        }
+        SelectorExpr::Not(item) => scoped_selector_certainty(item, shape).map(|v| !v),
+        SelectorExpr::Predicate(predicate) => match predicate {
+            SelectorPredicate::HasArgumentAtMatching(index, matcher) => {
+                shape.argument_templates.get(index).map_or_else(
+                    || Some(predicate_matches(predicate, shape)),
+                    |s| crate::runtime_matcher::matches(s, matcher),
+                )
+            }
+            SelectorPredicate::HasPositionalAtMatching(index, matcher) => {
+                positional_match_certainty(shape, *index, matcher)
+            }
+            SelectorPredicate::HasPositionalAtOrAfterMatching(index, matcher) => {
+                let mut unknown = false;
+                for index in *index..shape.positional_args.len() {
+                    match positional_match_certainty(shape, index, matcher) {
+                        Some(true) => return Some(true),
+                        None => unknown = true,
+                        _ => {}
+                    }
+                }
+                (!unknown).then_some(false)
+            }
+            SelectorPredicate::LastPositionalMatches(matcher) => shape
+                .positional_args
+                .len()
+                .checked_sub(1)
+                .map_or(Some(false), |i| {
+                    positional_match_certainty(shape, i, matcher)
+                }),
+            SelectorPredicate::HasPositionalAfterLeadingMatcher(matcher)
+            | SelectorPredicate::NoPositionalAfterLeadingMatcher(matcher) => {
+                let mut after = false;
+                for index in 0..shape.positional_args.len() {
+                    if !positional_match_certainty(shape, index, matcher)? {
+                        after = true;
+                        break;
+                    }
+                }
+                Some(
+                    if matches!(
+                        predicate,
+                        SelectorPredicate::NoPositionalAfterLeadingMatcher(_)
+                    ) {
+                        !after
+                    } else {
+                        after
+                    },
+                )
+            }
+            SelectorPredicate::HasModifierParameterMatching(modifier, parameter, _)
+                if shape
+                    .template_modifier_parameters
+                    .contains(&(modifier.clone(), parameter.clone())) =>
+            {
+                None
+            }
+            _ => Some(predicate_matches(predicate, shape)),
+        },
+    }
+}
+
+fn positional_match_certainty(
+    shape: &InvocationShape,
+    index: usize,
+    matcher: &ValueMatcher,
+) -> Option<bool> {
+    if let Some(structure) = shape.positional_templates.get(&index) {
+        crate::runtime_matcher::matches(structure, matcher)
+    } else {
+        Some(
+            shape
+                .positional_args
+                .get(index)
+                .is_some_and(|text| argument_matches_value_matcher(text, matcher)),
+        )
+    }
 }
 
 fn selector_matches(selector: &SelectorExpr, shape: &InvocationShape) -> bool {

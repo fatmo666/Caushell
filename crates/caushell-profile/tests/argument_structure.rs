@@ -37,6 +37,47 @@ fn runtime_tail_is_unknown_width_unless_explicitly_scalar() {
 }
 
 #[test]
+fn native_text_affixes_are_spelling_not_exact_content_or_scalar_arity() {
+    use caushell_types::{ImplicitInputSource, RuntimeArgumentDomain};
+    let parsed = parse_command("echo placeholder", ShellKind::Bash).unwrap();
+    let mut projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let arg = &mut projection.args[0];
+    arg.text.clear();
+    arg.implicit_input_source = Some(ImplicitInputSource::StdinData);
+    arg.node_kind = "runtime_scalar".into();
+    arg.runtime_argument_domain =
+        Some(RuntimeArgumentDomain::Unbounded.substitute_into("+%c: {} END", "{}"));
+    let facts = argument_structure(arg);
+    assert_eq!(facts.fields, ArgumentFieldCount::ExactlyOne);
+    assert_eq!(facts.static_prefix, "+%c: ");
+    assert_eq!(facts.static_suffix, " END");
+    assert!(!facts.exact && facts.exact_value().is_none());
+    assert!(!facts.may_start_with("-") && facts.may_start_with("+"));
+    assert!(facts.may_equal("+%c: --set=tomorrow END"));
+    assert!(!facts.may_equal("--set=tomorrow"));
+    assert!(!facts.may_equal("+%c: wrong suffix"));
+
+    // A single item's spelling does not turn a native batch into one item.
+    arg.node_kind = "runtime_argument_list".into();
+    assert_eq!(
+        argument_structure(arg).fields,
+        ArgumentFieldCount::ZeroOrMore
+    );
+    assert!(!argument_structure(arg).may_start_with("-"));
+
+    arg.node_kind = "runtime_scalar".into();
+    for (template, control) in [("{} END", true), ("--{}", true), ("safe/{}", false)] {
+        arg.runtime_argument_domain =
+            Some(RuntimeArgumentDomain::Unbounded.substitute_into(template, "{}"));
+        assert_eq!(
+            argument_structure(arg).may_start_with("-"),
+            control,
+            "{template}"
+        );
+    }
+}
+
+#[test]
 fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
     let parsed = parse_command("echo placeholder", ShellKind::Bash).unwrap();
     let mut projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
@@ -69,8 +110,8 @@ fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
         roots: vec![".".into()],
         may_escape: false,
     });
-    assert_eq!(argument_structure(arg).fields, ArgumentFieldCount::Unknown);
-    assert_eq!(argument_structure(arg).static_prefix, "");
+    assert_eq!(argument_structure(arg).fields, ArgumentFieldCount::ZeroOrMore);
+    assert_eq!(argument_structure(arg).static_prefix, ".");
 }
 
 fn bound_with(yaml: &str, command: &str) -> BoundInvocation {

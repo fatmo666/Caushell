@@ -12,7 +12,7 @@ pub(crate) struct RuntimePathBounds<'a> {
 /// tool-declared suffix derivation. This query never invents a filename.
 pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<RuntimePathBounds<'_>> {
     match domain {
-        RuntimeArgumentDomain::Unbounded => None,
+        RuntimeArgumentDomain::Unbounded | RuntimeArgumentDomain::TextTemplate { .. } => None,
         RuntimeArgumentDomain::PathSet { roots, may_escape } => Some(RuntimePathBounds {
             roots: Cow::Borrowed(roots),
             may_escape: *may_escape,
@@ -123,6 +123,8 @@ mod tests {
     fn unknown_escape_parent_suffix_and_control_boundaries_remain_unproven() {
         for domain in [
             RuntimeArgumentDomain::Unbounded,
+            RuntimeArgumentDomain::Unbounded.substitute_into("/tmp/{}", "{}"),
+            RuntimeArgumentDomain::Unbounded.substitute_into("./{}", "{}"),
             template(&[], "", ".bak"),
             template(&[""], "dest/", ""),
             template(&["."], "", "."),

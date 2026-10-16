@@ -1713,6 +1713,33 @@ certificate: quotes, whitespace or newlines in filenames can change its argv.
 Sources: [GNU find execution](https://www.gnu.org/software/findutils/manual/html_node/find_html/Single-File.html),
 [GNU xargs replacement](https://www.gnu.org/software/findutils/manual/html_node/find_html/xargs-options.html).
 
+## Literal templates around unknown native data
+
+An `xargs -I` replacement with unknown input bytes can retain its decoded
+literal prefix and suffix as `RuntimeArgumentDomain::TextTemplate`, even when
+there is no path domain. For example, `date '+%c: {}'` still receives one
+format argument starting with `+%c: `, not a possible `--set` option. The shared
+argv-structure query consumes this spelling bound; the original implicit-input
+source and unknown content remain intact. A native batch does not gain scalar
+arity from its template, and wrappers preserve the metadata as ordinary argv.
+
+This domain grants no path containment: `touch 'cache/{}'` can still receive
+`../` segments and requires the existing unknown-target approval. Unknown
+script text is not decoded as known code. Templates must be fully decoded
+native argv, not unresolved shell expansion. Single replacements and flattened
+nested affixes are supported under the existing 4096-byte template budget;
+repeated placeholders retain the existing unknown-domain fallback. No new
+Profile syntax, risk Pass or runtime input is required.
+
+Value-dependent form selectors also preserve the unknown-content boundary.
+Literal exclusion and anchored single-literal/class prefix matchers can certify
+an outcome from the bounds; unsupported or ambiguous predicates keep selection
+unresolved. In particular, a non-option numeric date operand retains its
+system-clock mutation effect rather than inheriting a query form from empty
+diagnostic text. Ordinary invocations without text templates retain the existing
+selection fast path. Regex syntax parsing uses the already-pinned dependency
+and is bounded to 4096 bytes and nesting depth 32.
+
 ## Argument proofs and bounded execution directories
 
 Dispatch forwards expanded argv, not shell ASTs. The shared unchanged-field

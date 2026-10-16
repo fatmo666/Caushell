@@ -5082,12 +5082,19 @@ fn expanded_static_xargs_children(
                     continue;
                 }
                 if unresolved {
-                    let domain = (!tilde_unresolved)
-                        .then_some(input_domain.as_ref())
-                        .flatten()
-                        .as_ref()
-                        .map(|domain| domain.substitute_into(&argument.text, replace_token))
-                        .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded);
+                    // Only decoded native argv can certify literal affixes.
+                    // Unresolved shell text is not an xargs template proof.
+                    let domain = if tilde_unresolved
+                        || !argument.runtime_data
+                        || argument.implicit_input_source.is_some()
+                    {
+                        caushell_types::RuntimeArgumentDomain::Unbounded
+                    } else {
+                        input_domain
+                            .as_ref()
+                            .unwrap_or(&caushell_types::RuntimeArgumentDomain::Unbounded)
+                            .substitute_into(&argument.text, replace_token)
+                    };
                     argument.text.clear();
                     argument.runtime_data = false;
                     argument.implicit_input_source =

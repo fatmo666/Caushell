@@ -45,7 +45,10 @@ fn unsupported_templates_and_unknown_inputs_never_gain_a_path_domain() {
     );
     assert_eq!(
         RuntimeArgumentDomain::Unbounded.substitute_into("/tmp/copy/{}", "{}"),
-        RuntimeArgumentDomain::Unbounded
+        RuntimeArgumentDomain::TextTemplate {
+            prefix: "/tmp/copy/".into(),
+            suffix: "".into(),
+        }
     );
     let inner = paths().substitute_into(&format!("{}{{}}", "x".repeat(3000)), "{}");
     assert_eq!(
@@ -59,6 +62,7 @@ fn new_and_existing_domains_round_trip_through_snapshot_json() {
     for domain in [
         paths(),
         paths().substitute_into("{}.$HOME*", "{}"),
+        RuntimeArgumentDomain::Unbounded.substitute_into("+%c: {}", "{}"),
         RuntimeArgumentDomain::Unbounded,
     ] {
         let json = serde_json::to_string(&domain).unwrap();
@@ -72,4 +76,37 @@ fn new_and_existing_domains_round_trip_through_snapshot_json() {
         serde_json::from_str::<RuntimeArgumentDomain>(old_json).unwrap(),
         RuntimeArgumentDomain::PathSet { .. }
     ));
+}
+
+#[test]
+fn unknown_native_text_retains_only_bounded_literal_affixes() {
+    let template = RuntimeArgumentDomain::Unbounded.substitute_into("+%c: {} END", "{}");
+    assert_eq!(
+        template,
+        RuntimeArgumentDomain::TextTemplate {
+            prefix: "+%c: ".into(),
+            suffix: " END".into(),
+        }
+    );
+    assert_eq!(
+        template.substitute_into("before % after", "%"),
+        RuntimeArgumentDomain::TextTemplate {
+            prefix: "before +%c: ".into(),
+            suffix: " END after".into(),
+        }
+    );
+    assert_eq!(
+        RuntimeArgumentDomain::Unbounded.substitute_into("{}", "{}"),
+        RuntimeArgumentDomain::Unbounded
+    );
+    assert_eq!(
+        template.substitute_into("{}{}", "{}"),
+        RuntimeArgumentDomain::Unbounded
+    );
+    let inner = RuntimeArgumentDomain::Unbounded
+        .substitute_into(&format!("{}{{}}", "x".repeat(3000)), "{}");
+    assert_eq!(
+        inner.substitute_into(&format!("{}{{}}", "y".repeat(1500)), "{}"),
+        RuntimeArgumentDomain::Unbounded
+    );
 }

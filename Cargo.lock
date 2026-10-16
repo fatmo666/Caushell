@@ -178,6 +178,7 @@ dependencies = [
  "caushell-parse",
  "caushell-types",
  "regex",
+ "regex-syntax",
  "serde",
  "serde_json",
  "serde_yaml",
