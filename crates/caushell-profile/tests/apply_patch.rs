@@ -73,8 +73,12 @@ fn argument_targets_preserve_all_effect_classes_and_moves() {
         values(&b, "patch_writes"),
         [known("new"), known("same"), known("dest")]
     );
-    assert_eq!(values(&b, "patch_deletes"), [known("gone"), known("src")]);
-    assert_eq!(b.effects.len(), 3);
+    assert_eq!(values(&b, "patch_deletes"), [known("gone")]);
+    assert_eq!(values(&b, "patch_moves"), [known("src")]);
+    assert_eq!(b.effects.len(), 4);
+    assert!(b.effects.iter().any(|e| e.kind == EffectKind::MovePath
+        && e.target == EffectTarget::Slot(SlotName::new("patch_moves"))
+        && e.host_risk.semantic_class == Some(HostRiskSemanticClass::MoveSourcePath)));
     assert!(collect_recursive_payload_candidates(&b).is_empty());
 }
 #[test]
@@ -174,8 +178,11 @@ fn stdin_starts_unknown_and_requires_explicit_complete_evidence() {
             .iter()
             .filter(|p| p.payload_generated)
             .count(),
-        3
+        4
     );
+    for slot in ["patch_reads", "patch_writes", "patch_deletes", "patch_moves"] {
+        assert_eq!(b.bound_parameters.iter().filter(|p| p.name.as_str() == slot).count(), 1);
+    }
 }
 #[test]
 fn opt_in_grammar_is_not_tied_to_apply_patch_command_name() {

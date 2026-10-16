@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+opaque_on_unresolved: true
+identity: {canonical_name: rename.ul, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+forms:
+  - id: rename_paths
+    parameters: [{name: argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    payload_projections:
+      - format: rename_util_linux_arguments
+        source: {kind: slot, name: argv}
+        reads: rename_reads
+        writes: rename_destinations
+        deletes: rename_deletes
+        moves: rename_sources
+        executions: rename_executions
+        max_bytes: 65536
+        max_operations: 512
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: rename_reads}}
+      - {kind: write_path, target: {kind: slot, name: rename_destinations}}
+      - {kind: delete_path, target: {kind: slot, name: rename_deletes}}
+      - {kind: move_path, target: {kind: slot, name: rename_sources}, host_risk: {semantic_class: move_source_path}}
+      - {kind: execute_payload, target: {kind: slot, name: rename_executions}}
+extensions:
+  caushell.profile/sources: [https://man7.org/linux/man-pages/man1/rename.1.html, https://manpages.debian.org/rename.ul]
+  caushell.profile/known_limitations:
+    - Explicit util-linux dialect. Symlink-target, copy, unknown option and dynamic replacement forms remain unresolved. Filename transforms are static, bounded byte/string operations, never filesystem probes.

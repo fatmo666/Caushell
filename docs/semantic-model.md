@@ -34,6 +34,33 @@ Before parsing a recursive inline payload, its outer-shell operands must become 
 
 ## Command Modeling
 
+### Native rename argv and filename transforms
+
+The `rename_arguments`, `rename_util_linux_arguments` and
+`rename_perl_arguments` payload-projection formats consume a plain-value
+`remaining_args` vector, not a newline-joined program. Their declarations require
+move-source, destination-write and opaque-execution slots. The existing path
+and execution guards consume those facts; no rename-specific risk pass is used.
+
+The ambiguous `rename` profile joins util-linux and Perl interpretations whose
+native grammars can apply, including their different option ordering. Argument
+count alone does not select an implementation. `rename.ul` explicitly declares
+util-linux; `file-rename` and `prename` declare Perl. In particular, an arbitrary
+Perl expression remains opaque even with `-n` or enough arguments for util-linux.
+
+Complete supported `s`, `y` and `tr` programs project source and destination
+paths. Expression evaluation flags, interpolation, embedded code and unsupported
+regex/replacement syntax retain opaque execution. No Perl interpreter is called.
+Unknown input filenames retain their original path bounds; transformed bounds
+require a separate component-local proof and retain intermediate root branches.
+Unproven destinations stay unknown instead of inheriting source containment.
+
+Perl-style filename lists from complete stdin evidence use line or NUL records,
+never shell parsing. Unknown or partial input retains unknown paths. Native
+byte/operation budgets, capped aggregate transformation work and output bounds
+prevent expansion of large replacement results. Only profiles declaring these
+formats enter the decoder; other tools keep their existing behavior.
+
 ### External state operations and native operand grammars
 
 A Profile may declare a non-filesystem effect explicitly:

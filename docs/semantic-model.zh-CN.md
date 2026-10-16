@@ -53,6 +53,27 @@ Query 将它与逻辑上传／下载目标分开，非本地或未知路由阻�
 
 ## 命令建模
 
+### rename 原生 argv 与文件名转换
+
+`rename_arguments`、`rename_util_linux_arguments`、`rename_perl_arguments`
+通过现有 payload projection 入口消费完整的 `remaining_args` 参数向量，不将
+参数用换行拼成程序。声明必须包含移动源、目标写入和不透明执行 slot；这些事实
+由已有路径／执行护栏消费，不新增 rename 专用风险 Pass。
+
+`rename` 在实现不明确时合并 util-linux 与 Perl 原生语法的可成立解释，分别保留
+其选项顺序，不只靠参数数量猜方言。`rename.ul` 显式声明 util-linux，
+`file-rename` 和 `prename` 显式声明 Perl。任意 Perl 表达式即使带 `-n`，或参数
+数量也符合 util-linux，仍保留不透明执行。
+
+完整受支持的 `s`、`y`、`tr` 程序投影源路径和转换后的目标路径；求值修饰符、
+动态插值、嵌入代码及未支持的正则／替换语法继续要求解析兜底。分析不调用 Perl。
+未知文件名保留原始路径范围；转换后的范围需要独立的路径组件证明，并保留连续
+改写中的中间根分支。无法证明的目标保持未知，不照搬源路径的工作区归属。
+
+stdin 文件列表只在内容证据完整时按换行或 NUL 分隔处理，不重新作为 Shell
+解析。未知或部分输入仍产生未知路径。字节／操作数上限、聚合转换工作预算及
+输出长度上限限制资源消耗；只有显式声明原生格式的 Profile 才进入解码器。
+
 连接对端校验的显式覆盖通过 `state_operation` 的
 `connection_verification` 域表达；关闭校验声明为 `control`，沿用既有状态审批
 Pass 与 Graph／Query，不代表主机持久配置。curl 分别声明直连、HTTPS 代理和 DoH

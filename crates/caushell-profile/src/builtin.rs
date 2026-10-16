@@ -2263,6 +2263,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/rename.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "rename.ul",
+        content: include_str!("../profiles/rename.ul.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "file-rename",
+        content: include_str!("../profiles/file-rename.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "rev",
         content: include_str!("../profiles/rev.yaml"),
     },

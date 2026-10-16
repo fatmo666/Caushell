@@ -1778,7 +1778,7 @@ fn refresh_execution_payload_projections(
         .bound
         .payload_projections
         .iter()
-        .filter(|p| p.source == caushell_profile::PayloadInputSource::Stdin)
+        .filter(|p| p.may_read_stdin())
         .map(|p| p.max_bytes)
         .max()
     else {

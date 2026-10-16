@@ -17,6 +17,7 @@ mod payload_projection;
 mod projection;
 mod raw;
 mod recursive;
+mod rename_payload;
 mod registry;
 mod resolve;
 mod runtime_variables;

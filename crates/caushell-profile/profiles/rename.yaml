@@ -20,50 +20,31 @@ platform:
 
 forms:
   - id: rename_paths
-    selector:
-      kind: has_positional_at
-      index: 0
     parameters:
-      - name: expression
-        semantic:
-          kind: structured_value
-          context: path_expression
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: replacement
-        semantic:
-          kind: plain_value
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: path_targets
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
+      - {name: argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    payload_projections:
+      - format: rename_arguments
+        source: {kind: slot, name: argv}
+        reads: rename_reads
+        writes: rename_destinations
+        deletes: rename_deletes
+        moves: rename_sources
+        executions: rename_executions
+        max_bytes: 65536
+        max_operations: 512
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
     effects:
-      - kind: move_path
-        target:
-          kind: slot
-          name: path_targets
-        host_risk:
-          semantic_class: move_source_path
-
-modifiers:
-  - id: no_action
-    matcher:
-      kind: any_flag
-      flags:
-        - "-n"
-        - "--no-act"
+      - {kind: read_path, target: {kind: slot, name: rename_reads}}
+      - {kind: write_path, target: {kind: slot, name: rename_destinations}}
+      - {kind: delete_path, target: {kind: slot, name: rename_deletes}}
+      - {kind: move_path, target: {kind: slot, name: rename_sources}, host_risk: {semantic_class: move_source_path}}
+      - {kind: execute_payload, target: {kind: slot, name: rename_executions}}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
   caushell.profile/known_limitations:
-    - Sequential expression/replacement/files operands model the util-linux form. Shorter variant-ambiguous forms remain unresolved; Perl expressions are not decoded as ordinary rename paths.
+    - Unknown implementation uses the union of util-linux and Perl contracts, including option ordering. Explicit rename.ul and file-rename/prename profiles select their documented dialects. Unsupported programs, options and path transformations remain unresolved; no Perl code or filesystem state is evaluated.
+  caushell.profile/sources: [https://man7.org/linux/man-pages/man1/rename.1.html, https://metacpan.org/pod/File::Rename, https://cpan.metacpan.org/authors/id/R/RM/RMBARKER/File-Rename-2.02.tar.gz]

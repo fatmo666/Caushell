@@ -66,6 +66,17 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
     bound.bound_parameters.retain(|p| !p.payload_generated);
     let mut generated = Vec::new();
     for projection in &bound.payload_projections {
+        if matches!(
+            projection.format,
+            PayloadFormat::RenameArguments
+                | PayloadFormat::RenameUtilLinuxArguments
+                | PayloadFormat::RenamePerlArguments
+        ) {
+            generated.extend(crate::rename_payload::project(
+                bound, projection, complete_stdin,
+            ));
+            continue;
+        }
         let mut sources = match &projection.source {
             PayloadInputSource::Slot(slot) => {
                 let parameter = bound.bound_parameters.iter().find(|p| p.name == *slot);
@@ -286,6 +297,11 @@ fn decode_targets(
                 executions: t.executions.into_iter().map(index).collect(),
                 stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
             })
+        }
+        PayloadFormat::RenameArguments
+        | PayloadFormat::RenameUtilLinuxArguments
+        | PayloadFormat::RenamePerlArguments => {
+            unreachable!("native argv bypasses program-text joining")
         }
     }
 }

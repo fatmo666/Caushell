@@ -193,6 +193,9 @@ pub enum RawPayloadFormat {
     CodexApplyPatch,
     SedProgram,
     AwkProgram,
+    RenameArguments,
+    RenameUtilLinuxArguments,
+    RenamePerlArguments,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

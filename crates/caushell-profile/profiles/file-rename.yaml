@@ -1,0 +1,31 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+opaque_on_unresolved: true
+identity: {canonical_name: file-rename, aliases: [prename]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: rename_paths
+    parameters: [{name: argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    payload_projections:
+      - format: rename_perl_arguments
+        source: {kind: slot, name: argv}
+        reads: rename_reads
+        writes: rename_destinations
+        deletes: rename_deletes
+        moves: rename_sources
+        executions: rename_executions
+        max_bytes: 65536
+        max_operations: 512
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: rename_reads}}
+      - {kind: write_path, target: {kind: slot, name: rename_destinations}}
+      - {kind: delete_path, target: {kind: slot, name: rename_deletes}}
+      - {kind: move_path, target: {kind: slot, name: rename_sources}, host_risk: {semantic_class: move_source_path}}
+      - {kind: execute_payload, target: {kind: slot, name: rename_executions}}
+extensions:
+  caushell.profile/sources: [https://metacpan.org/pod/File::Rename, https://cpan.metacpan.org/authors/id/R/RM/RMBARKER/File-Rename-2.02.tar.gz]
+  caushell.profile/known_limitations:
+    - Only complete supported s/y/tr programs are decoded. Evaluation flags, interpolated variables, embedded Perl code, Unicode/encoding modes and unsupported syntax retain opaque execution. Unknown stdin filenames remain unknown paths; a dry run does not waive opaque Perl execution.

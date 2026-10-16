@@ -5,7 +5,7 @@ use caushell_profile::*;
 fn sequential_operands_do_not_skip_the_replacement_and_consume_the_target() {
     let registry = ProfileRegistry::built_in().unwrap();
     let parsed = caushell_parse::parse_command(
-        "rename foo bar /opt/shared/one /opt/shared/two",
+        "rename.ul foo bar /opt/shared/one /opt/shared/two",
         caushell_types::ShellKind::Bash,
     )
     .unwrap();
@@ -17,11 +17,10 @@ fn sequential_operands_do_not_skip_the_replacement_and_consume_the_target() {
     ) else {
         panic!("expected resolved invocation");
     };
-    for (slot, expected) in [
-        ("expression", vec!["foo"]),
-        ("replacement", vec!["bar"]),
-        ("path_targets", vec!["/opt/shared/one", "/opt/shared/two"]),
-    ] {
+    for (slot, expected) in [(
+        "argv",
+        vec!["foo", "bar", "/opt/shared/one", "/opt/shared/two"],
+    )] {
         let parameter = resolved
             .bound
             .bound_parameters
@@ -37,5 +36,18 @@ fn sequential_operands_do_not_skip_the_replacement_and_consume_the_target() {
             })
             .collect();
         assert_eq!(texts, expected, "{slot}");
+    }
+    // Neither file contains 'foo': these are proven identity transforms, not
+    // a missing-target parse or a write to the replacement operand.
+    for slot in ["rename_sources", "rename_destinations"] {
+        assert!(
+            resolved
+                .bound
+                .bound_parameters
+                .iter()
+                .find(|p| p.name.as_str() == slot)
+                .unwrap()
+                .semantic_values_are_inapplicable()
+        );
     }
 }

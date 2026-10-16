@@ -798,6 +798,10 @@ pub enum PayloadFormat {
     CodexApplyPatch,
     SedProgram,
     AwkProgram,
+    /// Native argv, with the union of supported rename implementation contracts.
+    RenameArguments,
+    RenameUtilLinuxArguments,
+    RenamePerlArguments,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,6 +828,16 @@ pub struct PayloadProjection {
     pub write_controls: Vec<SlotName>,
     pub max_bytes: usize,
     pub max_operations: usize,
+}
+
+impl PayloadProjection {
+    pub fn may_read_stdin(&self) -> bool {
+        self.source == PayloadInputSource::Stdin
+            || matches!(
+                self.format,
+                PayloadFormat::RenameArguments | PayloadFormat::RenamePerlArguments
+            )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

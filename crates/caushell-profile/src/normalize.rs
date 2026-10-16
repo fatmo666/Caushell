@@ -1711,13 +1711,27 @@ fn normalize_payload_projection(
         ));
     }
     match (raw.format, &raw.executions) {
-        (crate::RawPayloadFormat::SedProgram | crate::RawPayloadFormat::AwkProgram, Some(name)) => {
+        (
+            crate::RawPayloadFormat::SedProgram
+            | crate::RawPayloadFormat::AwkProgram
+            | crate::RawPayloadFormat::RenameArguments
+            | crate::RawPayloadFormat::RenameUtilLinuxArguments
+            | crate::RawPayloadFormat::RenamePerlArguments,
+            Some(name),
+        ) => {
             ensure_non_empty(name, "payload_projections.executions")?;
         }
-        (crate::RawPayloadFormat::SedProgram | crate::RawPayloadFormat::AwkProgram, None)
+        (
+            crate::RawPayloadFormat::SedProgram
+            | crate::RawPayloadFormat::AwkProgram
+            | crate::RawPayloadFormat::RenameArguments
+            | crate::RawPayloadFormat::RenameUtilLinuxArguments
+            | crate::RawPayloadFormat::RenamePerlArguments,
+            None,
+        )
         | (crate::RawPayloadFormat::CodexApplyPatch, Some(_)) => {
             return Err(NormalizeError::InvalidPayloadProjection(
-                "sed_program/awk_program requires an executions slot; codex_apply_patch forbids it"
+                "program and native argv formats require an executions slot; codex_apply_patch forbids it"
                     .into(),
             ));
         }
@@ -1746,7 +1760,13 @@ fn normalize_payload_projection(
     }
     if let Some(name) = &raw.moves {
         ensure_non_empty(name, "payload_projections.moves")?;
-        if raw.format != crate::RawPayloadFormat::CodexApplyPatch {
+        if !matches!(
+            raw.format,
+            crate::RawPayloadFormat::CodexApplyPatch
+                | crate::RawPayloadFormat::RenameArguments
+                | crate::RawPayloadFormat::RenameUtilLinuxArguments
+                | crate::RawPayloadFormat::RenamePerlArguments
+        ) {
             return Err(NormalizeError::InvalidPayloadProjection(
                 "moves requires a format with native relocation semantics".into(),
             ));
@@ -1757,6 +1777,13 @@ fn normalize_payload_projection(
             crate::RawPayloadFormat::CodexApplyPatch => crate::PayloadFormat::CodexApplyPatch,
             crate::RawPayloadFormat::SedProgram => crate::PayloadFormat::SedProgram,
             crate::RawPayloadFormat::AwkProgram => crate::PayloadFormat::AwkProgram,
+            crate::RawPayloadFormat::RenameArguments => crate::PayloadFormat::RenameArguments,
+            crate::RawPayloadFormat::RenameUtilLinuxArguments => {
+                crate::PayloadFormat::RenameUtilLinuxArguments
+            }
+            crate::RawPayloadFormat::RenamePerlArguments => {
+                crate::PayloadFormat::RenamePerlArguments
+            }
         },
         source,
         reads: SlotName::new(raw.reads),
@@ -1797,6 +1824,33 @@ fn validate_payload_projection_references(
             }
         }
         for projection in &form.payload_projections {
+            if matches!(
+                projection.format,
+                crate::PayloadFormat::RenameArguments
+                    | crate::PayloadFormat::RenameUtilLinuxArguments
+                    | crate::PayloadFormat::RenamePerlArguments
+            ) {
+                let valid_argv = match &projection.source {
+                    crate::PayloadInputSource::Slot(slot) => parameters.iter().any(|p| {
+                        p.name == *slot
+                            && p.binding == BindingSpec::RemainingArgs
+                            && p.cardinality == Cardinality::OptionalMany
+                    }),
+                    _ => false,
+                };
+                if !valid_argv
+                    || projection.moves.is_none()
+                    || !projection.write_controls.is_empty()
+                    || (projection.may_read_stdin()
+                        && !form.implicit_inputs.iter().any(|i| {
+                            i.source == ImplicitInputSource::StdinData
+                                && i.semantic == SemanticType::PlainValue
+                        }))
+                {
+                    return Err(NormalizeError::InvalidPayloadProjection(
+                                "rename argv formats require an optional remaining_args slot, moves, no write_controls and a declared stdin_data source when stdin may be read".into()));
+                }
+            }
             let mut controls = BTreeSet::new();
             for slot in &projection.write_controls {
                 if !controls.insert(slot.as_str())
