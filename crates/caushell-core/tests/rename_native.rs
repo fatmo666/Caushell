@@ -176,3 +176,25 @@ fn dry_run_does_not_invent_mutations_for_symbolic_filename_collections() {
         check(command, Decision::NeedApproval);
     }
 }
+
+#[test]
+fn utility_dispatch_batches_keep_basename_transform_bounds() {
+    for command in [
+        "find . -type f -exec rename.ul foo bar '{}' +",
+        "find . -type f -print0 | xargs -0 rename.ul foo bar",
+        "find . -type f -exec rename.ul -a foo bar '{}' +",
+        "find . -type f -exec rename.ul -l foo bar '{}' +",
+    ] {
+        check(command, Decision::Allow);
+    }
+    for command in [
+        "find /opt -type f -exec rename.ul foo bar '{}' +",
+        "find . -type f -exec rename.ul foo ../bar '{}' +",
+        "find . -type f -exec rename.ul foo .. '{}' +",
+        "find . -type f -exec rename.ul foo '' '{}' +",
+        "find . -type f -exec rename.ul './' '/opt/out/' '{}' +",
+        "find . -type f -exec file-rename 's/\\.compiled$//' '{}' +",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+}

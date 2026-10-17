@@ -89,6 +89,13 @@ Make 代码，复用已有嵌套执行审批，不当 Bash 解析。重复参数
 
 ### rename 原生 argv 与文件名转换
 
+未知重命名目标保留产生它的 argv／程序／文件证据，并以
+`preserves_source: false` 标记：无法推导目标不代表目标等于输入，也不虚构 stdin
+读取。只有 Perl 真正回退到 stdin 文件列表时使用 stdin 证据。util-linux 的
+basename 替换在能证明不引入路径分隔符及点目录时，沿用已有路径集合推导目标，
+同时保留原根与改名后的根。实现方言不确定、完整路径改写及无法证明安全的
+去后缀继续保持未知，不从路径根猜测文件名筛选条件。
+
 `rename_arguments`、`rename_util_linux_arguments`、`rename_perl_arguments`
 通过现有 payload projection 入口消费完整的 `remaining_args` 参数向量，不将
 参数用换行拼成程序。声明必须包含移动源、目标写入和不透明执行 slot；这些事实

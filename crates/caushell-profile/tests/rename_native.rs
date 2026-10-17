@@ -224,3 +224,49 @@ fn native_contract_is_opt_in_and_not_a_command_name_branch() {
     };
     assert_eq!(known(&r.bound, "rename_destinations"), ["y"]);
 }
+
+#[test]
+fn unknown_transforms_keep_argv_evidence_without_inheriting_path_identity() {
+    for command in [
+        "rename -v 's/\\.JPG/\\.jpeg/' *.JPG",
+        "file-rename 's/\\.compiled$//' \"$FILE\"",
+        "rename.ul foo bar \"$FILE\"",
+        "file-rename 'system(\"id\")' ./input",
+    ] {
+        let r = resolved(command);
+        let mut unknown_count = 0;
+        for parameter in &r.bound.bound_parameters {
+            for value in parameter.semantic_values() {
+                if let SemanticValueRef::Projected { source, value } = value {
+                    if matches!(value.resolution, SemanticValueResolution::Unknown(_)) {
+                        unknown_count += 1;
+                        assert!(
+                            !matches!(
+                                source,
+                                BoundValue::ImplicitInput {
+                                    source: ImplicitInputSource::StdinData,
+                                    ..
+                                }
+                            ),
+                            "{command}: {value:#?}"
+                        );
+                        if parameter.name.as_str() == "rename_destinations" {
+                            assert!(!value.preserves_source, "{command}: {value:#?}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(unknown_count > 0, "{command}");
+    }
+    let r = resolved("file-rename 's/x/y/'");
+    let writes = r
+        .bound
+        .bound_parameters
+        .iter()
+        .find(|p| p.name.as_str() == "rename_destinations")
+        .unwrap();
+    assert!(writes.semantic_values().any(|v| matches!(v,
+        SemanticValueRef::Projected { source: BoundValue::ImplicitInput { source: ImplicitInputSource::StdinData, .. }, value }
+        if !value.preserves_source && value.resolution == SemanticValueResolution::Unknown(ProjectionUnknownReason::PayloadUnavailable))));
+}

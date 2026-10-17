@@ -726,11 +726,19 @@ fn add_path(p: &mut BoundParameter, source: BoundValue, known: Option<String>) {
             ),
         });
 }
-fn unknown() -> BoundValue {
-    BoundValue::implicit_input(ImplicitInputSource::StdinData)
-}
-fn unknown_path(p: &mut BoundParameter) {
-    add_path(p, unknown(), None);
+fn unknown_path(p: &mut BoundParameter, source: &BoundValue, reason: ProjectionUnknownReason) {
+    let index = p.values.len();
+    p.values.push(source.clone());
+    p.projected_values
+        .as_mut()
+        .unwrap()
+        .push(ProjectedSemanticValue {
+            source_index: index,
+            // An unknown transform is NOT the original path. Keep its evidence,
+            // but do not inherit containment or invent a stdin dependency.
+            preserves_source: false,
+            resolution: SemanticValueResolution::Unknown(reason),
+        });
 }
 fn decoded_value(text: String, evidence: &BoundValue) -> BoundValue {
     let span = match evidence {
@@ -800,6 +808,58 @@ fn transformed_domain(
             }
         }
         projected = next;
+    }
+    Some(BoundValue::ImplicitInput {
+        source: *source,
+        domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: projected,
+            may_escape: false,
+        }),
+        origin: origin.clone(),
+    })
+}
+
+/// util-linux changes only the basename when neither replacement operand
+/// contains '/'. A non-dot replacement keeps every rewritten component away
+/// from '.'/'..'; the inclusive root itself can still be renamed, so retain
+/// both its original and transformed spelling.
+fn utility_transformed_domain(
+    source: &BoundValue,
+    from: &str,
+    to: &str,
+    all: bool,
+    last: bool,
+    limit: usize,
+    work: &mut usize,
+) -> Option<BoundValue> {
+    if from.contains('/') || to.contains('/') || !to.chars().any(|c| c != '.') {
+        return None;
+    }
+    let BoundValue::ImplicitInput {
+        source,
+        domain:
+            Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                roots,
+                may_escape: false,
+            }),
+        origin,
+    } = source
+    else {
+        return None;
+    };
+    if roots.is_empty() || roots.len() > 128 {
+        return None;
+    }
+    let mut projected = roots.clone();
+    for root in roots {
+        charge(work, root.len().max(1).saturating_mul(from.len().max(1))).ok()?;
+        let transformed = utility_apply(root, from, to, all, last, limit).ok()?;
+        if !projected.contains(&transformed) {
+            projected.push(transformed);
+        }
+        if projected.len() > 128 {
+            return None;
+        }
     }
     Some(BoundValue::ImplicitInput {
         source: *source,
@@ -910,10 +970,10 @@ pub(crate) fn project(
                 })
             })
             .is_some_and(|n| n <= projection.max_bytes);
-    let evidence = args
-        .first()
-        .map(|a| a.source.clone())
-        .unwrap_or_else(unknown);
+    let Some(evidence) = args.first().map(|a| a.source.clone()) else {
+        executions.projected_values = Some(Vec::new());
+        return vec![reads, writes, deletes, moves, executions];
+    };
     let mut work = projection.max_bytes.saturating_mul(8).min(1_048_576);
     for dialect in dialects {
         let parsed = if within_budget {
@@ -924,11 +984,11 @@ pub(crate) fn project(
         let call = match parsed {
             Ok(Parsed::Info | Parsed::Inapplicable | Parsed::NoMutation) => continue,
             Ok(Parsed::Call(c)) => c,
-            Err(_) => {
-                unknown_path(&mut moves);
-                unknown_path(&mut writes);
+            Err(reason) => {
+                unknown_path(&mut moves, &evidence, reason);
+                unknown_path(&mut writes, &evidence, reason);
                 if *dialect == Dialect::Perl {
-                    executions.values.push(unknown());
+                    executions.values.push(evidence.clone());
                 }
                 continue;
             }
@@ -938,18 +998,42 @@ pub(crate) fn project(
                 if call.operands.iter().all(|a| a.single) {
                     continue;
                 }
-                unknown_path(&mut moves);
-                unknown_path(&mut writes);
+                unknown_path(
+                    &mut moves,
+                    &evidence,
+                    ProjectionUnknownReason::DynamicArgument,
+                );
+                unknown_path(
+                    &mut writes,
+                    &evidence,
+                    ProjectionUnknownReason::DynamicArgument,
+                );
                 continue;
             }
             let (Some(from), Some(to)) = (&call.operands[0].text, &call.operands[1].text) else {
-                unknown_path(&mut moves);
-                unknown_path(&mut writes);
+                unknown_path(
+                    &mut moves,
+                    &evidence,
+                    ProjectionUnknownReason::DynamicArgument,
+                );
+                unknown_path(
+                    &mut writes,
+                    &evidence,
+                    ProjectionUnknownReason::DynamicArgument,
+                );
                 continue;
             };
             if !call.operands[0].single || !call.operands[1].single {
-                unknown_path(&mut moves);
-                unknown_path(&mut writes);
+                unknown_path(
+                    &mut moves,
+                    &evidence,
+                    ProjectionUnknownReason::DynamicArgument,
+                );
+                unknown_path(
+                    &mut writes,
+                    &evidence,
+                    ProjectionUnknownReason::DynamicArgument,
+                );
                 continue;
             }
             for file in &call.operands[2..] {
@@ -966,7 +1050,22 @@ pub(crate) fn project(
                 add_path(&mut moves, file.source.clone(), file.text.clone());
                 match destination {
                     Some(s) => add_path(&mut writes, file.source.clone(), Some(s)),
-                    None => unknown_path(&mut writes),
+                    None => match utility_transformed_domain(
+                        &file.source,
+                        from,
+                        to,
+                        call.all,
+                        call.last,
+                        projection.max_bytes,
+                        &mut work,
+                    ) {
+                        Some(domain) => add_path(&mut writes, domain, None),
+                        None => unknown_path(
+                            &mut writes,
+                            &file.source,
+                            ProjectionUnknownReason::DynamicArgument,
+                        ),
+                    },
                 }
             }
         } else {
@@ -977,8 +1076,12 @@ pub(crate) fn project(
                 }
                 let program = operands.remove(0);
                 let Some(text) = program.text else {
+                    unknown_path(
+                        &mut writes,
+                        &program.source,
+                        ProjectionUnknownReason::DynamicArgument,
+                    );
                     executions.values.push(program.source);
-                    unknown_path(&mut writes);
                     continue;
                 };
                 text
@@ -987,12 +1090,12 @@ pub(crate) fn project(
             };
             let program = match Program::parse(&programs, projection.max_operations) {
                 Ok(program) => program,
-                Err(_) => {
+                Err(reason) => {
                     executions
                         .values
                         .push(decoded_value(programs.clone(), &evidence));
-                    unknown_path(&mut moves);
-                    unknown_path(&mut writes);
+                    unknown_path(&mut moves, &evidence, reason);
+                    unknown_path(&mut writes, &evidence, reason);
                     continue;
                 }
             };
@@ -1000,20 +1103,29 @@ pub(crate) fn project(
                 continue;
             }
             if operands.is_empty() {
+                let stdin_source = BoundValue::implicit_input(ImplicitInputSource::StdinData);
                 if stdin.is_some_and(|text| text.len() > projection.max_bytes) {
-                    unknown_path(&mut moves);
-                    unknown_path(&mut writes);
+                    unknown_path(
+                        &mut moves,
+                        &stdin_source,
+                        ProjectionUnknownReason::PayloadBudgetExceeded,
+                    );
+                    unknown_path(
+                        &mut writes,
+                        &stdin_source,
+                        ProjectionUnknownReason::PayloadBudgetExceeded,
+                    );
                     continue;
                 }
-                operands = match stdin_files(stdin, call.null, &evidence, projection.max_operations)
-                {
-                    Ok(files) => files,
-                    Err(_) => {
-                        unknown_path(&mut moves);
-                        unknown_path(&mut writes);
-                        continue;
-                    }
-                };
+                operands =
+                    match stdin_files(stdin, call.null, &stdin_source, projection.max_operations) {
+                        Ok(files) => files,
+                        Err(reason) => {
+                            unknown_path(&mut moves, &stdin_source, reason);
+                            unknown_path(&mut writes, &stdin_source, reason);
+                            continue;
+                        }
+                    };
             }
             for file in operands {
                 let destination = file.text.as_ref().and_then(|s| {
@@ -1040,7 +1152,11 @@ pub(crate) fn project(
                 ) {
                     add_path(&mut writes, domain, None);
                 } else {
-                    unknown_path(&mut writes);
+                    unknown_path(
+                        &mut writes,
+                        &file.source,
+                        ProjectionUnknownReason::DynamicArgument,
+                    );
                 }
             }
         }
@@ -1054,6 +1170,76 @@ pub(crate) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn utility_domains_preserve_source_and_inclusive_root_relocations() {
+        let source = BoundValue::ImplicitInput {
+            source: ImplicitInputSource::DispatchOutput,
+            domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                roots: vec!["./foo".into(), "/opt/foo".into()],
+                may_escape: false,
+            }),
+            origin: None,
+        };
+        let Some(BoundValue::ImplicitInput {
+            source: input,
+            domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape }),
+            ..
+        }) = utility_transformed_domain(&source, "foo", "bar", false, false, 4096, &mut 65536)
+        else {
+            panic!("expected basename proof");
+        };
+        assert_eq!(input, ImplicitInputSource::DispatchOutput);
+        assert!(!may_escape);
+        assert_eq!(roots, ["./foo", "/opt/foo", "./bar", "/opt/bar"]);
+        for (from, to) in [
+            ("foo", "../bar"),
+            ("foo", ".."),
+            ("foo", ""),
+            ("./", "/opt/out/"),
+        ] {
+            assert!(
+                utility_transformed_domain(&source, from, to, false, false, 4096, &mut 65536)
+                    .is_none()
+            );
+        }
+        assert!(
+            utility_transformed_domain(&source, "foo", "bar", true, false, 4096, &mut 0).is_none()
+        );
+    }
+
+    #[test]
+    fn utility_bounds_cover_concrete_root_and_descendant_results() {
+        for root in [".", "./foo", "foo/..", "/bench/workspace", "/opt/foo"] {
+            let source = BoundValue::ImplicitInput {
+                source: ImplicitInputSource::DispatchOutput,
+                domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                    roots: vec![root.into()],
+                    may_escape: false,
+                }),
+                origin: None,
+            };
+            for (from, to) in [("foo", "bar"), (".", "x"), ("", "x"), ("o", "a")] {
+                for (all, last) in [(false, false), (true, false), (false, true)] {
+                    let Some(BoundValue::ImplicitInput {
+                        domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, .. }),
+                        ..
+                    }) = utility_transformed_domain(&source, from, to, all, last, 4096, &mut 65536)
+                    else {
+                        panic!("expected bounded utility transform");
+                    };
+                    for tail in ["", "/file", "/foo", "/foo/foo", "/foo..", "/.foo", "/a b"] {
+                        let input = format!("{root}{tail}");
+                        let output = utility_apply(&input, from, to, all, last, 4096).unwrap();
+                        assert!(
+                            roots.iter().any(|bound| output == *bound
+                                || output.starts_with(&format!("{bound}/"))),
+                            "{input} -> {output}; {roots:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn shell_field_proofs_are_not_replaced_by_value_availability() {
         fn arg(text: &str, quoted: bool, node_kind: &str) -> Arg {

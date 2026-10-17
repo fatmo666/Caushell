@@ -110,6 +110,15 @@ byte/operation budgets, capped aggregate transformation work and output bounds
 prevent expansion of large replacement results. Only profiles declaring these
 formats enter the decoder; other tools keep their existing behavior.
 
+Unknown rename targets retain the argv/program/file evidence that produced
+them, with `preserves_source: false`: failure to transform a bounded input is
+not an identity transform and is not a synthetic stdin read. Only an actual
+Perl filename-list fallback uses stdin evidence. util-linux basename-only
+replacements can project existing path-set bounds when slash and dot-component
+safety are proven; original and rewritten inclusive roots are both retained.
+Dialect ambiguity, whole-path rewrites and unproven suffix removals remain
+unresolved. Filename selection predicates are not inferred from path roots.
+
 ### External state operations and native operand grammars
 
 A Profile may declare a non-filesystem effect explicitly:
