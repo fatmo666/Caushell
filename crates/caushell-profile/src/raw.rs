@@ -281,6 +281,9 @@ pub enum RawSelectorExpr {
     HasPositionalAt {
         index: usize,
     },
+    ExactPositionalCount {
+        count: usize,
+    },
     HasArgumentAtMatching {
         index: usize,
         matcher: RawValueMatcher,

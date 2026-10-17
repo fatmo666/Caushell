@@ -19,11 +19,11 @@ mod payload_projection;
 mod projection;
 mod raw;
 mod recursive;
-mod rename_payload;
 mod registry;
+mod rename_payload;
 mod resolve;
-mod runtime_variables;
 mod runtime_matcher;
+mod runtime_variables;
 mod sed_payload;
 mod structured_projection;
 mod types;
@@ -57,10 +57,9 @@ pub use materialize::{
     ShellParameterReference, ValueMaterialization, VariablePresence,
     exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
     exact_shell_parameter_reference, materialize_command_name,
-    materialize_exact_shell_parameter_reference_fields, materialize_projected_invocation,
-    materialize_recursive_payload_candidate, materialize_shell_assignment_value,
-    parse_shell_parameter_reference_after_dollar,
-    materialize_prefix_environment,
+    materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,
+    materialize_projected_invocation, materialize_recursive_payload_candidate,
+    materialize_shell_assignment_value, parse_shell_parameter_reference_after_dollar,
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
@@ -71,8 +70,8 @@ pub use projection::{
 };
 pub use raw::RawArgumentControlVocabulary;
 pub use raw::RawEnvironmentInput;
+pub use raw::RawModifierEffectCondition;
 pub use raw::RawModifierParameterCondition;
-pub use types::EnvironmentInput;
 pub use raw::RawPathScope;
 pub use raw::{
     RawArgumentFileRule, RawBindingSpec, RawCardinality, RawCatastrophicEffectMetadata,
@@ -119,11 +118,12 @@ pub use resolve::{
 };
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
 pub use types::ArgumentControlVocabulary;
+pub use types::ArgumentOwnership;
 pub use types::CompiledOperandRegex;
 pub use types::EndpointInputScope;
-pub use types::OptionOperandMatcher;
+pub use types::EnvironmentInput;
 pub use types::ModifierEffectCondition;
-pub use raw::RawModifierEffectCondition;
+pub use types::OptionOperandMatcher;
 pub use types::PathAccessKind;
 pub use types::PathScope;
 pub use types::StdoutScalarShape;

@@ -4,8 +4,8 @@ use caushell_types::PathResolution;
 
 use super::normalize::{join_shell_path, resolve_path_operand};
 
-/// `option_like_fields_are_data` is true only for a shell redirection, not
-/// because a command happens to bind a glob-looking token to a path slot.
+/// `option_like_fields_are_data` requires a shell redirection or certified
+/// native operand ownership, never merely a semantic path-slot binding.
 pub(crate) fn resolve_glob_path_operand(
     text: &str,
     quoted: bool,

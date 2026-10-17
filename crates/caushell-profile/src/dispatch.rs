@@ -636,6 +636,7 @@ fn argument_from_bound_value(
             span,
             binding_source,
             materialization,
+            ..
         } => DispatchArgument {
             slot: slot.clone(),
             text: text_override.unwrap_or(text).to_string(),

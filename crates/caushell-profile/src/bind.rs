@@ -22,6 +22,9 @@ pub struct InvocationShape {
     pub matched_modifiers: Vec<crate::ModifierId>,
     pub matched_modifier_parameters: Vec<MatchedModifierParameter>,
     pub positional_args: Vec<String>,
+    /// Some only when each positional source has one proven native field.
+    /// Unknown-width words must not select an apparently harmless short call.
+    pub exact_positional_count: Option<usize>,
     pub positional_args_before_dashdash: Vec<String>,
     // Native text templates are not their empty diagnostic spelling. Keep
     // their bounds separate from exact values used by legacy shape callers.
@@ -42,7 +45,18 @@ pub struct InvocationShape {
 
 impl InvocationShape {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            exact_positional_count: Some(0),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn observe_positional_width(&mut self, arg: &crate::ProjectedArg) {
+        if let Some(count) = self.exact_positional_count {
+            self.exact_positional_count = (arg.runtime_data && arg.implicit_input_source.is_none()
+                || crate::argument_structure(arg).fields == crate::ArgumentFieldCount::ExactlyOne)
+                .then_some(count + 1);
+        }
     }
 
     pub fn with_flag(mut self, flag_name: &str) -> Self {
@@ -57,6 +71,7 @@ impl InvocationShape {
     }
 
     pub fn with_positional_arg(mut self, value: impl Into<String>) -> Self {
+        self.exact_positional_count = self.exact_positional_count.map(|count| count + 1);
         let value = value.into();
         self.positional_args.push(value.clone());
         self.positional_args_before_dashdash.push(value);
@@ -498,9 +513,19 @@ pub fn bind_invocation(
         .map(|options| options.argument_regions.clone())
         .unwrap_or_default();
 
-    for bound_parameter in parameter_results.into_iter().flatten() {
-        bound.bound_parameters.push(bound_parameter);
+    for (index, bound_parameter) in parameter_results.into_iter().enumerate() {
+        if let Some(mut parameter) = bound_parameter {
+            if targets[index].modifier.is_some() && form_suppresses_modifier_effects(selection.form)
+            {
+                // A suppressed modifier must not regain its effect-bearing
+                // virtual slots during the post-materialization refresh.
+                parameter.structured_projection = None;
+            }
+            bound.bound_parameters.push(parameter);
+        }
     }
+
+    certify_operand_ownership(&mut bound, projection, selection.option_scope.as_ref());
 
     for implicit_input in &selection.form.implicit_inputs {
         bound.bound_implicit_inputs.push(BoundImplicitInput::new(
@@ -627,6 +652,73 @@ pub fn bind_invocation(
     bound.operation_semantics_unresolved |=
         state.group_binding_unresolved || selection.form.operation_semantics_unresolved;
     bound
+}
+
+fn certify_operand_ownership(
+    bound: &mut BoundInvocation,
+    projection: &ProjectedInvocation,
+    options: Option<&crate::ScopedOptions>,
+) {
+    let Some(options) = options.filter(|o| !o.ownership_unresolved && o.error.is_none()) else {
+        return;
+    };
+    // Only unresolved lexical pathname generation needs a cross-layer
+    // certificate today. Exact/native values already carry their bytes;
+    // ordinary invocations do not allocate the source-span ownership map.
+    if !bound
+        .bound_parameters
+        .iter()
+        .flat_map(|p| &p.values)
+        .any(|value| {
+            matches!(value, BoundValue::Argument {
+            text, materialization: crate::BoundArgumentMaterialization::Literal, ..
+        } if text.contains(['*', '?', '[']))
+        })
+    {
+        return;
+    }
+    let mut spans = BTreeMap::new();
+    for (index, arg) in projection.args.iter().enumerate() {
+        let entry = spans
+            .entry((arg.span.start_byte, arg.span.end_byte))
+            .or_insert((true, true));
+        entry.0 &= options.is_positional(index);
+        entry.1 &= !options
+            .argument_regions
+            .iter()
+            .any(|region| index >= region.command_index && index < region.end_index);
+    }
+    for value in bound
+        .bound_parameters
+        .iter_mut()
+        .flat_map(|p| &mut p.values)
+    {
+        let BoundValue::Argument {
+            span,
+            binding_source,
+            ownership,
+            ..
+        } = value
+        else {
+            continue;
+        };
+        // A span can represent multiple brace-expanded words. Require every
+        // field with that source identity to have the same data ownership.
+        let Some((all_positionals, outside_child)) = spans.get(&(span.start_byte, span.end_byte))
+        else {
+            continue;
+        };
+        if *outside_child
+            && (*all_positionals
+                || matches!(
+                    binding_source,
+                    ArgumentBindingSource::FollowingFlag { .. }
+                        | ArgumentBindingSource::MatchedModifierFlag { .. }
+                ))
+        {
+            *ownership = crate::ArgumentOwnership::Operand;
+        }
+    }
 }
 
 /// Whole-argv accounting is opt-in: the legacy binder intentionally tolerates
@@ -927,9 +1019,10 @@ pub fn select_form<'a>(
         .argument_templates
         .values()
         .any(|s| s.fields != crate::ArgumentFieldCount::ExactlyOne)
-        || profile.forms.iter().any(|form| {
-            scoped_selector_certainty(&form.selector, &shape).is_none()
-        })
+        || profile
+            .forms
+            .iter()
+            .any(|form| scoped_selector_certainty(&form.selector, &shape).is_none())
     {
         return Err(BindError::UnsupportedProfileFeature {
             command_name: profile.primary_name().to_owned(),
@@ -1270,6 +1363,10 @@ fn select_form_for_scope<'a>(
     options: Option<&crate::ScopedOptions>,
     matching: OptionMatchingPolicy,
 ) -> Result<&'a Form, BindError> {
+    let needs_exact_count = forms.iter().any(|form| {
+        selector_needs_exact_count(&form.selector)
+            || selector_needs_exact_count(&form.remaining_selector)
+    });
     let mut shape = shape_for_scope_with_consumed(
         projection,
         scope,
@@ -1278,6 +1375,7 @@ fn select_form_for_scope<'a>(
         subcommand_path,
         options,
         matching,
+        needs_exact_count,
     );
     if shape
         .argument_templates
@@ -1312,6 +1410,7 @@ fn select_form_for_scope<'a>(
             subcommand_path,
             options,
             matching,
+            needs_exact_count,
         );
         populate_argument_selector(&form.remaining_selector, projection, &mut remaining_shape);
         if scoped_selector_certainty(&form.remaining_selector, &remaining_shape)
@@ -1321,6 +1420,17 @@ fn select_form_for_scope<'a>(
         }
     }
     resolve_matched_forms(command_name, matched_forms)
+}
+
+fn selector_needs_exact_count(selector: &SelectorExpr) -> bool {
+    match selector {
+        SelectorExpr::All(items) | SelectorExpr::Any(items) => {
+            items.iter().any(selector_needs_exact_count)
+        }
+        SelectorExpr::Not(item) => selector_needs_exact_count(item),
+        SelectorExpr::Predicate(SelectorPredicate::ExactPositionalCount(_)) => true,
+        _ => false,
+    }
 }
 
 fn populate_argument_selector(
@@ -1671,6 +1781,7 @@ fn shape_for_scope_with_consumed<'a>(
     subcommand_path: &[String],
     options: Option<&crate::ScopedOptions>,
     matching: OptionMatchingPolicy,
+    needs_exact_count: bool,
 ) -> InvocationShape {
     shape_for_scope_internal(
         projection,
@@ -1680,6 +1791,7 @@ fn shape_for_scope_with_consumed<'a>(
         subcommand_path,
         options,
         matching,
+        needs_exact_count,
     )
 }
 
@@ -1691,8 +1803,10 @@ fn shape_for_scope_internal<'a>(
     subcommand_path: &[String],
     options: Option<&crate::ScopedOptions>,
     matching: OptionMatchingPolicy,
+    needs_exact_count: bool,
 ) -> InvocationShape {
     let mut shape = InvocationShape::new().with_subcommand_path(subcommand_path.to_vec());
+    shape.exact_positional_count = needs_exact_count.then_some(0);
     shape.option_matching = matching;
 
     for modifier in modifiers {
@@ -1731,6 +1845,7 @@ fn shape_for_scope_internal<'a>(
 
         if options.is_some() {
             // After the option prefix every token is argv data, even `--`.
+            shape.observe_positional_width(arg);
             if let Some(structure) = native_template {
                 shape
                     .positional_templates
@@ -1746,6 +1861,7 @@ fn shape_for_scope_internal<'a>(
         match arg.kind {
             ProjectedArgKind::Flag => shape.flags.push(FlagName::new(arg.text.clone())),
             ProjectedArgKind::Positional => {
+                shape.observe_positional_width(arg);
                 if let Some(structure) = native_template {
                     shape
                         .positional_templates
@@ -1787,9 +1903,13 @@ fn populate_modifier_parameters_for_shape(
             state.set_option_scope(options);
             let values = state.bind_parameter_values(&target);
             for value in values {
-                if matches!(&value, BoundValue::ImplicitInput {
-                    domain: Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. }), ..
-                }) {
+                if matches!(
+                    &value,
+                    BoundValue::ImplicitInput {
+                        domain: Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. }),
+                        ..
+                    }
+                ) {
                     shape.template_modifier_parameters.insert((
                         selected_modifier.modifier.id.clone(),
                         parameter.name.clone(),
@@ -1983,6 +2103,15 @@ fn preview_form_consumption<'a>(
 }
 
 fn form_suppresses_modifier_effects(form: &Form) -> bool {
+    if let Some(explicit) = form
+        .extensions
+        .get("caushell.form/suppress_modifier_effects")
+        .and_then(serde_json::Value::as_bool)
+    {
+        return explicit;
+    }
+    // Compatibility for existing Profiles predating the explicit declaration.
+    // New native forms need not borrow a reserved help-like identifier.
     matches!(
         form.id.as_str(),
         "show_help" | "show_version" | "show_usage"
@@ -4008,6 +4137,9 @@ fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> 
             .get(index)
             .is_some_and(|value| argument_matches_value_matcher(value, matcher)),
         SelectorPredicate::HasPositionalAt(index) => shape.has_positional_at(*index),
+        SelectorPredicate::ExactPositionalCount(count) => {
+            shape.exact_positional_count == Some(*count)
+        }
         SelectorPredicate::HasPositionalBeforeDashDashAt(index) => {
             shape.positional_args_before_dashdash.get(*index).is_some()
         }

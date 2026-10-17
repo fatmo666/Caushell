@@ -112,6 +112,7 @@ impl ProjectedInvocation {
 
     pub fn shape(&self) -> InvocationShape {
         let mut shape = InvocationShape::new();
+        shape.exact_positional_count = Some(0);
         let mut before_dashdash = true;
 
         for (index, arg) in self.args.iter().enumerate() {
@@ -128,6 +129,7 @@ impl ProjectedInvocation {
                     shape.flags.push(FlagName::new(arg.text.clone()));
                 }
                 ProjectedArgKind::Positional => {
+                    shape.observe_positional_width(arg);
                     if let Some(structure) = template {
                         shape
                             .positional_templates

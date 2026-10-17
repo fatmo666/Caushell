@@ -7,6 +7,22 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 
 forms:
+  - id: missing_operands
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - kind: any
+          items:
+            - kind: all
+              items:
+                - {kind: not, item: {kind: has_modifier, modifier: target_directory}}
+                - {kind: any, items: [{kind: exact_positional_count, count: 0}, {kind: exact_positional_count, count: 1}]}
+            - {kind: all, items: [{kind: has_modifier, modifier: target_directory}, {kind: exact_positional_count, count: 0}]}
+    parameters: [{name: incomplete_operands, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+    extensions: {caushell.form/suppress_modifier_effects: true}
+
   - id: information
     selector: &information {kind: has_modifier, modifier: information}
     parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]

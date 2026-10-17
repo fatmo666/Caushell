@@ -945,7 +945,10 @@ fn materialize_shell_word_with_references(
             ShellWordQuote::None => match ch {
                 '\'' => quote = ShellWordQuote::Single,
                 '"' => quote = ShellWordQuote::Double,
-                '\\' => out.push(chars.next()?),
+                '\\' => match chars.next()? {
+                    '\n' => at_word_start = lexical_start,
+                    escaped => out.push(escaped),
+                },
                 '$' => {
                     let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
                     if mode == ShellWordMode::PositionalArgument
@@ -1871,14 +1874,26 @@ pub(crate) fn materialize_argument_text_with_tilde(
     // decode; do not invent a variable origin from the whole source word.
     let tilde_word = allow_tilde_expansion && !quoted && (text == "~" || text.starts_with("~/"));
     let tilde_literal_composite = node_kind == "concatenation" && text.contains('~');
-    if !tilde_word
-        && !tilde_literal_composite
-        && crate::value_projection::decode_argument_prefix(text, quoted, node_kind).1
-    {
-        return MaterializedText {
-            text: text.to_string(),
-            resolution: ValueMaterialization::Static,
-        };
+    if !tilde_word && !tilde_literal_composite {
+        let (value, complete) =
+            crate::value_projection::decode_argument_prefix(text, quoted, node_kind);
+        if complete {
+            // Selection/binding consume native argv, not source spelling.
+            // Retain the ordinary literal fast path, but mark quote/escape
+            // removal as resolved data so later consumers cannot decode it
+            // twice (or miss an option hidden by a lexical continuation).
+            return if value == text {
+                MaterializedText {
+                    text: value,
+                    resolution: ValueMaterialization::Static,
+                }
+            } else {
+                MaterializedText {
+                    text: value.clone(),
+                    resolution: ValueMaterialization::ResolvedShellWord { value },
+                }
+            };
+        }
     }
 
     if let Some(variable_name) = exact_variable_reference(text) {

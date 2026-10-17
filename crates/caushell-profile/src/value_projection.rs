@@ -188,6 +188,14 @@ pub(crate) fn decode_argument_prefix(text: &str, quoted: bool, node_kind: &str) 
     if matches!(node_kind, "raw_string" | "ansi_c_string") {
         return (text.to_string(), true);
     }
+    if node_kind == "concatenation"
+        && let Some(value) = caushell_parse::decode_static_shell_argument(text, quoted, node_kind)
+    {
+        // Share the grammar-backed complete-word proof with argv ownership.
+        // A quoted comma/$ inside literal braces is program data, whereas a
+        // real brace vector must still take the bounded shell-expansion path.
+        return (value, true);
+    }
     if !matches!(node_kind, "word" | "number" | "string" | "concatenation") {
         return (String::new(), false);
     }

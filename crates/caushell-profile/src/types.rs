@@ -21,6 +21,16 @@ pub enum BoundArgumentMaterialization {
     },
 }
 
+/// Native CLI ownership, independent of shell expansion and path containment.
+/// Only a completed scoped binding may certify an operand. Merely assigning
+/// a word to a semantic path slot is not evidence that it cannot be an option.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArgumentOwnership {
+    #[default]
+    Unproven,
+    Operand,
+}
+
 pub type ExtensionMap = BTreeMap<String, JsonValue>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -191,6 +201,7 @@ pub enum SelectorPredicate {
     /// (excluding the executable). Independent of option/positional ownership.
     HasArgumentAtMatching(usize, ValueMatcher),
     HasPositionalAt(usize),
+    ExactPositionalCount(usize),
     HasPositionalBeforeDashDashAt(usize),
     HasPositionalAtMatching(usize, ValueMatcher),
     HasPositionalAtOrAfterMatching(usize, ValueMatcher),
@@ -1662,6 +1673,7 @@ pub enum BoundValue {
         span: SourceSpan,
         binding_source: ArgumentBindingSource,
         materialization: BoundArgumentMaterialization,
+        ownership: ArgumentOwnership,
     },
     ImplicitInput {
         source: ImplicitInputSource,
@@ -1729,6 +1741,7 @@ impl BoundValue {
             span,
             binding_source,
             materialization: BoundArgumentMaterialization::Literal,
+            ownership: ArgumentOwnership::Unproven,
         }
     }
 
@@ -1740,6 +1753,7 @@ impl BoundValue {
                 node_kind,
                 span,
                 binding_source,
+                ownership,
                 ..
             } => Self::Argument {
                 text,
@@ -1748,6 +1762,7 @@ impl BoundValue {
                 span,
                 binding_source,
                 materialization,
+                ownership,
             },
             other => other,
         }

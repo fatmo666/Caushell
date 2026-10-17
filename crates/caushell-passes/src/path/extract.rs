@@ -789,13 +789,8 @@ fn collect_selection_error_path_facts(
             else {
                 continue;
             };
-            let (resolution, cwd_dependent) = semantic_code_path_resolution(
-                &parameter.semantic,
-                value,
-                None,
-                cwd,
-                home,
-            );
+            let (resolution, cwd_dependent) =
+                semantic_code_path_resolution(&parameter.semantic, value, None, cwd, home);
 
             out.push(PathFactCandidate {
                 source_node_id: record.source_node_id().clone(),
@@ -2276,6 +2271,13 @@ fn resolve_bound_path_resolution(
         home,
         projection_materialization,
         value.allows_shell_tilde_expansion(),
+        matches!(
+            value,
+            BoundValue::Argument {
+                ownership: caushell_profile::ArgumentOwnership::Operand,
+                ..
+            }
+        ),
     )
 }
 
@@ -2287,7 +2289,16 @@ fn resolve_path_resolution(
     home: Option<&str>,
     materialization: Option<&ValueMaterialization>,
 ) -> PathResolution {
-    resolve_path_resolution_with_tilde(text, quoted, node_kind, cwd, home, materialization, true)
+    resolve_path_resolution_with_tilde(
+        text,
+        quoted,
+        node_kind,
+        cwd,
+        home,
+        materialization,
+        true,
+        false,
+    )
 }
 
 fn resolve_path_resolution_with_tilde(
@@ -2298,6 +2309,7 @@ fn resolve_path_resolution_with_tilde(
     home: Option<&str>,
     materialization: Option<&ValueMaterialization>,
     allow_tilde_expansion: bool,
+    option_like_fields_are_data: bool,
 ) -> PathResolution {
     if let Some(path) =
         resolve_path_operand_with_tilde(text, quoted, node_kind, cwd, home, allow_tilde_expansion)
@@ -2311,7 +2323,7 @@ fn resolve_path_resolution_with_tilde(
         node_kind,
         cwd,
         home,
-        false,
+        option_like_fields_are_data,
         allow_tilde_expansion,
     ) {
         return resolution;
@@ -2919,7 +2931,13 @@ mod tests {
             Some("file"),
             "/workspace",
         );
-        assert_eq!(output, PathResolution::BoundedPathSet { roots: vec!["/workspace".into()], may_escape: false });
+        assert_eq!(
+            output,
+            PathResolution::BoundedPathSet {
+                roots: vec!["/workspace".into()],
+                may_escape: false
+            }
+        );
     }
 
     #[test]

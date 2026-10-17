@@ -447,10 +447,11 @@ extensions: {}
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
 
         assert_eq!(profile.primary_name(), "cp");
-        assert_eq!(profile.forms.len(), 11);
+        assert_eq!(profile.forms.len(), 12);
         assert_eq!(
             form_ids,
             vec![
+                "missing_operands",
                 "show_help",
                 "show_version",
                 "target_directory",

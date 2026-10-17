@@ -47,7 +47,10 @@ pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -
     let mut chars = text.chars();
     while let Some(character) = chars.next() {
         match character {
-            '\\' => decoded.push(chars.next()?),
+            '\\' => match chars.next()? {
+                '\n' => {}
+                escaped => decoded.push(escaped),
+            },
             '$' | '`' | '*' | '?' | '[' => return None,
             _ => decoded.push(character),
         }
@@ -65,6 +68,7 @@ fn with_single_argument<T>(
     if text.len() > 65536 {
         return None;
     }
+    let text = shell_word_without_continuations(text);
     let source = format!("__argument__ {text}");
     let mut parser = Parser::new();
     parser
@@ -84,6 +88,70 @@ fn with_single_argument<T>(
         return None;
     }
     query(word, source.as_bytes())
+}
+
+// A disposable grammar query has no source coordinates to remap. Normalize
+// only lexical continuations here; command facts retain the original spelling
+// and spans. Quoted literal/ANSI data is never rewritten as shell source.
+fn shell_word_without_continuations(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("\\\n") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    #[derive(Clone, Copy)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+        Ansi,
+    }
+    let mut quote = Quote::None;
+    let mut chars = text.chars().peekable();
+    let mut output = String::with_capacity(text.len());
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Quote::Single, '\'') | (Quote::Ansi, '\'') => {
+                quote = Quote::None;
+                output.push(ch);
+            }
+            (Quote::Single, _) => output.push(ch),
+            (Quote::Ansi, '\\') => {
+                output.push(ch);
+                if let Some(next) = chars.next() {
+                    output.push(next);
+                }
+            }
+            (Quote::Ansi, _) => output.push(ch),
+            (_, '\\') => {
+                if let Some(next) = chars.next() {
+                    if next != '\n' {
+                        output.push(ch);
+                        output.push(next);
+                    }
+                } else {
+                    output.push(ch);
+                }
+            }
+            (Quote::None, '$') if chars.peek() == Some(&'\'') => {
+                output.push('$');
+                output.push(chars.next().unwrap());
+                quote = Quote::Ansi;
+            }
+            (Quote::None, '\'') => {
+                quote = Quote::Single;
+                output.push(ch);
+            }
+            (Quote::None, '"') => {
+                quote = Quote::Double;
+                output.push(ch);
+            }
+            (Quote::Double, '"') => {
+                quote = Quote::None;
+                output.push(ch);
+            }
+            _ => output.push(ch),
+        }
+    }
+    std::borrow::Cow::Owned(output)
 }
 
 fn decode_static_word_node(node: Node<'_>, source: &[u8]) -> Option<String> {
@@ -134,20 +202,76 @@ fn decode_static_word_node(node: Node<'_>, source: &[u8]) -> Option<String> {
         }
         "concatenation" => {
             let raw = node.utf8_text(source).ok()?;
-            if raw.contains(['{', '}']) && (raw.contains(',') || raw.contains("..")) {
+            if unquoted_braces_may_expand(raw) {
                 return None;
             }
             let mut result = String::new();
+            let mut cursor = node.start_byte();
             for index in 0..node.named_child_count() {
-                result.push_str(&decode_static_word_node(
-                    node.named_child(index as u32)?,
-                    source,
-                )?);
+                let child = node.named_child(index as u32)?;
+                // Tree-sitter can represent special expansions such as $$ as
+                // anonymous children. A named-child walk alone must not drop
+                // those bytes and certify a different, shorter argv word.
+                if child.start_byte() != cursor {
+                    return None;
+                }
+                result.push_str(&decode_static_word_node(child, source)?);
+                cursor = child.end_byte();
+            }
+            if cursor != node.end_byte() {
+                // A terminal, unquoted '$' is literal Shell data. It may be
+                // an anonymous grammar token too, but must be kept, not lost.
+                // '$$', '$?', substitutions and all other gaps stay unknown.
+                if source.get(cursor..node.end_byte()) != Some(b"$") {
+                    return None;
+                }
+                result.push('$');
             }
             Some(result)
         }
         _ => None,
     }
+}
+
+// Brace expansion precedes quote removal. Commas and dots inside quoted
+// program text cannot turn surrounding literal braces into a shell vector.
+// Keep real list/range syntax unresolved here; the Profile materializer owns
+// its bounded Bash expansion and retains the selected shell kind.
+fn unquoted_braces_may_expand(text: &str) -> bool {
+    let mut quote = None;
+    let mut groups = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                chars.next();
+            }
+            (Some('"'), _) => {}
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '{') => {
+                if groups.len() >= 32 {
+                    return true;
+                }
+                groups.push(false);
+            }
+            (None, ',' | '.') => {
+                if ch == ',' || chars.peek() == Some(&'.') {
+                    if let Some(group) = groups.last_mut() {
+                        *group = true;
+                    }
+                }
+            }
+            (None, '}') => {
+                if groups.pop() == Some(true) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 pub fn concatenated_argument_is_scalar(text: &str) -> bool {
@@ -1532,9 +1656,11 @@ fn collect_state_builtin_argument(
 fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
     let scope = simple_command_scope(node);
     let mut command_name = None;
+    let mut command_name_span: Option<SourceSpan> = None;
     let mut prefix_assignments = Vec::new();
     let mut tokens: Vec<CommandToken> = Vec::new();
     let mut dashdash_seen = false;
+    let mut joined_words = false;
 
     for child in simple_command_words(node) {
         if child.kind() == "variable_assignment" {
@@ -1548,6 +1674,7 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
 
         if child.kind() == "command_name" {
             command_name = Some(source_text(child, source));
+            command_name_span = Some(span_for(child));
             continue;
         }
 
@@ -1562,16 +1689,33 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
             continue;
         };
 
-        if let Some(previous) = tokens.last_mut()
-            && previous.span.end_byte == child.start_byte()
+        if tokens.is_empty()
+            && let Some(name_span) = &mut command_name_span
+            && continuation_gap(source, name_span.end_byte, child.start_byte())
         {
-            // Adjacent AST fragments are one shell word; never bridge a gap,
-            // delimiter or redirect to establish this adjacency.
+            command_name = Some(
+                String::from_utf8_lossy(&source[name_span.start_byte..child.end_byte()])
+                    .into_owned(),
+            );
+            name_span.end_byte = child.end_byte();
+            name_span.end_row = child.end_position().row;
+            name_span.end_column = child.end_position().column;
+            continue;
+        }
+
+        if let Some(previous) = tokens.last_mut()
+            && (previous.span.end_byte == child.start_byte()
+                || continuation_gap(source, previous.span.end_byte, child.start_byte()))
+        {
+            // A backslash-newline is removed before shell word tokenization.
+            // Only that exact lexical gap can join nonadjacent AST fragments;
+            // spaces, redirects, delimiters and ordinary newlines cannot.
             previous.text =
                 String::from_utf8_lossy(&source[previous.span.start_byte..child.end_byte()])
                     .into_owned();
             previous.quoted = false;
             previous.node_kind = "concatenation".into();
+            joined_words = true;
             previous.span.end_byte = child.end_byte();
             previous.span.end_row = child.end_position().row;
             previous.span.end_column = child.end_position().column;
@@ -1603,6 +1747,21 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
         });
     }
 
+    if joined_words || tokens.iter().any(|token| token.text.contains("\\\n")) {
+        let mut terminated = false;
+        for token in &mut tokens {
+            let decoded = decode_static_shell_argument(&token.text, token.quoted, &token.node_kind);
+            let spelling = decoded.as_deref().unwrap_or(&token.text);
+            token.kind = if !terminated && spelling == "--" {
+                terminated = true;
+                CommandTokenKind::DashDash
+            } else if !terminated && spelling.starts_with('-') && spelling.len() > 1 {
+                CommandTokenKind::Flag
+            } else {
+                CommandTokenKind::Arg
+            };
+        }
+    }
     if command_name.is_none() && tokens.is_empty() {
         return None;
     }
@@ -1638,6 +1797,13 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
         top_level_span: top_level_command_span(node),
         span: span_for(scope),
     })
+}
+
+fn continuation_gap(source: &[u8], start: usize, end: usize) -> bool {
+    let Some(gap) = source.get(start..end) else {
+        return false;
+    };
+    !gap.is_empty() && gap.len() % 2 == 0 && gap.chunks_exact(2).all(|pair| pair == b"\\\n")
 }
 
 fn simple_command_scope(node: Node<'_>) -> Node<'_> {
@@ -2301,14 +2467,22 @@ fn redirection_opening_statement(node: Node<'_>, source: &[u8]) -> Option<Comman
 }
 
 fn extract_command_name(node: Node<'_>, source: &[u8]) -> Option<String> {
-    for i in 0..node.child_count() {
-        let child = child_at(node, i)?;
+    let mut name_span: Option<SourceSpan> = None;
+    for child in simple_command_words(node) {
         if child.kind() == "command_name" {
-            return Some(source_text(child, source));
+            name_span = Some(span_for(child));
+        } else if let Some(span) = &mut name_span {
+            if extract_token_text(child, source).is_some()
+                && continuation_gap(source, span.end_byte, child.start_byte())
+            {
+                span.end_byte = child.end_byte();
+            } else {
+                break;
+            }
         }
     }
-
-    None
+    name_span
+        .map(|span| String::from_utf8_lossy(&source[span.start_byte..span.end_byte]).into_owned())
 }
 
 fn extract_token_text(node: Node<'_>, source: &[u8]) -> Option<(String, bool)> {
@@ -2634,7 +2808,10 @@ mod tests {
     fn quoted_scalar_query_does_not_hide_nested_vector_words() {
         for word in [r#""${prompt:-$@}""#, r#""${prompt:-${items[@]}}""#] {
             let tree = super::with_single_argument(word, |node, _| Some(node.to_sexp())).unwrap();
-            assert!(!super::concatenated_argument_is_scalar(word), "{word}: {tree}");
+            assert!(
+                !super::concatenated_argument_is_scalar(word),
+                "{word}: {tree}"
+            );
         }
     }
 

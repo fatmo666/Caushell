@@ -1466,8 +1466,11 @@ mod tests {
                 assert!(modifier_ids.contains(&"help"));
                 assert!(modifier_ids.contains(&"target_directory"));
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "destination_directory"),
+                    first_argument_text(&resolved.bound, "destination_directory_operand"),
                     "out"
+                );
+                assert!(
+                    find_bound_parameter_opt(&resolved.bound, "destination_directory").is_none()
                 );
                 assert!(resolved.bound.effects.is_empty());
             }
@@ -1498,8 +1501,11 @@ mod tests {
                 assert!(modifier_ids.contains(&"version"));
                 assert!(modifier_ids.contains(&"target_directory"));
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "destination_directory"),
+                    first_argument_text(&resolved.bound, "destination_directory_operand"),
                     "out"
+                );
+                assert!(
+                    find_bound_parameter_opt(&resolved.bound, "destination_directory").is_none()
                 );
                 assert!(resolved.bound.effects.is_empty());
             }
@@ -1681,17 +1687,16 @@ mod tests {
         let result = resolve_invocation(&registry, command, InvocationRuntimeContext::new());
 
         match result {
-            ResolveInvocationResult::SelectionError {
-                normalized_command_name,
-                gap_kind,
-                partial_bound: Some(bound),
-                ..
-            } => {
-                assert_eq!(normalized_command_name, "cp");
-                assert_eq!(gap_kind, caushell_types::ResolveGapKind::OpaqueInvocation);
-                assert_eq!(first_argument_text(&bound, "sparse_mode"), "src");
-                assert!(find_bound_parameter_opt(&bound, "destination_path").is_none());
-                assert!(bound.operation_semantics_unresolved);
+            ResolveInvocationResult::Resolved(resolved) => {
+                assert_eq!(resolved.normalized_command_name, "cp");
+                assert_eq!(resolved.bound.form_id.as_str(), "missing_operands");
+                assert_eq!(first_argument_text(&resolved.bound, "sparse_mode"), "src");
+                assert_eq!(
+                    argument_texts(&resolved.bound, "incomplete_operands"),
+                    ["dest"]
+                );
+                assert!(find_bound_parameter_opt(&resolved.bound, "destination_path").is_none());
+                assert!(resolved.bound.effects.is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

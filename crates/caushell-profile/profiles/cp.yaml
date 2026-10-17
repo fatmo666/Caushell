@@ -20,6 +20,25 @@ platform:
   requires_features: []
 
 forms:
+  # Missing operands are a native error before any copy/link/metadata action.
+  # Source-word counts are not argv counts: the shared selector requires an
+  # exact field-width proof and cannot match a variable-width glob/batch.
+  - id: missing_operands
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: any, items: [{kind: has_flag, flag: '--help'}, {kind: has_flag, flag: '--version'}]}}
+        - kind: any
+          items:
+            - kind: all
+              items:
+                - {kind: not, item: {kind: has_modifier, modifier: target_directory}}
+                - {kind: any, items: [{kind: exact_positional_count, count: 0}, {kind: exact_positional_count, count: 1}]}
+            - {kind: all, items: [{kind: has_modifier, modifier: target_directory}, {kind: exact_positional_count, count: 0}]}
+    parameters: [{name: incomplete_operands, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+    extensions: {caushell.form/suppress_modifier_effects: true}
+
   - id: show_help
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     selector:
@@ -719,15 +738,15 @@ modifiers:
         - "-t"
         - "--target-directory"
     parameters:
-      - name: destination_directory
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
+      - name: destination_directory_operand
+        semantic: {kind: plain_value}
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, target: {name: destination_directory, semantic: {kind: path, role: write, purpose: generic_operand}}}
     effects:
       - kind: write_path
         target:

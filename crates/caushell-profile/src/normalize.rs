@@ -1011,6 +1011,15 @@ fn normalize_forms(raw_forms: Vec<RawForm>) -> Result<Vec<Form>, NormalizeError>
 fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
     ensure_non_empty(&raw.id, "forms.id")?;
     ensure_unique_parameter_names(&raw.parameters)?;
+    if raw
+        .extensions
+        .get("caushell.form/suppress_modifier_effects")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(NormalizeError::InvalidExtensionKey(
+            "caushell.form/suppress_modifier_effects must be boolean".into(),
+        ));
+    }
 
     Ok(Form {
         id: FormId::new(raw.id),
@@ -1235,6 +1244,9 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
         )),
         RawSelectorExpr::HasPositionalAt { index } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::HasPositionalAt(index),
+        )),
+        RawSelectorExpr::ExactPositionalCount { count } => Ok(SelectorExpr::Predicate(
+            SelectorPredicate::ExactPositionalCount(count),
         )),
         RawSelectorExpr::HasPositionalBeforeDashDashAt { index } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::HasPositionalBeforeDashDashAt(index),

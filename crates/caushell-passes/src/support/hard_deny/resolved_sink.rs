@@ -222,15 +222,28 @@ pub(crate) fn bound_argument_operands_for_slot<'a>(
                     text,
                     quoted,
                     node_kind,
+                    materialization,
                     ..
                 },
-            ) => Some(HostTargetOperand {
-                text: text.as_str(),
-                quoted: *quoted,
-                node_kind: node_kind.as_str(),
-                literal_argv_data: false,
-                allow_tilde_expansion: source.allows_shell_tilde_expansion(),
-            }),
+            ) => Some(
+                if !matches!(
+                    materialization,
+                    caushell_profile::BoundArgumentMaterialization::Literal
+                ) {
+                    // The resolver already removed outer-shell syntax. Native
+                    // bytes (including literal glob metacharacters) cannot be
+                    // reinterpreted as another shell expansion by a risk query.
+                    HostTargetOperand::literal_argv_data(text)
+                } else {
+                    HostTargetOperand {
+                        text: text.as_str(),
+                        quoted: *quoted,
+                        node_kind: node_kind.as_str(),
+                        literal_argv_data: false,
+                        allow_tilde_expansion: source.allows_shell_tilde_expansion(),
+                    }
+                },
+            ),
             SemanticValueRef::Projected { value, .. } => match &value.resolution {
                 SemanticValueResolution::Known(text) => {
                     Some(HostTargetOperand::literal_argv_data(text))
@@ -287,6 +300,41 @@ mod tests {
         assert_eq!(
             runtime_targets[0].domain,
             Some(caushell_types::RuntimeArgumentDomain::Unbounded)
+        );
+    }
+
+    #[test]
+    fn materialized_native_operands_keep_the_no_second_expansion_contract() {
+        let value = BoundValue::argument(
+            "/etc/*",
+            false,
+            caushell_parse::SourceSpan {
+                start_byte: 0,
+                end_byte: 6,
+                start_row: 0,
+                end_row: 0,
+                start_column: 0,
+                end_column: 6,
+            },
+            ArgumentBindingSource::RemainingArg,
+        )
+        .with_materialization(caushell_profile::BoundArgumentMaterialization::RuntimeData);
+        let bound = BoundInvocation::new(CommandName::new("arbitrary"), FormId::new("native"))
+            .with_bound_parameter(
+                BoundParameter::new(SlotName::new("target"), SemanticType::PlainValue)
+                    .with_value(value),
+            );
+        let operands = bound_argument_operands_for_slot(&bound, "target");
+        assert_eq!(operands.len(), 1);
+        assert!(operands[0].literal_argv_data);
+        assert_eq!(operands[0].text, "/etc/*");
+        assert_eq!(
+            super::super::host_target_catalog::catastrophic_delete_target_for_arg(
+                operands[0],
+                "/workspace",
+                None
+            ),
+            None
         );
     }
 }

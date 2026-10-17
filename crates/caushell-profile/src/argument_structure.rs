@@ -639,7 +639,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
     let whole_quoted_scalar = initial == Quote::Double && !may_expand_quoted_vector(&arg.text);
     // Keep the legacy literal fast path, except concatenation needs its actual
     // quote transitions and unquoted braces may generate multiple fields.
-    if (initial != Quote::None || !arg.text.contains('{'))
+    if (initial != Quote::None || !arg.text.contains('{') || arg.node_kind == "concatenation")
         && let Some(value) =
             caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
     {
