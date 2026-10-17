@@ -137,6 +137,78 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         ));
     }
     let modifiers = normalize_modifiers(raw.modifiers)?;
+    let mut environment_inputs = Vec::new();
+    let mut environment_names = BTreeSet::new();
+    let declared_names = declared_parameter_names(&forms, &modifiers, &BTreeSet::new());
+    for input in raw.environment_inputs {
+        let parameter = normalize_parameter(crate::RawParameter {
+            name: input.name,
+            semantic: input.semantic,
+            binding: crate::RawBindingSpec::RemainingArgs,
+            value_projection: None,
+            structured_projection: input.structured_projection,
+            cardinality: Some(crate::RawCardinality::OptionalOne),
+            value_constraints: Vec::new(),
+            extensions: Default::default(),
+        })?;
+        if !matches!(
+            parameter.semantic,
+            crate::SemanticType::PlainValue | crate::SemanticType::Payload(_)
+        ) || declared_names.contains(parameter.name.as_str())
+            || !environment_names.insert(parameter.name.as_str().to_owned())
+            || input
+                .unless_modifiers
+                .iter()
+                .any(|id| !modifiers.iter().any(|m| m.id.as_str() == id))
+        {
+            return Err(NormalizeError::InvalidStructuredProjection(
+                "invalid environment input semantic, name or modifier".into(),
+            ));
+        }
+        if let Some(grammar) = &parameter.structured_projection {
+            if grammar.branches.iter().any(|branch| {
+                branch.unless_parameter_matches.is_some()
+                    || branch
+                        .requires_modifiers
+                        .iter()
+                        .chain(&branch.unless_modifiers)
+                        .chain(branch.unless_modifier.iter())
+                        .any(|id| !modifiers.iter().any(|m| m.id == *id))
+            }) {
+                return Err(NormalizeError::InvalidStructuredProjection("environment input branches require declared modifiers and no cross-parameter conditions".into()));
+            }
+            for target in grammar
+                .branches
+                .iter()
+                .filter_map(|b| b.target.as_ref())
+                .chain(grammar.fallback.iter())
+            {
+                if !target.sources.is_empty()
+                    || declared_names.contains(target.name.as_str())
+                    || !matches!(
+                        target.semantic,
+                        SemanticType::PlainValue | SemanticType::Payload(_)
+                    )
+                    || !environment_names.insert(target.name.as_str().to_owned())
+                {
+                    return Err(NormalizeError::InvalidStructuredProjection(
+                        "environment input targets must be unique and source-local".into(),
+                    ));
+                }
+            }
+        }
+        environment_inputs.push(crate::types::EnvironmentInput {
+            name: parameter.name,
+            environment: normalize_environment_source(input.environment)?,
+            semantic: parameter.semantic,
+            structured_projection: parameter.structured_projection,
+            unless_modifiers: input
+                .unless_modifiers
+                .into_iter()
+                .map(ModifierId::new)
+                .collect(),
+        });
+    }
     validate_endpoint_input_scopes(&forms, &modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
     validate_stdout_scalars(&forms)?;
@@ -149,6 +221,26 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .subcommands
         .map(|tree| normalize_subcommand_tree(tree, option_matching))
         .transpose()?;
+    if let Some(tree) = &subcommands {
+        fn validate_environment_names(
+            nodes: &[SubcommandNode],
+            names: &BTreeSet<String>,
+        ) -> Result<(), NormalizeError> {
+            for node in nodes {
+                if declared_parameter_names(&node.forms, &node.modifiers, &BTreeSet::new())
+                    .iter()
+                    .any(|name| names.contains(name))
+                {
+                    return Err(NormalizeError::InvalidStructuredProjection(
+                        "environment input collides with a subcommand slot".into(),
+                    ));
+                }
+                validate_environment_names(&node.children, names)?;
+            }
+            Ok(())
+        }
+        validate_environment_names(&tree.roots, &environment_names)?;
+    }
     let option_scope = normalize_option_scope(raw.option_scope);
     let option_operand_matcher = raw
         .option_operand_matcher
@@ -205,6 +297,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 && effect.host_risk.semantic_class.is_none()
         };
         if subcommands.is_some()
+            || !environment_inputs.is_empty()
             || !raw.argument_regions.is_empty()
             || !argument_files.is_empty()
             || !selection_failure_effects.is_empty()
@@ -310,6 +403,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         trust: normalize_trust(raw.trust),
         platform: normalize_platform(raw.platform),
         argument_files,
+        environment_inputs,
         argument_regions,
         argument_control_vocabulary,
         selection_failure_effects,
@@ -692,6 +786,26 @@ fn validate_option_scope(
 ) -> Result<(), NormalizeError> {
     for modifier in modifiers {
         if let Some(condition) = &modifier.effects_when {
+            if condition.last_parameter_not_matching.is_some()
+                && condition.last_option_not_matching.is_some()
+            {
+                return Err(NormalizeError::InvalidOptionScope(
+                    "effects_when accepts one final-occurrence comparison".into(),
+                ));
+            }
+            if let Some((slot, _)) = &condition.last_parameter_not_matching {
+                if policy == OptionScopePolicy::AllArguments
+                    || !modifier.parameters.iter().any(|p| {
+                        p.name == *slot
+                            && p.semantic == SemanticType::PlainValue
+                            && matches!(p.binding, BindingSpec::FollowingMatchedFlag { .. })
+                    })
+                {
+                    return Err(NormalizeError::InvalidOptionScope(
+                        "effects_when.last_parameter_not_matching requires an owned plain-value modifier operand".into(),
+                    ));
+                }
+            }
             if condition.last_option_not_matching.is_some()
                 && (policy == OptionScopePolicy::AllArguments
                     || !matches!(modifier.matcher, ModifierMatcher::AnyFlag(_)))
@@ -980,6 +1094,7 @@ fn normalize_stdout_records(
     };
     Ok(crate::StdoutRecordContract {
         projection,
+        empty_slots: raw.empty_slots.into_iter().map(SlotName::new).collect(),
         required_modifiers: raw
             .required_modifiers
             .into_iter()
@@ -1003,6 +1118,15 @@ fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(),
                 "requires stream_contract".into(),
             ));
         };
+        if records
+            .empty_slots
+            .iter()
+            .any(|slot| !form.parameters.iter().any(|p| p.name == *slot))
+        {
+            return Err(NormalizeError::InvalidStdoutRecords(
+                "empty_slots requires declared form parameters".into(),
+            ));
+        }
         let mut ids = records
             .required_modifiers
             .iter()
@@ -1235,6 +1359,28 @@ fn normalize_modifier(raw: RawModifier) -> Result<Modifier, NormalizeError> {
                     unless_modifiers,
                     unless_forms,
                     last_option_not_matching,
+                    last_parameter_not_matching: condition
+                        .last_parameter_not_matching
+                        .map(|raw| {
+                            ensure_non_empty(
+                                &raw.parameter,
+                                "effects_when.last_parameter_not_matching.parameter",
+                            )?;
+                            let matcher = normalize_value_matcher(raw.matcher)?;
+                            let regex = match &matcher {
+                                ValueMatcher::RegexPattern(pattern) => {
+                                    Some(crate::CompiledOperandRegex::compile(pattern).map_err(
+                                        |e| NormalizeError::InvalidOptionScope(e.to_string()),
+                                    )?)
+                                }
+                                _ => None,
+                            };
+                            Ok((
+                                crate::SlotName::new(raw.parameter),
+                                crate::OptionOperandMatcher { matcher, regex },
+                            ))
+                        })
+                        .transpose()?,
                 })
             })
             .transpose()?,
@@ -2951,6 +3097,25 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                         slot: SlotName::new(anchor.slot),
                         expand_environment: anchor.expand_environment,
                         fallback_parent_slot,
+                        environment: anchor
+                            .environment
+                            .map(normalize_environment_source)
+                            .transpose()?,
+                        default_value: anchor
+                            .default_value
+                            .map(|value| {
+                                ensure_non_empty(
+                                    &value,
+                                    "effects.target.relative_to.default_value",
+                                )?;
+                                if value.contains('\0') {
+                                    return Err(NormalizeError::InvalidConfiguredPath(
+                                        "NUL in configured anchor default".into(),
+                                    ));
+                                }
+                                Ok(value)
+                            })
+                            .transpose()?,
                     })
                 })
                 .transpose()?;
@@ -3506,6 +3671,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
+            environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -3694,6 +3860,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
+            environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -3802,6 +3969,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
+            environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -3910,6 +4078,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
+            environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4125,6 +4294,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
+            environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,

@@ -4,19 +4,26 @@ identity: {canonical_name: wall, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [linux], shell_families: [], requires_features: []}
 opaque_on_unresolved: true
+option_scope: permuted_options
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
   - id: broadcast_file
-    selector: {kind: has_positional_at, index: 0}
+    selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
     parameters:
       - {name: message_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: message_file}}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: message_file}}
+      - &broadcast {kind: state_operation, state_operation: {domain: terminal_broadcast, operation: control}, target: {kind: none}}
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: broadcast_stdin_or_message
-    selector: {kind: no_positional_args}
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
     parameters: []
-    effects: [{kind: consume_stdin, target: {kind: none}}]
+    effects: [{kind: consume_stdin, target: {kind: none}}, *broadcast]
     stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '--help', '-V', '--version']}}
   - {id: nobanner, matcher: {kind: any_flag, flags: ['-n', '--nobanner']}}
   - id: timeout
     matcher: {kind: any_flag, flags: ['-t', '--timeout']}

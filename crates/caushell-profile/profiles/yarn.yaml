@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: yarn
@@ -18,10 +20,22 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+  - id: exec_child
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: exec}}, {kind: has_positional_at, index: 1}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    parameters:
+      - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects: [{kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdout_to_parent: true}}]
   - id: package_script_or_install
     selector:
       kind: all
-      items: []
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: exec}}}
     parameters:
       - name: arguments
         semantic:
@@ -41,6 +55,7 @@ forms:
           kind: none
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-h, --help, -v, --version]}}
   - id: cwd
     matcher:
       kind: any_flag
@@ -49,24 +64,13 @@ modifiers:
     parameters:
       - name: working_directory
         semantic:
-          kind: path
-          role: cwd_anchor
-          purpose: working_directory
+          kind: plain_value
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: optional_one
     effects:
-      - kind: target_path
-        target:
-          kind: slot
-          name: working_directory
-
-  - id: script_separator
-    matcher:
-      kind: any_flag
-      flags:
-        - "--"
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: working_directory, projection: {kind: identity}}], missing: unknown}}
 
 subcommands: null
 extensions:
@@ -74,4 +78,4 @@ extensions:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
-    - Yarn subcommands are intentionally represented as package-defined task execution until a deeper package-manager schema is added.
+    - Explicit exec argv is dispatched without parsing child flags as Yarn flags. Other subcommands retain package-defined task semantics.

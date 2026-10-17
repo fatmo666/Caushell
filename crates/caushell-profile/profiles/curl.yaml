@@ -28,13 +28,13 @@ forms:
       - kind: network_endpoint
         target: {kind: slot, name: endpoint}
         input_scope: &request_inputs
-          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, query_operand, query_file, netrc_file]
+          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, request_method, query_operand, query_file, netrc_file]
           stdin: true
     stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque}
 
   - id: show_help
     selector: {kind: has_modifier, modifier: information}
-    parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
 
   - id: list_engines
@@ -109,8 +109,8 @@ forms:
     selector: {kind: all, items: [*unconfigured, *data_query, {kind: has_positional_at, index: 0}]}
     remaining_selector: {kind: no_positional_args}
     parameters:
-      - {name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}
-    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}, input_scope: *request_inputs}]
+      - {name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: &gopher_projection {branches: [{matcher: {kind: regex_capture, pattern: '(?i)^gophers?://.+$', group: 0}, target: {name: gopher_target, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}}}]}}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: endpoint}, input_scope: *request_inputs}, {kind: network_endpoint, target: {kind: slot, name: gopher_target}, input_scope: *request_inputs}]
     stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: data}
 
   - id: fetch_explicit_url_to_file
@@ -186,7 +186,9 @@ forms:
         binding:
           kind: next_positional
         cardinality: required_one
+        structured_projection: *gopher_projection
     effects:
+      - {kind: network_endpoint, target: {kind: slot, name: gopher_target}, input_scope: *request_inputs}
       - kind: network_endpoint
         target:
           kind: slot
@@ -215,7 +217,9 @@ forms:
         binding:
           kind: next_positional
         cardinality: required_one
+        structured_projection: *gopher_projection
     effects:
+      - {kind: network_endpoint, target: {kind: slot, name: gopher_target}, input_scope: *request_inputs}
       - kind: network_endpoint
         target:
           kind: slot
@@ -255,11 +259,13 @@ forms:
         binding:
           kind: next_positional
         cardinality: required_one
+        structured_projection: *gopher_projection
     stream_contract:
       stdin_mode: declared_effects
       stdout_mode: data
       stderr_mode: opaque
     effects:
+      - {kind: network_endpoint, target: {kind: slot, name: gopher_target}, input_scope: *request_inputs}
       - kind: network_endpoint
         target:
           kind: slot
@@ -460,7 +466,10 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: regex_capture, pattern: '(?i)^gophers?://.+$', group: 0}, target: {name: gopher_explicit_target, semantic: {kind: endpoint, endpoint_kind: url, usage: upload_target}}}]
     effects:
+      - {kind: network_endpoint, target: {kind: slot, name: gopher_explicit_target}, input_scope: *request_inputs}
       - kind: network_endpoint
         target:
           kind: slot
@@ -593,8 +602,17 @@ modifiers:
       - {kind: read_path, target: {kind: slot, name: request_header_file}}
       - {kind: consume_stdin, target: {kind: slot, name: request_header_stdin}}
 
+  - id: request_method
+    matcher: {kind: any_flag, flags: [-X, --request]}
+    parameters: [{name: request_method, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects_when:
+      unless_modifiers: [information]
+      unless_forms: [list_engines]
+      last_parameter_not_matching: {parameter: request_method, matcher: {kind: regex_pattern, pattern: '^(GET|HEAD|OPTIONS|TRACE)$'}}
+    effects: [{kind: state_operation, state_operation: {domain: remote_resource, operation: mutate}, target: {kind: none}}]
+
   - id: request_values
-    matcher: {kind: any_flag, flags: [-u, --user, --oauth2-bearer, -A, --user-agent, -e, --referer, -X, --request, --request-target, -r, --range, --mail-auth, --mail-from, --mail-rcpt, --ftp-account, --login-options, --haproxy-clientip, -Q, --quote, -t, --telnet-option, --ftp-alternative-to-user, --proxy-header, -U, --proxy-user]}
+    matcher: {kind: any_flag, flags: [-u, --user, --oauth2-bearer, -A, --user-agent, -e, --referer, --request-target, -r, --range, --mail-auth, --mail-from, --mail-rcpt, --ftp-account, --login-options, --haproxy-clientip, -Q, --quote, -t, --telnet-option, --ftp-alternative-to-user, --proxy-header, -U, --proxy-user]}
     parameters: [{name: request_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 
   - id: url_query

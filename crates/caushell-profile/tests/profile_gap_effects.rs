@@ -184,10 +184,11 @@ fn ln_one_operand_tracks_current_directory_destination_and_reference_is_not_a_li
 }
 
 #[test]
-fn chown_reference_reads_reference_and_mutates_only_the_targets() {
+fn chown_reference_uses_metadata_and_mutates_only_the_targets() {
     let b = resolve("chown --reference=/etc/passwd -- /opt/file");
     assert_eq!(values(&b, "reference_path"), ["/etc/passwd"]);
-    assert!(has(&b, EffectKind::ReadPath, "reference_path"));
+    assert!(has(&b, EffectKind::TargetPath, "reference_path"));
+    assert!(!has(&b, EffectKind::ReadPath, "reference_path"));
     assert!(has(&b, EffectKind::MetadataMutation, "path_targets"));
 }
 

@@ -13,6 +13,7 @@ platform:
   shell_families: []
   requires_features: []
 opaque_on_unresolved: true
+option_scope: permuted_options
 forms:
 - id: information
   selector:
@@ -23,7 +24,7 @@ forms:
     semantic:
       kind: plain_value
     binding:
-      kind: remaining_args
+      kind: remaining_positionals
     cardinality: optional_many
 - id: serve_local_file
   selector:
@@ -38,6 +39,8 @@ forms:
       item:
         kind: has_modifier
         modifier: information
+    - kind: not
+      item: {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(status|reset|drain|advertise|get-config|set-config)$'}}
   parameters:
   - name: serve_operation
     semantic:
@@ -46,27 +49,33 @@ forms:
       kind: positional_at
       index: 0
     cardinality: required_one
-  - name: served_file
-    semantic:
-      kind: path
-      role: read
-      purpose: generic_operand
-    binding:
-      kind: last_positional
-    cardinality: required_one
-  - name: http_port
+  - name: served_target
     semantic:
       kind: plain_value
     binding:
-      kind: args_with_prefix
-      prefix: "--http="
-    cardinality: optional_one
+      kind: last_positional
+    cardinality: required_one
+    structured_projection:
+      branches: [{matcher: {kind: regex_capture, pattern: '^/.+$', group: 0}, target: {name: served_file, semantic: {kind: path, role: read, purpose: generic_operand}}}]
   effects:
+  - {kind: state_operation, state_operation: {domain: network_configuration, operation: control}, target: {kind: none}}
   - kind: read_path
     target:
       kind: slot
       name: served_file
+- id: serve_inspect
+  selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: serve}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(status|get-config)$'}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+  parameters: &control_parameters [{name: serve_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+  effects: [{kind: state_operation, state_operation: {domain: network_configuration, operation: inspect}, target: {kind: none}}]
+- id: serve_control
+  selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: serve}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(reset|drain|advertise|set-config)$'}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+  parameters: *control_parameters
+  effects: [{kind: state_operation, state_operation: {domain: network_configuration, operation: control}, target: {kind: none}}]
 modifiers:
+- id: http
+  matcher: {kind: any_flag, flags: [--http, --https, --tcp, --tls-terminated-tcp, --set-path, --service]}
+  parameters: [{name: serve_options, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+- {id: serve_flags, matcher: {kind: any_flag, flags: [--bg, --yes, --json]}}
 - id: information
   matcher:
     kind: any_flag
@@ -81,9 +90,7 @@ extensions:
   - Source-specific bounded forms are modeled; unresolved CLI combinations remain
     opaque.
   - The URL is reachable by any host of the same Tailnet.
-  - The Tailscale daemon owns its Serve listener/runtime config; the effective listener
-    endpoint and daemon-state path are not expressible from this source invocation,
-    so the profile models the file read and leaves listener materialization partial.
+  - Serve publication and reconfiguration are explicit network-configuration controls, not host file writes. The daemon's resolved listener address is not invented. Status/get-config remain inspect operations.
   - Inner configuration payloads and generated native child argv not explicitly represented
     by a form remain partial.
   - Known GTFOBins mechanism remains partially opaque until its native boundary has

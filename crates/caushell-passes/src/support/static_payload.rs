@@ -586,44 +586,8 @@ fn scoped_stdout_evidence(
                         complete: true,
                     };
                 }
-                if command.command_name.as_deref() == Some("echo")
-                    && arg_tokens(command).is_empty()
-                    && command.tokens.iter().all(|token| {
-                        token.kind == CommandTokenKind::Flag
-                            && matches!(token.text.as_str(), "-n" | "-E" | "-e")
-                    })
-                {
-                    return StaticInputEvidence {
-                        known_fragments: vec![if command
-                            .tokens
-                            .iter()
-                            .any(|token| token.text == "-n")
-                        {
-                            String::new()
-                        } else {
-                            "\n".to_string()
-                        }],
-                        complete: true,
-                    };
-                }
                 return StaticInputEvidence::unknown();
             }
-            let payloads = if command.command_name.as_deref() == Some("echo")
-                && !command
-                    .tokens
-                    .iter()
-                    .any(|token| token.kind == CommandTokenKind::Flag && token.text == "-n")
-            {
-                payloads
-                    .into_iter()
-                    .map(|mut payload| {
-                        payload.push('\n');
-                        payload
-                    })
-                    .collect()
-            } else {
-                payloads
-            };
             StaticInputEvidence {
                 known_fragments: payloads,
                 complete: true,
@@ -2476,55 +2440,61 @@ fn printf_literal_payloads(
     let Some(args) = command
         .tokens
         .iter()
-        .map(|token| {
-            if token.implicit_input_source.is_some() || token.runtime_argument_domain.is_some() {
-                return None;
-            }
-            if !token.runtime_data
-                && !matches!(token.node_kind.as_str(), "raw_string" | "ansi_c_string")
-                && let Some(_value) =
-                    exact_scalar_shell_parameter_reference_value(&token.text, bindings)
-            {
-                // Reuse the field materializer: known unquoted safe scalars
-                // remain exact, but splittable/globbable values do not.
-                let fields = caushell_profile::materialize_exact_shell_parameter_reference_fields(
-                    &token.text,
-                    token.quoted,
-                    bindings.base(),
-                )?;
-                let [field] = fields.as_slice() else {
-                    return None;
-                };
-                return Some(field.text.clone());
-            }
-            let argument = caushell_profile::ProjectedArg {
-                text: token.text.clone(),
-                quoted: token.quoted,
-                node_kind: token.node_kind.clone(),
-                span: token.span.clone(),
-                implicit_input_source: None,
-                runtime_argument_domain: None,
-                runtime_data: token.runtime_data,
-                substitution_shape: None,
-                lexical_field_prefix: None,
-                kind: caushell_profile::ProjectedArgKind::Positional,
-            };
-            caushell_profile::argument_structure(&argument)
-                .exact_value()
-                .map(str::to_owned)
-        })
+        .map(|token| exact_output_field(token, bindings))
         .collect::<Option<Vec<_>>>()
     else {
         return Vec::new();
     };
+    render_printf_arguments(&args)
+}
+
+// Output bytes are known only when the shell produces exactly one known argv
+// field. In particular, a glob's spelling is not its emitted filename list.
+fn exact_output_field(
+    token: &caushell_parse::CommandToken,
+    bindings: &dyn VariableBindingReplay,
+) -> Option<String> {
+    if token.implicit_input_source.is_some() || token.runtime_argument_domain.is_some() {
+        return None;
+    }
+    if !token.runtime_data
+        && !matches!(token.node_kind.as_str(), "raw_string" | "ansi_c_string")
+        && let Some(_value) = exact_scalar_shell_parameter_reference_value(&token.text, bindings)
+    {
+        // Reuse the field materializer: known unquoted safe scalars
+        // remain exact, but splittable/globbable values do not.
+        let fields = caushell_profile::materialize_exact_shell_parameter_reference_fields(
+            &token.text,
+            token.quoted,
+            bindings.base(),
+        )?;
+        let [field] = fields.as_slice() else {
+            return None;
+        };
+        return Some(field.text.clone());
+    }
+    let argument = caushell_profile::ProjectedArg {
+        text: token.text.clone(),
+        quoted: token.quoted,
+        node_kind: token.node_kind.clone(),
+        span: token.span.clone(),
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: token.runtime_data,
+        substitution_shape: None,
+        lexical_field_prefix: None,
+        kind: caushell_profile::ProjectedArgKind::Positional,
+    };
+    caushell_profile::argument_structure(&argument)
+        .exact_value()
+        .map(str::to_owned)
+}
+
+fn render_printf_arguments(args: &[String]) -> Vec<String> {
     // Only the prefix before FORMAT is an option surface. Every later argv
     // word is data, including --, -v, and option-shaped callback strings.
     let terminated = args.first().is_some_and(|arg| arg == "--");
-    let args = if terminated {
-        &args[1..]
-    } else {
-        args.as_slice()
-    };
+    let args = if terminated { &args[1..] } else { args };
     let Some(format) = args
         .first()
         .filter(|format| terminated || !format.starts_with('-'))
@@ -2540,33 +2510,56 @@ fn echo_literal_payload(
     command: &CommandFact,
     bindings: &dyn VariableBindingReplay,
 ) -> Option<String> {
+    let args = command
+        .tokens
+        .iter()
+        .map(|token| exact_output_field(token, bindings))
+        .collect::<Option<Vec<_>>>()?;
     let mut decode_escapes = false;
-    let mut segments = Vec::new();
-
-    for token in &command.tokens {
-        match token.kind {
-            CommandTokenKind::Flag => match token.text.as_str() {
-                "-e" => decode_escapes = true,
-                "-n" | "-E" => {}
-                _ => return None,
-            },
-            CommandTokenKind::Arg => {
-                let text = materialize_token_text(&token.text, bindings);
-                if decode_escapes {
-                    let decoded = decode_printf_escapes_with_control(&text);
-                    segments.push(decoded.text);
-                    if decoded.stopped {
-                        break;
-                    }
-                } else {
-                    segments.push(text);
+    let mut newline = true;
+    let mut first_data = 0;
+    for word in &args {
+        if word.len() > 1
+            && word.starts_with('-')
+            && word[1..].bytes().all(|b| matches!(b, b'n' | b'e' | b'E'))
+        {
+            for flag in word[1..].bytes() {
+                match flag {
+                    b'n' => newline = false,
+                    b'e' => decode_escapes = true,
+                    b'E' => decode_escapes = false,
+                    _ => unreachable!(),
                 }
             }
-            CommandTokenKind::DashDash => {}
+            first_data += 1;
+        } else {
+            // Unknown leading option spellings can differ between builtin
+            // and standalone echo implementations. Do not certify them.
+            if first_data == 0 && word.starts_with('-') && word != "--" && word != "-" {
+                return None;
+            }
+            break;
         }
     }
-
-    (!segments.is_empty()).then(|| segments.join(" "))
+    let mut output = String::new();
+    for (index, word) in args[first_data..].iter().enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        if decode_escapes {
+            let decoded = decode_printf_escapes_with_control(word);
+            output.push_str(&decoded.text);
+            if decoded.stopped {
+                return Some(output);
+            }
+        } else {
+            output.push_str(word);
+        }
+    }
+    if newline {
+        output.push('\n');
+    }
+    Some(output)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3501,6 +3494,48 @@ mod tests {
             "printf '%d' 1 | xargs",
         ] {
             assert!(!stdin_evidence_for(source, 1).complete, "{source}");
+        }
+    }
+
+    #[test]
+    fn echo_requires_exact_shell_fields_and_preserves_quoted_glob_bytes() {
+        for source in [
+            "echo ./fs*/* | xargs",
+            "echo ?.txt | xargs",
+            "echo [ab].txt | xargs",
+            "echo $UNKNOWN | xargs",
+            "echo \"$@\" | xargs",
+        ] {
+            assert!(!stdin_evidence_for(source, 1).complete, "{source}");
+        }
+        for (source, output) in [
+            ("echo './fs*/*' | xargs", "./fs*/*\n"),
+            ("echo ./fs\\*/\\* | xargs", "./fs*/*\n"),
+            ("echo -e -E 'a\\nb' | xargs", "a\\nb\n"),
+        ] {
+            let evidence = stdin_evidence_for(source, 1);
+            assert!(evidence.complete, "{source}");
+            assert_eq!(evidence.known_fragments.concat(), output);
+        }
+        let bindings = SessionBindings::new().with_exact_scalar("VALUE", "one two");
+        assert!(!stdin_evidence_for_with_bindings("echo $VALUE | xargs", 1, &bindings).complete);
+        let evidence = stdin_evidence_for_with_bindings("echo \"$VALUE\" | xargs", 1, &bindings);
+        assert!(evidence.complete);
+        assert_eq!(evidence.known_fragments.concat(), "one two\n");
+    }
+
+    #[test]
+    fn echo_byte_proof_matches_bash_builtin_option_and_newline_boundaries() {
+        for source in [
+            "echo", "echo -n", "echo '--' -n", "echo data -n",
+            "echo '-n' data", "echo -e -E 'a\\nb'", "echo -ne 'a\\cb'",
+            "echo -neE 'a\\nb'", "echo './fs*/*'", "echo ./fs\\*/\\*",
+        ] {
+            let actual = std::process::Command::new("bash").args(["--noprofile", "--norc", "-c", source]).env_clear().output().unwrap();
+            assert!(actual.status.success());
+            let evidence = stdin_evidence_for(&format!("{source} | xargs"), 1);
+            assert!(evidence.complete, "{source}");
+            assert_eq!(evidence.known_fragments.concat().as_bytes(), actual.stdout, "{source}");
         }
     }
 

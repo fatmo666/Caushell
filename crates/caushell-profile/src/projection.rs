@@ -4,15 +4,31 @@ use std::borrow::Cow;
 
 use crate::{FlagName, InvocationShape, OptionPrefixPolicy};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvocationRuntimeContext {
+    pub shell_kind: caushell_types::ShellKind,
     pub stdin_payload_available: bool,
     pub interactive_session: bool,
+}
+
+impl Default for InvocationRuntimeContext {
+    fn default() -> Self {
+        Self {
+            shell_kind: caushell_types::ShellKind::Bash,
+            stdin_payload_available: false,
+            interactive_session: false,
+        }
+    }
 }
 
 impl InvocationRuntimeContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_shell_kind(mut self, kind: caushell_types::ShellKind) -> Self {
+        self.shell_kind = kind;
+        self
     }
 
     pub fn with_stdin_payload_available(mut self) -> Self {
@@ -53,6 +69,7 @@ pub struct ProjectedArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedInvocation {
+    pub shell_kind: caushell_types::ShellKind,
     /// The selected tool's CLI grammar, not shell lexical state.
     pub option_prefixes: OptionPrefixPolicy,
     pub command_name: Option<String>,
@@ -174,6 +191,7 @@ pub fn project_invocation(
         .collect();
 
     ProjectedInvocation {
+        shell_kind: context.shell_kind,
         option_prefixes: OptionPrefixPolicy::DashOnly,
         command_name: command.command_name.clone(),
         args,

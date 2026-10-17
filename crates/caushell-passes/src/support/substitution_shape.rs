@@ -62,7 +62,7 @@ pub(crate) fn substitution_shapes(
                 resolve_invocation_artifact_with_bindings(
                     registry,
                     producer,
-                    InvocationRuntimeContext::default(),
+                    InvocationRuntimeContext::default().with_shell_kind(shell_kind),
                     bindings,
                 )
             else {

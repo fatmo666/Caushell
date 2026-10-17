@@ -273,6 +273,8 @@ pub struct StdoutRecordContract {
     pub projection: StdoutRecordProjection,
     pub required_modifiers: Vec<ModifierId>,
     pub excluded_modifiers: Vec<ModifierId>,
+    /// A forwarding contract cannot mix these non-stdin inputs into stdout.
+    pub empty_slots: Vec<SlotName>,
 }
 
 /// Complete stdout shape, after command substitution removes trailing LF.
@@ -1229,6 +1231,8 @@ pub struct ConfiguredPathAnchor {
     pub slot: SlotName,
     pub expand_environment: bool,
     pub fallback_parent_slot: Option<SlotName>,
+    pub environment: Option<EnvironmentValueSource>,
+    pub default_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1266,6 +1270,16 @@ pub struct ConfiguredPathTarget {
 pub struct EnvironmentValueSource {
     pub name: String,
     pub empty_is_unset: bool,
+}
+
+/// A declared native loader/control input from supplied environment facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentInput {
+    pub name: SlotName,
+    pub environment: EnvironmentValueSource,
+    pub semantic: SemanticType,
+    pub structured_projection: Option<StructuredProjection>,
+    pub unless_modifiers: Vec<ModifierId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1472,6 +1486,8 @@ pub struct ModifierEffectCondition {
     /// value. A proven match suppresses effects; unknown input retains them.
     /// Short clusters use the scanner's decoded flag name.
     pub last_option_not_matching: Option<OptionOperandMatcher>,
+    /// Compare the final owned, materialized operand, not shell source text.
+    pub last_parameter_not_matching: Option<(SlotName, OptionOperandMatcher)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1923,6 +1939,7 @@ pub struct CommandProfile {
     pub trust: ProfileTrustMetadata,
     pub platform: PlatformConstraints,
     pub argument_files: Vec<ArgumentFileRule>,
+    pub environment_inputs: Vec<EnvironmentInput>,
     pub argument_regions: Vec<ArgumentRegion>,
     /// Opt-in finite outer control vocabulary. Unknown dash words are invalid
     /// in the tool, not new actions. Valid but unmodeled controls stay opaque.
@@ -1980,6 +1997,7 @@ impl CommandProfile {
             trust: ProfileTrustMetadata::default(),
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
+            environment_inputs: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),

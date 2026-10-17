@@ -3,6 +3,18 @@ kind: command_profile
 option_scope: leading_options
 option_matching: short_clusters
 opaque_on_unresolved: true
+environment_inputs:
+  - name: startup_options
+    environment: {name: PERL5OPT, empty_is_unset: true}
+    semantic: {kind: plain_value}
+    structured_projection:
+      branches:
+        # Known diagnostic-only controls; no module/debugger loader. Other
+        # supplied native options are opaque, never parsed as shell source.
+        - matcher: {kind: regex_capture, pattern: '^([ \t]*-[wW]+[ \t]*)+$', group: 0}
+      fallback:
+        name: startup_option_code
+        semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
 
 identity:
   canonical_name: perl

@@ -96,13 +96,14 @@ fn source_forms_resolve_and_record_only_the_documented_file_operands() {
             "ksshell -i /opt/shared/kickstart.cfg",
             "/opt/shared/kickstart.cfg",
         ),
-        ("xmodmap -v /opt/shared/map", "/opt/shared/map"),
         ("7z a -ttar -an -so /opt/shared/input", "/opt/shared/input"),
     ];
     for (command, path) in cases {
         let graph = check(command, Decision::Allow);
         assert!(has_path(&graph, ResolvedPathRole::Read, path), "{command}");
     }
+    let graph = check("xmodmap -v /opt/shared/map", Decision::NeedApproval);
+    assert!(has_path(&graph, ResolvedPathRole::Read, "/opt/shared/map"));
 
     let graph = check(
         "mosquitto -c /opt/shared/mosquitto.conf",

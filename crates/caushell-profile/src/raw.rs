@@ -12,6 +12,7 @@ pub struct RawCommandProfile {
     pub trust: RawProfileTrustMetadata,
     pub platform: RawPlatformConstraints,
     pub argument_files: Vec<RawArgumentFileRule>,
+    pub environment_inputs: Vec<RawEnvironmentInput>,
     pub argument_regions: Vec<RawArgumentRegion>,
     pub argument_control_vocabulary: Option<RawArgumentControlVocabulary>,
     pub selection_failure_effects: Vec<RawEffect>,
@@ -26,6 +27,19 @@ pub struct RawCommandProfile {
     pub option_operand_matcher: Option<RawValueMatcher>,
     pub subcommands: Option<RawSubcommandTree>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+/// Explicitly evidenced native environment inputs, not ambient discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawEnvironmentInput {
+    pub name: String,
+    pub environment: RawEnvironmentValueSource,
+    pub semantic: RawSemanticType,
+    #[serde(default)]
+    pub structured_projection: Option<RawStructuredProjection>,
+    #[serde(default)]
+    pub unless_modifiers: Vec<String>,
 }
 
 /// A tool expands matching argv before parsing its ordinary options.
@@ -353,6 +367,8 @@ pub struct RawStdoutRecordContract {
     pub required_modifiers: Vec<String>,
     #[serde(default)]
     pub excluded_modifiers: Vec<String>,
+    #[serde(default)]
+    pub empty_slots: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -394,6 +410,14 @@ pub struct RawModifierEffectCondition {
     pub unless_modifiers: Vec<String>,
     pub unless_forms: Vec<String>,
     pub last_option_not_matching: Option<RawValueMatcher>,
+    pub last_parameter_not_matching: Option<RawModifierParameterCondition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawModifierParameterCondition {
+    pub parameter: String,
+    pub matcher: RawValueMatcher,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1234,6 +1258,10 @@ pub struct RawConfiguredPathAnchor {
     pub expand_environment: bool,
     #[serde(default)]
     pub fallback_parent_slot: Option<String>,
+    #[serde(default)]
+    pub environment: Option<RawEnvironmentValueSource>,
+    #[serde(default)]
+    pub default_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

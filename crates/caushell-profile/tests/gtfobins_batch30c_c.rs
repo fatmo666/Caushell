@@ -135,7 +135,7 @@ fn all_ten_source_forms_select_named_semantics_and_bind_the_actual_file_operands
         ),
         (
             "xmodmap -v /opt/shared/map",
-            "verbose_map_file",
+            "apply_mappings",
             "map_file",
             "/opt/shared/map",
         ),

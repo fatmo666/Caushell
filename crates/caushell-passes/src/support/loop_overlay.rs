@@ -9,6 +9,7 @@ use caushell_types::{PathResolution, RuntimeArgumentDomain};
 pub(super) fn iteration_domain(
     iteration: &ForLoopFact,
     bindings: &SessionBindings,
+    shell_kind: caushell_types::ShellKind,
 ) -> Option<RuntimeArgumentDomain> {
     const MAX_ITEMS: usize = 256;
     if bindings.runtime_variable_target_is_unresolved(&iteration.variable) {
@@ -33,6 +34,7 @@ pub(super) fn iteration_domain(
         return None;
     }
     let projection = ProjectedInvocation {
+        shell_kind,
         option_prefixes: Default::default(),
         command_name: None,
         stdin_payload_available: false,
@@ -54,6 +56,9 @@ pub(super) fn iteration_domain(
             .collect(),
     };
     let materialized = materialize_projected_invocation(&projection, bindings);
+    if materialized.shell_expansion_unresolved {
+        return None;
+    }
     if materialized.invocation.args.len() > MAX_ITEMS {
         return None;
     }

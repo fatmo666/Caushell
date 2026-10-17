@@ -118,7 +118,11 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 assigned.insert(iteration.variable.clone());
-                let domain = super::loop_overlay::iteration_domain(iteration, &bindings);
+                let domain = super::loop_overlay::iteration_domain(
+                    iteration,
+                    &bindings,
+                    parsed.shell_kind,
+                );
                 if let Some(domain) = domain {
                     bindings.insert_argument_domain(&iteration.variable, domain);
                 } else {
@@ -735,16 +739,8 @@ pub(crate) fn command_environment_bindings(
         bindings.forget_environment();
         return bindings;
     };
-    for assignment in &command.prefix_assignments {
-        let value = if assignment.operator == caushell_parse::AssignmentOperator::Assign {
-            classify_assignment_value(&assignment.value, base)
-        } else {
-            SessionVariableValue::opaque_dynamic("unresolved prefix assignment")
-        };
-        bindings.set_child_environment_value(
-            &assignment.name,
-            caushell_profile::SessionValue::from_session_variable_value(&value),
-        );
+    for (name, value) in caushell_profile::materialize_prefix_environment(command, base) {
+        bindings.set_child_environment_value(&name, value);
     }
     bindings
 }

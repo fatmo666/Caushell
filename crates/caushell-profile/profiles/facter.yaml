@@ -16,6 +16,11 @@ platform:
   requires_features: []
 option_scope: permuted_options
 opaque_on_unresolved: true
+environment_inputs:
+  - name: custom_facts_environment
+    environment: {name: FACTERLIB, empty_is_unset: true}
+    unless_modifiers: [information, disable_custom]
+    semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
 extensions:
   caushell.profile/source_research:
   - https://help.puppet.com/osp/8.11/Content/PuppetCore/Markdown/cli.htm
@@ -24,8 +29,8 @@ extensions:
   - Facter custom directories select Ruby code at runtime; this is an opaque dynamic
     entry, not a guessed .rb path. Only single-directory FACTERLIB is concrete; multi-directory
     configuration, default custom loaders and external-fact executables remain unexpanded.
-    FACTERLIB is modeled as a search-directory read only; environment-selected executable
-    loading is a known missing semantic, not accepted as protected execution.
+    Explicit FACTERLIB inputs declare an opaque Ruby loader, including unresolved
+    supplied values; their contents are not interpreted as Bash or guessed filenames.
     --no-custom-facts suppresses the declared custom Ruby loader; external facts are
     not claimed disabled.
 forms:
@@ -158,7 +163,11 @@ modifiers:
       operand_mode: next_arg
     cardinality: required_one
     structured_projection:
-      branches: []
+      branches:
+      - matcher: {kind: regex_capture, pattern: '(?s)^(.*)$', group: 0}
+        requires_modifiers: [disable_custom]
+      - matcher: {kind: regex_capture, pattern: '(?s)^(.+)$', group: 0}
+        requires_modifiers: [information]
       fallback:
         name: facts_payload
         semantic:

@@ -13,52 +13,51 @@ platform:
   shell_families: []
   requires_features: []
 option_scope: permuted_options
+option_matching: exact_names
 opaque_on_unresolved: true
 forms:
+- id: show_information
+  selector: &information {kind: has_modifier, modifier: information}
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+- id: dump_file
+  selector: {kind: all, items: [{kind: not, item: *information}, &dump {kind: has_modifier, modifier: dump}, &local_file {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[A-Za-z][A-Za-z0-9+.-]*:'}}}]}]}
+  parameters: &file_parameters
+    - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: exclude_literal, value: '-'}]}
+  effects: [{kind: read_path, target: {kind: slot, name: input_paths}}]
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 - id: display_file_in_tui
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at
-      index: 0
-    - kind: not
-      item:
-        kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: regex_pattern
-          pattern: "^[A-Za-z][A-Za-z0-9+.-]*:"
-  parameters:
-  - name: input_paths
-    semantic:
-      kind: path
-      role: read
-      purpose: generic_operand
-    binding:
-      kind: next_positional
-    cardinality: required_one
-    value_constraints:
-    - kind: exclude_literal
-      value: "-"
+  selector: {kind: all, items: [{kind: not, item: *information}, {kind: not, item: *dump}, *local_file]}
+  parameters: *file_parameters
   effects:
   - kind: read_path
     target:
       kind: slot
       name: input_paths
+  - &browser_surface {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command, write_buffer_to_path]}}
   stream_contract:
     stdin_mode: ignored
     stdout_mode: opaque
     stderr_mode: opaque
-modifiers: []
+- id: interactive_browser
+  selector: {kind: all, items: [{kind: not, item: *information}, {kind: not, item: *dump}, {kind: no_positional_args}]}
+  effects: [*browser_surface]
+  stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-help, -version]}}
+  - {id: dump, matcher: {kind: any_flag, flags: [-dump, -source]}}
+  - {id: restricted_browser, matcher: {kind: any_flag, flags: [-anonymous, -no-connect]}}
+  - id: dump_format
+    matcher: {kind: any_flag, flags: [-width, -codepage]}
+    parameters: [{name: dump_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 subcommands:
 extensions:
   caushell.profile/source_research:
   - https://links.twibright.com/user_en.html
+  - https://links.twibright.com/download/links-2.30.tar.gz
   - 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/links
     file-read'
   caushell.profile/known_limitations:
-  - Models file operands as reads; TUI interaction
-  - URL handling
-  - and terminal output are opaque.
+  - Local-file reads retain their path facts; ordinary browsing declares the interactive Shell/save surface. Only explicit -dump/-source omit that surface.
+  - URL handling, external associations and graphical-mode options remain unsupported.
   - Declared local-file forms accept one path. URI-shaped operands and additional
     resources remain unsupported instead of becoming fabricated workspace paths.

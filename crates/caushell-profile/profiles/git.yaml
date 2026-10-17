@@ -3659,18 +3659,28 @@ subcommands:
 
     - name: apply
       aliases: []
+      option_scope: permuted_options
       forms:
         - id: apply_patch_to_index_and_worktree
           selector:
             kind: all
             items:
-              - kind: has_flag
-                flag: "--index"
-              - kind: not
-                item:
-                  kind: has_flag
-                  flag: "--cached"
-          parameters:
+              - &index_apply {kind: any, items: [{kind: has_flag, flag: '--index'}, {kind: has_flag, flag: '--3way'}, {kind: has_flag, flag: '-3'}]}
+              - &not_cached {kind: not, item: {kind: has_flag, flag: '--cached'}}
+              - &not_inspect
+                kind: not
+                item: &inspect_patch
+                  kind: all
+                  items:
+                    - kind: any
+                      items:
+                        - {kind: has_flag, flag: '--check'}
+                        - {kind: has_flag, flag: '--stat'}
+                        - {kind: has_flag, flag: '--numstat'}
+                        - {kind: has_flag, flag: '--summary'}
+                        - {kind: has_modifier, modifier: fake_ancestor}
+                    - {kind: not, item: &force_apply {kind: has_flag, flag: '--apply'}}
+          parameters: &patch_inputs
             - name: patch_paths
               semantic:
                 kind: path
@@ -3700,12 +3710,9 @@ subcommands:
           selector:
             kind: all
             items:
-              - kind: has_flag
-                flag: "--apply"
-              - kind: not
-                item:
-                  kind: has_flag
-                  flag: "--cached"
+              - *force_apply
+              - *not_cached
+              - {kind: not, item: *index_apply}
           parameters:
             - name: patch_paths
               semantic:
@@ -3727,23 +3734,7 @@ subcommands:
                 path_set: patch_selected_tracked
 
         - id: inspect_patch_only
-          selector:
-            kind: all
-            items:
-              - kind: any
-                items:
-                  - kind: has_flag
-                    flag: "--check"
-                  - kind: has_flag
-                    flag: "--stat"
-                  - kind: has_flag
-                    flag: "--numstat"
-                  - kind: has_flag
-                    flag: "--summary"
-              - kind: not
-                item:
-                  kind: has_flag
-                  flag: "--apply"
+          selector: *inspect_patch
           parameters:
             - name: patch_paths
               semantic:
@@ -3763,26 +3754,10 @@ subcommands:
           selector:
             kind: all
             items:
-              - kind: not
-                item:
-                  kind: has_flag
-                  flag: "--cached"
-              - kind: not
-                item:
-                  kind: has_flag
-                  flag: "--index"
-              - kind: not
-                item:
-                  kind: any
-                  items:
-                    - kind: has_flag
-                      flag: "--check"
-                    - kind: has_flag
-                      flag: "--stat"
-                    - kind: has_flag
-                      flag: "--numstat"
-                    - kind: has_flag
-                      flag: "--summary"
+              - *not_cached
+              - {kind: not, item: *index_apply}
+              - *not_inspect
+              - {kind: not, item: *force_apply}
           parameters:
             - name: patch_paths
               semantic:
@@ -3802,7 +3777,39 @@ subcommands:
                 kind: mutation_scope
                 scope_kind: repository_worktree
                 path_set: patch_selected_tracked
-      modifiers: []
+        - id: apply_patch_to_index_only
+          selector: {kind: all, items: [{kind: has_flag, flag: '--cached'}, *not_inspect]}
+          parameters: *patch_inputs
+          effects:
+            - {kind: read_path, target: {kind: slot, name: patch_paths}}
+            - {kind: write_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
+      modifiers:
+        - id: patch_mode
+          matcher: {kind: any_flag, flags: ['--index', '--cached', '--3way', '-3', '--apply', '--reject', '--check', '--stat', '--numstat', '--summary', '-R', '--reverse', '--binary', '--allow-binary-replacement', '--unidiff-zero', '--recount', '--ignore-whitespace', '--ignore-space-change', '--inaccurate-eof', '--no-add', '--intent-to-add', '-N', '--allow-empty', '-z', '-v', '--verbose', '-q', '--quiet', '--ours', '--theirs', '--union']}
+        - id: unsafe_patch_paths
+          matcher: {kind: any_flag, flags: ['--unsafe-paths']}
+          effects_when:
+            unless_forms: [inspect_patch_only, apply_patch_to_index_and_worktree, apply_patch_to_index_only]
+          effects:
+            - kind: write_path
+              target:
+                kind: configured_path
+                sources: []
+                missing: unknown
+                purpose: generic_operand
+        - id: patch_directory
+          matcher: {kind: any_flag, flags: ['--directory']}
+          parameters:
+            - {name: directory_prefix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+        - id: patch_value_options
+          matcher: {kind: any_flag, flags: ['-p', '-C', '--include', '--exclude', '--whitespace']}
+          parameters:
+            - {name: option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+        - id: fake_ancestor
+          matcher: {kind: any_flag, flags: ['--build-fake-ancestor']}
+          parameters:
+            - {name: ancestor_index, semantic: {kind: path, role: write}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+          effects: [{kind: write_path, target: {kind: slot, name: ancestor_index}}]
       children: []
       default_behavior: reject_unknown
       extensions: {}

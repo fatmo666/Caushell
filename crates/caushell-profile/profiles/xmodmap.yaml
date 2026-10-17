@@ -4,22 +4,60 @@ identity: {canonical_name: xmodmap, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 option_matching: exact_names
+option_scope: permuted_options
 opaque_on_unresolved: true
 forms:
-  - id: verbose_map_file
-    selector: {kind: has_modifier, modifier: verbose}
-    parameters: [{name: map_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_one}]
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: map_file}}]
-    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stderr_dependency: inputs}
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: inspect_or_dry_run
+    selector:
+      kind: all
+      items:
+        - &running {kind: not, item: {kind: has_modifier, modifier: information}}
+        - kind: any
+          items:
+            - {kind: has_modifier, modifier: dry_run}
+            - kind: all
+              items:
+                - {kind: no_positional_args}
+                - {kind: not, item: {kind: has_modifier, modifier: expression}}
+    parameters: &files
+      - name: map_operands
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: map_stdin, semantic: {kind: plain_value}}}
+          fallback: {name: map_file, semantic: {kind: path, role: read}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: map_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: map_stdin}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: apply_mappings
+    selector:
+      kind: all
+      items:
+        - *running
+        - {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+        - {kind: any, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: expression}]}
+    parameters: *files
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: map_file}}
+      - {kind: consume_stdin, target: {kind: slot, name: map_stdin}}
+      - {kind: state_operation, state_operation: {domain: display_configuration, operation: mutate}, target: {kind: none}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
 modifiers:
-  - {id: verbose, matcher: {kind: any_flag, flags: ['-v', '-verbose']}}
+  - {id: information, matcher: {kind: any_flag, flags: ['-help', '-grammar', '-version']}}
+  - {id: verbose, matcher: {kind: any_flag, flags: ['-v', '-verbose', '-quiet']}}
+  - {id: dry_run, matcher: {kind: any_flag, flags: ['-n']}}
+  - {id: query, matcher: {kind: any_flag, flags: ['-pm', '-pk', '-pke', '-pp']}}
   - {id: display, matcher: {kind: any_flag, flags: ['-display']}, parameters: [{name: display_name, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
-  - {id: expression, matcher: {kind: any_flag, flags: ['-e']}, parameters: [{name: expression, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: optional_many}]}
+  - {id: expression, matcher: {kind: any_flag, flags: ['-e']}, parameters: [{name: expression, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]}
 extensions:
   caushell.profile/source_research:
     - https://gtfobins.org/gtfobins/xmodmap/
     - https://xorg.freedesktop.org/archive/X11R7.0/doc/html/xmodmap.1.html
   caushell.profile/known_limitations:
     - Requires an accessible X server. Reading -v input also applies key, modifier, or pointer mappings to that server.
-    - The product risk model has no X-server-state mutation action. This profile records the input path and diagnostic flow but intentionally does not invent a filesystem write or alter policy.
-    - -e expressions, default input selection, X server state changes, and non-file options remain outside this form.
+    - Mapping expressions change display configuration, not their source file. Verbose output and query switches do not suppress supplied expressions; only -n suppresses applying mappings.

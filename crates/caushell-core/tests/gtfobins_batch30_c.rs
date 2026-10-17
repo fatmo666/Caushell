@@ -139,7 +139,14 @@ fn content_readers_tui_and_wall_track_only_the_documented_file_target() {
         "tbl /opt/.env",
         "soelim /opt/.env",
     ] {
-        let graph = check(command, Decision::Allow);
+        let graph = check(
+            command,
+            if command.starts_with("wall ") {
+                Decision::NeedApproval
+            } else {
+                Decision::Allow
+            },
+        );
         assert!(
             has_path_role(&graph, ResolvedPathRole::Read, "/opt/.env"),
             "{command}"
@@ -154,7 +161,14 @@ fn content_readers_tui_and_wall_track_only_the_documented_file_target() {
         "tbl /tmp/project/public.txt",
         "soelim /tmp/project/public.txt",
     ] {
-        check(command, Decision::Allow);
+        check(
+            command,
+            if command.starts_with("wall ") {
+                Decision::NeedApproval
+            } else {
+                Decision::Allow
+            },
+        );
     }
 
     let dimensions = check(

@@ -1666,9 +1666,12 @@ fn derive_path_resolution_from_spelling(
         };
     }
     if *rule == DerivedPathRule::Basename {
+        if let PathResolution::BoundedPathSet { roots, may_escape } = &source_resolution {
+            return derive_bounded_path_resolution(roots, *may_escape, basis, rule, cwd);
+        }
         // Normalizing a source such as `a/..` before extracting its name
         // destroys tool-owned lexical semantics. Only a complete original
-        // operand supplies a name; unresolved/bounded input stays unknown.
+        // operand supplies an exact name; bounded inputs retain only cwd scope.
         let basename = source_resolution
             .concrete_path()
             .and(spelling)
@@ -1717,6 +1720,14 @@ fn derive_bounded_path_resolution(
     }
     if matches!(rule, DerivedPathRule::LexicalAncestors) {
         return ancestor_path_bounds(roots, may_escape, cwd);
+    }
+    if matches!(rule, DerivedPathRule::Basename) {
+        // This transform emits a non-special leaf in cwd, not the source's
+        // directory. Exact empty/dot/dot-dot operands remain unresolved above.
+        return PathResolution::BoundedPathSet {
+            roots: vec![lexical_path_from_argv(".", cwd)],
+            may_escape: false,
+        };
     }
     let component = |s: &str| !s.contains(['/', '\0']);
     let preserves_root = match rule {
@@ -2908,7 +2919,7 @@ mod tests {
             Some("file"),
             "/workspace",
         );
-        assert!(matches!(output, PathResolution::DerivedUnresolved { .. }));
+        assert_eq!(output, PathResolution::BoundedPathSet { roots: vec!["/workspace".into()], may_escape: false });
     }
 
     #[test]

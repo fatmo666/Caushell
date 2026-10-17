@@ -4,17 +4,37 @@ identity: {canonical_name: alpine, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
 option_scope: permuted_options
+option_matching: exact_names
 opaque_on_unresolved: true
 forms:
+  - id: show_information
+    selector: &information {kind: has_modifier, modifier: information}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
   - id: read_file_as_message
-    selector: {kind: has_modifier, modifier: file}
-    effects: [{kind: read_path, target: {kind: slot, name: input_path}}]
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_modifier, modifier: file}]}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: input_path}}
+      - &browser_surface {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, write_buffer_to_path]}}
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  - id: interactive_mail
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: not, item: {kind: has_modifier, modifier: file}}]}
+    parameters: [{name: recipients, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    effects: [*browser_surface]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-h, -v, -version, -supported]}}
   - id: file
     matcher: {kind: any_flag, flags: ['-F']}
+    constraints: [{kind: mutually_exclusive_with, modifier: information}]
     parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: ignored_file_information
+    matcher: {kind: any_flag, flags: [-F]}
+    constraints: [{kind: requires_modifier, modifier: information}]
+    parameters: [{name: ignored_file, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - {id: restricted_browser, matcher: {kind: any_flag, flags: [-r, -o, -i, -k, -z]}}
 subcommands: null
 extensions:
-  caushell.profile/source_research: ['https://alpine.x10host.com/alpine/tech-notes/alpine-7.0/tech-notes.html', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/alpine file-read']
-  caushell.profile/known_limitations: [Interactive mail UI and save operations are not modeled; -F reads a message file and can display its contents.]
+  caushell.profile/source_research: ['https://raw.githubusercontent.com/realpine/alpine/master/doc/alpine.1', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/alpine file-read']
+  caushell.profile/known_limitations:
+    - -F opens a text file in the Alpine browser, not a stdout dump. The historical form ID is retained; the input path remains a read and the interactive surface is explicit.
+    - Restricted/read-only mailbox options do not prove that the entire application cannot run configured programs or save other files. Mail configuration, addresses and later UI commands are not interpreted.

@@ -1,303 +1,144 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+identity: {canonical_name: psql, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: short_clusters
+opaque_on_unresolved: true
+selection_failure_effects:
+  - &opaque {kind: database_operation, database_operation: opaque, target: {kind: none}}
 
-identity:
-  canonical_name: psql
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+# PostgreSQL SQL plus client meta-commands are executable input, not Bash.
+# -c/-f actions are queued; output pipes (-o) can execute while parsing options.
 forms:
-  - id: execute_sql_command
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: command
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: file
-    parameters:
-      - name: database_names
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: network_endpoint
-        target:
-          kind: none
-      - kind: transform_data
-        target:
-          kind: none
-
-  - id: execute_sql_file
-    selector:
-      kind: all
-      items:
-        - kind: has_modifier
-          modifier: file
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: command
-    parameters:
-      - name: database_names
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    stream_contract:
-      stdin_mode: ignored
-      stdout_mode: data
-      stderr_mode: opaque
-    effects:
-      - kind: network_endpoint
-        target:
-          kind: none
-      - kind: transform_data
-        target:
-          kind: none
-
+  - id: show_information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_tail, semantic: &plain {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: &ignored {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+  - id: list_databases
+    selector: {kind: all, items: [&not_info {kind: not, item: *information}, &listing {kind: has_modifier, modifier: list_databases}]}
+    parameters: &database [{name: database_names, semantic: *plain, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    # Startup scripts and a possible pager keep the whole operation opaque;
+    # this does not pretend that listing itself is a database mutation.
+    effects: [*opaque, &network {kind: network_endpoint, target: {kind: none}}]
+    stream_contract: *ignored
+  - id: execute_actions_with_stdin_file
+    selector: {kind: all, items: [&running {kind: all, items: [*not_info, {kind: not, item: *listing}]}, &stdin_file {kind: has_modifier_parameter_matching, modifier: file, parameter: file_operands, matcher: {kind: literal, value: '-'}}]}
+    parameters: *database
+    implicit_inputs: &stdin [{source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}]
+    effects: &stream_effects
+      - *opaque
+      - *network
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+    stream_contract: &input {stdin_mode: payload_optional, stdout_mode: data, stderr_mode: opaque}
+  - id: execute_actions
+    selector: {kind: all, items: [*running, &actions {kind: any, items: [{kind: has_modifier, modifier: command}, {kind: has_modifier, modifier: file}]}, {kind: not, item: *stdin_file}]}
+    parameters: *database
+    effects: [*opaque, *network]
+    stream_contract: *ignored
+  - id: execute_stdin
+    selector: {kind: all, items: [*running, &no_actions {kind: not, item: *actions}, {kind: stdin_payload_available}]}
+    parameters: *database
+    implicit_inputs: *stdin
+    effects: *stream_effects
+    stream_contract: *input
   - id: interactive_or_stdin_query
-    selector:
-      kind: all
-      items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: command
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: file
-    parameters:
-      - name: database_names
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    stream_contract:
-      stdin_mode: data_optional
-      stdout_mode: data
-      stderr_mode: opaque
+    selector: {kind: all, items: [*running, *no_actions, {kind: not, item: {kind: stdin_payload_available}}]}
+    parameters: *database
+    implicit_inputs: *stdin
     effects:
-      - kind: network_endpoint
-        target:
-          kind: none
-      - kind: transform_data
-        target:
-          kind: none
+      - *opaque
+      - *network
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: line_editor, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor, write_buffer_to_path]}}
+    stream_contract: *input
 
 modifiers:
-  - id: host
-    matcher:
-      kind: any_flag
-      flags:
-        - "-h"
-        - "--host"
-    parameters:
-      - name: host
-        semantic:
-          kind: endpoint
-          endpoint_kind: host_port
-          usage: control_plane
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-    effects:
-      - kind: network_endpoint
-        target:
-          kind: slot
-          name: host
-
-  - id: port
-    matcher:
-      kind: any_flag
-      flags:
-        - "-p"
-        - "--port"
-    parameters:
-      - name: port
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-
-  - id: username
-    matcher:
-      kind: any_flag
-      flags:
-        - "-U"
-        - "--username"
-    parameters:
-      - name: username
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-
-  - id: dbname
-    matcher:
-      kind: any_flag
-      flags:
-        - "-d"
-        - "--dbname"
-    parameters:
-      - name: dbname
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
-
+  - id: information
+    matcher: {kind: any_flag, flags: ['-?', --help, -V, --version]}
+    parameters: [{name: help_topics, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}]
+  - {id: list_databases, matcher: {kind: any_flag, flags: [-l, --list]}}
   - id: command
-    matcher:
-      kind: any_flag
-      flags:
-        - "-c"
-        - "--command"
-    parameters:
-      - name: sql
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: required_one
-
+    matcher: &command_flags {kind: any_flag, flags: [-c, --command]}
+    constraints: &active [{kind: mutually_exclusive_with, modifier: information}, {kind: mutually_exclusive_with, modifier: list_databases}]
+    parameters: [{name: sql, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: &operand {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: sql}}]
   - id: file
-    matcher:
-      kind: any_flag
-      flags:
-        - "-f"
-        - "--file"
+    matcher: &file_flags {kind: any_flag, flags: [-f, --file]}
+    constraints: *active
     parameters:
-      - name: sql_file
-        semantic:
-          kind: path
-          role: read
-          purpose: script_source
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: required_one
+      - name: file_operands
+        # Native references may select a script file or '-' (stdin). Keep the
+        # executable reference once; project only real filenames as paths.
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: *operand
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: sql_file, semantic: {kind: path, role: read, purpose: script_source}}
     effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: sql_file
-
+      - {kind: read_path, target: {kind: slot, name: sql_file}}
+      - {kind: execute_payload, target: {kind: slot, name: file_operands}}
+  - id: ignored_command_information
+    matcher: *command_flags
+    constraints: &info_only [{kind: requires_modifier, modifier: information}]
+    parameters: &ignored_actions [{name: ignored_actions, semantic: *plain, binding: *operand, cardinality: required_many}]
+  - id: ignored_file_information
+    matcher: *file_flags
+    constraints: *info_only
+    parameters: *ignored_actions
+  - id: ignored_command_listing
+    matcher: *command_flags
+    constraints: &list_only [{kind: requires_modifier, modifier: list_databases}, {kind: mutually_exclusive_with, modifier: information}]
+    parameters: *ignored_actions
+  - id: ignored_file_listing
+    matcher: *file_flags
+    constraints: *list_only
+    parameters: *ignored_actions
+  - id: host
+    matcher: {kind: any_flag, flags: [-h, --host]}
+    parameters: [{name: host, semantic: {kind: endpoint, endpoint_kind: host_port, usage: control_plane}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: network_endpoint, target: {kind: slot, name: host}}]
+  - id: connection_values
+    matcher: {kind: any_flag, flags: [-p, --port, -U, --username, -d, --dbname]}
+    parameters: [{name: connection_values, semantic: *plain, binding: *operand, cardinality: required_many}]
   - id: output_file
-    matcher:
-      kind: any_flag
-      flags:
-        - "-o"
-        - "--output"
+    matcher: {kind: any_flag, flags: [-o, --output]}
     parameters:
-      - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_one
+      - name: output_operands
+        semantic: *plain
+        binding: *operand
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^$', group: 0}}
+            - matcher: {kind: prefix, value: '|'}
+              target: {name: output_programs, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}
+          fallback: {name: output_path, semantic: {kind: path, role: write, purpose: generic_operand}}
     effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_path
-
-  - id: record_separator
-    matcher:
-      kind: any_flag
-      flags:
-        - "-F"
-        - "--field-separator"
-        - "-R"
-        - "--record-separator"
-    parameters:
-      - name: separator
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_many
-
-  - id: output_mode
-    matcher:
-      kind: any_flag
-      flags:
-        - "-A"
-        - "--no-align"
-        - "-t"
-        - "--tuples-only"
-        - "-q"
-        - "--quiet"
-        - "-X"
-        - "--no-psqlrc"
-
+      - {kind: write_path, target: {kind: slot, name: output_path}}
+      - {kind: execute_payload, target: {kind: slot, name: output_programs}}
+  - id: log_file
+    matcher: {kind: any_flag, flags: [-L, --log-file]}
+    parameters: [{name: log_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: *operand, cardinality: required_many}]
+    effects: [{kind: write_path, target: {kind: slot, name: log_path}}]
+  - id: format_values
+    matcher: {kind: any_flag, flags: [-F, --field-separator, -R, --record-separator, -T, --table-attr, -P, --pset]}
+    parameters: [{name: format_values, semantic: *plain, binding: *operand, cardinality: required_many}]
   - id: variable
-    matcher:
-      kind: any_flag
-      flags:
-        - "-v"
-        - "--set"
-        - "--variable"
-    parameters:
-      - name: variable_assignment
-        semantic:
-          kind: structured_value
-          context: env_assignment
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_many
+    matcher: {kind: any_flag, flags: [-v, --set, --variable]}
+    parameters: [{name: variable_assignment, semantic: {kind: structured_value, context: env_assignment}, binding: *operand, cardinality: required_many}]
+  - {id: execution_modes, matcher: {kind: any_flag, flags: [-a, --echo-all, -A, --no-align, -b, --echo-errors, -e, --echo-queries, -E, --echo-hidden, -H, --html, -n, --no-readline, -q, --quiet, -s, --single-step, -S, --single-line, -t, --tuples-only, -w, --no-password, -W, --password, -x, --expanded, -X, --no-psqlrc, -z, --field-separator-zero, '-0', --record-separator-zero, '-1', --single-transaction, --csv]}}
 
-  - id: print_option
-    matcher:
-      kind: any_flag
-      flags:
-        - "-P"
-        - "--pset"
-    parameters:
-      - name: print_option
-        semantic:
-          kind: plain_value
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_many
-
-subcommands: null
 extensions:
+  caushell.profile/source_research:
+    - https://www.postgresql.org/docs/18/app-psql.html
+    - https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/startup.c
+    - https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/psql/common.c
   caushell.profile/known_limitations:
-    - SQL text is modeled as plain data rather than recursively parsed code; database-side mutation semantics are not inferred from SQL content.
-    - Connection information supplied through environment variables such as PGHOST and PGPASSWORD is outside this command profile and belongs to shell/environment state.
+    - SQL, psql meta-commands, script files and stdin remain opaque executable input; no PostgreSQL parser or host database discovery is added.
+    - Startup scripts, connection-string options, variable-triggered hooks and pager configuration are not replayed. Non-information database operations retain the existing database opaque policy.
+    - Mixed information callbacks retain explicit output-path and output-program effects conservatively; their parse-time ordering is not simulated.

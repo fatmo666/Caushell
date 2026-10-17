@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: strace
@@ -17,7 +19,7 @@ platform:
 
 forms:
   - id: wrapped_command
-    selector:
+    selector: &launch
       kind: all
       items:
         - kind: has_positional_at
@@ -32,7 +34,8 @@ forms:
                 flag: "--help"
               - kind: has_flag
                 flag: "--version"
-    parameters:
+        - {kind: not, item: {kind: has_modifier, modifier: environment}}
+    parameters: &child_parameters
       - name: wrapped_command
         semantic:
           kind: command_ref
@@ -46,7 +49,7 @@ forms:
         binding:
           kind: remaining_args
         cardinality: optional_many
-    effects:
+    effects: &child_effects
       - kind: dispatch_command
         target:
           kind: dispatch
@@ -54,6 +57,18 @@ forms:
           argv:
             - wrapped_args
           environment: []
+          stdout_to_parent: true
+          unknown_environment_when: [environment]
+  - id: wrapped_command_with_environment
+    operation_semantics_unresolved: true
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: environment}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: attach_process}, {kind: has_flag, flag: '--help'}, {kind: has_flag, flag: '--version'}]}}
+    parameters: *child_parameters
+    effects: *child_effects
 
 modifiers:
   - id: output
@@ -150,6 +165,7 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+    effects: [{kind: privilege_modifier, target: {kind: none}}]
 
   - id: environment
     matcher:
@@ -163,7 +179,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
 
   - id: interruptible
     matcher:
@@ -226,7 +242,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-f"
-        - "-ff"
         - "--follow-forks"
 
   - id: quiet
@@ -234,8 +249,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-q"
-        - "-qq"
-        - "-qqq"
         - "--quiet"
 
   - id: daemonize
@@ -243,8 +256,6 @@ modifiers:
       kind: any_flag
       flags:
         - "-D"
-        - "-DD"
-        - "-DDD"
 
   - id: help
     matcher:
@@ -264,3 +275,4 @@ subcommands: null
 extensions:
   caushell.profile/known_limitations:
     - This profile models strace command launch mode; attach-only mode is intentionally not dispatched.
+    - Explicit -E environment edits retain operation uncertainty and mask inherited child-environment facts; they are not silently ignored or reordered into a guessed final environment.

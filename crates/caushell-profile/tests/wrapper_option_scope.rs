@@ -3,6 +3,7 @@ use caushell_profile::{
     BindingSpec, BoundInvocation, BoundValue, CommandProfile, FlagName, FlagOperandMode, Form,
     InvocationRuntimeContext, Modifier, OptionScopePolicy, Parameter, SelectorExpr,
     SelectorPredicate, SemanticType, bind_invocation, project_invocation, select_invocation,
+    load_command_profile_from_str,
 };
 use caushell_types::ShellKind;
 
@@ -626,10 +627,22 @@ fn option_scope_is_validated_and_opt_in_in_yaml() {
 
 #[test]
 fn legacy_all_argument_profiles_still_accept_options_after_operands() {
-    let registry = caushell_profile::ProfileRegistry::built_in().unwrap();
-    let profile = registry.lookup("cp").profile.unwrap();
+    // Test the legacy DSL default independently of built-in tools that have
+    // since opted into native argument ownership.
+    let profile = load_command_profile_from_str(r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: legacy-copy}
+forms:
+  - id: copy
+    parameters:
+      - {name: source_paths, semantic: {kind: path, role: read}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - {name: destination_path, semantic: {kind: path, role: write}, binding: {kind: last_positional}, cardinality: required_one}
+modifiers:
+  - {id: force, matcher: {kind: any_flag, flags: ['-f']}}
+"#).unwrap();
     assert_eq!(profile.option_scope, OptionScopePolicy::AllArguments);
-    let result = bound(profile, "cp source.txt -f destination.txt");
+    let result = bound(&profile, "legacy-copy source.txt -f destination.txt");
     assert!(
         result
             .applied_modifiers

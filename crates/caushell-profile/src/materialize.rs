@@ -834,6 +834,45 @@ pub fn materialize_shell_assignment_value(
     )
 }
 
+/// Command-prefix assignments expand in source order, unlike the command's
+/// ordinary argv words. Return child-environment facts without mutating the
+/// caller's variable frame or consulting the host environment.
+pub fn materialize_prefix_environment(
+    command: &caushell_parse::CommandFact,
+    bindings: &SessionBindings,
+) -> Vec<(String, SessionValue)> {
+    if command.prefix_assignments.is_empty() {
+        return Vec::new();
+    }
+    let mut rhs = bindings.clone();
+    let mut values = Vec::with_capacity(command.prefix_assignments.len());
+    for assignment in &command.prefix_assignments {
+        let text = (assignment.operator == caushell_parse::AssignmentOperator::Assign)
+            .then(|| {
+                if assignment.value.node_kind == "empty" {
+                    Some(String::new())
+                } else {
+                    materialize_shell_assignment_value(
+                        &assignment.value.text,
+                        assignment.value.quoted,
+                        &assignment.value.node_kind,
+                        &rhs,
+                    )
+                }
+            })
+            .flatten();
+        let value = if let Some(text) = text {
+            rhs.insert_exact_scalar(&assignment.name, text.clone());
+            SessionValue::exact_scalar(text)
+        } else {
+            rhs.insert_opaque_dynamic(&assignment.name, "unresolved prefix assignment");
+            SessionValue::opaque_dynamic("unresolved prefix assignment")
+        };
+        values.push((assignment.name.clone(), value));
+    }
+    values
+}
+
 fn materialize_shell_word(
     text: &str,
     bindings: &SessionBindings,
@@ -1254,6 +1293,7 @@ impl ValueMaterialization {
 pub struct MaterializedProjectedInvocation {
     pub invocation: ProjectedInvocation,
     pub arg_resolutions: Vec<ValueMaterialization>,
+    pub shell_expansion_unresolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1275,58 +1315,97 @@ pub fn materialize_projected_invocation(
 ) -> MaterializedProjectedInvocation {
     let mut args = Vec::with_capacity(projection.args.len());
     let mut arg_resolutions = Vec::with_capacity(projection.args.len());
+    let mut brace_budget = crate::brace_expansion::BraceBudget::default();
+    let mut shell_expansion_unresolved = false;
 
-    for arg in &projection.args {
-        if let Some(domain) = materialize_argument_domain(arg, bindings) {
-            let mut argument = arg.clone();
-            argument.implicit_input_source =
-                Some(caushell_types::ImplicitInputSource::ShellIteration);
-            argument.runtime_argument_domain = Some(domain);
-            argument.runtime_data = true;
-            argument.node_kind = "runtime_scalar".into();
-            args.push(argument);
-            arg_resolutions.push(ValueMaterialization::RequiresImplicitInput {
-                source: ImplicitInputSource::ShellIteration,
-            });
-            continue;
-        }
-        for materialized in materialize_argument_fields(arg, bindings) {
-            args.push(ProjectedArg {
-                text: materialized.text,
-                implicit_input_source: arg.implicit_input_source,
-                runtime_argument_domain: arg.runtime_argument_domain.clone(),
-                substitution_shape: arg.substitution_shape,
-                lexical_field_prefix: arg.lexical_field_prefix.clone().or_else(|| {
-                    if arg.runtime_data
-                        || arg.implicit_input_source.is_some()
-                        || arg.quoted
-                        || !matches!(arg.node_kind.as_str(), "word" | "concatenation")
-                        || !(arg.text == "~" || arg.text.starts_with("~/"))
-                        || arg.text[1..].contains(['$', '`', '\'', '"', '\\', '~'])
-                    {
-                        return None;
-                    }
-                    // Tilde's value is not field-split or glob-expanded. A pure
-                    // pathname suffix may generate many fields, all retaining
-                    // this spelling prefix. Use supplied bindings, no lookup.
-                    let prefix = bindings.tilde_home()?;
-                    prefix.starts_with('/').then(|| prefix.to_owned())
-                }),
-                // A resolved field is argv data, not shell source to decode
-                // again. Its binding origin stays in arg_resolutions below.
-                runtime_data: arg.runtime_data
-                    || matches!(
-                        materialized.resolution,
-                        ValueMaterialization::ResolvedExactScalar { .. }
-                            | ValueMaterialization::ResolvedRuntimeProduced { .. }
-                            | ValueMaterialization::ResolvedShellWord { .. }
-                    ),
-                kind: arg.kind,
-                quoted: arg.quoted,
-                node_kind: arg.node_kind.clone(),
-                span: arg.span.clone(),
-            });
-            arg_resolutions.push(materialized.resolution);
+    for original in &projection.args {
+        let expanded = if projection.shell_kind == caushell_types::ShellKind::Bash
+            && !original.runtime_data
+            && original.implicit_input_source.is_none()
+            && matches!(
+                original.node_kind.as_str(),
+                "word" | "concatenation" | "brace_expression"
+            )
+            && original.text.contains('{')
+        {
+            match crate::brace_expansion::expand(&original.text, &mut brace_budget) {
+                Ok(Some(words)) => Some(
+                    words
+                        .into_iter()
+                        .map(|text| {
+                            let mut arg = original.clone();
+                            arg.text = text;
+                            if arg.node_kind == "brace_expression" {
+                                arg.node_kind = "word".into();
+                            }
+                            arg
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                Ok(None) => None,
+                Err(()) => {
+                    shell_expansion_unresolved = true;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        for arg in expanded
+            .as_deref()
+            .unwrap_or(std::slice::from_ref(original))
+        {
+            if let Some(domain) = materialize_argument_domain(arg, bindings) {
+                let mut argument = arg.clone();
+                argument.implicit_input_source =
+                    Some(caushell_types::ImplicitInputSource::ShellIteration);
+                argument.runtime_argument_domain = Some(domain);
+                argument.runtime_data = true;
+                argument.node_kind = "runtime_scalar".into();
+                args.push(argument);
+                arg_resolutions.push(ValueMaterialization::RequiresImplicitInput {
+                    source: ImplicitInputSource::ShellIteration,
+                });
+                continue;
+            }
+            for materialized in materialize_argument_fields(arg, bindings) {
+                args.push(ProjectedArg {
+                    text: materialized.text,
+                    implicit_input_source: arg.implicit_input_source,
+                    runtime_argument_domain: arg.runtime_argument_domain.clone(),
+                    substitution_shape: arg.substitution_shape,
+                    lexical_field_prefix: arg.lexical_field_prefix.clone().or_else(|| {
+                        if arg.runtime_data
+                            || arg.implicit_input_source.is_some()
+                            || arg.quoted
+                            || !matches!(arg.node_kind.as_str(), "word" | "concatenation")
+                            || !(arg.text == "~" || arg.text.starts_with("~/"))
+                            || arg.text[1..].contains(['$', '`', '\'', '"', '\\', '~'])
+                        {
+                            return None;
+                        }
+                        // Tilde's value is not field-split or glob-expanded. A pure
+                        // pathname suffix may generate many fields, all retaining
+                        // this spelling prefix. Use supplied bindings, no lookup.
+                        let prefix = bindings.tilde_home()?;
+                        prefix.starts_with('/').then(|| prefix.to_owned())
+                    }),
+                    // A resolved field is argv data, not shell source to decode
+                    // again. Its binding origin stays in arg_resolutions below.
+                    runtime_data: arg.runtime_data
+                        || matches!(
+                            materialized.resolution,
+                            ValueMaterialization::ResolvedExactScalar { .. }
+                                | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                                | ValueMaterialization::ResolvedShellWord { .. }
+                        ),
+                    kind: arg.kind,
+                    quoted: arg.quoted,
+                    node_kind: arg.node_kind.clone(),
+                    span: arg.span.clone(),
+                });
+                arg_resolutions.push(materialized.resolution);
+            }
         }
     }
 
@@ -1334,6 +1413,7 @@ pub fn materialize_projected_invocation(
 
     MaterializedProjectedInvocation {
         invocation: ProjectedInvocation {
+            shell_kind: projection.shell_kind,
             option_prefixes: projection.option_prefixes,
             command_name: projection.command_name.clone(),
             args,
@@ -1341,6 +1421,7 @@ pub fn materialize_projected_invocation(
             interactive_session: projection.interactive_session,
         },
         arg_resolutions,
+        shell_expansion_unresolved,
     }
 }
 

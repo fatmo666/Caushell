@@ -991,7 +991,7 @@ fn base_cwd_for_record(
     };
     let has_parent_override = parent_override.is_some();
     let parent_state = parent_override
-        .or_else(|| parent_cwd_for_record(ctx, record, effective_cwds))
+        .or_else(|| parent_cwd_for_record(ctx, record, effective_cwds, execution_cwd_overrides))
         .unwrap_or_else(|| CwdState::known(initial_cwd));
 
     if record.origin_kind != ExecutionUnitOriginKind::Dispatch {
@@ -1487,6 +1487,7 @@ fn parent_cwd_for_record(
     ctx: &RunnerContext,
     record: &ExecutionUnitResolveRecord,
     effective_cwds: &BTreeMap<NodeId, EffectiveCwd>,
+    execution_cwd_overrides: &BTreeMap<NodeId, EffectiveCwd>,
 ) -> Option<CwdState> {
     if let Some(cwd) = effective_cwds.get(&record.parent_execution_node_id) {
         return Some(CwdState::from(cwd));
@@ -1496,13 +1497,14 @@ fn parent_cwd_for_record(
         return None;
     }
 
-    nested_payload_parent_cwd(ctx, record, effective_cwds)
+    nested_payload_parent_cwd(ctx, record, effective_cwds, execution_cwd_overrides)
 }
 
 fn nested_payload_parent_cwd(
     ctx: &RunnerContext,
     record: &ExecutionUnitResolveRecord,
     effective_cwds: &BTreeMap<NodeId, EffectiveCwd>,
+    execution_cwd_overrides: &BTreeMap<NodeId, EffectiveCwd>,
 ) -> Option<CwdState> {
     let parsed_request = ctx.parsed_command()?;
 
@@ -1526,7 +1528,12 @@ fn nested_payload_parent_cwd(
             NestedPayloadParentRef::DerivedInvocation { node_id } => node_id.clone(),
         };
 
-        return effective_cwds.get(&parent_node_id).map(CwdState::from);
+        // The payload's synthetic parent is not the native invocation node.
+        // Preserve that invocation's execution-only cwd at this boundary.
+        return execution_cwd_overrides
+            .get(&parent_node_id)
+            .or_else(|| effective_cwds.get(&parent_node_id))
+            .map(CwdState::from);
     }
 
     None
@@ -2212,5 +2219,29 @@ forms:
             ctx.effective_cwd_for_node(&NodeId::new("derived-dispatch:sess-1:1:0:0")),
             Some(&EffectiveCwd::Known("/".to_string()))
         );
+    }
+
+    #[test]
+    fn native_execution_directory_reaches_payloads_and_dispatches() {
+        for command in [
+            "npm -C /opt exec --call 'touch file'",
+            "yarn --cwd /opt exec touch file",
+        ] {
+            let ctx = run_pass(command, "/tmp/project");
+            let record = ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .find(|record| matches!(
+                    &record.result,
+                    caushell_profile::ResolveInvocationArtifactResult::Resolved(r)
+                        if r.normalized_command_name == "touch"
+                ))
+                .expect("expected modeled child invocation");
+            assert_eq!(
+                ctx.effective_cwd_for_node(&record.source_node_id),
+                Some(&EffectiveCwd::Known("/opt".into())),
+                "{command}: {record:#?}"
+            );
+        }
     }
 }

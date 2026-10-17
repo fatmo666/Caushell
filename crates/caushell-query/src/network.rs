@@ -213,7 +213,7 @@ fn url_host(endpoint: &str) -> Option<&str> {
     }
     // Local-file/custom schemes do not establish loopback network transport.
     if ![
-        "http", "https", "ftp", "ftps", "sftp", "scp", "ssh", "rsync", "tftp", "ws", "wss", "smtp",
+        "http", "https", "ftp", "ftps", "sftp", "scp", "ssh", "rsync", "tftp", "ws", "wss", "smtp", "gopher", "gophers",
         "smtps", "imap", "imaps", "pop3", "pop3s", "ldap", "ldaps", "rtsp", "socks4", "socks4a",
         "socks5", "socks5h",
     ]
@@ -277,6 +277,8 @@ mod tests {
             ("http://127.12.3.4:80/x", Url),
             ("http://[::1]:8765/x", Url),
             ("ftp://user@LOCALHOST/x", Url),
+            ("gopher://127.0.0.1:12345/_DATA", Url),
+            ("gophers://[::1]:12345/_DATA", Url),
             ("socks5h://localhost:1080", Url),
             ("u@[::1]:/x", RemoteSpec),
             ("127.0.0.1::module/x", RemoteSpec),
@@ -289,6 +291,8 @@ mod tests {
         }
         for (value, kind) in [
             ("https://localhost.evil/x", Url),
+            ("gopher://localhost@evil/_DATA", Url),
+            ("gophers://localhost.evil/_DATA", Url),
             ("http://localhost@evil/x", Url),
             ("http://evil/localhost", Url),
             ("http://127.0.0.1:bad/x", Url),

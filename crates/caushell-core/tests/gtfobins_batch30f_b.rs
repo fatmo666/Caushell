@@ -95,7 +95,7 @@ fn remote_printing_and_cancellation_do_not_become_local_filesystem_writes() {
         "{:#?}",
         graph(lp)
     );
-    assert_eq!(check(lp).decision, Decision::Allow);
+    assert_eq!(check(lp).decision, Decision::NeedApproval);
 
     let cancel = "cancel -h print.example:12345 -u DATA";
     assert_eq!(semantic(cancel, "cancel").normalized_command_name, "cancel");
@@ -110,7 +110,7 @@ fn remote_printing_and_cancellation_do_not_become_local_filesystem_writes() {
         "{:#?}",
         graph(cancel)
     );
-    assert_eq!(check(cancel).decision, Decision::Allow);
+    assert_eq!(check(cancel).decision, Decision::NeedApproval);
 }
 
 #[test]

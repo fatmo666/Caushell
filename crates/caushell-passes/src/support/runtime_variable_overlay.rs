@@ -276,7 +276,10 @@ impl RuntimeVariableContext<'_> {
                 return None;
             };
             let projection = materialize_projected_invocation(
-                &project_invocation(&expanded, InvocationRuntimeContext::default()),
+                &project_invocation(
+                    &expanded,
+                    InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind),
+                ),
                 bindings,
             );
             let environment = super::command_environment_bindings(
@@ -398,7 +401,7 @@ impl RuntimeVariableContext<'_> {
             resolve_invocation_artifact_with_bindings(
                 self.registry,
                 &expanded,
-                InvocationRuntimeContext::default(),
+                InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind),
                 bindings,
             )
         else {

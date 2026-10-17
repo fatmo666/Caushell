@@ -1644,6 +1644,7 @@ fn collect_top_level_dispatch_command_resolve_records(
                     registry,
                     &command.command,
                     InvocationRuntimeContext {
+                        shell_kind: request.shell_kind,
                         stdin_payload_available: command.stdin_available,
                         interactive_session: false,
                     },
@@ -2725,7 +2726,10 @@ fn expanded_function_body_children(
         ));
     };
     let projection = caushell_profile::materialize_projected_invocation(
-        &caushell_profile::project_invocation(command, InvocationRuntimeContext::default()),
+        &caushell_profile::project_invocation(
+            command,
+            InvocationRuntimeContext::default().with_shell_kind(entry.shell_kind),
+        ),
         &entry.bindings,
     );
     let environment = crate::support::command_environment_bindings(
@@ -3380,6 +3384,7 @@ fn expanded_dispatch_children(
             registry,
             &command,
             InvocationRuntimeContext {
+                shell_kind: entry.shell_kind,
                 stdin_payload_available: stdin_available,
                 interactive_session: false,
             },
@@ -3517,6 +3522,7 @@ fn expanded_shell_payload_children(
                         registry,
                         command,
                         InvocationRuntimeContext {
+                            shell_kind,
                             stdin_payload_available: resolved.projection.stdin_payload_available
                                 || runtime_context_for_parsed_command(
                                     &parsed_payload,
@@ -5165,7 +5171,7 @@ fn expanded_static_xargs_children(
         let resolved_child = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
             registry,
             &command,
-            InvocationRuntimeContext::new(),
+            InvocationRuntimeContext::new().with_shell_kind(entry.shell_kind),
             &child_bindings,
             &forwarded_substitution_shapes(resolved, &command),
         );
@@ -6888,7 +6894,7 @@ fn runtime_context_for_parsed_command_with_external_stdin(
     command: &caushell_parse::CommandFact,
     external_stdin_payload_available: bool,
 ) -> InvocationRuntimeContext {
-    let mut context = InvocationRuntimeContext::new();
+    let mut context = InvocationRuntimeContext::new().with_shell_kind(parsed.shell_kind);
 
     if pipeline_upstream_exists(parsed, command_index, command) {
         context = context.with_stdin_payload_available();

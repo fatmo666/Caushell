@@ -129,13 +129,7 @@ fn generated_or_quoted_tildes_do_not_gain_lexical_expansion() {
         let result = args(&format!("cp {word} output"), &b);
         assert!(!result.invocation.args[0].text.starts_with("/default"));
     }
-    for word in [
-        "~root/file",
-        "~+/file",
-        "~/$(command)",
-        "~/$UNKNOWN",
-        "~/{one,two}",
-    ] {
+    for word in ["~root/file", "~+/file", "~/$(command)", "~/$UNKNOWN"] {
         let result = args(&format!("cp {word} output"), &b);
         assert!(
             !result.invocation.args[0].runtime_data,
@@ -152,6 +146,27 @@ fn generated_or_quoted_tildes_do_not_gain_lexical_expansion() {
             .text,
         "~/literal"
     );
+}
+
+#[test]
+fn lexical_brace_expansion_precedes_tilde_materialization() {
+    let b = defaults("/default");
+    let result = args("cp ~/{one,two} output", &b);
+    assert_eq!(
+        result
+            .invocation
+            .args
+            .iter()
+            .map(|arg| arg.text.as_str())
+            .collect::<Vec<_>>(),
+        ["/default/one", "/default/two", "output"]
+    );
+    assert!(
+        result.invocation.args[..2]
+            .iter()
+            .all(|arg| arg.runtime_data)
+    );
+    assert!(!result.shell_expansion_unresolved);
 }
 
 #[test]

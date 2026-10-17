@@ -91,6 +91,7 @@ forms:
     target:
       kind: slot
       name: input_paths
+  - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command, write_buffer_to_path]}}
   stream_contract:
     stdin_mode: ignored
     stdout_mode: opaque
@@ -105,10 +106,10 @@ subcommands:
 extensions:
   caushell.profile/source_research:
   - https://github.com/tats/w3m/blob/master/doc/README
+  - https://github.com/tats/w3m/blob/master/doc/MANUAL.html
   - 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/w3m
     file-read'
   caushell.profile/known_limitations:
-  - The -dump form emits rendered text rather than source bytes; URL resources and
-    interactive browser behavior are opaque.
+  - The -dump form emits rendered text rather than source bytes. Interactive browser behavior declares the existing escape surface rather than being treated as a pure read.
   - Declared local-file forms accept one path. URI-shaped operands and additional
     resources remain unsupported instead of becoming fabricated workspace paths.

@@ -297,27 +297,16 @@ enum Quote {
 
 // Absence is a proof, not an assumption about a variable's value. In a whole
 // Bash/sh double-quoted word, multiple fields require $@, a vector subscript,
-// or an indirect/vector parameter form. Inspect syntax conservatively even
-// inside nested substitutions; false positives keep the Unknown fallback.
+// or an indirect/vector parameter form. Only ambiguous spellings need the
+// bounded syntax query; inner command argv cannot become outer argv fields.
 fn may_expand_quoted_vector(text: &str) -> bool {
-    let mut previous = 0;
-    let mut parameter = false;
-    for byte in text.bytes() {
-        if previous == b'$' && byte == b'@' {
-            return true;
-        }
-        if previous == b'$' && byte == b'{' {
-            parameter = true;
-        }
-        if parameter && matches!(byte, b'@' | b'!' | b'[') {
-            return true;
-        }
-        if byte == b'}' {
-            parameter = false;
-        }
-        previous = byte;
+    if !text.contains("$@") && !text.contains("${") {
+        return false;
     }
-    parameter
+    if text.len() > 8190 {
+        return true;
+    }
+    !caushell_parse::concatenated_argument_is_scalar(&format!("\"{text}\""))
 }
 
 fn incomplete_word(prefix: String, whole_quoted_scalar: bool) -> ArgumentStructure {
@@ -482,8 +471,9 @@ fn native_path_common_prefix(roots: &[String]) -> Option<String> {
     Some(prefix)
 }
 
-/// Query existing lexical metadata without parsing another AST, running a
-/// command, or looking up files. Unsupported constructs return Unknown.
+/// Query lexical argv structure without execution or filesystem lookup.
+/// Ambiguous quoted vectors use a bounded syntax proof; unsupported forms
+/// retain Unknown rather than treating nested command words as outer fields.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
     if let Some(prefix) = &arg.lexical_field_prefix
         && !arg.runtime_data

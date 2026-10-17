@@ -12,6 +12,11 @@ pub enum StateOperationDomain {
     ShellHistory,
     NetworkConfiguration,
     HostIdentity,
+    DisplayConfiguration,
+    ContainerRuntime,
+    RemoteResource,
+    PrintService,
+    TerminalBroadcast,
     /// Explicit peer-verification configuration for this invocation's connections.
     ConnectionVerification,
 }

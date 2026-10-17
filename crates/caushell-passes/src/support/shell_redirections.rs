@@ -49,6 +49,7 @@ pub(crate) fn shell_syntax_redirections(ctx: &RunnerContext) -> Vec<ShellSyntaxR
                     let mut r = scope.parsed.redirections[index].clone();
                     if let Some(target) = &mut r.target {
                         let p = ProjectedInvocation {
+                            shell_kind: scope.parsed.shell_kind,
                             option_prefixes: Default::default(),
                             command_name: None,
                             stdin_payload_available: false,

@@ -234,11 +234,26 @@ pub(crate) fn resolve_configured_path(
                         last_value(invocation, slot.as_str(), &ValueProjection::Identity)
                     }) {
                         Some(value) => (value, true),
-                        None => {
-                            return Err(unknown(
-                                "relative configured path has no statically known anchor",
-                            ));
-                        }
+                        None => (
+                            anchor
+                                .environment
+                                .as_ref()
+                                .and_then(|source| {
+                                    crate::support::environment_default(source, record)
+                                })
+                                .or_else(|| {
+                                    anchor
+                                        .default_value
+                                        .as_ref()
+                                        .map(|v| SemanticValueResolution::Known(v.clone()))
+                                })
+                                .ok_or_else(|| {
+                                    unknown(
+                                        "relative configured path has no statically known anchor",
+                                    )
+                                })?,
+                            false,
+                        ),
                     },
                 };
             let SemanticValueResolution::Known(root) = root else {

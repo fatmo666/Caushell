@@ -554,6 +554,7 @@ pub fn bind_invocation(
                 &selection.modifiers,
                 projection,
                 &bound.form_id,
+                &bound.bound_parameters,
             ) {
                 continue;
             }
@@ -868,6 +869,7 @@ pub(crate) fn bind_modifier_only_invocation(
             &modifiers,
             projection,
             &bound.form_id,
+            &bound.bound_parameters,
         ) {
             continue;
         }
@@ -1992,6 +1994,7 @@ fn modifier_effects_apply(
     modifiers: &[SelectedModifier<'_>],
     projection: &ProjectedInvocation,
     form: &FormId,
+    parameters: &[BoundParameter],
 ) -> bool {
     let Some(condition) = &selected.effects_when else {
         return true;
@@ -2005,6 +2008,24 @@ fn modifier_effects_apply(
         .any(|id| modifiers.iter().any(|m| m.id == *id))
     {
         return false;
+    }
+    if let Some((slot, matcher)) = &condition.last_parameter_not_matching {
+        let last = parameters
+            .iter()
+            .find(|p| p.name == *slot)
+            .and_then(|p| p.semantic_values().last());
+        let known = last.and_then(|value| {
+            crate::project_semantic_value(&crate::ValueProjection::Identity, value)
+        });
+        let Some(crate::SemanticValueResolution::Known(text)) = known else {
+            return true;
+        };
+        if !owned_condition_matches(&text, matcher) {
+            return true;
+        }
+        if condition.last_option_not_matching.is_none() {
+            return false;
+        }
     }
     let Some(matcher) = &condition.last_option_not_matching else {
         return true;
@@ -2033,14 +2054,17 @@ fn modifier_effects_apply(
     } else {
         flag.as_str()
     };
-    let matches = match &matcher.regex {
+    !owned_condition_matches(word, matcher)
+}
+
+fn owned_condition_matches(word: &str, matcher: &crate::OptionOperandMatcher) -> bool {
+    match &matcher.regex {
         Some(regex) => regex
             .regex()
             .find(word)
             .is_some_and(|m| m.start() == 0 && m.end() == word.len()),
         None => argument_matches_value_matcher(word, &matcher.matcher),
-    };
-    !matches
+    }
 }
 
 fn emit_effects(
@@ -4438,10 +4462,6 @@ fn remote_spec_prefix_is_host_like(prefix: &str) -> bool {
     }
 
     if prefix.contains('/') {
-        return false;
-    }
-
-    if prefix.len() == 1 && prefix.as_bytes()[0].is_ascii_alphabetic() {
         return false;
     }
 

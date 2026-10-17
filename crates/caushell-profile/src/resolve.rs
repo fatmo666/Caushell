@@ -105,6 +105,14 @@ impl ResolvedInvocationArtifact {
         // unmodeled control word must never manufacture a positive path proof.
         let streams = self.proven_stream_contract()?;
         let contract = self.bound.stdout_records.as_ref()?;
+        if contract.empty_slots.iter().any(|slot| {
+            self.bound
+                .bound_parameters
+                .iter()
+                .any(|p| p.name == *slot && p.semantic_values().next().is_some())
+        }) {
+            return None;
+        }
         if matches!(contract.projection, crate::StdoutRecordProjection::Stdin)
             && streams.stdin_mode == crate::StreamInputMode::Ignored
         {
@@ -348,7 +356,10 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
             let bound = bind_invocation(profile, &materialized_projection.invocation, &selection);
             let bound =
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
+            let bound = crate::environment_inputs::attach(profile, bound, command, bindings);
             let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
+            bound.operation_semantics_unresolved |=
+                materialized_projection.shell_expansion_unresolved;
             // Variable-writing CLI ownership must not use a hypothetical
             // one-word expansion. Unknown width can swallow controls or add
             // unmodeled destinations, even when this selected form is a query.
@@ -463,14 +474,23 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                     attach_argument_file_effects(
                         profile,
                         &materialized_projection,
-                        attach_bound_argument_materialization(
-                            bound,
-                            &materialized_projection,
+                        crate::environment_inputs::attach(
+                            profile,
+                            attach_bound_argument_materialization(
+                                bound,
+                                &materialized_projection,
+                                bindings,
+                            ),
+                            command,
                             bindings,
                         ),
                     )
                 } else {
-                    attach_argument_file_effects(profile, &materialized_projection, bound)
+                    attach_argument_file_effects(
+                        profile,
+                        &materialized_projection,
+                        crate::environment_inputs::attach(profile, bound, command, bindings),
+                    )
                 }
             }),
         },

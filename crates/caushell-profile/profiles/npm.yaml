@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: npm
@@ -22,19 +24,45 @@ modifiers:
   - id: working_directory
     matcher: {kind: any_flag, flags: ["-C"]}
     parameters:
-      - {name: working_directory, semantic: {kind: path, role: cwd_anchor, purpose: working_directory}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
-    effects: [{kind: target_path, target: {kind: slot, name: working_directory}}]
+      - {name: working_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: working_directory, projection: {kind: identity}}], missing: unknown}}]
 subcommands:
   roots:
     - name: install
+      option_scope: permuted_options
       aliases:
         - i
         - add
       forms:
+        - id: show_help
+          selector: {kind: has_modifier, modifier: information}
+          parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+        - id: preview_install
+          selector: {kind: all, items: [{kind: has_modifier, modifier: preview}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+          parameters: &install_parameters [{name: package_specs, semantic: {kind: package_locator, manager: npm, locator_kinds: [registry_ref, local_path, direct_url, vcs_url, unknown_dynamic]}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          effects: [&manifest {kind: load_config, target: {kind: tool_convention_path, path: package.json, convention: npm.package_json, purpose: task_config}}]
+        - id: install_without_scripts
+          selector: {kind: all, items: [{kind: has_modifier, modifier: no_scripts}, {kind: not, item: {kind: has_modifier, modifier: preview}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+          parameters: *install_parameters
+          effects:
+            - *manifest
+            - {kind: import_package, target: {kind: slot, name: package_specs}}
+            - &install_scope {kind: write_path, target: {kind: configured_path, sources: [{slot: install_prefix, projection: {kind: identity}}], missing: unknown}}
+        - id: install_current_project
+          operation_semantics_unresolved: true
+          selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: preview}}, {kind: not, item: {kind: has_modifier, modifier: no_scripts}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+          effects:
+            - {kind: load_config, target: {kind: tool_convention_path, path: package.json, convention: npm.package_json, purpose: task_config}}
+            - {kind: execute_config_defined_task, target: {kind: none}}
+            - *install_scope
         - id: install_packages
           selector:
-            kind: has_positional_at
-            index: 0
+            kind: all
+            items:
+              - {kind: has_positional_at, index: 0}
+              - {kind: not, item: {kind: has_modifier, modifier: preview}}
+              - {kind: not, item: {kind: has_modifier, modifier: no_scripts}}
+              - {kind: not, item: {kind: has_modifier, modifier: information}}
           parameters:
             - name: package_specs
               semantic:
@@ -65,6 +93,16 @@ subcommands:
                 kind: slot
                 name: package_specs
       modifiers:
+        - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
+        - {id: preview, matcher: {kind: any_flag, flags: [--dry-run]}}
+        - {id: no_scripts, matcher: {kind: any_flag, flags: [--ignore-scripts, --package-lock-only]}}
+        - id: prefix
+          matcher: {kind: any_flag, flags: [--prefix]}
+          parameters: [{name: install_prefix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: global_install
+          matcher: {kind: any_flag, flags: [-g, --global]}
+          effects_when: {unless_modifiers: [preview, information]}
+          effects: [*install_scope]
         - id: install_flag
           matcher:
             kind: any_flag
@@ -78,13 +116,8 @@ subcommands:
               - "--save-peer"
               - "--save-exact"
               - "--no-save"
-              - "-g"
-              - "--global"
               - "--force"
               - "--legacy-peer-deps"
-              - "--ignore-scripts"
-              - "--package-lock-only"
-              - "--dry-run"
               - "--workspaces"
         - id: install_value_option
           matcher:
@@ -92,7 +125,6 @@ subcommands:
             flags:
               - "--registry"
               - "--cache"
-              - "--prefix"
               - "--tag"
               - "-w"
               - "--workspace"
@@ -191,20 +223,45 @@ subcommands:
       extensions: {}
 
     - name: exec
+      option_scope: permuted_options
       aliases:
         - x
       forms:
+        - id: exec_shell_call
+          selector: {kind: has_modifier, modifier: call}
+          parameters: [{name: ignored_call_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+        - id: exec_interactive
+          selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: call}}]}
+          implicit_inputs: [{source: interactive_session, semantic: {kind: payload, language: sh, source: interactive, recursive: true}}]
+          effects: [{kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}]
         - id: exec_package_from_modifier
           selector:
-            kind: has_modifier
-            modifier: package
+            kind: all
+            items:
+              - {kind: has_modifier, modifier: package}
+              - {kind: has_positional_at, index: 0}
+              - {kind: not, item: {kind: has_modifier, modifier: call}}
           parameters:
+            - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
             - name: exec_args
               semantic:
                 kind: plain_value
               binding:
                 kind: remaining_args
               cardinality: optional_many
+          effects: [{kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [exec_args], stdout_to_parent: true}}]
+
+        - id: exec_local_program_or_package
+          selector:
+            kind: all
+            items:
+              - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(\./|\.\./|/)'}}
+              - {kind: not, item: {kind: has_modifier, modifier: package}}
+              - {kind: not, item: {kind: has_modifier, modifier: call}}
+          parameters:
+            - {name: local_execution, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: exec_args, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects: [{kind: execute_payload, target: {kind: slot, name: local_execution}}]
 
         - id: exec_package
           selector:
@@ -212,6 +269,8 @@ subcommands:
             items:
               - kind: has_positional_at
                 index: 0
+              - {kind: not, item: {kind: has_modifier, modifier: call}}
+              - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(\./|\.\./|/)'}}}
               - kind: not
                 item:
                   kind: has_modifier
@@ -246,6 +305,10 @@ subcommands:
                 kind: slot
                 name: package_specs
       modifiers:
+        - id: call
+          matcher: {kind: any_flag, flags: [-c, --call]}
+          parameters: [{name: shell_call, semantic: {kind: payload, language: sh, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+          effects: [{kind: execute_payload, target: {kind: slot, name: shell_call}}]
         - id: package
           matcher:
             kind: any_flag

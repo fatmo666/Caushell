@@ -1,88 +1,157 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+option_matching: short_clusters
+opaque_on_unresolved: true
 
-identity:
-  canonical_name: make
-  aliases:
-    - gmake
+identity: {canonical_name: make, aliases: [gmake]}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
-
+# GNU Make native argv. Makefile text is not Bash. --eval is expanded before
+# makefiles are read, including with -n/-q/-p/-t.
 forms:
-  - id: run_default
+  - id: show_help
+    selector: &help {kind: has_modifier, modifier: help}
+    parameters: &build_parameters
+      - name: assignment_code
+        semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}
+        binding:
+          kind: positionals_matching
+          matcher: {kind: regex_pattern, pattern: '(^[^=]*!=[\s\S]*$)|(^[\s\S]*\$[({][\s\S]*=[\s\S]*$)|(^[^=]+=[\s\S]*\$[({])'}
+        cardinality: optional_many
+      - {name: targets_and_assignments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: &assignment_effects [{kind: execute_payload, target: {kind: slot, name: assignment_code}}]
+    stream_contract: &information_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: show_version
+    selector: {kind: all, items: [{kind: not, item: *help}, {kind: has_modifier, modifier: version}]}
+    parameters: *build_parameters
+    effects: *assignment_effects
+    stream_contract: *information_stream
+
+  # Repeated -C is sequential, not last-wins. Do not load a fictitious
+  # caller-relative Makefile or bind relative -f paths to the caller's cwd.
+  - id: unresolved_directory_build
     selector:
       kind: all
       items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: file
-    parameters:
-      - name: targets
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
+        - &running {kind: all, items: [{kind: not, item: *help}, {kind: not, item: {kind: has_modifier, modifier: version}}]}
+        - &directory {kind: has_modifier, modifier: directory}
+    operation_semantics_unresolved: true
+    parameters: *build_parameters
+    effects: *assignment_effects
+
+  - id: stdin_makefile
+    selector:
+      kind: all
+      items:
+        - *running
+        - &no_directory {kind: not, item: *directory}
+        - &stdin_file {kind: has_modifier_parameter_matching, modifier: file, parameter: makefiles, matcher: {kind: literal, value: '-'}}
+    parameters: *build_parameters
+    implicit_inputs:
+      - {source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
     effects:
-      - kind: load_config
-        target:
-          kind: tool_convention_path
-          path: Makefile
-          convention: make.makefile
-          purpose: task_config
-      - kind: execute_config_defined_task
-        target:
-          kind: none
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: slot, name: assignment_code}}
+      - &load_files {kind: load_config, target: {kind: slot, name: config_paths}}
+      - &execute_files {kind: load_in_process_code, target: {kind: slot, name: config_paths}}
+      - &build {kind: execute_config_defined_task, target: {kind: none}}
+
+  - id: run_default
+    selector:
+      kind: all
+      items: [*running, *no_directory, {kind: not, item: &files {kind: has_modifier, modifier: file}}]
+    parameters: *build_parameters
+    stream_contract: &build_stream {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+    effects:
+      # Candidate convention paths, not a claim about which one exists.
+      - {kind: load_config, target: {kind: tool_convention_path, path: GNUmakefile, convention: make.makefile, purpose: task_config}}
+      - {kind: load_config, target: {kind: tool_convention_path, path: makefile, convention: make.makefile, purpose: task_config}}
+      - {kind: load_config, target: {kind: tool_convention_path, path: Makefile, convention: make.makefile, purpose: task_config}}
+      - *build
+      - {kind: execute_payload, target: {kind: slot, name: assignment_code}}
 
   - id: run_with_file
-    selector:
-      kind: has_modifier
-      modifier: file
-    parameters:
-      - name: config_path
-        semantic:
-          kind: path
-          role: config
-          purpose: task_config
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: required_one
-      - name: targets
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    effects:
-      - kind: load_config
-        target:
-          kind: slot
-          name: config_path
-      - kind: execute_config_defined_task
-        target:
-          kind: none
+    selector: {kind: all, items: [*running, *no_directory, *files, {kind: not, item: *stdin_file}]}
+    parameters: *build_parameters
+    stream_contract: *build_stream
+    effects: [*load_files, *execute_files, *build, {kind: execute_payload, target: {kind: slot, name: assignment_code}}]
 
 modifiers:
+  - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}
+  - {id: version, matcher: {kind: any_flag, flags: [-v, --version]}}
+  - id: eval
+    matcher: {kind: any_flag, flags: [-E, --eval]}
+    constraints: [{kind: mutually_exclusive_with, modifier: help}, {kind: mutually_exclusive_with, modifier: version}]
+    parameters:
+      - {name: eval_code, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: execute_payload, target: {kind: slot, name: eval_code}}]
+  - id: ignored_eval_help
+    matcher: {kind: any_flag, flags: [-E, --eval]}
+    constraints: [{kind: requires_modifier, modifier: help}]
+    parameters: &ignored_eval [{name: ignored_eval, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: ignored_eval_version
+    matcher: {kind: any_flag, flags: [-E, --eval]}
+    constraints: [{kind: requires_modifier, modifier: version}, {kind: mutually_exclusive_with, modifier: help}]
+    parameters: *ignored_eval
   - id: file
+    matcher: {kind: any_flag, flags: [-f, --file, --makefile]}
+    parameters:
+      - name: makefiles
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}}]
+          fallback: {name: config_paths, semantic: {kind: path, role: config, purpose: in_process_code}}
+  - id: directory
+    matcher: {kind: any_flag, flags: [-C, --directory]}
+    parameters:
+      - {name: directories, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: include_directory
+    matcher: {kind: any_flag, flags: [-I, --include-dir]}
+    parameters:
+      - {name: include_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: target_path, target: {kind: slot, name: include_paths}}]
+  - id: jobs
+    matcher: {kind: any_flag, flags: [-j, --jobs]}
+    parameters:
+      - {name: job_counts, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
+  - id: load_average
+    matcher: {kind: any_flag, flags: [-l, --load-average, --max-load]}
+    parameters:
+      - {name: load_limits, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
+  - id: optional_modes
+    matcher: {kind: any_flag, flags: [-O, --output-sync, --debug, --shuffle]}
+    parameters:
+      - {name: mode_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_many}
+  - id: jobserver_style
+    matcher: {kind: any_flag, flags: [--jobserver-style]}
+    parameters:
+      - {name: jobserver_style, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: old_file
+    matcher: {kind: any_flag, flags: [-o, --old-file, --assume-old]}
+    parameters:
+      - {name: old_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: target_path, target: {kind: slot, name: old_files}}]
+  - id: new_file
+    matcher: {kind: any_flag, flags: [-W, --what-if, --new-file, --assume-new]}
+    parameters:
+      - {name: new_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: target_path, target: {kind: slot, name: new_files}}]
+  - id: build_modes
     matcher:
       kind: any_flag
-      flags:
-        - "-f"
-        - "--file"
+      flags: [-b, -m, -B, --always-make, -d, -e, --environment-overrides, -i, --ignore-errors, -k, --keep-going, -L, --check-symlink-times, -n, --just-print, --dry-run, --recon, -p, --print-data-base, -q, --question, -r, --no-builtin-rules, -R, --no-builtin-variables, -s, --silent, --quiet, -S, --no-keep-going, --stop, -t, --touch, --trace, -w, --print-directory, --no-print-directory, --no-silent, --warn-undefined-variables]
 
-subcommands: null
 extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/make/manual/html_node/Options-Summary.html
+    - https://www.gnu.org/software/make/manual/html_node/Eval-Function.html
   caushell.profile/known_limitations:
-    - The default form models the conventional Makefile in the current working directory; recursive directory traversal and fallback filenames are not expanded yet.
+    - Explicit Make evaluation, shell/function-bearing assignments and stdin Makefiles are opaque code, never Bash.
+    - Directory-changing builds retain unresolved semantics rather than pretending -C is last-wins or loading caller-relative configuration.
+    - Separate numeric -j/-l values remain plain argv, not path or code operands; their numeric value is not simulated.
+    - Includes, inherited Make variables and recipe bodies are not dynamically inspected. Ordinary local project configuration retains the existing build policy.

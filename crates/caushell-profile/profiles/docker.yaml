@@ -1,5 +1,9 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+selection_failure_effects:
+  - {kind: state_operation, state_operation: {domain: container_runtime, operation: opaque}, target: {kind: none}}
 
 identity:
   canonical_name: docker
@@ -18,10 +22,8 @@ platform:
   requires_features: []
 
 forms:
-  - id: daemon_control
-    selector:
-      kind: all
-      items: []
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
     parameters:
       - name: arguments
         semantic:
@@ -29,21 +31,13 @@ forms:
         binding:
           kind: remaining_args
         cardinality: optional_many
-    effects:
-      - kind: network_endpoint
-        target:
-          kind: tool_convention_path
-          path: /var/run/docker.sock
-          convention: docker.daemon_socket
-          purpose: generic_operand
-      - kind: execute_imported_package_logic
-        target:
-          kind: none
-      - kind: metadata_mutation
-        target:
-          kind: none
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: ['--help', '-v', '--version']}}
+  - id: context
+    matcher: {kind: any_flag, flags: ['-c', '--context']}
+    parameters:
+      - {name: context, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
   - id: host
     matcher:
       kind: any_flag
@@ -70,8 +64,7 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
-        - "-f"
-        - "--file"
+        - "--config"
     parameters:
       - name: config_path
         semantic:
@@ -88,9 +81,93 @@ modifiers:
           kind: slot
           name: config_path
 
-subcommands: null
+subcommands:
+  roots:
+    - &copy
+      name: cp
+      option_scope: permuted_options
+      forms:
+        - id: copy_from_container
+          selector:
+            kind: all
+            items:
+              - {kind: has_positional_at_matching, index: 0, matcher: &container_path {kind: structured_value_context, context: remote_spec}}
+              - {kind: not, item: {kind: last_positional_matches, matcher: *container_path}}
+          parameters:
+            - {name: container_source, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+            - name: destination_operand
+              semantic: {kind: plain_value}
+              binding: {kind: next_positional}
+              cardinality: required_one
+              structured_projection:
+                branches: [{matcher: {kind: literal, value: '-'}}]
+                fallback: {name: host_destination, semantic: {kind: path, role: write}}
+          remaining_selector: {kind: no_positional_args}
+          effects: [{kind: write_path, target: {kind: slot, name: host_destination}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+        - id: copy_to_container
+          selector:
+            kind: all
+            items:
+              - {kind: last_positional_matches, matcher: *container_path}
+              - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: *container_path}}
+          parameters:
+            - {name: host_source, semantic: {kind: path, role: read}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: exclude_literal, value: '-'}]}
+            - {name: container_destination, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+          remaining_selector: {kind: no_positional_args}
+          effects:
+            - {kind: read_path, target: {kind: slot, name: host_source}}
+            - {kind: state_operation, state_operation: {domain: container_runtime, operation: mutate}, target: {kind: none}}
+          stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+      modifiers:
+        - {id: copy_flags, matcher: {kind: any_flag, flags: ['-a', '--archive', '-L', '--follow-link', '-q', '--quiet']}}
+      children: []
+      default_behavior: reject_unknown
+    - &run
+      name: run
+      option_scope: leading_options
+      forms:
+        - id: run_container
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: image, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: container_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - {kind: state_operation, state_operation: {domain: container_runtime, operation: control}, target: {kind: none}}
+      modifiers:
+        - {id: flags, matcher: {kind: any_flag, flags: ['--rm', '-i', '--interactive', '-t', '--tty', '-d', '--detach', '--init', '--read-only', '-P', '--publish-all', '--oom-kill-disable']}}
+        - id: privileged
+          matcher: {kind: any_flag, flags: ['--privileged']}
+          effects: [{kind: privilege_modifier, target: {kind: none}}]
+        - id: native_options
+          matcher: {kind: any_flag, flags: ['-v', '--volume', '--mount', '--volumes-from', '--name', '--network', '--net', '-p', '--publish', '-e', '--env', '--env-file', '-u', '--user', '--userns', '-w', '--workdir', '--entrypoint', '--hostname', '-h', '--cap-add', '--cap-drop', '--security-opt', '--device', '--platform', '--restart', '--pull', '--label', '-l', '--memory', '-m', '--cpus', '--gpus', '--add-host', '--dns', '--detach-keys', '-a', '--attach']}
+          parameters:
+            - {name: native_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+      children: []
+      default_behavior: reject_unknown
+    - &inspect
+      name: ps
+      aliases: [ls, images, info, version, inspect, logs, top, port, stats]
+      option_scope: all_arguments
+      forms:
+        - id: inspect_runtime
+          parameters: [{name: query_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          effects: [{kind: state_operation, state_operation: {domain: container_runtime, operation: inspect}, target: {kind: none}}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+    - name: container
+      forms: []
+      modifiers: []
+      children: [*copy, *run, *inspect]
+      default_behavior: reject_unknown
 extensions:
   caushell.profile/source_research:
     - command-frequency/D3-real-incidents/frequency_sorted.csv
   caushell.profile/known_limitations:
-    - Docker subcommands are modeled as daemon/container control; image-specific filesystem effects are not expanded in this first slice.
+    - Container paths are not host paths. cp separates host writes from container mutations. run declares container-runtime control, including bind mounts and privileged execution, without interpreting image programs as host Bash or assuming an image filesystem. Unmodeled operations retain opaque runtime semantics.
+    - Remote daemon contexts may designate another machine; static host path facts describe client-side cp operands, not daemon bind-mount locations.
+  caushell.profile/native_sources:
+    - https://docs.docker.com/reference/cli/docker/container/cp/
+    - https://docs.docker.com/reference/cli/docker/container/run/

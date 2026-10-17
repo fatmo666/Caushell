@@ -1,4 +1,6 @@
 //! Classify command text and inspect evidence only; no package manager executes.
+//! Pip destinations are explicitly scoped here; installation-scope policy is
+//! tested separately from package-origin classification.
 use caushell_core::ShellQueryCore;
 use caushell_graph::NodeKind;
 use caushell_types::{
@@ -55,7 +57,7 @@ fn definition_filename_changes_do_not_change_the_decision() {
         "custom.spec",
     ] {
         assert_source(
-            &format!("pip install -r {name}"),
+            &format!("pip install --target ./site -r {name}"),
             Decision::Allow,
             "requirement_file",
         );
@@ -88,15 +90,15 @@ fn definition_classification_does_not_approve_an_unknown_or_outside_environment(
 #[test]
 fn remote_definitions_and_unknown_values_still_require_approval() {
     for command in [
-        "pip install -r https://example.test/input",
+        "pip install --target ./site -r https://example.test/input",
         "conda env create -p env -f https://example.test/input",
     ] {
         assert_source(command, Decision::NeedApproval, "direct_url");
     }
     for command in [
-        "pip install -r \"$FILE\"",
-        "pip install -r \"https://example.test/$FILE\"",
-        "pip install -r s3://bucket/input",
+        "pip install --target ./site -r \"$FILE\"",
+        "pip install --target ./site -r \"https://example.test/$FILE\"",
+        "pip install --target ./site -r s3://bucket/input",
         "conda env create -p env -f \"$FILE\"",
     ] {
         assert_source(command, Decision::NeedApproval, "unknown_dynamic");
@@ -105,18 +107,26 @@ fn remote_definitions_and_unknown_values_still_require_approval() {
 
 #[test]
 fn semantic_role_not_filename_selects_the_package_source_class() {
-    assert_source("pip install requests.txt", Decision::Allow, "registry_ref");
     assert_source(
-        "pip install -r requests.txt",
+        "pip install --target ./site requests.txt",
+        Decision::Allow,
+        "registry_ref",
+    );
+    assert_source(
+        "pip install --target ./site -r requests.txt",
         Decision::Allow,
         "requirement_file",
     );
-    assert_source("pip install -e requests.txt", Decision::Allow, "local_path");
+    assert_source(
+        "pip install --target ./site -e requests.txt",
+        Decision::Allow,
+        "local_path",
+    );
 }
 
 #[test]
 fn known_argv_value_is_not_reexpanded_as_shell_source() {
-    let mut req = request("pip install -r \"$FILE\"");
+    let mut req = request("pip install --target ./site -r \"$FILE\"");
     req.shell_state_before =
         req.shell_state_before
             .with_exact_scalar_variable("FILE", "input$LITERAL", true);
@@ -140,7 +150,7 @@ fn package_rule_configuration_still_controls_definition_sources() {
         RulePolicyEntry::new(RuleAction::Deny),
     );
     for command in [
-        "pip install -r input",
+        "pip install --target ./site -r input",
         "conda env create -p env -f environment.yml",
     ] {
         assert_eq!(
@@ -167,7 +177,11 @@ fn package_sinks(response: &CheckResponse) -> Vec<&ImportedPackageExecutionSinkE
 #[test]
 fn mixed_package_sources_are_order_independent_across_managers() {
     let url = "https://packages.example.test/other.pkg";
-    for prefix in ["pip install", "npm install", "conda install -p env"] {
+    for prefix in [
+        "pip install --target ./site",
+        "npm install",
+        "conda install -p env",
+    ] {
         for args in [format!("numpy {url}"), format!("{url} numpy")] {
             let command = format!("{prefix} {args}");
             let response = ShellQueryCore::new().check(request(&command));
@@ -196,8 +210,8 @@ fn mixed_package_sources_are_order_independent_across_managers() {
 #[test]
 fn sources_in_other_parameter_slots_cannot_be_masked_by_a_registry_package() {
     for command in [
-        "pip install numpy -r https://packages.example.test/input",
-        "pip install -r https://packages.example.test/input numpy",
+        "pip install --target ./site numpy -r https://packages.example.test/input",
+        "pip install --target ./site -r https://packages.example.test/input numpy",
         "conda install -p env numpy -c https://packages.example.test",
         "conda install -p env -c https://packages.example.test numpy",
         "conda install -p env numpy -f https://packages.example.test/input",
@@ -226,7 +240,7 @@ fn sources_in_other_parameter_slots_cannot_be_masked_by_a_registry_package() {
 #[test]
 fn all_six_source_kinds_keep_evidence_without_stopping_at_the_first_approval() {
     let response = ShellQueryCore::new().check(request(
-        "pip install numpy ./dist/pkg.whl -r input https://packages.example.test/pkg.whl git+https://packages.example.test/repo.git \"$PKG\"",
+        "pip install --target ./site numpy ./dist/pkg.whl -r input https://packages.example.test/pkg.whl git+https://packages.example.test/repo.git \"$PKG\"",
     ));
     assert_eq!(response.decision, Decision::NeedApproval, "{response:?}");
     let sinks = package_sinks(&response);
@@ -260,7 +274,7 @@ fn all_six_source_kinds_keep_evidence_without_stopping_at_the_first_approval() {
 #[test]
 fn repeated_sources_are_deduplicated_only_within_the_same_invocation_and_kind() {
     let response = ShellQueryCore::new().check(request(
-        "pip install https://packages.example.test/pkg https://packages.example.test/pkg -r https://packages.example.test/pkg",
+        "pip install --target ./site https://packages.example.test/pkg https://packages.example.test/pkg -r https://packages.example.test/pkg",
     ));
     assert_eq!(response.decision, Decision::NeedApproval);
     assert_eq!(package_sinks(&response).len(), 1, "{response:?}");
@@ -274,7 +288,9 @@ fn repeated_sources_are_deduplicated_only_within_the_same_invocation_and_kind() 
         1
     );
 
-    let response = ShellQueryCore::new().check(request("pip install input -r input -e input"));
+    let response = ShellQueryCore::new().check(request(
+        "pip install --target ./site input -r input -e input",
+    ));
     assert_eq!(response.decision, Decision::Allow);
     let sinks = package_sinks(&response);
     assert_eq!(sinks.len(), 3, "{sinks:?}");
@@ -291,7 +307,7 @@ fn repeated_sources_are_deduplicated_only_within_the_same_invocation_and_kind() 
     }
 
     let response = ShellQueryCore::new().check(request(
-        "pip install https://packages.example.test/pkg; pip install https://packages.example.test/pkg",
+        "pip install --target ./site https://packages.example.test/pkg; pip install --target ./site https://packages.example.test/pkg",
     ));
     assert_eq!(response.decision, Decision::NeedApproval);
     let sinks = package_sinks(&response);
@@ -312,7 +328,7 @@ fn explicit_package_policy_applies_to_every_source_and_keeps_all_evidence() {
             RulePolicyEntry::new(action),
         );
         let response = ShellQueryCore::with_policy(policy).check(request(
-            "pip install numpy https://packages.example.test/pkg git+https://packages.example.test/repo.git",
+            "pip install --target ./site numpy https://packages.example.test/pkg git+https://packages.example.test/repo.git",
         ));
         assert_eq!(response.decision, decision, "{action:?}: {response:?}");
         assert_eq!(
@@ -326,8 +342,8 @@ fn explicit_package_policy_applies_to_every_source_and_keeps_all_evidence() {
 #[test]
 fn nested_package_calls_check_all_child_sources_and_preserve_child_identity() {
     for command in [
-        "env pip install numpy https://packages.example.test/pkg",
-        "bash -c 'pip install numpy https://packages.example.test/pkg'",
+        "env pip install --target ./site numpy https://packages.example.test/pkg",
+        "bash -c 'pip install --target ./site numpy https://packages.example.test/pkg'",
     ] {
         let response = ShellQueryCore::new().check(request(command));
         assert_eq!(
@@ -337,10 +353,8 @@ fn nested_package_calls_check_all_child_sources_and_preserve_child_identity() {
         );
         let sinks = package_sinks(&response);
         assert_eq!(sinks.len(), 2, "{command}: {sinks:?}");
-        assert!(
-            sinks.iter().all(|s| s.depth == 1
-                && s.command == "pip install numpy https://packages.example.test/pkg")
-        );
+        assert!(sinks.iter().all(|s| s.depth == 1
+            && s.command == "pip install --target ./site numpy https://packages.example.test/pkg"));
         assert_eq!(sinks[0].node_id, sinks[1].node_id);
     }
 }
@@ -386,10 +400,12 @@ fn earlier_session_package_sources_are_not_rechecked_for_later_calls() {
         RulePolicyEntry::new(RuleAction::Observe),
     );
     let mut core = ShellQueryCore::with_policy(policy);
-    let first = core.check(request("pip install https://packages.example.test/pkg"));
+    let first = core.check(request(
+        "pip install --target ./site https://packages.example.test/pkg",
+    ));
     assert_eq!(first.decision, Decision::Allow);
     assert_eq!(package_sinks(&first).len(), 1);
-    let mut second_request = request("pip install numpy");
+    let mut second_request = request("pip install --target ./site numpy");
     second_request.sequence_no = CommandSequenceNo::new(2);
     let second = core.check(second_request);
     assert_eq!(second.decision, Decision::Allow);
@@ -402,7 +418,7 @@ fn earlier_session_package_sources_are_not_rechecked_for_later_calls() {
 #[test]
 fn package_approval_does_not_override_a_stronger_neighboring_denial() {
     let response = ShellQueryCore::new().check(request(
-        "pip install numpy https://packages.example.test/pkg; rm -rf /",
+        "pip install --target ./site numpy https://packages.example.test/pkg; rm -rf /",
     ));
     assert_eq!(response.decision, Decision::Deny, "{response:?}");
     assert_eq!(package_sinks(&response).len(), 2);

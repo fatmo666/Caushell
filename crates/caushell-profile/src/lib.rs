@@ -3,9 +3,11 @@ mod argument_regions;
 mod argument_structure;
 mod awk_payload;
 mod bind;
+mod brace_expansion;
 mod builtin;
 mod dispatch;
 mod dispatch_string;
+mod environment_inputs;
 mod loader;
 mod lookup;
 mod materialize;
@@ -58,6 +60,7 @@ pub use materialize::{
     materialize_exact_shell_parameter_reference_fields, materialize_projected_invocation,
     materialize_recursive_payload_candidate, materialize_shell_assignment_value,
     parse_shell_parameter_reference_after_dollar,
+    materialize_prefix_environment,
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
@@ -67,6 +70,9 @@ pub use projection::{
     project_invocation,
 };
 pub use raw::RawArgumentControlVocabulary;
+pub use raw::RawEnvironmentInput;
+pub use raw::RawModifierParameterCondition;
+pub use types::EnvironmentInput;
 pub use raw::RawPathScope;
 pub use raw::{
     RawArgumentFileRule, RawBindingSpec, RawCardinality, RawCatastrophicEffectMetadata,

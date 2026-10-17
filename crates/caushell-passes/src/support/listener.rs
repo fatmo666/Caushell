@@ -50,15 +50,13 @@ fn variable_default(
             .find(|a| a.name == name)
     });
     let value = if let Some(assignment) = prefix {
-        if assignment.operator != caushell_parse::AssignmentOperator::Assign {
-            return unknown();
-        }
-        SessionValue::from_session_variable_value(
-            &super::variable_overlay::classify_assignment_value(
-                &assignment.value,
-                record.bindings(),
-            ),
-        )
+        record.command().and_then(|command| {
+            caushell_profile::materialize_prefix_environment(command, record.bindings())
+                .into_iter()
+                .rev()
+                .find(|(key, _)| key == &assignment.name)
+                .map(|(_, value)| value)
+        })?
     } else if shell_scope {
         match record.bindings().variable_presence(name) {
             VariablePresence::Absent => return None,

@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: mktemp
@@ -11,17 +13,53 @@ trust:
 
 platform:
   os_families:
-    - posix
     - linux
-    - macos
   shell_families: []
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+  - id: legacy_temporary_directory
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: legacy_tmpdir}
+        - &running {kind: not, item: {kind: has_modifier, modifier: information}}
+        - &creating {kind: not, item: {kind: has_modifier, modifier: dry_run}}
+        - &not_p {kind: not, item: {kind: has_modifier, modifier: target_directory}}
+        - &not_tmpdir {kind: not, item: {kind: has_modifier, modifier: tmpdir}}
+    parameters: &legacy_templates
+      - {name: template_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_one}
+    stream_contract: &names {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque}
+    effects:
+      - kind: write_path
+        target: {kind: configured_path, sources: [], environment: {name: TMPDIR, empty_is_unset: true}, default_value: '/tmp'}
+  - id: mixed_directory_selection
+    operation_semantics_unresolved: true
+    selector:
+      kind: all
+      items:
+        - *running
+        - *creating
+        - kind: any
+          items:
+            - {kind: all, items: [{kind: has_modifier, modifier: legacy_tmpdir}, {kind: any, items: [{kind: has_modifier, modifier: target_directory}, {kind: has_modifier, modifier: tmpdir}]}]}
+            - {kind: all, items: [{kind: has_modifier, modifier: target_directory}, {kind: has_modifier, modifier: tmpdir}]}
+    parameters: *legacy_templates
+    stream_contract: *names
+  - id: repeated_optional_directory
+    operation_semantics_unresolved: true
+    selector: {kind: all, items: [*running, *creating, {kind: has_flag_at_least, flag: '--tmpdir', count: 2}]}
+    parameters: *legacy_templates
+    stream_contract: *names
   - id: create_temporary_path
     selector:
       kind: all
       items:
+        - *running
+        - &not_legacy {kind: not, item: {kind: has_modifier, modifier: legacy_tmpdir}}
+        - *not_tmpdir
         - kind: not
           item:
             kind: has_modifier
@@ -40,7 +78,7 @@ forms:
           purpose: generic_operand
         binding:
           kind: remaining_positionals
-        cardinality: required_many
+        cardinality: required_one
     stream_contract:
       stdin_mode: ignored
       stdout_mode: path_list
@@ -55,6 +93,9 @@ forms:
     selector:
       kind: all
       items:
+        - *running
+        - *not_legacy
+        - *not_tmpdir
         - kind: not
           item:
             kind: has_modifier
@@ -77,13 +118,16 @@ forms:
           kind: configured_path
           sources: []
           environment: {name: TMPDIR, empty_is_unset: true}
-          missing: unknown
+          default_value: '/tmp'
           purpose: generic_operand
 
   - id: create_temporary_path_in_target_directory
     selector:
       kind: all
       items:
+        - *running
+        - *not_legacy
+        - *not_tmpdir
         - kind: not
           item:
             kind: has_modifier
@@ -98,7 +142,7 @@ forms:
           purpose: generic_operand
         binding:
           kind: remaining_positionals
-        cardinality: optional_many
+        cardinality: optional_one
     stream_contract:
       stdin_mode: ignored
       stdout_mode: path_list
@@ -106,13 +150,31 @@ forms:
     effects:
       - kind: write_path
         target:
-          kind: slot
-          name: target_directory
+          kind: configured_path
+          sources: [{slot: template_paths, projection: {kind: identity}}]
+          default_value: 'tmp.XXXXXXXXXX'
+          relative_to:
+            slot: target_directory
+            environment: {name: TMPDIR, empty_is_unset: true}
+            default_value: '/tmp'
+
+  - id: temporary_path_with_long_tmpdir
+    selector: {kind: all, items: [*running, *creating, *not_legacy, *not_p, {kind: has_modifier, modifier: tmpdir}, {kind: not, item: {kind: has_flag_at_least, flag: '--tmpdir', count: 2}}]}
+    parameters: *legacy_templates
+    stream_contract: *names
+    effects:
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources: [{slot: template_names, projection: {kind: identity}}]
+          default_value: 'tmp.XXXXXXXXXX'
+          relative_to:
+            slot: long_target_directory
+            environment: {name: TMPDIR, empty_is_unset: true}
+            default_value: '/tmp'
 
   - id: dry_run_name
-    selector:
-      kind: has_modifier
-      modifier: dry_run
+    selector: {kind: all, items: [*running, {kind: has_modifier, modifier: dry_run}]}
     parameters:
       - name: template_paths
         semantic:
@@ -121,13 +183,24 @@ forms:
           purpose: generic_operand
         binding:
           kind: remaining_positionals
-        cardinality: optional_many
+        cardinality: optional_one
     stream_contract:
       stdin_mode: ignored
       stdout_mode: path_list
       stderr_mode: opaque
 
 modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: ['--help', '--version', '-V']}}
+  - {id: quiet, matcher: {kind: any_flag, flags: ['-q', '--quiet']}}
+  - {id: legacy_tmpdir, matcher: {kind: any_flag, flags: ['-t']}}
+  - id: suffix
+    matcher: {kind: any_flag, flags: ['--suffix']}
+    parameters:
+      - {name: suffix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: tmpdir
+    matcher: {kind: any_flag, flags: ['--tmpdir']}
+    parameters:
+      - {name: long_target_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_one}
   - id: directory
     matcher:
       kind: any_flag
@@ -147,19 +220,20 @@ modifiers:
       kind: any_flag
       flags:
         - "-p"
-        - "--tmpdir"
     parameters:
       - name: target_directory
         semantic:
-          kind: path
-          role: target
-          purpose: generic_operand
+          kind: plain_value
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_many
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+    - https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp-invocation
+    - https://github.com/coreutils/coreutils/blob/master/src/mktemp.c
+  caushell.profile/known_limitations:
+    - This is the GNU coreutils CLI contract. BSD -t prefix and transient-create -u semantics are not interchangeable with GNU flags. Mixed -t/-p/--tmpdir precedence and repeated optional --tmpdir values remain unresolved instead of retaining an earlier value after a bare flag resets it. Templates are not exact output bytes or proof of a created filename.

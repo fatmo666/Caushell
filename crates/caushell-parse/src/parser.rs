@@ -151,6 +151,82 @@ fn decode_static_word_node(node: Node<'_>, source: &[u8]) -> Option<String> {
 }
 
 pub fn concatenated_argument_is_scalar(text: &str) -> bool {
+    fn quoted_parameter(node: Node<'_>, source: &[u8], budget: &mut usize) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        let Ok(text) = node.utf8_text(source) else {
+            return false;
+        };
+        let Some(body) = text.strip_prefix("${") else {
+            return false;
+        };
+        // Only a scalar parameter head is a proof. Vector subscripts,
+        // indirection and parameter transformations retain the fallback.
+        let end = body
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .count();
+        if end == 0 {
+            return false;
+        }
+        let suffix = &body[end..];
+        if !(suffix == "}"
+            || [
+                ":-", ":+", ":=", ":?", "-", "+", "=", "?", ":", "%", "#", "/", "^", ",",
+            ]
+            .iter()
+            .any(|op| suffix.starts_with(op)))
+        {
+            return false;
+        }
+        fn expansions_are_scalar(node: Node<'_>, source: &[u8], budget: &mut usize) -> bool {
+            if *budget == 0 {
+                return false;
+            }
+            *budget -= 1;
+            match node.kind() {
+                "command_substitution" | "arithmetic_expansion" => true,
+                "simple_expansion" => node.utf8_text(source).is_ok_and(|s| s != "$@"),
+                "expansion" => quoted_parameter(node, source, budget),
+                // In a double-quoted parameter operator word these quotes
+                // are not an independent shell single-quote barrier. Do not
+                // hide unparsed expansions behind tree-sitter's raw leaf.
+                "raw_string" | "ansi_c_string" => node
+                    .utf8_text(source)
+                    .is_ok_and(|s| !s.contains(['$', '`'])),
+                "word" => {
+                    let Ok(word) = node.utf8_text(source) else {
+                        return false;
+                    };
+                    // Parameter operator words may be opaque leaves containing
+                    // $@. Query their quoted syntax, not their leaf-node count.
+                    if !word.contains('$') {
+                        return true;
+                    }
+                    with_single_argument(&format!("\"{word}\""), |word_node, word_source| {
+                        Some(
+                            word_node.kind() == "string"
+                                && (0..word_node.named_child_count()).all(|i| {
+                                    expansions_are_scalar(
+                                        word_node.named_child(i as u32).unwrap(),
+                                        word_source,
+                                        budget,
+                                    )
+                                }),
+                        )
+                    })
+                    .unwrap_or(false)
+                }
+                _ => (0..node.named_child_count()).all(|i| {
+                    expansions_are_scalar(node.named_child(i as u32).unwrap(), source, budget)
+                }),
+            }
+        }
+        (0..node.named_child_count())
+            .all(|i| expansions_are_scalar(node.named_child(i as u32).unwrap(), source, budget))
+    }
     fn quoted_child(node: Node<'_>, source: &[u8]) -> bool {
         match node.kind() {
             // Inner shell words never become outer argv fields here.
@@ -159,9 +235,7 @@ pub fn concatenated_argument_is_scalar(text: &str) -> bool {
             | "string_content"
             | "escape_sequence" => true,
             "simple_expansion" => node.utf8_text(source).is_ok_and(|s| s != "$@"),
-            "expansion" => node
-                .utf8_text(source)
-                .is_ok_and(|s| !s.contains(['@', '!', '['])),
+            "expansion" => quoted_parameter(node, source, &mut 256),
             _ => false,
         }
     }
@@ -176,7 +250,8 @@ pub fn concatenated_argument_is_scalar(text: &str) -> bool {
             _ => false,
         }
     }
-    with_single_argument(text, |node, source| Some(scalar(node, source))).unwrap_or(false)
+    text.len() <= 8192
+        && with_single_argument(text, |node, source| Some(scalar(node, source))).unwrap_or(false)
 }
 
 pub fn parse_command(
@@ -2240,6 +2315,7 @@ fn extract_token_text(node: Node<'_>, source: &[u8]) -> Option<(String, bool)> {
     match node.kind() {
         "word"
         | "number"
+        | "brace_expression"
         | "concatenation"
         | "simple_expansion"
         | "expansion"
@@ -2553,6 +2629,14 @@ mod tests {
         PipelinePosition, ProcessSubstitutionOperator, RedirectionKind, StatementTerminator,
     };
     use caushell_types::ShellKind;
+
+    #[test]
+    fn quoted_scalar_query_does_not_hide_nested_vector_words() {
+        for word in [r#""${prompt:-$@}""#, r#""${prompt:-${items[@]}}""#] {
+            let tree = super::with_single_argument(word, |node, _| Some(node.to_sexp())).unwrap();
+            assert!(!super::concatenated_argument_is_scalar(word), "{word}: {tree}");
+        }
+    }
 
     #[test]
     fn decode_static_double_quoted_argument_applies_shell_lexical_escapes_only() {

@@ -34,6 +34,31 @@ Before parsing a recursive inline payload, its outer-shell operands must become 
 
 ## Command Modeling
 
+### Make evaluation and argv ownership
+
+The Make Profile owns permuted options and their operands before selecting a
+build form. `-E`/`--eval` introduces opaque Make code, not Bash, and uses the
+existing nested-payload approval path. Repetitions retain all fragments;
+`-n`, `-q`, `-p` and `-t` do not waive evaluation. Unknown options and missing
+operands remain unresolved. Literal option operands and words after `--` are
+not reinterpreted as Make options.
+
+Function-bearing command-line assignments and `!=` shell assignments are also
+explicit code carriers. Immediate assignments can expand while argv is parsed,
+even with help/version; the Profile retains them separately from `--eval`,
+which help/version skip. This distinction was checked with container-local
+warning-only probes, not filesystem or shell-execution payloads.
+
+Ordinary builds, literal assignments and workspace/temporary explicit Makefiles
+retain the existing project policy. Explicit Makefiles use existing code-load
+path checks; `-f -` is stdin Make code rather than a filename. `-C` builds remain
+unresolved because repeated directory changes are sequential and relative
+Makefiles must not be attached to the caller's cwd. This is declared in the
+Profile; no new Pass, base-binder exception or Make interpreter is introduced.
+
+Sources: [GNU Make options](https://www.gnu.org/software/make/manual/html_node/Options-Summary.html),
+[GNU Make variable assignment](https://www.gnu.org/software/make/manual/html_node/Setting.html).
+
 ### Native rename argv and filename transforms
 
 The `rename_arguments`, `rename_util_linux_arguments` and
@@ -73,7 +98,8 @@ A Profile may declare a non-filesystem effect explicitly:
 
 Domains are `system_clock`, `filesystem_mount`, `service_manager`,
 `cloud_resource`, `remote_access`, `shell_history`, `network_configuration` and
-`host_identity`, and `connection_verification`; operations are `inspect`, `mutate`,
+`host_identity`, `connection_verification`, `display_configuration` and
+`container_runtime`; operations are `inspect`, `mutate`,
 `control` and `opaque`. The typed declarations are retained in execution
 semantics and exposed by the public execution-semantics Query. They do not
 invent local files, remote resource ownership, successful execution or live
@@ -2421,6 +2447,172 @@ its body runs. Path extraction and mutation guards share this projection and
 the existing FD/discard resolution. Workspace/temporary-path policy and
 block-device rules remain in their existing Passes; no command-name exception
 or extra risk Pass is needed.
+
+## Static Bash brace operands
+
+The shared argv materializer expands lexical Bash operand lists, nested lists,
+Cartesian products, numeric sequences and same-case ASCII letter sequences
+before CLI selection and binding. Sequence order, signed/zero-padded numbers,
+steps, empty alternatives, quoting and escaping are preserved. Bare numeric
+`brace_expression` AST nodes are retained by parsing instead of dropped.
+Expanded operands keep the original source span; the original command remains
+available separately. Generated flags and `--` participate in ordinary option
+binding, and every generated path reaches the existing path guards.
+
+Only shell source operands are candidates: quoted/escaped braces and already
+decoded native/runtime argv are not expanded again. Words involving parameter
+or command substitutions keep the existing unresolved path. Expansion is Bash
+specific; the internal invocation context carries the parsed shell kind through
+functions, nested shells and native dispatch. It adds no Harness request field.
+
+An invocation shares a budget of 256 generated intermediate words and 64 KiB
+of generated text, with 8 KiB source-word and 32-level structural limits.
+Exceeding a limit or encountering an unsupported cross-case letter sequence
+retains the original operand and `operation_semantics_unresolved`, handled by
+the existing resolve policy. No truncated expansion becomes a complete argv
+proof. Ordinary words skip the decoder; no filesystem probe, Profile-specific
+exception or risk Pass is added.
+
+## Executable client input and interactive readers
+
+The `psql` Profile distinguishes information callbacks, database listing,
+queued `-c`/`-f` actions, explicit file-selected stdin and default command input.
+SQL and client meta-commands remain opaque executable input, never Bash or
+ordinary transformed data. Repeated and mixed actions retain all operands.
+Native `-f` references use the existing script-file contract; `-` is excluded
+from filesystem projections and separately declares stdin program input.
+The existing database opaque and nested-payload rules decide approval.
+Default input also declares the client's interactive Shell/editor/save surface;
+an explicitly supplied stdin stream is not mislabeled as that interactive form.
+
+Output files and logs keep explicit write paths. A `psql -o` value beginning
+with `|` instead projects to an opaque program, not a fabricated filename.
+Those parse-time output effects survive information forms; queued SQL/file
+actions ignored by information or listing callbacks do not create payloads or
+file reads. Startup/configuration and pager behavior are not dynamically
+replayed; listing retains an opaque whole-client boundary rather than claiming
+that its query itself mutates a database.
+
+The `links`, `alpine -F` and `w3m` browsing forms preserve their read paths and
+declare native interactive capabilities through `open_interactive_escape_surface`.
+Explicit local `links -dump`/`-source` and `w3m -dump` forms remain noninteractive
+reads. Restricted browsing/mailbox flags are not a proof that every external
+program or save action is disabled. Pure supported information options remain
+information forms; unknown controls and missing operands use the existing
+unresolved-operation policy. No new risk Pass, language decoder, host probe or
+Harness protocol field is introduced.
+
+## Native invocation boundaries and environment operands
+
+Remote specifications follow the native POSIX host/path grammar. A single-letter
+host such as `x:x` is remote; an explicit path such as `./x:x` is local. This
+shared classification selects the existing rsync/scp transport semantics.
+
+The Git apply node owns its native option operands. `--unsafe-paths` adds an
+unknown possible write scope when patches are applied without index protection;
+inspection and index-only/protected modes do not gain that effect. `--apply`
+overrides inspection, whereas `--reject` alone does not override `--check`.
+`--build-fake-ancestor` retains its independent explicit index-file write.
+
+Profiles can declare native environment operands through `environment_inputs`:
+
+```yaml
+environment_inputs:
+  - name: native_loader
+    environment: {name: FIXTURE_LOADER, empty_is_unset: true}
+    semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+    unless_modifiers: [information]
+```
+
+Only supplied environment facts or this command's prefix assignments activate
+these operands. Prefix assignments expand in source order in a temporary RHS
+frame without changing ordinary argv expansion or caller bindings; exported values
+and tool-decoded environment overlays remain data and are not shell-expanded
+again. Explicit unknown values retain an unknown payload. Proven unset/empty
+values and unexported locals do not activate a loader, and missing ambient
+facts do not change the default loader policy. Names, target collisions and
+modifier references are validated at load time. Optional structured projections
+can recognize a diagnostic-only native value and otherwise retain an opaque
+program. Perl uses this for explicit `PERL5OPT` options, including debugger and
+module-loading options; Facter treats explicit `FACTERLIB` as a Ruby loader,
+not merely a directory read. No Perl/Ruby decoder or host environment probe is
+introduced.
+
+Configured path anchors may supply `environment` and `default_value` fallbacks
+after their declared argv slot and optional parent slot. A provided unknown
+anchor does not fall back to a known default. The GNU mktemp contract uses this
+for template paths relative to `-p`/`--tmpdir` or supplied `TMPDIR`, preserving
+`..` traversal rather than checking only the base directory. A bare optional
+`--tmpdir` does not consume the next template. Mixed directory-selection modes
+and repeated optional resets retain unresolved semantics instead of reusing a
+stale earlier directory. GNU and BSD `-t`/`-u` contracts are not interchangeable.
+
+The Docker Profile separates client-side `cp` output paths from container
+operands. Copying into a container declares a runtime-state mutation; `run`
+declares runtime control, not an image program interpreted as host Bash.
+Inspection remains inspection. Xmodmap input declares display-configuration
+mutation; verbose/query flags do not suppress supplied mapping expressions,
+whereas `-n` suppresses applying them. Both state domains use the existing
+state-operation Query and guard, not new risk Passes.
+
+The strace Profile ends option binding at the child program, retaining child
+flags and inherited stdin. Child stdout uses the existing explicit forwarding
+contract. Explicit unmodeled `-E` edits mask inherited child-environment facts
+and retain operation uncertainty rather than guessing reordered updates.
+
+Grep declares intact NUL filename output or an unmodified subset of NUL stdin
+records only in supported modes. `stdout_records.empty_slots` requires the named
+form slots to contribute no inputs, preventing mixed file/stdin output from
+borrowing the stdin path domain. Numeric/context output, prefixes, partial
+matches, counts, colors and binary summaries disable the forwarding proof.
+Filename-list modes keep their separate native filename contract. Unknown
+input and ordinary whitespace-delimited streams do not gain a path proof.
+
+Quoted argv structure follows the outer expansion context. Command-substitution
+arguments cannot expand into outer fields; direct/nested `$@`, vector subscripts
+and unresolved indirection retain their width uncertainty. Common quoted
+scalars use the existing cheap path; ambiguous forms use an 8 KiB bounded syntax
+query with a 256-node parameter budget. Opaque operator-word leaves are checked
+without treating their quoting as an independent outer-shell quote barrier.
+This proves field count, not content or absence of nested command effects.
+
+## Native execution, output fields and non-filesystem side effects
+
+Static `echo` and `printf` output share the exact-shell-field query. Unexpanded
+globs and splittable unknown values are not literal stdout and cannot certify
+the paths later reconstructed by xargs. Quoted/escaped glob bytes remain data.
+The basename transform can retain cwd containment for bounded runtime path sets
+without inventing their filenames; exact special components remain unresolved.
+
+`npm exec --call` declares shell payload, while explicit package-provided argv
+and `yarn exec` dispatch children. Child flags are not root tool flags.
+Native execution-directory declarations also reach parsed payloads through
+their real invocation parent; caller-side redirections and substitutions retain
+the caller directory. npm's
+no-package install form records the project manifest, task execution and unknown
+installation scope instead of losing the invocation; unresolved lifecycle
+behavior requires approval. Preview/help and no-script modes have independent
+forms and do not invent execution. Pip installation targets use explicit
+target/root/prefix or supplied target configuration; undiscovered interpreter
+destinations remain unknown, independently of whether a package is local.
+`--break-system-packages` alone is not proof of a system destination.
+Pip dry-run suppresses installation writes, not build-backend metadata execution;
+its package execution provenance and explicit `--report` writes are retained.
+
+An opt-in modifier condition `effects_when.last_parameter_not_matching` names
+one owned plain-value parameter and a matcher. Only a proven match of its last
+materialized operand suppresses effects; missing/unknown values retain them.
+It requires scoped option binding and cannot be combined with the existing
+last-option comparison. Curl uses it for explicit request methods, retaining
+ordinary safe HTTP reads and last-occurrence behavior. Gopher selectors retain
+their outbound-data endpoint as well as response provenance; loopback scope is
+still checked through the shared transport query.
+
+Explicit `GROFF_BIN_PATH` uses the existing native environment-input contract.
+Tailscale Serve publishes network configuration; print submission/cancellation
+and terminal broadcasting declare typed state operations (`print_service`,
+`terminal_broadcast`). Explicit non-safe request methods use `remote_resource`.
+All use the existing state-operation guard, with no new risk Pass or live probe.
 
 ## Further Reading
 

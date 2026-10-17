@@ -20,12 +20,51 @@ platform:
   requires_features: []
 
 forms:
+  - id: explicit_pattern_filename_records
+    selector: &explicit_filename_records
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: filename_output}
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: not, item: {kind: has_modifier, modifier: quiet}}
+        - {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}
+        - {kind: any, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: recursive}]}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+    parameters: &filename_explicit_inputs
+      - name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    effects: &filename_effects
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: path_list, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_records: &filename_records
+      projection: {kind: paths, roots_slot: input_paths, default_root: '.', separator: nul, escape_modifiers: [dereference_recursive]}
+      required_modifiers: [nul_filename]
+      excluded_modifiers: [color]
+  - id: positional_pattern_filename_records
+    selector: &positional_filename_records
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: filename_output}
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: not, item: {kind: has_modifier, modifier: quiet}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}}
+        - {kind: has_positional_at, index: 0}
+        - {kind: any, items: [{kind: has_positional_at, index: 1}, {kind: has_modifier, modifier: recursive}]}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 1, matcher: {kind: literal, value: '-'}}}
+    parameters:
+      - {name: pattern, semantic: {kind: structured_value, context: regex}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: *filename_effects
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: path_list, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_records: *filename_records
   - id: show_help
     selector: {kind: has_modifier, modifier: information}
     parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: explicit_pattern_search
-    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}, {kind: not, item: {kind: has_modifier, modifier: quiet}}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    selector: {kind: all, items: [{kind: not, item: *explicit_filename_records}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}, {kind: not, item: {kind: has_modifier, modifier: quiet}}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
     parameters: &explicit_inputs
       - name: input_paths
         semantic:
@@ -51,6 +90,11 @@ forms:
     parameters: *explicit_inputs
     effects: *explicit_effects
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_records: &stdin_records
+      projection: {kind: stdin}
+      empty_slots: [input_paths]
+      required_modifiers: [nul_data, as_text]
+      excluded_modifiers: [output_control, filename_output, numeric_context, context_before, context_after, context_around, group_separator, color, binary_files]
 
   - id: explicit_pattern_search_quiet
     selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}, {kind: has_modifier, modifier: quiet}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
@@ -65,7 +109,7 @@ forms:
     stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
   - id: positional_pattern_search
-    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}}, {kind: has_positional_at, index: 0}]}, {kind: not, item: {kind: has_modifier, modifier: quiet}}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 1, matcher: {kind: literal, value: '-'}}]}}]}
+    selector: {kind: all, items: [{kind: not, item: *positional_filename_records}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}}, {kind: has_positional_at, index: 0}]}, {kind: not, item: {kind: has_modifier, modifier: quiet}}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 1, matcher: {kind: literal, value: '-'}}]}}]}
     parameters: &positional_inputs
       - name: pattern
         semantic:
@@ -98,6 +142,7 @@ forms:
     parameters: *positional_inputs
     effects: *positional_effects
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_records: *stdin_records
 
   - id: positional_pattern_search_quiet
     selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: all, items: [{kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}}, {kind: has_positional_at, index: 0}]}, {kind: has_modifier, modifier: quiet}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 1}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 1, matcher: {kind: literal, value: '-'}}]}}]}
@@ -175,8 +220,6 @@ modifiers:
         - "--word-regexp"
         - "-x"
         - "--line-regexp"
-        - "-z"
-        - "--null-data"
         - "-s"
         - "--no-messages"
         - "-v"
@@ -220,16 +263,17 @@ modifiers:
         - "--no-filename"
         - "-o"
         - "--only-matching"
-        - "-L"
-        - "--files-without-match"
-        - "-l"
-        - "--files-with-matches"
         - "-c"
         - "--count"
         - "-T"
         - "--initial-tab"
-        - "-Z"
-        - "--null"
+
+  - {id: nul_data, matcher: {kind: any_flag, flags: ['-z', '--null-data']}}
+  - {id: nul_filename, matcher: {kind: any_flag, flags: ['-Z', '--null']}}
+  - {id: filename_output, matcher: {kind: any_flag, flags: ['-l', '--files-with-matches', '-L', '--files-without-match']}}
+  - {id: dereference_recursive, matcher: {kind: any_flag, flags: ['-R', '--dereference-recursive']}}
+  - {id: numeric_context, matcher: {kind: any_flag, flags: ['-0', '-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9']}}
+  - {id: as_text, matcher: {kind: any_flag, flags: ['-a', '--text']}}
 
   - id: label
     matcher:
@@ -263,8 +307,6 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
-        - "-a"
-        - "--text"
         - "-I"
         - "-U"
         - "--binary"
@@ -432,6 +474,8 @@ modifiers:
       flags:
         - "--color"
         - "--colour"
+    parameters:
+      - {name: color_mode, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_one}
 
 subcommands: null
 extensions:

@@ -17,10 +17,14 @@ platform:
 option_scope: permuted_options
 opaque_on_unresolved: true
 forms:
+- id: show_help
+  selector: {kind: has_modifier, modifier: information}
+  parameters: [{name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
 - id: submit_file_to_remote_printer
   selector:
     kind: all
     items:
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
     - kind: has_positional_at
       index: 0
     - kind: not
@@ -43,6 +47,7 @@ forms:
     - kind: exclude_literal
       value: "-"
   effects:
+  - &print_submission {kind: state_operation, state_operation: {domain: print_service, operation: mutate}, target: {kind: none}}
   - kind: read_path
     path_access: content_open
     target:
@@ -54,15 +59,12 @@ forms:
     stderr_mode: opaque
 - id: submit_stdin_to_remote_printer
   selector:
-    kind: any
+    kind: all
     items:
-    - kind: no_positional_args
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: "-"
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+    - {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}
   effects:
+  - *print_submission
   - kind: consume_stdin
     target:
       kind: implicit_input
@@ -83,6 +85,7 @@ forms:
     semantic:
       kind: plain_value
 modifiers:
+- {id: information, matcher: {kind: any_flag, flags: ['--help']}}
 - id: server
   matcher:
     kind: any_flag
@@ -103,6 +106,10 @@ modifiers:
     target:
       kind: slot
       name: server
+- id: print_values
+  matcher: {kind: any_flag, flags: ['-d', '-i', '-n', '-o', '-P', '-q', '-t', '-H', '-U']}
+  parameters: [{name: print_options, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+- {id: print_flags, matcher: {kind: any_flag, flags: ['-E', '-c', '-m', '-s']}}
 extensions:
   caushell.profile/source_research:
   - https://www.cups.org/doc/man-lp.html
