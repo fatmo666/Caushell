@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 opaque_on_unresolved: true
+option_matching: exact_names
 identity: {canonical_name: rename.ul, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux], shell_families: [], requires_features: []}

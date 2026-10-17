@@ -1,6 +1,8 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 opaque_on_unresolved: true
+# The native projection owns complete argv, including short-option clusters.
+option_matching: exact_names
 
 identity:
   canonical_name: rename

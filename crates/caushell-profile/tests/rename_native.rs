@@ -43,6 +43,38 @@ fn present(bound: &BoundInvocation, slot: &str) -> bool {
 }
 
 #[test]
+fn native_read_only_branches_do_not_generate_unknown_mutation_slots() {
+    for command in [
+        "rename -n 's/a/b/' ./*.txt",
+        "rename -n 's/a/b/' **",
+        "rename.ul -n foo bar \"$UNKNOWN\"",
+        "rename.ul --no-act foo bar ./*",
+        "file-rename -n 's/a/b/' ./*.txt",
+    ] {
+        let r = resolved(command);
+        for slot in [
+            "rename_sources",
+            "rename_destinations",
+            "rename_deletes",
+            "rename_executions",
+        ] {
+            assert!(!present(&r.bound, slot), "{command}: {r:#?}");
+        }
+    }
+    for command in [
+        "rename -n 'system(\"id\")' ./*",
+        "rename -n \"$PROGRAM\" ./*",
+        "file-rename -e 's/a/b/' ./* -n /opt/a",
+    ] {
+        let r = resolved(command);
+        assert!(present(&r.bound, "rename_executions"), "{command}: {r:#?}");
+    }
+    let r = resolved("file-rename 's/a/b/' /opt/a");
+    assert_eq!(known(&r.bound, "rename_sources"), ["/opt/a"]);
+    assert_eq!(known(&r.bound, "rename_destinations"), ["/opt/b"]);
+}
+
+#[test]
 fn native_inputs_are_not_joined_and_perl_filenames_are_not_util_replacements() {
     for (command, sources, destinations) in [
         (

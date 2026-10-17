@@ -19,6 +19,7 @@ struct Arg {
     source: BoundValue,
     text: Option<String>,
     single: bool,
+    shell_structure: Option<ArgumentStructure>,
 }
 impl Arg {
     fn new(source: BoundValue) -> Self {
@@ -29,17 +30,45 @@ impl Arg {
             }
             _ => None,
         };
+        // Value availability, native field width and control-word ownership
+        // are separate facts. Reuse the shared lexical proof; never sample a
+        // glob or treat a quoted unknown scalar as a variable-width batch.
+        let shell_structure = if text.is_some() {
+            None
+        } else {
+            match &source {
+                BoundValue::Argument {
+                    text,
+                    quoted,
+                    node_kind,
+                    materialization: BoundArgumentMaterialization::Literal,
+                    ..
+                } if text.len() <= 65536 => Some(shell_word_structure(text, *quoted, node_kind)),
+                _ => None,
+            }
+        };
         let single = text.is_some()
+            || shell_structure
+                .as_ref()
+                .is_some_and(|s| s.fields == ArgumentFieldCount::ExactlyOne)
             || matches!(&source, BoundValue::ImplicitInput { origin: Some(o), .. } if o.single_field);
         Self {
             source,
             text,
             single,
+            shell_structure,
         }
     }
     fn non_option(&self) -> bool {
         match &self.text {
             Some(s) => !s.starts_with('-') || s == "-",
+            None if self
+                .shell_structure
+                .as_ref()
+                .is_some_and(|s| !s.may_start_with("-")) =>
+            {
+                true
+            }
             None => {
                 matches!(&self.source, BoundValue::ImplicitInput { domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape: false }), .. }
                 if !roots.is_empty() && roots.iter().all(|r| !r.is_empty() && !r.starts_with('-')))
@@ -65,6 +94,9 @@ struct Call {
 enum Parsed {
     Info,
     Inapplicable,
+    /// An owned util-linux no-act option cannot be undone by later argv.
+    /// This proves no mutation, not successful parsing of the remaining CLI.
+    NoMutation,
     Call(Call),
 }
 
@@ -79,16 +111,26 @@ fn parse_cli(args: &[Arg], dialect: Dialect) -> Result<Parsed> {
         last: false,
     };
     let mut options = true;
+    let mut optional_operand_boundary = false;
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
         index += 1;
         if !options || arg.non_option() {
             if dialect == Dialect::Perl {
-                options = false;
+                if arg.single {
+                    options = false;
+                } else {
+                    optional_operand_boundary = true;
+                }
             }
             call.operands.push(arg.clone());
             continue;
+        }
+        if optional_operand_boundary {
+            // If a batch vanishes, this word may be an option; if it does
+            // not, Perl treats it as a filename. Do not choose one branch.
+            return Err(ProjectionUnknownReason::DynamicArgument);
         }
         let text = arg
             .text
@@ -121,7 +163,8 @@ fn parse_cli(args: &[Arg], dialect: Dialect) -> Result<Parsed> {
         if text.starts_with("--") {
             match (dialect, text) {
                 (_, "--help" | "--version") | (Dialect::Perl, "--man") => return Ok(Parsed::Info),
-                (Dialect::Util, "--no-act") | (Dialect::Perl, "--nono") => call.dry = true,
+                (Dialect::Util, "--no-act") => return Ok(Parsed::NoMutation),
+                (Dialect::Perl, "--nono") => call.dry = true,
                 (_, "--verbose") => {}
                 (Dialect::Util, "--all") => call.all = true,
                 (Dialect::Util, "--last") => call.last = true,
@@ -155,7 +198,8 @@ fn parse_cli(args: &[Arg], dialect: Dialect) -> Result<Parsed> {
             match (dialect, flag) {
                 (_, 'h' | 'V') | (Dialect::Perl, 'm' | '?') => return Ok(Parsed::Info),
                 (_, 'v') => {}
-                (_, 'n') => call.dry = true,
+                (Dialect::Util, 'n') => return Ok(Parsed::NoMutation),
+                (Dialect::Perl, 'n') => call.dry = true,
                 (Dialect::Util, 'a') => call.all = true,
                 (Dialect::Util, 'l') => call.last = true,
                 (Dialect::Util, 'o') | (Dialect::Perl, 'f') => {}
@@ -878,7 +922,7 @@ pub(crate) fn project(
             Err(ProjectionUnknownReason::PayloadBudgetExceeded)
         };
         let call = match parsed {
-            Ok(Parsed::Info | Parsed::Inapplicable) => continue,
+            Ok(Parsed::Info | Parsed::Inapplicable | Parsed::NoMutation) => continue,
             Ok(Parsed::Call(c)) => c,
             Err(_) => {
                 unknown_path(&mut moves);
@@ -896,9 +940,6 @@ pub(crate) fn project(
                 }
                 unknown_path(&mut moves);
                 unknown_path(&mut writes);
-                continue;
-            }
-            if call.dry {
                 continue;
             }
             let (Some(from), Some(to)) = (&call.operands[0].text, &call.operands[1].text) else {
@@ -1013,6 +1054,32 @@ pub(crate) fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shell_field_proofs_are_not_replaced_by_value_availability() {
+        fn arg(text: &str, quoted: bool, node_kind: &str) -> Arg {
+            Arg::new(BoundValue::argument_with_node_kind(
+                text,
+                quoted,
+                node_kind,
+                caushell_parse::SourceSpan {
+                    start_byte: 0,
+                    end_byte: text.len(),
+                    start_row: 0,
+                    end_row: 0,
+                    start_column: 0,
+                    end_column: text.len(),
+                },
+                ArgumentBindingSource::RemainingArg,
+            ))
+        }
+        assert!(arg("./*.txt", false, "word").non_option());
+        assert!(!arg("*.txt", false, "word").non_option());
+        assert!(!arg("./*.txt", false, "word").single);
+        assert!(arg("file_$UNKNOWN", true, "string").single);
+        assert!(arg("file_$UNKNOWN", true, "string").non_option());
+        assert!(!arg("file_$UNKNOWN", false, "word").non_option());
+        assert!(!arg("$UNKNOWN", true, "string").non_option());
+    }
     #[test]
     fn supported_transformations_never_evaluate_perl() {
         for (program, input, output) in [

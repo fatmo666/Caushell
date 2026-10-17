@@ -141,3 +141,38 @@ fn read_only_modes_do_not_waive_shell_substitution_effects() {
         check(command, Decision::NeedApproval);
     }
 }
+
+#[test]
+fn dry_run_does_not_invent_mutations_for_symbolic_filename_collections() {
+    for command in [
+        "rename -n 's/a/b/' ./*.txt",
+        "rename -n 's/a/b/' **",
+        "rename -n -- 's/a/b/' *.txt",
+        "rename -vn 's/a/b/' /opt/*.txt",
+        "file-rename -vn 's/a/b/' /opt/*.txt",
+        "rename.ul -vn foo bar /opt/*.txt",
+        "rename.ul -n foo bar ./*",
+        "rename.ul --no-act foo bar \"$UNKNOWN\"",
+        "file-rename -n 's/a/b/' ./*.txt",
+        "find . -type f -exec rename -n 's/a/b/' '{}' +",
+        "find . -type f -print0 | xargs -0 rename -n 's/a/b/'",
+        "find . -type f | rename -n 's/a/b/'",
+    ] {
+        check(command, Decision::Allow);
+    }
+    for command in [
+        "rename -n 'system(\"id\")' ./*",
+        "rename -n 's/a/b/e' ./*",
+        "rename -n \"$PROGRAM\" ./*",
+        "rename -n -e \"$PROGRAM\" ./*",
+        "rename -n 's/a/b/' \"$(touch /opt/out)\"",
+        // An optional batch may disappear: -n can be an option OR a file.
+        "file-rename -e 's/a/b/' ./* -n /opt/a",
+        "rename 's/a/b/' -n /opt/a",
+        "file-rename 's/a/b/' /opt/*.txt",
+        "rename -nz 's/a/b/' ./*",
+        "file-rename -vn 'system(\"id\")' ./*",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+}

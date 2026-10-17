@@ -2614,6 +2614,50 @@ and terminal broadcasting declare typed state operations (`print_service`,
 `terminal_broadcast`). Explicit non-safe request methods use `remote_resource`.
 All use the existing state-operation guard, with no new risk Pass or live probe.
 
+## Certified operand ownership and positional arity
+
+The scoped binder retains `ArgumentOwnership::Operand` on bound lexical
+pathname-generation values only after the complete native ownership scan
+succeeds. A path slot name, shell quotation, or a wrapper's `--` is not this
+proof. The certificate is local to the consumer and is not copied into a
+dispatched child's CLI. Source spans shared by expanded words must agree.
+Ordinary exact/native arguments require no ownership-map allocation.
+
+The shared path Query consumes that certificate for pure glob bounds,
+including after a native `--`. It proves a directory-bounded set, never
+enumerates files, and passes the same bound to direct and derived targets.
+Parent traversal, external roots, unknown shell splitting, symlinks already
+known by the session, and deletion retain their existing guard semantics.
+
+`exact_positional_count: {count: N}` selects only a *certified* count of
+native positional fields. An unknown-width source word is not one argument;
+absence of the certificate is not proof of a different count. Only Profiles
+using this predicate request the extra width query. The cp/mv Profiles use
+positive count proofs to describe native missing-operand calls without
+inventing a copy/move; variable-width globs and batches cannot select them.
+
+Forms may explicitly set the boolean extension
+`caushell.form/suppress_modifier_effects`. It suppresses modifier effects and
+their structured virtual-slot projections through later materialization
+refreshes, but not shell substitutions/redirections or the form's own effects.
+Legacy help-form identifiers remain compatible. Complete concatenated-word
+decoding is shared by argv ownership, value projections and recursive payloads:
+quoted program punctuation is data, real brace vectors remain expansions,
+and unhandled/anonymous grammar bytes can never be dropped from a proof.
+
+Lexical backslash-newline gaps join word fragments only when no whitespace,
+redirection or other delimiter intervenes. Command facts retain original
+source spans. Complete static quote/escape removal is materialized once as
+native argv data before option selection; later consumers must not re-expand
+those bytes. A continuation cannot hide an option or split a recursive payload.
+
+Native rename projections reuse shared shell-field proofs without equating
+unknown values with unknown arity. Optional batches cannot prematurely close
+Perl option parsing. An owned util-linux no-act option proves no mutation,
+including for unresolved filename collections; Perl dry-run still checks the
+program. All rename variants delegate full argv (including clusters) to their
+native decoder through the existing exact-name option-matching declaration.
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)
