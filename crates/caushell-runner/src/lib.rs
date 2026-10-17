@@ -3,6 +3,8 @@ mod mutation;
 mod nested;
 mod node_ids;
 mod pass;
+mod path_policy;
+pub use path_policy::{PathExemption, PathExemptionBasis, PathExemptionPolicy, PathOperation};
 mod runner;
 mod staged;
 

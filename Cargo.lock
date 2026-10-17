@@ -200,6 +200,7 @@ dependencies = [
  "caushell-graph",
  "caushell-parse",
  "caushell-profile",
+ "caushell-query",
  "caushell-types",
 ]
 

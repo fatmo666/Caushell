@@ -103,13 +103,19 @@ fn inline_awk_keeps_native_effects_and_never_guesses_shell_code() {
 
 #[test]
 fn awk_file_reference_read_and_execution_survive_without_double_binding() {
-    for c in [
-        "mawk -f scripts/program public.txt",
-        "mawk -f /opt/shared/program public.txt",
-        "mawk -f scripts/one -f scripts/two public.txt",
+    for (c, expected) in [
+        ("mawk -f scripts/program public.txt", Decision::Allow),
+        (
+            "mawk -f /opt/shared/program public.txt",
+            Decision::NeedApproval,
+        ),
+        (
+            "mawk -f scripts/one -f scripts/two public.txt",
+            Decision::Allow,
+        ),
     ] {
         let r = check(c);
-        assert_eq!(r.decision, Decision::NeedApproval, "{c}: {r:#?}");
+        assert_eq!(r.decision, expected, "{c}: {r:#?}");
         assert!(opaque(&r), "{c}");
         assert!(path(c, "/tmp/project/public.txt", ResolvedPathRole::Read));
         assert!(

@@ -86,9 +86,12 @@ pub struct MutationPathExemption {
     pub operations: BTreeSet<MutationExemptionOperation>,
 }
 
+pub const DEFAULT_TEMPORARY_PATH_ROOTS: &[&str] = &["/tmp", "/private/tmp"];
+
 pub fn default_mutation_path_exemptions() -> Vec<MutationPathExemption> {
-    ["/tmp", "/private/tmp"]
-        .into_iter()
+    DEFAULT_TEMPORARY_PATH_ROOTS
+        .iter()
+        .copied()
         .map(|root| MutationPathExemption {
             root: root.into(),
             operations: BTreeSet::from([
@@ -359,7 +362,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::StateMutation | RuleId::StateControl | RuleId::StateOpaqueOperation => {
             RuleAction::NeedApproval
         }
-        RuleId::OutsideWorkspaceScriptSource => RuleAction::Observe,
+        RuleId::OutsideWorkspaceScriptSource => RuleAction::NeedApproval,
         RuleId::OutsideWorkspaceStartupConfig => RuleAction::Observe,
         RuleId::MissingCommandName => RuleAction::NeedApproval,
         RuleId::SelectionError => RuleAction::NeedApproval,

@@ -3,15 +3,19 @@ use std::collections::BTreeSet;
 use caushell_parse::ParsedCommandArtifact;
 use caushell_profile::EffectKind;
 use caushell_query::IoTarget;
-use caushell_runner::{CwdPathContext, RunnerContext, SessionAnalysisPass, SessionView};
+use caushell_runner::{
+    CwdPathContext, PathExemptionPolicy, PathOperation, RunnerContext, SessionAnalysisPass,
+    SessionView,
+};
+#[cfg(test)]
+use caushell_types::MutationPathExemption;
 use caushell_types::{
-    MutationExemptionOperation, MutationPathExemption, PathMetadataMutationKind, PathResolution,
-    RuleId,
+    MutationExemptionOperation, PathMetadataMutationKind, PathResolution, RuleId,
 };
 
 use crate::path::{
     MutationTargetCandidate, collect_effect_mutation_targets, collect_redirection_path_facts,
-    effective_cwd_cases, normalize_shell_path, path_is_within_root, project_path_at_cwd,
+    effective_cwd_cases, normalize_shell_path, project_path_at_cwd,
 };
 use crate::support::{
     bound_invocation, content_io_target, decision_for_rule_action,
@@ -41,7 +45,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
         let fallback_cwd = ctx.request().shell_state_before.cwd().to_string();
         let home = ctx.request().home.clone();
         let mut reasons = BTreeSet::new();
-        let exemptions = &ctx.policy().mutation_path_exemptions;
+        let exemptions = ctx.path_exemption_policy();
 
         for record in graph_backed_execution_resolve_records(ctx) {
             let home = record.bindings().tilde_home_with_default(home.as_deref());
@@ -273,7 +277,7 @@ fn add_reason_for_target(
     cwd_dependent: bool,
     cwd_unknown: bool,
     workspace_root: Option<&str>,
-    exemptions: &[MutationPathExemption],
+    exemptions: &PathExemptionPolicy,
     exemption_operation: Option<MutationExemptionOperation>,
 ) {
     // Content-open sinks have already been classified by the shared I/O query.
@@ -286,8 +290,15 @@ fn add_reason_for_target(
         return;
     }
 
-    if exemption_operation
-        .is_some_and(|operation| resolution_is_exempt(resolution, operation, exemptions))
+    let path_operation = match exemption_operation {
+        Some(MutationExemptionOperation::Write) => PathOperation::Write,
+        Some(MutationExemptionOperation::OrdinaryMetadata) => PathOperation::OrdinaryMetadata,
+        Some(MutationExemptionOperation::PermissionMetadata) => PathOperation::PermissionMetadata,
+        None => PathOperation::UnspecifiedMutation,
+    };
+    if exemptions
+        .check(resolution, path_operation, RuleId::OutsideWorkspaceMutation)
+        .is_exempt()
     {
         return;
     }
@@ -300,7 +311,6 @@ fn add_reason_for_target(
     };
 
     match resolution.concrete_path() {
-        Some(path) if path.starts_with('/') && path_is_within_root(path, root) => {}
         Some(path) if path.starts_with('/') => {
             reasons.insert(format!(
                 "{operation} target {path} for slot {slot_name} is outside workspace root {root}"
@@ -313,11 +323,7 @@ fn add_reason_for_target(
         }
         None => {
             if let PathResolution::FileNamePrefix { directory, .. } = resolution {
-                if !directory.starts_with('/')
-                    || !path_is_within_root(&normalize_shell_path(directory), root)
-                {
-                    reasons.insert(format!("{operation} filename family for slot {slot_name} is outside workspace root {root} through directory {directory}"));
-                }
+                reasons.insert(format!("{operation} filename family for slot {slot_name} is outside workspace root {root} or unproven through directory {directory}"));
                 return;
             }
             if let PathResolution::BoundedPathSet { roots, may_escape } = resolution {
@@ -334,17 +340,13 @@ fn add_reason_for_target(
                     return;
                 }
                 for path in roots {
-                    let normalized = normalize_shell_path(path);
-                    if !path_is_within_root(&normalized, root)
-                        && !exemption_operation.is_some_and(|operation| {
-                            resolution_is_exempt(
-                                &PathResolution::Concrete {
-                                    path: normalized.clone(),
-                                },
-                                operation,
-                                exemptions,
-                            )
-                        })
+                    if !exemptions
+                        .check(
+                            &PathResolution::Concrete { path: path.clone() },
+                            path_operation,
+                            RuleId::OutsideWorkspaceMutation,
+                        )
+                        .is_exempt()
                     {
                         reasons.insert(format!(
                             "{operation} target may be outside workspace root {root} through bounded path {path}"
@@ -389,35 +391,22 @@ fn exemption_operation_for_target(
     }
 }
 
+#[cfg(test)]
 fn resolution_is_exempt(
     resolution: &PathResolution,
     operation: MutationExemptionOperation,
     exemptions: &[MutationPathExemption],
 ) -> bool {
-    let path_is_exempt = |path: &str| {
-        path.starts_with('/')
-            && exemptions.iter().any(|entry| {
-                entry.root.starts_with('/')
-                    && !entry.root.contains('\0')
-                    && (entry.operations.contains(&operation)
-                        || operation == MutationExemptionOperation::OrdinaryMetadata
-                            && entry
-                                .operations
-                                .contains(&MutationExemptionOperation::PermissionMetadata))
-                    && path_is_within_root(path, &entry.root)
-            })
+    let mut config = caushell_types::PolicyConfig::default();
+    config.mutation_path_exemptions = exemptions.to_vec();
+    let operation = match operation {
+        MutationExemptionOperation::Write => PathOperation::Write,
+        MutationExemptionOperation::OrdinaryMetadata => PathOperation::OrdinaryMetadata,
+        MutationExemptionOperation::PermissionMetadata => PathOperation::PermissionMetadata,
     };
-    if let Some(path) = resolution.concrete_path() {
-        return path_is_exempt(path);
-    }
-    match resolution {
-        PathResolution::FileNamePrefix { directory, .. } => path_is_exempt(directory),
-        PathResolution::BoundedPathSet {
-            roots,
-            may_escape: false,
-        } => !roots.is_empty() && roots.iter().all(|root| path_is_exempt(root)),
-        _ => false,
-    }
+    PathExemptionPolicy::new(None, None, &config)
+        .check(resolution, operation, RuleId::OutsideWorkspaceMutation)
+        .is_exempt()
 }
 
 // The existing metadata fact supplies the operand. This is a permission-mode
@@ -525,7 +514,11 @@ mod exemption_tests {
             false,
             false,
             Some("/workspace"),
-            &exemptions,
+            &PathExemptionPolicy::new(
+                Some("/workspace"),
+                None,
+                &caushell_types::PolicyConfig::default(),
+            ),
             Some(MutationExemptionOperation::Write),
         );
         assert!(reasons.is_empty(), "{reasons:?}");

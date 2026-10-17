@@ -1,5 +1,5 @@
-use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
-use caushell_types::{Evidence, PathTrustScope, ProvenanceConsumeKind, RuleId};
+use caushell_runner::{PathOperation, RunnerContext, SessionAnalysisPass, SessionView};
+use caushell_types::{Evidence, ProvenanceConsumeKind, RuleId};
 
 use crate::support::{
     collect_outside_workspace_path_consumes, decision_for_rule_action, push_unique_reason,
@@ -19,18 +19,13 @@ impl SessionAnalysisPass for OutsideWorkspaceStartupConfigPass {
         ctx: &mut RunnerContext,
     ) {
         let request = ctx.request().clone();
-        let trusted_sets = ctx
-            .policy()
-            .rule_policy
-            .trusted_sets_for(RuleId::OutsideWorkspaceStartupConfig)
-            .to_vec();
         let Some(path_facts) = collect_outside_workspace_path_consumes(
             caushell_query::QuerySession::from_session(&staged_session),
             &request,
-            &ctx.policy().path_trust_sets,
-            &trusted_sets,
+            ctx.path_exemption_policy(),
             ProvenanceConsumeKind::StartupConfigSource,
-            PathTrustScope::StartupConfigLoad,
+            PathOperation::StartupConfig,
+            RuleId::OutsideWorkspaceStartupConfig,
         ) else {
             return;
         };

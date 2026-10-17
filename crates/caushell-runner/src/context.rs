@@ -398,6 +398,7 @@ pub enum ShellSourceCwdAnchor {
 pub struct RunnerContext {
     request: CheckRequest,
     policy: PolicyConfig,
+    path_exemption_policy: std::sync::OnceLock<crate::PathExemptionPolicy>,
     pending_mutations: Vec<PendingMutation>,
     // Coextensive with pending_mutations. None identifies an unpositioned
     // observation/final-state fact; Some identifies a shell-state occurrence.
@@ -432,6 +433,7 @@ impl RunnerContext {
         Self {
             request,
             policy,
+            path_exemption_policy: std::sync::OnceLock::new(),
             pending_mutations: Vec::new(),
             pending_mutation_sources: Vec::new(),
             pending_mutation_index: HashSet::new(),
@@ -461,6 +463,16 @@ impl RunnerContext {
 
     pub fn policy(&self) -> &PolicyConfig {
         &self.policy
+    }
+
+    pub fn path_exemption_policy(&self) -> &crate::PathExemptionPolicy {
+        self.path_exemption_policy.get_or_init(|| {
+            crate::PathExemptionPolicy::new(
+                self.request.workspace_root.as_deref(),
+                self.request.home.as_deref(),
+                &self.policy,
+            )
+        })
     }
 
     pub fn pending_mutations(&self) -> &[PendingMutation] {

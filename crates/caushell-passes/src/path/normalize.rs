@@ -114,55 +114,7 @@ pub(crate) fn join_shell_path(base: &str, child: &str) -> String {
     normalize_shell_path(&joined)
 }
 
-pub(crate) fn normalize_shell_path(path: &str) -> String {
-    let is_absolute = path.starts_with('/');
-    let mut parts: Vec<&str> = Vec::new();
-
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if let Some(last) = parts.last() {
-                    if *last != ".." {
-                        parts.pop();
-                        continue;
-                    }
-                }
-
-                if !is_absolute {
-                    parts.push("..");
-                }
-            }
-            other => parts.push(other),
-        }
-    }
-
-    if is_absolute {
-        if parts.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", parts.join("/"))
-        }
-    } else if parts.is_empty() {
-        ".".to_string()
-    } else {
-        parts.join("/")
-    }
-}
-
-pub(crate) fn path_is_within_root(path: &str, root: &str) -> bool {
-    let normalized_path = normalize_shell_path(path);
-    let normalized_root = normalize_shell_path(root);
-
-    if normalized_root == "/" {
-        return normalized_path.starts_with('/');
-    }
-
-    normalized_path == normalized_root
-        || normalized_path
-            .strip_prefix(&normalized_root)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-}
+pub(crate) use caushell_query::{normalize_shell_path, path_is_within_root};
 
 fn contains_unescaped_chars(text: &str, targets: &[char]) -> bool {
     let mut escaped = false;

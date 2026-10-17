@@ -36,13 +36,11 @@ use crate::support::{
     known_literal_path_content_before_scoped_command as static_known_literal_path_content_before_scoped_command,
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
-    process_substitution_evidence, static_io_target_evidence,
-    pipeline_has_upstream, redirection_parent_command_index, redirection_targets_stdin_payload,
-    request_variable_bindings, runtime_variable_overlay,
+    pipeline_has_upstream, process_substitution_evidence, redirection_parent_command_index,
+    redirection_targets_stdin_payload, request_variable_bindings, runtime_variable_overlay,
     runtime_visible_variable_bindings_before_span, source_node_id_for_command,
-    static_stdin_evidence_for_scoped_command, static_stdin_payloads_for_scoped_command,
-    top_level_unit_for_command,
-    top_level_unit_for_span,
+    static_io_target_evidence, static_stdin_evidence_for_scoped_command,
+    static_stdin_payloads_for_scoped_command, top_level_unit_for_command, top_level_unit_for_span,
 };
 
 const MAX_ALIAS_EXPANSION_HOPS: usize = 8;
@@ -138,6 +136,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             expansion_limit_evidence,
             derived_unresolved_payloads,
             shell_redirection_scopes,
+            canonical_inline_payload_ids,
         ) = collect_execution_unit_resolve_records(
             &self.registry,
             staged_view,
@@ -152,6 +151,55 @@ impl SessionTransformPass for ResolveInvocationPass {
             &nested_payload_records,
             ctx.policy().semantic_expansion.max_nested_parse_depth,
         );
+        // The legacy payload traversal and canonical execution frontier share
+        // source positions, not node IDs. Reattach descendant payloads only
+        // after their parsed parent has a proven canonical execution unit.
+        let mut canonical_payload_children = BTreeMap::new();
+        for payload in &nested_payload_records {
+            if !canonical_inline_payload_ids.contains(&payload.record_id.0) {
+                continue;
+            }
+            let NestedPayloadResolution::Parsed { parsed: body, .. } = &payload.resolution else {
+                continue;
+            };
+            let parent = match &payload.parent_ref {
+                NestedPayloadParentRef::RootCommand { command_index } => records
+                    .iter()
+                    .find(|r| r.command_ref.command_index == *command_index)
+                    .map(|r| r.source_node_id.clone()),
+                NestedPayloadParentRef::DerivedInvocation { node_id } => Some(
+                    canonical_payload_children
+                        .get(node_id)
+                        .unwrap_or(node_id)
+                        .clone(),
+                ),
+            };
+            let Some(parent) = parent else {
+                continue;
+            };
+            for unit in execution_unit_resolve_records.iter().filter(|unit| {
+                unit.origin_kind == ExecutionUnitOriginKind::ShellCommandStringPayload
+                    && unit.parent_execution_node_id == parent
+                    && unit.parsed_scope == *body
+            }) {
+                canonical_payload_children.insert(
+                    derived_invocation_node_id(
+                        &binding_request.session_id,
+                        binding_request.sequence_no,
+                        payload.record_id.0,
+                        unit.command_ref.command_index,
+                    ),
+                    unit.source_node_id.clone(),
+                );
+            }
+        }
+        for payload in &mut nested_payload_records {
+            if let NestedPayloadParentRef::DerivedInvocation { node_id } = &mut payload.parent_ref {
+                if let Some(canonical) = canonical_payload_children.get(node_id) {
+                    *node_id = canonical.clone();
+                }
+            }
+        }
         nested_payload_records.extend(derived_unresolved_payloads);
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
@@ -1840,11 +1888,13 @@ fn collect_execution_unit_resolve_records(
     Vec<Evidence>,
     Vec<NestedPayloadRecord>,
     Vec<caushell_runner::ShellRedirectionScope>,
+    std::collections::BTreeSet<usize>,
 ) {
     let mut records = Vec::new();
     let mut syntax_scopes = Vec::new();
     let mut expansion_limit_evidence = Vec::new();
     let mut derived_unresolved_payloads = Vec::new();
+    let mut canonical_inline_payload_ids = std::collections::BTreeSet::new();
     let first_payload_id = nested_payload_records
         .iter()
         .map(|r| r.record_id.0)
@@ -2078,6 +2128,7 @@ fn collect_execution_unit_resolve_records(
             dispatch_derived_records,
             nested_payload_records,
         ) {
+            canonical_inline_payload_ids.insert(record.record_id.0);
             continue;
         }
         let NestedPayloadResolution::Parsed { shell_kind, parsed } = &record.resolution else {
@@ -2557,6 +2608,7 @@ fn collect_execution_unit_resolve_records(
         expansion_limit_evidence,
         derived_unresolved_payloads,
         syntax_scopes,
+        canonical_inline_payload_ids,
     )
 }
 
@@ -3638,7 +3690,10 @@ fn expanded_recursive_payload_children(
         )
         .into_iter()
         .filter(|candidate| {
-            matches!(candidate.source, PayloadSource::Stdin | PayloadSource::ScriptFileRef)
+            matches!(
+                candidate.source,
+                PayloadSource::Stdin | PayloadSource::ScriptFileRef
+            )
         })
         .collect::<Vec<_>>();
         candidates.extend(script_file_candidates);
@@ -9968,8 +10023,16 @@ modifiers:
         assert_eq!(
             truncated.parent_ref,
             NestedPayloadParentRef::DerivedInvocation {
-                node_id: caushell_graph::NodeId::new("derived:sess-1:2:0:0"),
+                node_id: caushell_graph::NodeId::new("expanded-shell-payload:command:sess-1:2:0:0"),
             }
+        );
+        assert!(
+            ctx.execution_unit_resolve_records()
+                .iter()
+                .any(|unit| truncated.parent_ref
+                    == NestedPayloadParentRef::DerivedInvocation {
+                        node_id: unit.source_node_id.clone()
+                    })
         );
         assert_eq!(truncated.root_command_index, 0);
 

@@ -2,13 +2,14 @@ use std::collections::BTreeSet;
 
 use caushell_profile::{EffectKind, ResolveInvocationArtifactResult};
 use caushell_query::{PathFactsQuery, QuerySession};
-use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
-use caushell_types::{PathResolution, PathTrustScope, ResolvedPathPurpose, RuleId};
+use caushell_runner::{PathOperation, RunnerContext, SessionAnalysisPass, SessionView};
+#[cfg(test)]
+use caushell_types::PathResolution;
+use caushell_types::{ResolvedPathPurpose, RuleId};
 
-use crate::path::{normalize_shell_path, path_is_within_root};
-use crate::support::{
-    decision_for_rule_action, graph_backed_execution_resolve_records, path_is_trusted_for_scope,
-};
+use crate::support::{decision_for_rule_action, graph_backed_execution_resolve_records};
+#[cfg(test)]
+use caushell_query::path_is_within_root;
 
 /// Checks explicit code-file inputs, not tool-owned module search mechanisms.
 /// Registered module CLI contracts and their unresolved dispatches retain their
@@ -49,28 +50,7 @@ impl SessionAnalysisPass for CodeLoadPathGuardPass {
 
         let rule = RuleId::CodeLoadPath;
         let request = ctx.request();
-        let root = request
-            .workspace_root
-            .as_deref()
-            .filter(|root| root.starts_with('/'))
-            .map(normalize_shell_path);
-        let trust_sets = ctx.policy().rule_policy.trusted_sets_for(rule);
-        let trusted = |path: &str| {
-            path.starts_with('/')
-                && (root
-                    .as_deref()
-                    .is_some_and(|root| path_is_within_root(path, root))
-                    || ["/tmp", "/private/tmp"]
-                        .iter()
-                        .any(|root| path_is_within_root(path, root))
-                    || path_is_trusted_for_scope(
-                        path,
-                        &ctx.policy().path_trust_sets,
-                        trust_sets,
-                        PathTrustScope::InProcessCodeLoad,
-                        request.home.as_deref(),
-                    ))
-        };
+        let policy = ctx.path_exemption_policy();
         let paths = PathFactsQuery::new()
             .purpose(ResolvedPathPurpose::InProcessCode)
             .used_by_root_sequence(request.sequence_no)
@@ -84,7 +64,10 @@ impl SessionAnalysisPass for CodeLoadPathGuardPass {
             {
                 continue;
             }
-            if resolution_is_trusted(path.resolution(), &trusted) {
+            if policy
+                .check(path.resolution(), PathOperation::LoadCodeFile, rule)
+                .is_exempt()
+            {
                 continue;
             }
             reasons.insert(format!(
@@ -105,23 +88,10 @@ impl SessionAnalysisPass for CodeLoadPathGuardPass {
     }
 }
 
+#[cfg(test)]
 fn resolution_is_trusted(resolution: &PathResolution, trusted: &impl Fn(&str) -> bool) -> bool {
-    if let Some(path) = resolution.concrete_path() {
-        return trusted(&normalize_shell_path(path));
-    }
-    match resolution {
-        PathResolution::BoundedPathSet { roots, may_escape } => {
-            !may_escape
-                && !roots.is_empty()
-                && roots
-                    .iter()
-                    .all(|root| trusted(&normalize_shell_path(root)))
-        }
-        PathResolution::FileNamePrefix { directory, .. } => {
-            trusted(&normalize_shell_path(directory))
-        }
-        _ => false,
-    }
+    caushell_query::PathScopeQuery::new(resolution).prove_all(trusted)
+        == caushell_query::PathScopeProof::Covered
 }
 
 #[cfg(test)]

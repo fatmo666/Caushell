@@ -1,5 +1,5 @@
-use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
-use caushell_types::{Evidence, PathTrustScope, ProvenanceConsumeKind, RuleId};
+use caushell_runner::{PathOperation, RunnerContext, SessionAnalysisPass, SessionView};
+use caushell_types::{Evidence, ProvenanceConsumeKind, RuleId};
 
 use crate::support::{
     collect_outside_workspace_path_consumes, decision_for_rule_action, push_unique_reason,
@@ -19,19 +19,42 @@ impl SessionAnalysisPass for OutsideWorkspaceScriptSourcePass {
         ctx: &mut RunnerContext,
     ) {
         let request = ctx.request().clone();
-        let trusted_sets = ctx
+        let checks = crate::support::file_execution_checks(
+            ctx,
+            caushell_query::QuerySession::from_session(&staged_session),
+        );
+        let action = ctx
             .policy()
             .rule_policy
-            .trusted_sets_for(RuleId::OutsideWorkspaceScriptSource)
-            .to_vec();
-        let Some(path_facts) = collect_outside_workspace_path_consumes(
+            .action_for(RuleId::OutsideWorkspaceScriptSource);
+        let path_facts = collect_outside_workspace_path_consumes(
             caushell_query::QuerySession::from_session(&staged_session),
             &request,
-            &ctx.policy().path_trust_sets,
-            &trusted_sets,
+            ctx.path_exemption_policy(),
             ProvenanceConsumeKind::ScriptSource,
-            PathTrustScope::ScriptSourceExecute,
-        ) else {
+            PathOperation::ExecuteFile,
+            RuleId::OutsideWorkspaceScriptSource,
+        );
+        for check in checks.iter().filter(|c| {
+            !c.exempt
+                && !path_facts.as_ref().is_some_and(|facts| {
+                    facts.consumes.iter().any(|p| {
+                        p.source_node_id == c.source
+                            && p.slot_name.as_deref() == Some(c.slot.as_str())
+                    })
+                })
+        }) {
+            ctx.add_finding(RuleId::OutsideWorkspaceScriptSource, check.reason.clone());
+            if let Some(decision) = decision_for_rule_action(action) {
+                ctx.propose_decision(
+                    self.name(),
+                    RuleId::OutsideWorkspaceScriptSource,
+                    decision,
+                    check.reason.clone(),
+                );
+            }
+        }
+        let Some(path_facts) = path_facts else {
             return;
         };
 
@@ -244,9 +267,9 @@ mod tests {
         let ctx = run_pass(
             policy_with_rule(RuleAction::NeedApproval),
             "bash ../shared/build.sh",
-            "/tmp/project/work",
+            "/opt/project/work",
             Some("/home/alice"),
-            Some("/tmp/project/work"),
+            Some("/opt/project/work"),
         );
 
         assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
@@ -254,7 +277,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceScriptSource,
-                "script source path /tmp/project/shared/build.sh for slot script_path in command bash is outside workspace root /tmp/project/work"
+                "script source path /opt/project/shared/build.sh for slot script_path in command bash is outside workspace root /opt/project/work"
             )]
         );
         assert_eq!(ctx.decision_proposals.len(), 1);
@@ -270,9 +293,9 @@ mod tests {
         let ctx = run_pass(
             policy_with_rule(RuleAction::NeedApproval),
             "sudo bash ../shared/build.sh",
-            "/tmp/project/work",
+            "/opt/project/work",
             Some("/home/alice"),
-            Some("/tmp/project/work"),
+            Some("/opt/project/work"),
         );
 
         assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
@@ -280,7 +303,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceScriptSource,
-                "script source path /tmp/project/shared/build.sh for slot script_path in command bash is outside workspace root /tmp/project/work"
+                "script source path /opt/project/shared/build.sh for slot script_path in command bash is outside workspace root /opt/project/work"
             )]
         );
     }
@@ -296,14 +319,14 @@ mod tests {
         runner.register_final_decision_pass(DecisionAssemblyPass);
 
         let session =
-            session_with_prior_write("/tmp/shared/build.sh", "echo hi > ../../shared/build.sh", 3);
+            session_with_prior_write("/opt/shared/build.sh", "echo hi > ../../shared/build.sh", 3);
         let mut ctx = RunnerContext::with_policy(
             CheckRequest {
                 session_id: SessionId::new("sess-1"),
                 sequence_no: CommandSequenceNo::new(10),
                 command: "bash ../../shared/build.sh".to_string(),
                 shell_state_before: caushell_types::ShellStateSnapshot::new(
-                    "/tmp/project/work".to_string(),
+                    "/opt/project/work".to_string(),
                 ),
                 shell_kind: ShellKind::Bash,
                 runtime: RuntimeMetadata {
@@ -313,7 +336,7 @@ mod tests {
                         caushell_types::ShellRuntimeCapabilities::persistent_shell(),
                 },
                 home: Some("/home/alice".to_string()),
-                workspace_root: Some("/tmp/project/work".to_string()),
+                workspace_root: Some("/opt/project/work".to_string()),
             },
             policy_with_rule(RuleAction::Observe),
         );
@@ -324,7 +347,7 @@ mod tests {
         assert_eq!(ctx.findings.len(), 2);
         assert!(ctx.evidence.contains(&Evidence::prior_path_write(
             RuleId::OutsideWorkspaceScriptSource,
-            "/tmp/shared/build.sh",
+            "/opt/shared/build.sh",
             CommandSequenceNo::new(3),
             "echo hi > ../../shared/build.sh",
         )));
@@ -342,7 +365,7 @@ mod tests {
                 .expect("expected prior write evidence"),
             &Evidence::prior_path_write(
                 RuleId::OutsideWorkspaceScriptSource,
-                "/tmp/shared/build.sh",
+                "/opt/shared/build.sh",
                 CommandSequenceNo::new(3),
                 "echo hi > ../../shared/build.sh",
             )
@@ -351,7 +374,7 @@ mod tests {
             ctx.findings[1],
             Finding::new(
                 RuleId::OutsideWorkspaceScriptSource,
-                "script source path /tmp/shared/build.sh was previously written at sequence 3 by command echo hi > ../../shared/build.sh"
+                "script source path /opt/shared/build.sh was previously written at sequence 3 by command echo hi > ../../shared/build.sh"
             )
         );
     }
@@ -361,9 +384,9 @@ mod tests {
         let ctx = run_pass(
             policy_with_rule(RuleAction::Observe),
             "bash ../shared/build.sh",
-            "/tmp/project/work",
+            "/opt/project/work",
             Some("/home/alice"),
-            Some("/tmp/project/work"),
+            Some("/opt/project/work"),
         );
 
         assert_eq!(ctx.final_decision, Some(Decision::Allow));
@@ -493,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn outside_workspace_script_source_skips_when_workspace_root_is_missing() {
+    fn outside_workspace_script_source_cannot_prove_arbitrary_paths_without_workspace() {
         let ctx = run_pass(
             policy_with_rule(RuleAction::NeedApproval),
             "bash /opt/trusted-scripts/setup.sh",
@@ -502,8 +525,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(ctx.final_decision, Some(Decision::Allow));
-        assert!(ctx.findings.is_empty());
-        assert!(ctx.decision_proposals.is_empty());
+        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        assert_eq!(ctx.findings.len(), 1);
+        assert_eq!(ctx.decision_proposals.len(), 1);
     }
 }

@@ -5,6 +5,7 @@ license.workspace = true
 edition = "2024"
 
 [dependencies]
+caushell-query = { path = "../caushell-query" }
 caushell-graph = { path = "../caushell-graph" }
 caushell-parse = { path = "../caushell-parse" }
 caushell-profile = { path = "../caushell-profile" }

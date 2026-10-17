@@ -1,6 +1,8 @@
 mod alias;
 mod execution_records;
 mod function_overlay;
+mod file_execution;
+pub(crate) use file_execution::{file_execution_checks, file_reference_is_exempt};
 mod hard_deny;
 mod implicit_startup;
 mod io_provenance;
@@ -72,7 +74,7 @@ pub(crate) use node_ids::{
     transform_output_artifact_node_id, variable_binding_intent_node_id,
 };
 pub(crate) use outside_workspace::{
-    collect_outside_workspace_path_consumes, decision_for_rule_action, path_is_trusted_for_scope,
+    collect_outside_workspace_path_consumes, decision_for_rule_action,
     push_unique_reason,
 };
 pub(crate) use payload_hard_deny::{

@@ -7,6 +7,8 @@ mod io_target;
 mod nested;
 mod network;
 mod path;
+mod path_scope;
+pub use path_scope::{PathScopeProof, PathScopeQuery, normalize_shell_path, path_is_within_root};
 mod provenance;
 mod sequence;
 mod session;

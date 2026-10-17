@@ -36,7 +36,7 @@ forms:
     runner.register_session_transform_pass(ComputeEffectiveCwdPass);
     runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
-    runner.register_request_analysis_pass(ResolvePolicyPass);
+    runner.register_session_analysis_pass(ResolvePolicyPass);
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
     runner.register_final_decision_pass(DecisionAssemblyPass);
     let request = CheckRequest {

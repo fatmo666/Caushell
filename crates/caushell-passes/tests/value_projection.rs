@@ -158,7 +158,7 @@ fn run_with_registry(
     runner.register_session_transform_pass(ExtractPipelineFlowPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
     runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
-    runner.register_request_analysis_pass(ResolvePolicyPass);
+    runner.register_session_analysis_pass(ResolvePolicyPass);
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
     runner.register_final_decision_pass(DecisionAssemblyPass);

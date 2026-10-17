@@ -201,7 +201,7 @@ forms:
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
-        runner.register_request_analysis_pass(caushell_passes::ResolvePolicyPass);
+        runner.register_session_analysis_pass(caushell_passes::ResolvePolicyPass);
         runner.register_final_decision_pass(caushell_passes::DecisionAssemblyPass);
         let graph = SessionGraph::new();
         let summary = SessionSummary::new();

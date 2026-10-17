@@ -208,7 +208,7 @@ fn other_risk_rules_still_apply_to_temporary_paths() {
             .insert(rule, RulePolicyEntry::new(RuleAction::NeedApproval));
     }
     for command in [
-        "bash /tmp/script.sh",
+        "bash /tmp/script.sh; rm /tmp/data",
         "BASH_ENV=/tmp/startup bash -c 'true'",
         "kill -TERM 1234; touch /tmp/output",
     ] {

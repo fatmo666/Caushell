@@ -75,8 +75,12 @@ fn psql_sql_client_commands_files_and_streams_are_not_readonly_data() {
             "{command}: {:?}",
             r.reasons
         );
-        assert!(
+        assert_eq!(
             rule(&r, RuleId::NestedPayloadExpansion),
+            !matches!(
+                command,
+                "psql -X -f ./script.sql" | "psql -f /tmp/script.sql"
+            ),
             "{command}: {:?}",
             r.reasons
         );

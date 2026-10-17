@@ -8,8 +8,7 @@ use caushell_passes::StateOperationGuardPass;
 use caushell_passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, CodeLoadPathGuardPass,
     ComputeEffectiveCwdPass, CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass,
-    DecisionAssemblyPass,
-    ExtractAliasBindingsPass, ExtractCommandSubstitutionProvenancePass,
+    DecisionAssemblyPass, ExtractAliasBindingsPass, ExtractCommandSubstitutionProvenancePass,
     ExtractCurrentWorkingDirectoryPass, ExtractEndpointProvenancePass,
     ExtractExecutionSemanticsPass, ExtractFunctionBindingsPass, ExtractImplicitStartupConfigPass,
     ExtractImportedPackageProvenancePass, ExtractPathFactsPass, ExtractPipelineFlowPass,
@@ -474,7 +473,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     // ordinary redirections and process-substitution provenance producers.
     runner.register_session_transform_pass(ExtractValueProvenancePass);
     runner.register_session_transform_pass(ExtractPipelineStreamProvenancePass);
-    runner.register_request_analysis_pass(ResolvePolicyPass);
+    runner.register_session_analysis_pass(ResolvePolicyPass);
     runner.register_request_analysis_pass(CwdWorkspaceBoundaryPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
     runner.register_session_analysis_pass(FileDeletionGuardPass);
@@ -2276,16 +2275,18 @@ policy:
         let response = core.check(sample_request(
             "sess-script-source-1",
             1,
-            "bash ../shared/build.sh",
+            "bash /opt/shared/build.sh",
         ));
 
         assert_eq!(response.decision, Decision::NeedApproval);
-        assert_eq!(
-            response.reasons,
-            vec![
-                "script source path /tmp/shared/build.sh for slot script_path in command bash is outside workspace root /tmp/project".to_string()
-            ]
-        );
+        assert!(response.reasons.iter().any(|reason| reason ==
+            "script source path /opt/shared/build.sh for slot script_path in command bash is outside workspace root /tmp/project"));
+        let temporary = core.check(sample_request(
+            "sess-script-source-tmp",
+            1,
+            "bash ../shared/build.sh",
+        ));
+        assert_eq!(temporary.decision, Decision::Allow);
     }
 
     #[test]

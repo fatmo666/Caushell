@@ -1,12 +1,11 @@
-use std::collections::BTreeMap;
-
 use caushell_query::{PathContentOriginQuery, QuerySession, SequenceWindow};
+use caushell_runner::{PathExemptionPolicy, PathOperation};
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, PathTrustScope, PathTrustSet, ProvenanceConsumeKind,
-    RuleAction,
+    CheckRequest, CommandSequenceNo, Decision, PathResolution, ProvenanceConsumeKind, RuleAction,
+    RuleId,
 };
 
-use crate::path::{join_shell_path, normalize_shell_path, path_is_within_root};
+use crate::path::normalize_shell_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutsideWorkspacePathConsumeSet {
@@ -16,6 +15,7 @@ pub(crate) struct OutsideWorkspacePathConsumeSet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutsideWorkspacePathConsume {
+    pub source_node_id: caushell_graph::NodeId,
     pub path: String,
     pub slot_name: Option<String>,
     pub normalized_command_name: Option<String>,
@@ -31,10 +31,10 @@ pub(crate) struct OutsideWorkspacePriorWrite {
 pub(crate) fn collect_outside_workspace_path_consumes(
     query_session: QuerySession<'_>,
     request: &CheckRequest,
-    trust_sets: &BTreeMap<String, PathTrustSet>,
-    selected_trust_sets: &[String],
+    policy: &PathExemptionPolicy,
     consume_kind: ProvenanceConsumeKind,
-    required_scope: PathTrustScope,
+    operation: PathOperation,
+    rule: RuleId,
 ) -> Option<OutsideWorkspacePathConsumeSet> {
     let workspace_root = request.workspace_root.as_deref()?;
     let normalized_workspace_root = normalize_shell_path(workspace_root);
@@ -49,21 +49,21 @@ pub(crate) fn collect_outside_workspace_path_consumes(
     for path in path_facts.origins() {
         let consume = path.consume();
 
-        if path_is_within_root(consume.path(), &normalized_workspace_root) {
-            continue;
-        }
-
-        if path_is_trusted_for_scope(
-            consume.path(),
-            trust_sets,
-            selected_trust_sets,
-            required_scope,
-            request.home.as_deref(),
-        ) {
+        if policy
+            .check(
+                &PathResolution::Concrete {
+                    path: consume.path().to_owned(),
+                },
+                operation,
+                rule,
+            )
+            .is_exempt()
+        {
             continue;
         }
 
         consumes.push(OutsideWorkspacePathConsume {
+            source_node_id: consume.execution_unit().node_id().clone(),
             path: consume.path().to_string(),
             slot_name: consume.slot_name().map(str::to_string),
             normalized_command_name: consume.normalized_command_name().map(str::to_string),
@@ -88,36 +88,6 @@ fn exact_sequence_window(sequence_no: CommandSequenceNo) -> SequenceWindow {
         .before_sequence(sequence_no.next())
 }
 
-pub(crate) fn path_is_trusted_for_scope(
-    path: &str,
-    trust_sets: &BTreeMap<String, PathTrustSet>,
-    selected_trust_sets: &[String],
-    required_scope: PathTrustScope,
-    home: Option<&str>,
-) -> bool {
-    for trust_set_name in selected_trust_sets {
-        let Some(trust_set) = trust_sets.get(trust_set_name) else {
-            continue;
-        };
-
-        if !trust_set.trusts_scope(required_scope) {
-            continue;
-        }
-
-        for root in &trust_set.roots {
-            let Some(normalized_root) = resolve_trust_root(root, home) else {
-                continue;
-            };
-
-            if path_is_within_root(path, &normalized_root) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 pub(crate) fn decision_for_rule_action(action: RuleAction) -> Option<Decision> {
     match action {
         RuleAction::Observe => None,
@@ -130,25 +100,4 @@ pub(crate) fn push_unique_reason(reasons: &mut Vec<String>, reason: String) {
     if !reasons.contains(&reason) {
         reasons.push(reason);
     }
-}
-
-fn resolve_trust_root(root: &str, home: Option<&str>) -> Option<String> {
-    if root == "~" {
-        return home.map(normalize_shell_path);
-    }
-
-    if let Some(rest) = root.strip_prefix("~/") {
-        return home.map(|home| join_shell_path(home, rest));
-    }
-
-    if root.starts_with('~') {
-        return None;
-    }
-
-    // Policy roots are stable anchors, so relative paths are intentionally unsupported here.
-    if !root.starts_with('/') {
-        return None;
-    }
-
-    Some(normalize_shell_path(root))
 }

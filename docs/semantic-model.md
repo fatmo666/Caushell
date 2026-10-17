@@ -34,6 +34,30 @@ Before parsing a recursive inline payload, its outer-shell operands must become 
 
 ## Command Modeling
 
+### Shared path scope and purpose-scoped exemptions
+
+`PathScopeQuery` proves containment from existing path facts: a concrete path,
+a filename-family directory, or every root of a nonempty bounded set. Relative,
+unknown, empty or escaping bounds are unproven. Paths are normalized lexically;
+the query does not inspect the filesystem or resolve symlinks.
+
+`RunnerContext` compiles `PathExemptionPolicy` once per request. It combines the
+workspace, temporary roots and existing configuration, but each grant applies to
+an operation and, for configured trust, its selected rule and trust scope. Write
+permission does not grant execution, execution does not grant startup-config
+loading, and no path exemption bypasses the deletion guard. Risk passes retain
+their own decisions: an exempt path is not a global Allow.
+
+File execution uses the owning execution unit, its `execute_payload` effect and
+its `script_source` path facts, including derived/wrapped calls. Every target
+must be proven in an execution-granted scope. Workspace and temporary file
+references are exempt independently of interpreter language; outside or unknown
+file targets require approval by default. Unsupported inline programs, stdin
+and descriptor-backed inputs retain their existing execution checks. Resolve
+policy runs in the session-analysis phase so this decision uses staged facts,
+not raw argument spelling. Historical nested-shell payload references are joined
+to canonical nodes by their resolved parent and parsed source positions.
+
 ### Make evaluation and argv ownership
 
 The Make Profile owns permuted options and their operands before selecting a

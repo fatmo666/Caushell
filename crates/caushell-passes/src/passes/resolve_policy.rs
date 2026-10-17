@@ -1,5 +1,5 @@
 use caushell_profile::ResolveInvocationArtifactResult;
-use caushell_runner::{RequestAnalysisPass, RunnerContext};
+use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
 use std::collections::BTreeSet;
 
 use caushell_types::{
@@ -8,12 +8,24 @@ use caushell_types::{
 
 pub struct ResolvePolicyPass;
 
-impl RequestAnalysisPass for ResolvePolicyPass {
+impl SessionAnalysisPass for ResolvePolicyPass {
     fn name(&self) -> &'static str {
         "resolve_policy"
     }
 
-    fn run(&self, ctx: &mut RunnerContext) {
+    fn run(&self, _session: SessionView<'_>, staged: SessionView<'_>, ctx: &mut RunnerContext) {
+        let has_unsupported_file = ctx.evidence.iter().any(|e| matches!(&e.kind,
+            EvidenceKind::NestedPayloadUnresolved(u)
+            if u.reason == caushell_types::NestedPayloadUnresolvedReasonEvidence::UnsupportedLanguage
+                && u.context.source == caushell_types::NestedPayloadSourceEvidence::ScriptFileRef));
+        let files = if has_unsupported_file {
+            crate::support::file_execution_checks(
+                ctx,
+                caushell_query::QuerySession::from_session(&staged),
+            )
+        } else {
+            Vec::new()
+        };
         let mut escalations: Vec<(RuleId, RuleAction, String)> = {
             let policy = &ctx.policy().rule_policy;
 
@@ -104,6 +116,10 @@ impl RequestAnalysisPass for ResolvePolicyPass {
 
         for (evidence, action) in
             unresolved_execution_payload_evidence(ctx).filter_map(|evidence| {
+                if let EvidenceKind::NestedPayloadUnresolved(unresolved) = &evidence.kind {
+                    if unresolved.reason == caushell_types::NestedPayloadUnresolvedReasonEvidence::UnsupportedLanguage
+                        && crate::support::file_reference_is_exempt(&unresolved.context, &files, ctx) { return None; }
+                }
                 unresolved_execution_payload_action(&ctx.policy().rule_policy, evidence)
                     .map(|action| (evidence, action))
             })
@@ -480,7 +496,7 @@ mod tests {
         command: &str,
     ) -> RunnerContext {
         let mut runner = PassRunner::new();
-        runner.register_request_analysis_pass(ResolvePolicyPass);
+        runner.register_session_analysis_pass(ResolvePolicyPass);
 
         let graph = SessionGraph::new();
         let summary = SessionSummary::new();
@@ -911,7 +927,9 @@ mod tests {
             node_id: "child:2".into(),
         };
         let ctx = run_pass(
-            PolicyConfig::default(), Vec::new(), Vec::new(),
+            PolicyConfig::default(),
+            Vec::new(),
+            Vec::new(),
             vec![
                 Evidence::nested_payload_parsed(parsed, ShellKind::Bash, 1),
                 Evidence::nested_payload_unresolved(

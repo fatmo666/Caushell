@@ -198,9 +198,20 @@ fn local_path_exemption_does_not_override_tainted_code_provenance() {
 }
 
 #[test]
-fn code_path_exemption_does_not_override_an_opaque_script_decision() {
+fn code_load_and_file_execution_exemptions_are_independent() {
+    check("node -r ./plugin.js ./main.js", Decision::Allow, false);
     check(
-        "node -r ./plugin.js ./main.js",
+        "node -r ./plugin.js /opt/main.js",
+        Decision::NeedApproval,
+        false,
+    );
+    check(
+        "node -r /opt/plugin.js ./main.js",
+        Decision::NeedApproval,
+        true,
+    );
+    check(
+        "node -r ./plugin.js -e 'console.log(1)'",
         Decision::NeedApproval,
         false,
     );

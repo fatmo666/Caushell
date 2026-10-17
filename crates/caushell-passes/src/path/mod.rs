@@ -26,7 +26,7 @@ pub(crate) use extract::{
     resolved_path_purpose_for_profile_purpose, resolved_path_role_for_profile_role,
 };
 pub(crate) use normalize::{
-    expand_home_path_spelling, join_shell_path, normalize_shell_path, path_is_within_root,
-    resolve_path_operand, resolve_path_operand_with_tilde,
+    expand_home_path_spelling, join_shell_path, normalize_shell_path, resolve_path_operand,
+    resolve_path_operand_with_tilde,
 };
 pub(crate) use target_match::match_path_expression_against_target_or_direct_children;
