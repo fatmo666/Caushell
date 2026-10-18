@@ -29,7 +29,7 @@ use serde_json::Value as JsonValue;
 
 use crate::path::resolve_path_operand;
 use crate::support::{
-    AliasExpansionHop, RuntimeBindingReplay, StaticInputEvidence, apply_alias_command,
+    AliasExpansionHop, RuntimeBindingReplay, StaticStreamEvidence, apply_alias_command,
     apply_runtime_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
     bound_argument_operands_for_slot, catastrophic_delete_target_for_arg, expand_alias_chain,
     known_literal_path_content_before_execution_unit as static_known_literal_path_content_before_execution_unit,
@@ -40,7 +40,7 @@ use crate::support::{
     redirection_targets_stdin_payload, request_variable_bindings, runtime_variable_overlay,
     runtime_visible_variable_bindings_before_span, source_node_id_for_command,
     static_io_target_evidence, static_stdin_evidence_for_scoped_command,
-    static_stdin_payloads_for_scoped_command, top_level_unit_for_command, top_level_unit_for_span,
+    top_level_unit_for_command, top_level_unit_for_span,
 };
 
 const MAX_ALIAS_EXPANSION_HOPS: usize = 8;
@@ -4811,7 +4811,7 @@ fn expanded_native_parallel_children(
             // ::: is an argv list, not a delimited byte stream. An item
             // containing a newline remains one native input record.
             direct_items = Some(source[1..].to_vec());
-            StaticInputEvidence {
+            StaticStreamEvidence {
                 known_fragments: Vec::new(),
                 complete: true,
             }
@@ -5331,19 +5331,19 @@ fn static_arg_file_evidence_for_xargs_scope(
     session: SessionView<'_>,
     entry: &ExpandedFrontierEntry,
     bound: &caushell_profile::BoundInvocation,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     // Historical bytes alone cannot certify an argument file after a current
     // action prelude. The existing history query does not prove that intervening
     // writes left those bytes unchanged; retain unknown input, not stale argv.
     if entry.static_payload_scope.command_index != 0 {
-        return StaticInputEvidence {
+        return StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: false,
         };
     }
     let paths = bound_argument_texts_for_slot(bound, "arg_file");
     if paths.len() != 1 {
-        return StaticInputEvidence {
+        return StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: false,
         };
@@ -5367,7 +5367,7 @@ fn static_arg_file_evidence_for_xargs_scope(
     {
         // ResolveInvocationPass cannot prove which file a relative -a names
         // after a directory transition (or an execdir-style unknown cwd).
-        return StaticInputEvidence {
+        return StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: false,
         };
@@ -5379,7 +5379,7 @@ fn static_arg_file_evidence_for_xargs_scope(
         request.shell_state_before.cwd(),
         request.home.as_deref(),
     ) else {
-        return StaticInputEvidence {
+        return StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: false,
         };
@@ -5391,11 +5391,11 @@ fn static_arg_file_evidence_for_xargs_scope(
         request.shell_state_before.cwd(),
         request.home.as_deref(),
     ) {
-        Some(content) => StaticInputEvidence {
+        Some(content) => StaticStreamEvidence {
             known_fragments: vec![content],
             complete: true,
         },
-        None => StaticInputEvidence {
+        None => StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: false,
         },
@@ -8316,7 +8316,7 @@ fn rewrite_static_stdin_payload_candidates(
     max_nested_parse_depth: u8,
     candidates: &mut [caushell_profile::RecursivePayloadCandidate],
 ) {
-    let payloads = static_stdin_payloads_for_scoped_command(
+    let evidence = static_stdin_evidence_for_scoped_command(
         caushell_query::QuerySession::from_session(&session),
         parsed_request,
         command_index,
@@ -8324,13 +8324,13 @@ fn rewrite_static_stdin_payload_candidates(
         &runtime_binding_replay(registry, request, bindings),
         &runtime_binding_replay(registry, request, scope_base_bindings),
         request.shell_state_before.cwd(),
+        true,
         request.home.as_deref(),
         max_nested_parse_depth,
     );
-    if payloads.is_empty() {
+    let Some(text) = evidence.complete_text() else {
         return;
-    }
-    let text = payloads.join("");
+    };
 
     for candidate in candidates.iter_mut() {
         let caushell_profile::RecursivePayloadInput::ImplicitInput { source, .. } =

@@ -7,7 +7,7 @@ use caushell_types::CommandSequenceNo;
 
 use crate::support::{
     block_device_path_for_arg_with_optional_cwd, materialize_static_token_text,
-    static_stdin_payloads_for_scoped_command,
+    static_stdin_evidence_for_scoped_command,
 };
 use crate::support::{
     collect_bare_shell_sink_hard_deny_reasons, collect_shell_sink_hard_deny_reasons_for_command,
@@ -309,7 +309,7 @@ fn collect_static_payload_partition_table_reasons(
         return Vec::new();
     };
 
-    let payloads = static_stdin_payloads_for_scoped_command(
+    let payloads = static_stdin_evidence_for_scoped_command(
         session,
         parsed,
         command_index,
@@ -317,9 +317,13 @@ fn collect_static_payload_partition_table_reasons(
         bindings,
         bindings,
         payload_cwd,
+        true,
         home,
         max_nested_parse_depth,
-    );
+    )
+    .complete_text()
+    .into_iter()
+    .collect::<Vec<_>>();
 
     match command_name {
         "fdisk" => matches!(
@@ -363,7 +367,7 @@ fn collect_static_payload_fdisk_session_reasons(
         return Vec::new();
     };
 
-    let payloads = static_stdin_payloads_for_scoped_command(
+    let payloads = static_stdin_evidence_for_scoped_command(
         session,
         parsed,
         command_index,
@@ -371,9 +375,13 @@ fn collect_static_payload_fdisk_session_reasons(
         bindings,
         bindings,
         payload_cwd,
+        true,
         home,
         max_nested_parse_depth,
-    );
+    )
+    .complete_text()
+    .into_iter()
+    .collect::<Vec<_>>();
 
     matches!(
         classify_fdisk_payload_texts(&payloads),

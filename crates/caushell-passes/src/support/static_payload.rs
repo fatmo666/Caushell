@@ -4,8 +4,8 @@ use caushell_graph::{NodeId, NodeKind};
 use caushell_parse::{CommandFact, CommandTokenKind, ParsedCommandArtifact, RedirectionKind};
 use caushell_profile::{SessionBindings, exact_scalar_shell_parameter_reference_value};
 use caushell_query::{
-    CommandInvocationRef, ExecutionUnitHistoryQuery, ExecutionUnitRef, PathContentProduceQuery,
-    IoTarget, QuerySession,
+    CommandInvocationRef, ExecutionUnitHistoryQuery, ExecutionUnitRef, IoTarget,
+    PathContentProduceQuery, QuerySession,
 };
 use caushell_types::{CommandSequenceNo, ProvenanceProduceKind, SessionId};
 
@@ -21,181 +21,124 @@ use crate::{
 
 const MAX_LITERAL_CONTENT_TRACE_HOPS: usize = 8;
 
-/// Static evidence about bytes delivered to a command's standard input.
+/// Static evidence about bytes carried by a shell input or output stream.
 ///
 /// `complete` is deliberately independent of `known_fragments`: a complete
 /// empty stream has no fragments, while an unknown stream may also have no
 /// known fragments (or may contain some known fragments alongside unknown
 /// input).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StaticInputEvidence {
+pub(crate) struct StaticStreamEvidence {
     pub(crate) known_fragments: Vec<String>,
     pub(crate) complete: bool,
 }
 
-impl StaticInputEvidence {
+impl StaticStreamEvidence {
     fn unknown() -> Self {
         Self {
             known_fragments: Vec::new(),
             complete: false,
         }
     }
-}
 
-pub(crate) fn static_stdout_payloads_for_command(
-    session: QuerySession<'_>,
-    command: &CommandFact,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-) -> Vec<String> {
-    let mut payloads = static_literal_stdout_payloads_for_command(command, bindings);
-    if command.command_name.as_deref() == Some("cat") {
-        payloads.extend(cat_static_payloads(
-            session,
-            command,
-            sequence_no,
-            cwd,
-            home,
-        ));
-    }
-    payloads
-}
-
-pub(crate) fn static_stdout_payloads_for_scoped_command(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    _bindings: &dyn VariableBindingReplay,
-    scope_base_bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    let Some(command) = parsed.commands.get(command_index) else {
-        return Vec::new();
-    };
-
-    let current = RebasedBindingReplay {
-        parent: scope_base_bindings,
-        bindings: scope_base_bindings.apply_before(
-            scope_base_bindings.base().clone(),
-            parsed,
-            command.span.start_byte,
-            sequence_no,
-        ),
-    };
-    let bindings: &dyn VariableBindingReplay = &current;
-
-    match command.command_name.as_deref() {
-        Some("cat") => cat_scoped_stdout_payloads(
-            session,
-            parsed,
-            command_index,
-            sequence_no,
-            bindings,
-            scope_base_bindings,
-            cwd,
-            home,
-            remaining_depth,
-        ),
-        Some("base64") => base64_decode_scoped_stdout_payloads(
-            session,
-            parsed,
-            command_index,
-            sequence_no,
-            bindings,
-            scope_base_bindings,
-            cwd,
-            home,
-            remaining_depth,
-        ),
-        Some("bash" | "sh") => shell_scoped_stdout_payloads(
-            session,
-            command,
-            sequence_no,
-            bindings,
-            cwd,
-            home,
-            remaining_depth,
-        ),
-        _ => static_stdout_payloads_for_command(session, command, sequence_no, bindings, cwd, home),
-    }
-}
-
-fn base64_decode_scoped_stdout_payloads(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    scope_base_bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    let Some(command) = parsed.commands.get(command_index) else {
-        return Vec::new();
-    };
-    let Some(ignore_garbage) = base64_decode_mode(command) else {
-        return Vec::new();
-    };
-
-    let mut encoded_chunks = Vec::new();
-    let input_args = arg_tokens(command);
-
-    if input_args.is_empty() {
-        encoded_chunks.extend(static_stdin_payloads_for_scoped_command(
-            session,
-            parsed,
-            command_index,
-            sequence_no,
-            bindings,
-            scope_base_bindings,
-            cwd,
-            home,
-            remaining_depth,
-        ));
-    } else {
-        for arg in input_args {
-            let text = materialize_static_token_text(&arg.text, bindings);
-            if text == "-" {
-                encoded_chunks.extend(static_stdin_payloads_for_scoped_command(
-                    session,
-                    parsed,
-                    command_index,
-                    sequence_no,
-                    bindings,
-                    scope_base_bindings,
-                    cwd,
-                    home,
-                    remaining_depth,
-                ));
-                continue;
-            }
-
-            let Some(path) = resolve_path_operand(&text, arg.quoted, &arg.node_kind, cwd, home)
-            else {
-                return Vec::new();
-            };
-            let Some(content) =
-                known_literal_path_content_before_sequence(session, &path, sequence_no, cwd, home)
-            else {
-                return Vec::new();
-            };
-            encoded_chunks.push(content);
+    fn known(text: String) -> Self {
+        Self {
+            known_fragments: vec![text],
+            complete: true,
         }
     }
 
-    if encoded_chunks.is_empty() {
-        return Vec::new();
+    pub(crate) fn complete_text(self) -> Option<String> {
+        self.complete.then(|| self.known_fragments.concat())
     }
+}
 
-    decode_base64_standard_to_utf8(&encoded_chunks.join(""), ignore_garbage)
-        .into_iter()
-        .collect()
+fn base64_decode_stdout_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence_no: CommandSequenceNo,
+    bindings: &dyn VariableBindingReplay,
+    scope_base_bindings: &dyn VariableBindingReplay,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticStreamEvidence {
+    let Some(command) = parsed.commands.get(command_index) else {
+        return StaticStreamEvidence::unknown();
+    };
+    let Some(ignore_garbage) = base64_decode_mode(command) else {
+        return StaticStreamEvidence::unknown();
+    };
+    let input_args = arg_tokens(command);
+    // base64 accepts a single input operand. Unknown operands and partial
+    // streams cannot certify the bytes of a decoded program.
+    if input_args.len() > 1 {
+        return StaticStreamEvidence::unknown();
+    }
+    let evidence = if input_args.is_empty()
+        || input_args
+            .first()
+            .is_some_and(|arg| exact_output_field(arg, bindings).as_deref() == Some("-"))
+    {
+        static_stdin_evidence_for_scoped_command(
+            session,
+            parsed,
+            command_index,
+            sequence_no,
+            bindings,
+            scope_base_bindings,
+            cwd,
+            cwd_reliable,
+            home,
+            remaining_depth,
+        )
+    } else {
+        let arg = input_args[0];
+        let Some(path) = resolve_materialized_path_operand(
+            &arg.text,
+            arg.quoted,
+            &arg.node_kind,
+            cwd,
+            home,
+            bindings,
+        ) else {
+            return StaticStreamEvidence::unknown();
+        };
+        if !cwd_reliable
+            && !std::path::Path::new(&materialize_token_text(&arg.text, bindings)).is_absolute()
+        {
+            return StaticStreamEvidence::unknown();
+        }
+        match known_literal_path_content_before_scoped_command_with_depth(
+            session,
+            parsed,
+            command_index,
+            &path,
+            sequence_no,
+            scope_base_bindings,
+            cwd,
+            home,
+            0,
+        )
+        .or_else(|| {
+            known_literal_path_content_before_sequence(session, &path, sequence_no, cwd, home)
+        }) {
+            Some(content) => StaticStreamEvidence::known(content),
+            None => StaticStreamEvidence::unknown(),
+        }
+    };
+    let Some(encoded) = evidence.complete_text() else {
+        return StaticStreamEvidence::unknown();
+    };
+    if encoded.is_empty() {
+        return StaticStreamEvidence::known(String::new());
+    }
+    match decode_base64_standard_to_utf8(&encoded, ignore_garbage) {
+        Some(decoded) => StaticStreamEvidence::known(decoded),
+        None => StaticStreamEvidence::unknown(),
+    }
 }
 
 fn base64_decode_mode(command: &CommandFact) -> Option<bool> {
@@ -292,95 +235,9 @@ fn base64_standard_value(byte: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn static_stdin_payloads_for_scoped_command(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    scope_base_bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    let source = effective_stdin_source(parsed, command_index);
-    if matches!(
-        source,
-        EffectiveStdinSource::UnknownDescriptor(_) | EffectiveStdinSource::Closed
-    ) {
-        return Vec::new();
-    }
-    let mut payloads = stdin_payloads_for_command(
-        session,
-        parsed,
-        command_index,
-        sequence_no,
-        bindings,
-        cwd,
-        home,
-        remaining_depth,
-    );
-    payloads.extend(file_stdin_payloads_for_command(
-        session,
-        parsed,
-        command_index,
-        sequence_no,
-        bindings,
-        scope_base_bindings,
-        cwd,
-        home,
-    ));
-
-    if remaining_depth == 0 {
-        return payloads;
-    }
-
-    payloads.extend(process_substitution_stdin_payloads_for_command(
-        session,
-        parsed,
-        command_index,
-        sequence_no,
-        bindings,
-        cwd,
-        home,
-        remaining_depth,
-    ));
-
-    if source != EffectiveStdinSource::Inherited {
-        return payloads;
-    }
-    if let Some(upstream_index) = pipeline_upstream_by_consumer(parsed)
-        .get(&command_index)
-        .copied()
-    {
-        let Some(upstream_command) = parsed.commands.get(upstream_index) else {
-            return payloads;
-        };
-        let upstream_bindings = scope_base_bindings.apply_before(
-            scope_base_bindings.base().clone(),
-            parsed,
-            upstream_command.span.start_byte,
-            sequence_no,
-        );
-        payloads.extend(static_stdout_payloads_for_scoped_command(
-            session,
-            parsed,
-            upstream_index,
-            sequence_no,
-            &upstream_bindings,
-            scope_base_bindings,
-            cwd,
-            home,
-            remaining_depth.saturating_sub(1),
-        ));
-    }
-
-    payloads
-}
-
 /// Return known bytes and whether they describe the command's entire stdin.
 ///
-/// Unlike the older payload helper, this selects the effective stdin source:
+/// This selects the effective stdin source:
 /// an explicit stdin redirection takes precedence over pipeline input, and
 /// when there are multiple stdin redirections the last one is effective.
 pub(crate) fn static_stdin_evidence_for_scoped_command(
@@ -394,9 +251,9 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
     cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     let Some(_) = parsed.commands.get(command_index) else {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     };
     let cwd_reliable = cwd_reliable && !scope_has_prior_directory_transition(parsed, command_index);
 
@@ -404,13 +261,13 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
     if source == EffectiveStdinSource::Closed {
         // A closed descriptor cannot supply executable bytes. This does not
         // assert that an attempted read succeeds or returns EOF at runtime.
-        return StaticInputEvidence {
+        return StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: true,
         };
     }
     if matches!(source, EffectiveStdinSource::UnknownDescriptor(_)) {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
     if let EffectiveStdinSource::Redirect(index) = source {
         let redirection = &parsed.redirections[index];
@@ -426,7 +283,7 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
                     home,
                     remaining_depth,
                 ) {
-                    Some(payload) => StaticInputEvidence {
+                    Some(payload) => StaticStreamEvidence {
                         known_fragments: vec![if redirection.kind == RedirectionKind::HereString {
                             format!("{payload}\n")
                         } else {
@@ -434,12 +291,12 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
                         }],
                         complete: true,
                     },
-                    None => StaticInputEvidence::unknown(),
+                    None => StaticStreamEvidence::unknown(),
                 }
             }
             RedirectionKind::File => {
                 let Some(target) = redirection.target.as_ref() else {
-                    return StaticInputEvidence::unknown();
+                    return StaticStreamEvidence::unknown();
                 };
                 if target.node_kind == "process_substitution" {
                     return process_substitution_evidence(
@@ -456,7 +313,7 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
                 }
                 let materialized_target = materialize_token_text(&target.text, bindings);
                 if !cwd_reliable && !std::path::Path::new(&materialized_target).is_absolute() {
-                    return StaticInputEvidence::unknown();
+                    return StaticStreamEvidence::unknown();
                 }
                 let Some(path) = resolve_materialized_path_operand(
                     &target.text,
@@ -466,7 +323,7 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
                     home,
                     bindings,
                 ) else {
-                    return StaticInputEvidence::unknown();
+                    return StaticStreamEvidence::unknown();
                 };
                 match known_literal_path_content_before_scoped_command_with_depth(
                     session,
@@ -488,19 +345,27 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
                         home,
                     )
                 }) {
-                    Some(content) => StaticInputEvidence {
+                    Some(content) => StaticStreamEvidence {
                         known_fragments: vec![content],
                         complete: true,
                     },
-                    None => StaticInputEvidence::unknown(),
+                    None => StaticStreamEvidence::unknown(),
                 }
             }
         };
     }
 
     static_pipeline_input_evidence(
-        session, parsed, command_index, sequence_no, bindings, scope_base_bindings,
-        cwd, cwd_reliable, home, remaining_depth,
+        session,
+        parsed,
+        command_index,
+        sequence_no,
+        bindings,
+        scope_base_bindings,
+        cwd,
+        cwd_reliable,
+        home,
+        remaining_depth,
     )
 }
 
@@ -515,17 +380,17 @@ fn static_pipeline_input_evidence(
     cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     let Some(upstream_index) = pipeline_upstream_by_consumer(parsed)
         .get(&command_index)
         .copied()
     else {
         // A command outside a pipeline may inherit interactive or otherwise
         // ambient stdin, which is not evidence of an empty stream.
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     };
     if remaining_depth == 0 {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
     scoped_stdout_evidence(
         session,
@@ -552,9 +417,9 @@ fn scoped_stdout_evidence(
     cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     let Some(command) = parsed.commands.get(command_index) else {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     };
     let cwd_reliable = cwd_reliable && !scope_has_prior_directory_transition(parsed, command_index);
     if command.control_flow_span.is_some()
@@ -564,7 +429,7 @@ fn scoped_stdout_evidence(
                 && !redirection_targets_stdin_payload(redirection)
         })
     {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
 
     match command.command_name.as_deref() {
@@ -574,21 +439,21 @@ fn scoped_stdout_evidence(
                     || token.runtime_argument_domain.is_some()
                     || token_has_unresolved_expansion(token, bindings)
             }) {
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             }
             let payloads = static_literal_stdout_payloads_for_command(command, bindings);
             if payloads.is_empty() {
                 // `printf` without a format emits no bytes. `echo` without
                 // operands emits one newline (unless -n is present).
                 if command.command_name.as_deref() == Some("printf") && command.tokens.is_empty() {
-                    return StaticInputEvidence {
+                    return StaticStreamEvidence {
                         known_fragments: Vec::new(),
                         complete: true,
                     };
                 }
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             }
-            StaticInputEvidence {
+            StaticStreamEvidence {
                 known_fragments: payloads,
                 complete: true,
             }
@@ -605,11 +470,23 @@ fn scoped_stdout_evidence(
             home,
             remaining_depth,
         ),
+        Some("base64") => base64_decode_stdout_evidence(
+            session,
+            parsed,
+            command_index,
+            sequence_no,
+            bindings,
+            scope_base_bindings,
+            cwd,
+            cwd_reliable,
+            home,
+            remaining_depth,
+        ),
         Some("bash" | "sh") if remaining_depth > 0 => {
             let Some((payload, script_bindings)) =
                 static_shell_payload_and_bindings(command, bindings)
             else {
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             };
             let shell_kind = if command.command_name.as_deref() == Some("bash") {
                 caushell_types::ShellKind::Bash
@@ -617,53 +494,24 @@ fn scoped_stdout_evidence(
                 caushell_types::ShellKind::Sh
             };
             let Ok(child_parsed) = caushell_parse::parse_command(&payload, shell_kind) else {
-                return StaticInputEvidence::unknown();
-            };
-            if child_parsed.commands.is_empty() {
-                return StaticInputEvidence {
-                    known_fragments: Vec::new(),
-                    complete: true,
-                };
-            }
-            if !is_linear_static_output_sequence(&child_parsed) {
-                return StaticInputEvidence::unknown();
-            }
-            let mut evidence = StaticInputEvidence {
-                known_fragments: Vec::new(),
-                complete: true,
+                return StaticStreamEvidence::unknown();
             };
             let script_scope = RebasedBindingReplay {
                 parent: bindings,
                 bindings: script_bindings,
             };
-            for child_index in 0..child_parsed.commands.len() {
-                let current = RebasedBindingReplay {
-                    parent: &script_scope,
-                    bindings: script_scope.apply_before(
-                        script_scope.base().clone(),
-                        &child_parsed,
-                        child_parsed.commands[child_index].span.start_byte,
-                        sequence_no,
-                    ),
-                };
-                let child = scoped_stdout_evidence(
-                    session,
-                    &child_parsed,
-                    child_index,
-                    sequence_no,
-                    &current,
-                    &script_scope,
-                    cwd,
-                    cwd_reliable,
-                    home,
-                    remaining_depth.saturating_sub(1),
-                );
-                evidence.known_fragments.extend(child.known_fragments);
-                evidence.complete &= child.complete;
-            }
-            evidence
+            static_shell_stdout_evidence(
+                session,
+                &child_parsed,
+                sequence_no,
+                &script_scope,
+                cwd,
+                cwd_reliable,
+                home,
+                remaining_depth.saturating_sub(1),
+            )
         }
-        _ => StaticInputEvidence::unknown(),
+        _ => StaticStreamEvidence::unknown(),
     }
 }
 
@@ -678,9 +526,9 @@ fn cat_scoped_stdout_evidence(
     cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     let Some(command) = parsed.commands.get(command_index) else {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     };
     if command
         .tokens
@@ -688,7 +536,7 @@ fn cat_scoped_stdout_evidence(
         .any(|token| token.kind == CommandTokenKind::Flag)
     {
         // Options such as -n, -b, and -s alter cat's output bytes.
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
     let args = arg_tokens(command);
     if args.is_empty() {
@@ -706,7 +554,7 @@ fn cat_scoped_stdout_evidence(
         );
     }
 
-    let mut evidence = StaticInputEvidence {
+    let mut evidence = StaticStreamEvidence {
         known_fragments: Vec::new(),
         complete: true,
     };
@@ -734,7 +582,7 @@ fn cat_scoped_stdout_evidence(
             if !cwd_reliable
                 && !std::path::Path::new(&materialize_token_text(&arg.text, bindings)).is_absolute()
             {
-                StaticInputEvidence::unknown()
+                StaticStreamEvidence::unknown()
             } else {
                 match known_literal_path_content_before_sequence(
                     session,
@@ -743,15 +591,15 @@ fn cat_scoped_stdout_evidence(
                     cwd,
                     home,
                 ) {
-                    Some(content) => StaticInputEvidence {
+                    Some(content) => StaticStreamEvidence {
                         known_fragments: vec![content],
                         complete: true,
                     },
-                    None => StaticInputEvidence::unknown(),
+                    None => StaticStreamEvidence::unknown(),
                 }
             }
         } else {
-            StaticInputEvidence::unknown()
+            StaticStreamEvidence::unknown()
         };
         evidence.known_fragments.extend(part.known_fragments);
         evidence.complete &= part.complete;
@@ -769,39 +617,59 @@ pub(crate) fn process_substitution_evidence(
     cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     let Some(inner) = text
         .strip_prefix("<(")
         .and_then(|inner| inner.strip_suffix(')'))
     else {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     };
-    let Ok(inner_parsed) = caushell_parse::parse_command(inner, shell_kind) else {
-        return StaticInputEvidence::unknown();
+    let Ok(parsed) = caushell_parse::parse_command(inner, shell_kind) else {
+        return StaticStreamEvidence::unknown();
     };
-    if inner_parsed.commands.is_empty() || remaining_depth == 0 {
-        return StaticInputEvidence::unknown();
-    }
-    if inner_parsed.commands.iter().any(|command| {
-        command.guarded
-            || command.control_flow_span.is_some()
-            || command.terminator == Some(caushell_parse::StatementTerminator::Background)
-    }) || inner_parsed
-        .redirections
-        .iter()
-        .any(|redirection| !redirection_targets_stdin_payload(redirection))
+    static_shell_stdout_evidence(
+        session,
+        &parsed,
+        sequence_no,
+        bindings,
+        cwd,
+        cwd_reliable,
+        home,
+        remaining_depth,
+    )
+}
+
+/// One output contract for shell bodies, command substitutions and process
+/// substitutions. Only terminal pipeline stages contribute to this stream.
+fn static_shell_stdout_evidence(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    sequence_no: CommandSequenceNo,
+    bindings: &dyn VariableBindingReplay,
+    cwd: &str,
+    cwd_reliable: bool,
+    home: Option<&str>,
+    remaining_depth: u8,
+) -> StaticStreamEvidence {
+    if remaining_depth == 0
+        || parsed.status != caushell_parse::ParseStatus::Complete
+        || parsed.commands.iter().any(|command| {
+            command.guarded
+                || command.control_flow_span.is_some()
+                || command.terminator == Some(caushell_parse::StatementTerminator::Background)
+        })
+        || parsed
+            .redirections
+            .iter()
+            .any(|redirection| !redirection_targets_stdin_payload(redirection))
     {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
-    let piped_outputs: std::collections::BTreeSet<_> = pipeline_upstream_by_consumer(&inner_parsed)
+    let piped_outputs: std::collections::BTreeSet<_> = pipeline_upstream_by_consumer(parsed)
         .into_values()
         .collect();
-    let mut evidence = StaticInputEvidence {
-        known_fragments: Vec::new(),
-        complete: true,
-    };
-    for index in 0..inner_parsed.commands.len() {
-        // An upstream stage supplies the next stage, not the outer stream.
+    let mut evidence = StaticStreamEvidence::known(String::new());
+    for index in 0..parsed.commands.len() {
         if piped_outputs.contains(&index) {
             continue;
         }
@@ -809,14 +677,14 @@ pub(crate) fn process_substitution_evidence(
             parent: bindings,
             bindings: bindings.apply_before(
                 bindings.base().clone(),
-                &inner_parsed,
-                inner_parsed.commands[index].span.start_byte,
+                parsed,
+                parsed.commands[index].span.start_byte,
                 sequence_no,
             ),
         };
         let part = scoped_stdout_evidence(
             session,
-            &inner_parsed,
+            parsed,
             index,
             sequence_no,
             &current,
@@ -845,10 +713,10 @@ pub(crate) fn static_io_target_evidence(
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     let cwd_reliable = !scope_has_prior_directory_transition(parsed, command_index);
     match target {
-        IoTarget::Closed | IoTarget::Discard => StaticInputEvidence {
+        IoTarget::Closed | IoTarget::Discard => StaticStreamEvidence {
             known_fragments: Vec::new(),
             complete: true,
         },
@@ -870,7 +738,7 @@ pub(crate) fn static_io_target_evidence(
         }
         IoTarget::InlineContent { redirection_index } => {
             let Some(redirection) = parsed.redirections.get(*redirection_index) else {
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             };
             match static_inline_stdin_payload(
                 session,
@@ -882,7 +750,7 @@ pub(crate) fn static_io_target_evidence(
                 home,
                 remaining_depth,
             ) {
-                Some(payload) => StaticInputEvidence {
+                Some(payload) => StaticStreamEvidence {
                     known_fragments: vec![if redirection.kind == RedirectionKind::HereString {
                         format!("{payload}\n")
                     } else {
@@ -890,7 +758,7 @@ pub(crate) fn static_io_target_evidence(
                     }],
                     complete: true,
                 },
-                None => StaticInputEvidence::unknown(),
+                None => StaticStreamEvidence::unknown(),
             }
         }
         IoTarget::ProcessSubstitution { redirection_index } => {
@@ -899,7 +767,7 @@ pub(crate) fn static_io_target_evidence(
                 .get(*redirection_index)
                 .and_then(|redirection| redirection.target.as_ref())
             else {
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             };
             process_substitution_evidence(
                 session,
@@ -918,10 +786,10 @@ pub(crate) fn static_io_target_evidence(
             cwd_dependent,
         } => {
             if *cwd_dependent && !cwd_reliable {
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             }
             let Some(path) = resolution.concrete_path() else {
-                return StaticInputEvidence::unknown();
+                return StaticStreamEvidence::unknown();
             };
             immediate_file_write_evidence(
                 session,
@@ -936,7 +804,7 @@ pub(crate) fn static_io_target_evidence(
             )
         }
         IoTarget::InheritedDescriptor { .. } | IoTarget::UnknownDescriptor { .. } => {
-            StaticInputEvidence::unknown()
+            StaticStreamEvidence::unknown()
         }
     }
 }
@@ -951,11 +819,11 @@ fn immediate_file_write_evidence(
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
-) -> StaticInputEvidence {
+) -> StaticStreamEvidence {
     // Only a complete immediate replacement certifies this version. Older
     // literal fragments cannot certify bytes after an intervening writer.
     let Some(writer) = consumer.checked_sub(1) else {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     };
     let command = &parsed.commands[writer];
     if remaining_depth == 0
@@ -968,7 +836,7 @@ fn immediate_file_write_evidence(
                 && matches!(redirection.operator.as_deref(), Some(">>" | "&>>"))
         })
     {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
     let target = super::content_io_target(
         parsed,
@@ -984,7 +852,7 @@ fn immediate_file_write_evidence(
     if !matches!(target, IoTarget::Path { ref resolution, .. }
         if resolution.concrete_path() == Some(path))
     {
-        return StaticInputEvidence::unknown();
+        return StaticStreamEvidence::unknown();
     }
     let current = RebasedBindingReplay {
         parent: scope_base_bindings,
@@ -1029,14 +897,6 @@ fn token_has_unresolved_expansion(
         return exact_scalar_shell_parameter_reference_value(text, bindings).is_none();
     }
     false
-}
-
-fn is_linear_static_output_sequence(parsed: &ParsedCommandArtifact) -> bool {
-    parsed.redirections.is_empty()
-        && parsed.commands.iter().all(|command| {
-            !command.in_pipeline && !command.guarded && command.control_flow_span.is_none()
-                && command.terminator != Some(caushell_parse::StatementTerminator::Background)
-        })
 }
 
 fn static_shell_payload_and_bindings(
@@ -1200,213 +1060,26 @@ fn static_command_substitution_output(
     home: Option<&str>,
     remaining_depth: u8,
 ) -> Option<String> {
-    if remaining_depth == 0 {
-        return None;
-    }
-
     let substitutions = caushell_parse::parse_command_substitutions(text, shell_kind).ok()?;
     let substitution = substitutions.first()?;
     let parsed = caushell_parse::parse_command(&substitution.body_text, shell_kind).ok()?;
-    let mut payloads = Vec::new();
-
-    for (command_index, _) in parsed.commands.iter().enumerate() {
-        payloads.extend(static_stdout_payloads_for_scoped_command(
-            session,
-            &parsed,
-            command_index,
-            sequence_no,
-            bindings,
-            bindings,
-            cwd,
-            home,
-            remaining_depth.saturating_sub(1),
-        ));
+    let output = static_shell_stdout_evidence(
+        session,
+        &parsed,
+        sequence_no,
+        bindings,
+        cwd,
+        true,
+        home,
+        remaining_depth,
+    )
+    .complete_text()?;
+    // Shell command substitution strips trailing newlines, unlike <(...).
+    // Binary NUL data is not representable by this text materializer.
+    if output.contains('\0') {
+        return None;
     }
-
-    (!payloads.is_empty()).then(|| payloads.join(""))
-}
-
-pub(crate) fn static_shell_payload_from_command(
-    command: &CommandFact,
-    bindings: &dyn VariableBindingReplay,
-) -> Option<String> {
-    match command.command_name.as_deref() {
-        Some("bash") | Some("sh") => {}
-        _ => return None,
-    };
-    let args = command
-        .tokens
-        .iter()
-        .filter(|token| token.kind != CommandTokenKind::DashDash)
-        .map(|token| materialize_token_text(&token.text, bindings))
-        .collect::<Vec<_>>();
-    static_shell_payload_from_args(&args)
-}
-
-pub(crate) fn static_shell_payload_from_args(args: &[String]) -> Option<String> {
-    let payload_index = shell_command_payload_arg_index(args)?;
-    let payload = args.get(payload_index)?.clone();
-    let trailing_args = args
-        .iter()
-        .skip(payload_index + 1)
-        .cloned()
-        .collect::<Vec<_>>();
-
-    Some(substitute_shell_positional_parameters(
-        &unquote_static_shell_arg(&payload).unwrap_or(payload),
-        &trailing_args,
-    ))
-}
-
-fn cat_static_payloads(
-    session: QuerySession<'_>,
-    command: &CommandFact,
-    sequence_no: CommandSequenceNo,
-    cwd: &str,
-    home: Option<&str>,
-) -> Vec<String> {
-    let args: Vec<&caushell_parse::CommandToken> = command
-        .tokens
-        .iter()
-        .filter(|token| token.kind == CommandTokenKind::Arg)
-        .collect();
-    let mut payloads = Vec::new();
-
-    for arg in args {
-        let Some(path) = resolve_path_operand(&arg.text, arg.quoted, &arg.node_kind, cwd, home)
-        else {
-            continue;
-        };
-        if let Some(content) =
-            known_literal_path_content_before_sequence(session, &path, sequence_no, cwd, home)
-        {
-            payloads.push(content);
-        }
-    }
-
-    payloads
-}
-
-fn shell_scoped_stdout_payloads(
-    session: QuerySession<'_>,
-    command: &CommandFact,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    if remaining_depth == 0 {
-        return Vec::new();
-    }
-
-    let shell_kind = match command.command_name.as_deref() {
-        Some("bash") => caushell_types::ShellKind::Bash,
-        Some("sh") => caushell_types::ShellKind::Sh,
-        _ => return Vec::new(),
-    };
-    let Some(payload) = static_shell_payload_from_command(command, bindings) else {
-        return Vec::new();
-    };
-    let Ok(parsed_payload) = caushell_parse::parse_command(&payload, shell_kind) else {
-        return Vec::new();
-    };
-    let mut child_payloads = Vec::new();
-
-    for (command_index, _) in parsed_payload.commands.iter().enumerate() {
-        child_payloads.extend(static_stdout_payloads_for_scoped_command(
-            session,
-            &parsed_payload,
-            command_index,
-            sequence_no,
-            bindings,
-            bindings,
-            cwd,
-            home,
-            remaining_depth.saturating_sub(1),
-        ));
-    }
-
-    if child_payloads.is_empty() {
-        Vec::new()
-    } else {
-        vec![child_payloads.join("")]
-    }
-}
-
-fn cat_scoped_stdout_payloads(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    scope_base_bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    let Some(command) = parsed.commands.get(command_index) else {
-        return Vec::new();
-    };
-    let args = arg_tokens(command);
-
-    if args.is_empty() {
-        let stdin_payloads = static_stdin_payloads_for_scoped_command(
-            session,
-            parsed,
-            command_index,
-            sequence_no,
-            bindings,
-            scope_base_bindings,
-            cwd,
-            home,
-            remaining_depth,
-        );
-        if !stdin_payloads.is_empty() {
-            return vec![stdin_payloads.join("")];
-        }
-
-        return Vec::new();
-    }
-
-    let mut fragments = Vec::new();
-    for arg in args {
-        if let Some(path) = resolve_path_operand(&arg.text, arg.quoted, &arg.node_kind, cwd, home) {
-            let Some(content) =
-                known_literal_path_content_before_sequence(session, &path, sequence_no, cwd, home)
-            else {
-                return Vec::new();
-            };
-            fragments.push(content);
-            continue;
-        }
-
-        if arg.node_kind == "process_substitution" {
-            let payloads = static_stdout_payloads_for_process_substitution_text(
-                session,
-                &arg.text,
-                parsed.shell_kind,
-                sequence_no,
-                bindings,
-                cwd,
-                home,
-                remaining_depth,
-            );
-            if payloads.is_empty() {
-                return Vec::new();
-            }
-            fragments.extend(payloads);
-            continue;
-        }
-
-        return Vec::new();
-    }
-
-    if fragments.is_empty() {
-        Vec::new()
-    } else {
-        vec![fragments.join("")]
-    }
+    Some(output.trim_end_matches('\n').to_string())
 }
 
 pub(crate) fn known_literal_path_content_before_sequence(
@@ -1745,55 +1418,6 @@ fn top_level_command_index(command: CommandInvocationRef<'_>) -> Option<usize> {
     command.node_id().0.strip_prefix(&prefix)?.parse().ok()
 }
 
-pub(crate) fn static_stdout_payloads_for_process_substitution_text(
-    session: QuerySession<'_>,
-    text: &str,
-    shell_kind: caushell_types::ShellKind,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    if remaining_depth == 0 {
-        return Vec::new();
-    }
-
-    let Ok(substitutions) = caushell_parse::parse_process_substitutions(text, shell_kind) else {
-        return Vec::new();
-    };
-    let mut payloads = Vec::new();
-
-    for substitution in substitutions {
-        let Ok(parsed_substitution) =
-            caushell_parse::parse_command(&substitution.body_text, shell_kind)
-        else {
-            continue;
-        };
-        let mut child_payloads = Vec::new();
-
-        for (command_index, _) in parsed_substitution.commands.iter().enumerate() {
-            child_payloads.extend(static_stdout_payloads_for_scoped_command(
-                session,
-                &parsed_substitution,
-                command_index,
-                sequence_no,
-                bindings,
-                bindings,
-                cwd,
-                home,
-                remaining_depth.saturating_sub(1),
-            ));
-        }
-
-        if !child_payloads.is_empty() {
-            payloads.push(child_payloads.join(""));
-        }
-    }
-
-    payloads
-}
-
 fn literal_content_written_by_command(
     session: QuerySession<'_>,
     raw_text: &str,
@@ -1988,33 +1612,6 @@ fn effective_stdin_redirection(
     }
 }
 
-fn stdin_payloads_for_command(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    effective_stdin_redirection(parsed, command_index)
-        .into_iter()
-        .filter_map(|redirection| {
-            static_inline_stdin_payload(
-                session,
-                parsed.shell_kind,
-                redirection,
-                sequence_no,
-                bindings,
-                cwd,
-                home,
-                remaining_depth,
-            )
-        })
-        .collect()
-}
-
 fn static_inline_stdin_payload(
     session: QuerySession<'_>,
     shell_kind: caushell_types::ShellKind,
@@ -2186,88 +1783,6 @@ fn contains_unescaped_dynamic_shell_syntax(text: &str) -> bool {
     }
 
     escaped
-}
-
-fn file_stdin_payloads_for_command(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    scope_base_bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-) -> Vec<String> {
-    effective_stdin_redirection(parsed, command_index)
-        .into_iter()
-        .filter(|redirection| {
-            redirection.kind == RedirectionKind::File
-                && matches!(redirection.operator.as_deref(), Some("<" | "<>"))
-        })
-        .filter_map(|redirection| {
-            let target = redirection.target.as_ref()?;
-            if target.node_kind == "process_substitution" {
-                return None;
-            }
-            let path = resolve_materialized_path_operand(
-                &target.text,
-                target.quoted,
-                &target.node_kind,
-                cwd,
-                home,
-                bindings,
-            )?;
-            known_literal_path_content_before_scoped_command_with_depth(
-                session,
-                parsed,
-                command_index,
-                &path,
-                sequence_no,
-                scope_base_bindings,
-                cwd,
-                home,
-                0,
-            )
-            .or_else(|| {
-                known_literal_path_content_before_sequence(session, &path, sequence_no, cwd, home)
-            })
-        })
-        .collect()
-}
-
-fn process_substitution_stdin_payloads_for_command(
-    session: QuerySession<'_>,
-    parsed: &ParsedCommandArtifact,
-    command_index: usize,
-    sequence_no: CommandSequenceNo,
-    bindings: &dyn VariableBindingReplay,
-    cwd: &str,
-    home: Option<&str>,
-    remaining_depth: u8,
-) -> Vec<String> {
-    effective_stdin_redirection(parsed, command_index)
-        .into_iter()
-        .filter(|redirection| {
-            redirection
-                .target
-                .as_ref()
-                .is_some_and(|target| target.node_kind == "process_substitution")
-        })
-        .flat_map(|redirection| {
-            redirection.target.as_ref().into_iter().flat_map(|target| {
-                static_stdout_payloads_for_process_substitution_text(
-                    session,
-                    &target.text,
-                    parsed.shell_kind,
-                    sequence_no,
-                    bindings,
-                    cwd,
-                    home,
-                    remaining_depth,
-                )
-            })
-        })
-        .collect()
 }
 
 fn pipeline_upstream_by_consumer(parsed: &ParsedCommandArtifact) -> BTreeMap<usize, usize> {
@@ -2752,294 +2267,6 @@ fn shell_command_payload_arg_index(args: &[String]) -> Option<usize> {
     None
 }
 
-fn substitute_shell_positional_parameters(payload: &str, trailing_args: &[String]) -> String {
-    let mut out = String::with_capacity(payload.len());
-    let chars: Vec<char> = payload.chars().collect();
-    let mut index = 0usize;
-    let mut quote = StaticShellQuote::None;
-
-    while index < chars.len() {
-        match quote {
-            StaticShellQuote::None => match chars[index] {
-                '\'' => {
-                    quote = StaticShellQuote::Single;
-                    out.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-                '"' => {
-                    quote = StaticShellQuote::Double;
-                    out.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-                '\\' => {
-                    out.push(chars[index]);
-                    index += 1;
-                    if index < chars.len() {
-                        out.push(chars[index]);
-                        index += 1;
-                    }
-                    continue;
-                }
-                '$' => {}
-                _ => {
-                    out.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-            },
-            StaticShellQuote::Single => {
-                if chars[index] == '\'' {
-                    quote = StaticShellQuote::None;
-                }
-                out.push(chars[index]);
-                index += 1;
-                continue;
-            }
-            StaticShellQuote::Double => match chars[index] {
-                '"' => {
-                    quote = StaticShellQuote::None;
-                    out.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-                '\\' => {
-                    out.push(chars[index]);
-                    index += 1;
-                    if index < chars.len() {
-                        out.push(chars[index]);
-                        index += 1;
-                    }
-                    continue;
-                }
-                '$' => {}
-                _ => {
-                    out.push(chars[index]);
-                    index += 1;
-                    continue;
-                }
-            },
-        }
-
-        if let Some((consumed, reference)) = parse_shell_positional_reference(&chars[index..]) {
-            if let Some(replacement) = shell_positional_replacement(reference, trailing_args, quote)
-            {
-                out.push_str(&replacement);
-                index += consumed;
-                continue;
-            }
-        }
-
-        out.push(chars[index]);
-        index += 1;
-    }
-
-    out
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StaticShellQuote {
-    None,
-    Single,
-    Double,
-}
-
-fn unquote_static_shell_arg(text: &str) -> Option<String> {
-    if text.len() < 2 {
-        return None;
-    }
-
-    if let Some(unquoted) = unquote_concatenated_single_quoted_arg(text) {
-        return Some(unquoted);
-    }
-
-    if text.starts_with('\'') && text.ends_with('\'') {
-        return Some(text[1..text.len() - 1].replace("'\"'\"'", "'"));
-    }
-
-    if text.starts_with('"') && text.ends_with('"') {
-        let mut out = String::with_capacity(text.len().saturating_sub(2));
-        let mut chars = text[1..text.len() - 1].chars();
-        while let Some(ch) = chars.next() {
-            if ch == '\\' {
-                if let Some(next) = chars.next() {
-                    out.push(next);
-                } else {
-                    out.push(ch);
-                }
-            } else {
-                out.push(ch);
-            }
-        }
-        return Some(out);
-    }
-
-    None
-}
-
-fn unquote_concatenated_single_quoted_arg(text: &str) -> Option<String> {
-    if !text.starts_with('\'') {
-        return None;
-    }
-
-    let mut rest = text;
-    let mut out = String::new();
-
-    while !rest.is_empty() {
-        let quoted = rest.strip_prefix('\'')?;
-        let end = quoted.find('\'')?;
-        out.push_str(&quoted[..end]);
-        rest = &quoted[end + 1..];
-
-        if rest.is_empty() {
-            return Some(out);
-        }
-
-        if let Some(next) = rest.strip_prefix("\"'\"") {
-            out.push('\'');
-            rest = next;
-        } else {
-            return None;
-        }
-    }
-
-    Some(out)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StaticShellPositionalReference {
-    Position(usize),
-    AllAt,
-    AllStar,
-}
-
-fn parse_shell_positional_reference(
-    chars: &[char],
-) -> Option<(usize, StaticShellPositionalReference)> {
-    if chars.len() < 2 || chars[0] != '$' {
-        return None;
-    }
-
-    if chars[1] == '{' {
-        if chars.get(3) == Some(&'}') {
-            return match chars.get(2) {
-                Some('@') => Some((4, StaticShellPositionalReference::AllAt)),
-                Some('*') => Some((4, StaticShellPositionalReference::AllStar)),
-                _ => None,
-            };
-        }
-
-        let mut end = 2usize;
-        while end < chars.len() && chars[end].is_ascii_digit() {
-            end += 1;
-        }
-        if end == 2 || chars.get(end) != Some(&'}') {
-            return None;
-        }
-        let position = chars[2..end]
-            .iter()
-            .collect::<String>()
-            .parse::<usize>()
-            .ok()?;
-        return Some((end + 1, StaticShellPositionalReference::Position(position)));
-    }
-
-    if chars[1] == '@' {
-        return Some((2, StaticShellPositionalReference::AllAt));
-    }
-    if chars[1] == '*' {
-        return Some((2, StaticShellPositionalReference::AllStar));
-    }
-
-    if !chars[1].is_ascii_digit() {
-        return None;
-    }
-
-    let mut end = 1usize;
-    while end < chars.len() && chars[end].is_ascii_digit() {
-        end += 1;
-    }
-    let position = chars[1..end]
-        .iter()
-        .collect::<String>()
-        .parse::<usize>()
-        .ok()?;
-    Some((end, StaticShellPositionalReference::Position(position)))
-}
-
-fn shell_positional_replacement(
-    reference: StaticShellPositionalReference,
-    trailing_args: &[String],
-    quote: StaticShellQuote,
-) -> Option<String> {
-    match reference {
-        StaticShellPositionalReference::Position(position) => {
-            let value = shell_positional_value(position, trailing_args);
-            Some(match quote {
-                StaticShellQuote::Double => escape_double_quoted_shell_text(&value),
-                StaticShellQuote::None => value,
-                StaticShellQuote::Single => return None,
-            })
-        }
-        StaticShellPositionalReference::AllAt => {
-            let values = shell_all_positional_values(trailing_args);
-            Some(match quote {
-                StaticShellQuote::Double => values
-                    .iter()
-                    .map(|value| escape_double_quoted_shell_text(value))
-                    .collect::<Vec<_>>()
-                    .join("\" \""),
-                StaticShellQuote::None => values
-                    .iter()
-                    .map(|value| shell_single_quote_word(value))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                StaticShellQuote::Single => return None,
-            })
-        }
-        StaticShellPositionalReference::AllStar => {
-            let value = shell_all_positional_values(trailing_args).join(" ");
-            Some(match quote {
-                StaticShellQuote::Double => escape_double_quoted_shell_text(&value),
-                StaticShellQuote::None => shell_all_positional_values(trailing_args)
-                    .iter()
-                    .map(|value| shell_single_quote_word(value))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                StaticShellQuote::Single => return None,
-            })
-        }
-    }
-}
-
-fn shell_positional_value(position: usize, trailing_args: &[String]) -> String {
-    trailing_args.get(position).cloned().unwrap_or_default()
-}
-
-fn shell_all_positional_values(trailing_args: &[String]) -> Vec<String> {
-    trailing_args.iter().skip(1).cloned().collect()
-}
-
-fn escape_double_quoted_shell_text(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if matches!(ch, '"' | '\\' | '$' | '`') {
-            escaped.push('\\');
-        }
-        escaped.push(ch);
-    }
-    escaped
-}
-
-fn shell_single_quote_word(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
-    }
-
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DecodedPrintfEscapes {
     text: String,
@@ -3146,7 +2373,7 @@ fn push_u8(decoded: &mut String, value: u8) {
 mod tests {
     use super::*;
 
-    fn stdin_evidence_for(raw_command: &str, target_index: usize) -> StaticInputEvidence {
+    fn stdin_evidence_for(raw_command: &str, target_index: usize) -> StaticStreamEvidence {
         stdin_evidence_for_with_cwd_reliability(raw_command, target_index, true)
     }
 
@@ -3154,7 +2381,7 @@ mod tests {
         raw_command: &str,
         target_index: usize,
         bindings: &dyn VariableBindingReplay,
-    ) -> StaticInputEvidence {
+    ) -> StaticStreamEvidence {
         stdin_evidence_for_with_bindings_and_cwd_reliability(
             raw_command,
             target_index,
@@ -3167,7 +2394,7 @@ mod tests {
         raw_command: &str,
         target_index: usize,
         cwd_reliable: bool,
-    ) -> StaticInputEvidence {
+    ) -> StaticStreamEvidence {
         stdin_evidence_for_with_bindings_and_cwd_reliability(
             raw_command,
             target_index,
@@ -3181,7 +2408,7 @@ mod tests {
         target_index: usize,
         bindings: &dyn VariableBindingReplay,
         cwd_reliable: bool,
-    ) -> StaticInputEvidence {
+    ) -> StaticStreamEvidence {
         let parsed = caushell_parse::parse_command(raw_command, caushell_types::ShellKind::Bash)
             .expect("command should parse");
         let graph = caushell_graph::SessionGraph::new();
@@ -3249,7 +2476,7 @@ mod tests {
         target_index: usize,
         cwd: &str,
         cwd_reliable: bool,
-    ) -> StaticInputEvidence {
+    ) -> StaticStreamEvidence {
         let parsed = caushell_parse::parse_command(raw_command, caushell_types::ShellKind::Bash)
             .expect("command should parse");
         let summary = caushell_types::SessionSummary::new();
@@ -3267,6 +2494,141 @@ mod tests {
             None,
             4,
         )
+    }
+
+    fn shell_output_for(text: &str) -> StaticStreamEvidence {
+        let parsed = caushell_parse::parse_command(text, caushell_types::ShellKind::Bash).unwrap();
+        let graph = caushell_graph::SessionGraph::new();
+        let summary = caushell_types::SessionSummary::new();
+        let bindings = SessionBindings::new();
+        static_shell_stdout_evidence(
+            QuerySession::new(&graph, &summary),
+            &parsed,
+            CommandSequenceNo::new(1),
+            &bindings,
+            "/tmp/project",
+            true,
+            None,
+            8,
+        )
+    }
+
+    fn substitution_output_for(text: &str) -> Option<String> {
+        let graph = caushell_graph::SessionGraph::new();
+        let summary = caushell_types::SessionSummary::new();
+        let bindings = SessionBindings::new();
+        static_command_substitution_output(
+            text,
+            QuerySession::new(&graph, &summary),
+            caushell_types::ShellKind::Bash,
+            CommandSequenceNo::new(1),
+            &bindings,
+            "/tmp/project",
+            None,
+            8,
+        )
+    }
+
+    #[test]
+    fn shell_output_counts_only_terminal_pipeline_stages() {
+        for (command, expected) in [
+            ("printf abc | cat", "abc"),
+            ("printf abc | cat | cat", "abc"),
+            ("printf a; printf b | cat; printf c", "abc"),
+            ("sh -c 'printf abc | cat'", "abc"),
+        ] {
+            assert_eq!(
+                shell_output_for(command).complete_text().as_deref(),
+                Some(expected),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_or_transformed_output_is_not_its_known_input() {
+        for command in [
+            "printf abc | base64",
+            "printf abc | tr a z",
+            "printf abc | unknown-command",
+            "printf abc; cat /unknown",
+            "printf abc | cat /unknown",
+            "printf abc > /tmp/output",
+            "printf abc 2>&1",
+            "printf abc &",
+            "printf abc && printf def",
+        ] {
+            assert!(!shell_output_for(command).complete, "{command}");
+        }
+        assert_eq!(substitution_output_for("$(printf abc | base64)"), None);
+        assert_eq!(substitution_output_for("$(printf abc; cat /unknown)"), None);
+        assert_eq!(
+            substitution_output_for("$(printf abc > /tmp/out; printf def)"),
+            None
+        );
+    }
+
+    #[test]
+    fn substitution_newlines_are_not_process_substitution_newlines() {
+        assert_eq!(
+            substitution_output_for("$(printf 'abc\\n\\n' | cat)"),
+            Some("abc".into())
+        );
+        assert_eq!(substitution_output_for("$(printf '')"), Some(String::new()));
+        assert_eq!(
+            shell_output_for("printf 'abc\\n\\n' | cat").complete_text(),
+            Some("abc\n\n".into())
+        );
+        let graph = caushell_graph::SessionGraph::new();
+        let summary = caushell_types::SessionSummary::new();
+        let bindings = SessionBindings::new();
+        let process = process_substitution_evidence(
+            QuerySession::new(&graph, &summary),
+            "<(printf 'abc\\n\\n' | cat)",
+            caushell_types::ShellKind::Bash,
+            CommandSequenceNo::new(1),
+            &bindings,
+            "/tmp/project",
+            true,
+            None,
+            8,
+        );
+        assert_eq!(process.complete_text(), Some("abc\n\n".into()));
+    }
+
+    #[test]
+    fn base64_output_requires_complete_input_evidence() {
+        assert_eq!(
+            shell_output_for("printf ZWNobwo= | base64 -d").complete_text(),
+            Some("echo\n".into()),
+        );
+        assert_eq!(
+            shell_output_for("printf ZWNobwo= | base64 -d | cat").complete_text(),
+            Some("echo\n".into()),
+        );
+        assert_eq!(
+            shell_output_for("printf '' | base64 -d").complete_text(),
+            Some(String::new()),
+        );
+        assert!(!shell_output_for("cat <(printf ZWNobwo=; cat /unknown) | base64 -d").complete);
+        assert!(!shell_output_for("printf ZWNobwo= | base64 -d first second").complete);
+    }
+
+    #[test]
+    fn complete_empty_stream_is_distinct_from_unknown() {
+        assert_eq!(
+            StaticStreamEvidence::known(String::new()).complete_text(),
+            Some(String::new())
+        );
+        assert_eq!(StaticStreamEvidence::unknown().complete_text(), None);
+        assert_eq!(
+            StaticStreamEvidence {
+                known_fragments: vec!["known".into()],
+                complete: false
+            }
+            .complete_text(),
+            None,
+        );
     }
 
     #[test]
@@ -3527,15 +2889,30 @@ mod tests {
     #[test]
     fn echo_byte_proof_matches_bash_builtin_option_and_newline_boundaries() {
         for source in [
-            "echo", "echo -n", "echo '--' -n", "echo data -n",
-            "echo '-n' data", "echo -e -E 'a\\nb'", "echo -ne 'a\\cb'",
-            "echo -neE 'a\\nb'", "echo './fs*/*'", "echo ./fs\\*/\\*",
+            "echo",
+            "echo -n",
+            "echo '--' -n",
+            "echo data -n",
+            "echo '-n' data",
+            "echo -e -E 'a\\nb'",
+            "echo -ne 'a\\cb'",
+            "echo -neE 'a\\nb'",
+            "echo './fs*/*'",
+            "echo ./fs\\*/\\*",
         ] {
-            let actual = std::process::Command::new("bash").args(["--noprofile", "--norc", "-c", source]).env_clear().output().unwrap();
+            let actual = std::process::Command::new("bash")
+                .args(["--noprofile", "--norc", "-c", source])
+                .env_clear()
+                .output()
+                .unwrap();
             assert!(actual.status.success());
             let evidence = stdin_evidence_for(&format!("{source} | xargs"), 1);
             assert!(evidence.complete, "{source}");
-            assert_eq!(evidence.known_fragments.concat().as_bytes(), actual.stdout, "{source}");
+            assert_eq!(
+                evidence.known_fragments.concat().as_bytes(),
+                actual.stdout,
+                "{source}"
+            );
         }
     }
 
@@ -3623,32 +3000,20 @@ mod tests {
     }
 
     #[test]
-    fn shell_payload_substitutes_quoted_all_positional_parameters_as_fields() {
-        let trailing_args = vec!["runner".to_string(), "/".to_string(), "/etc".to_string()];
-
-        assert_eq!(
-            substitute_shell_positional_parameters(r#"rm -rf "$@""#, &trailing_args),
-            r#"rm -rf "/" "/etc""#
-        );
-    }
-
-    #[test]
-    fn shell_payload_substitutes_quoted_star_positional_parameters_as_one_field() {
-        let trailing_args = vec!["runner".to_string(), "/".to_string(), "/etc".to_string()];
-
-        assert_eq!(
-            substitute_shell_positional_parameters(r#"rm -rf "$*""#, &trailing_args),
-            r#"rm -rf "/ /etc""#
-        );
-    }
-
-    #[test]
-    fn shell_payload_substitutes_braced_all_positional_parameters() {
-        let trailing_args = vec!["runner".to_string(), "/".to_string(), "/etc".to_string()];
-
-        assert_eq!(
-            substitute_shell_positional_parameters(r#"rm -rf "${@}""#, &trailing_args),
-            r#"rm -rf "/" "/etc""#
-        );
+    fn shell_output_keeps_positional_arguments_as_data() {
+        for (command, expected) in [
+            (r#"sh -c 'printf %s "$1"' _ 'a;b'"#, "a;b"),
+            (r#"sh -c 'printf %s "$2"' _ ignored 'a b'"#, "a b"),
+            (
+                r#"sh -c 'printf %s "${1}"' _ '$(unknown-command)'"#,
+                "$(unknown-command)",
+            ),
+        ] {
+            assert_eq!(
+                shell_output_for(command).complete_text().as_deref(),
+                Some(expected),
+                "{command}",
+            );
+        }
     }
 }
