@@ -147,7 +147,7 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
             ctx.stage_mutation(mutation);
         }
         for mutation in
-            super::extract_value_provenance::collect_native_template_input_mutations(session, ctx)
+            crate::support::collect_native_template_input_mutations(session, ctx)
         {
             ctx.stage_mutation(mutation);
         }
