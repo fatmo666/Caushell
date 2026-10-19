@@ -1,10 +1,15 @@
 //! Static semantics tests only. No sample command is executed.
 use caushell_core::ShellQueryCore;
 fn binding_core() -> ShellQueryCore {
-    // Test wrapper cwd/environment boundaries independently of deletion approval.
+    // Isolate wrapper cwd/environment from independent deletion and service-
+    // creation approval. Default service approval is tested in local_profile_specialist.
     let mut p = caushell_types::PolicyConfig::default();
     p.rule_policy.rules.insert(
         caushell_types::RuleId::FileDeletion,
+        caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+    );
+    p.rule_policy.rules.insert(
+        caushell_types::RuleId::StateMutation,
         caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
     );
     ShellQueryCore::with_policy(p)

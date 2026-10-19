@@ -118,6 +118,36 @@ fn spaced_quoted_and_escaped_numbers_remain_arguments() {
 }
 
 #[test]
+fn signed_numeric_words_before_redirects_are_argv_not_io_numbers() {
+    for source in [
+        "head -200>out",
+        "head +200>out",
+        "echo -1<input",
+        "head -200>out 2>err",
+    ] {
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert_eq!(
+            parsed.commands[0].tokens.first().map(|t| t.text.as_str()),
+            Some(if source.starts_with("echo") {
+                "-1"
+            } else if source.contains("+200") {
+                "+200"
+            } else {
+                "-200"
+            }),
+            "{source}: {} {parsed:#?}",
+            syntax(source)
+        );
+        assert_eq!(
+            parsed.redirections[0].file_descriptor,
+            None,
+            "{source}: {} {parsed:#?}",
+            syntax(source)
+        );
+    }
+}
+
+#[test]
 fn operators_and_descriptor_spelling_are_preserved_from_original_source() {
     for (source, fd, operator, target) in [
         ("cat 0<input", "0", "<", Some("input")),

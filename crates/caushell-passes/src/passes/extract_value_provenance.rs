@@ -480,6 +480,7 @@ fn collect_frame_variable_origins(
                         {
                             Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
                                 dependency: caushell_types::StreamDataDependency::Independent,
+                                growth: None,
                                 domain: None,
                             })
                         } else {
@@ -525,6 +526,7 @@ fn collect_frame_variable_origins(
                     {
                         *domain_label = Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
                             dependency: caushell_types::StreamDataDependency::Independent,
+                            growth: None,
                             domain: None,
                         });
                     }

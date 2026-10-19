@@ -72,7 +72,7 @@ pub(crate) fn content_io_target(
     )
 }
 
-fn content_io_target_with_entry(
+pub(super) fn content_io_target_with_entry(
     parsed: &ParsedCommandArtifact,
     command_index: Option<usize>,
     before_redirection: Option<usize>,
@@ -280,14 +280,18 @@ pub(crate) fn execution_content_io_target(
             needed.insert(fd);
         }
     }
-    let inherited = needed
-        .into_iter()
-        .filter(|fd| !matches!(*fd, "0" | "1" | "2"))
-        .filter_map(|fd| {
-            super::shell_io_scope::inherited_shell_descriptor_target(ctx, source, fd)
-                .map(|target| (fd.into(), target))
-        })
-        .collect();
+    let mut inherited =
+        super::shell_redirections::syntax_descriptor_entries(ctx, source, parsed, command_index);
+    inherited.extend(
+        needed
+            .into_iter()
+            .filter(|fd| !matches!(*fd, "0" | "1" | "2"))
+            .filter_map(|fd| {
+                super::shell_io_scope::inherited_shell_descriptor_target(ctx, source, fd)
+                    .map(|target| (fd.into(), target))
+            })
+            .collect::<BTreeMap<_, _>>(),
+    );
     content_io_target_with_entry(
         parsed,
         Some(command_index),

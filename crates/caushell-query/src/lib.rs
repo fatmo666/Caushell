@@ -1,6 +1,8 @@
 mod alias;
 mod command;
 mod data_dependency;
+mod stream_growth;
+pub use stream_growth::{StreamGrowthQuery, StreamGrowthResult, UnboundedFileWrite, output_growth};
 mod derived;
 mod execution;
 mod io_target;

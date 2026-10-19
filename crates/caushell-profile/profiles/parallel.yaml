@@ -123,4 +123,4 @@ subcommands: null
 extensions:
   caushell.profile/known_limitations:
     - Native jobs use shell templates, not literal wrapper argv. The bounded native projector supports one stdin, -a or ::: source, ordinary replacement forms, and -q. Dry-run never declares job execution.
-    - Multiple input products, :::: sources, custom replacements, explicit environment overrides and ambiguous quoting retain opaque execution instead of invented jobs. Single-source -X context jobs conservatively cover contiguous input groups within the expansion budget. Incomplete input remains unresolved. Ambient config contents are not dynamically read.
+    - Multiple input products, :::: sources, custom replacements, explicit environment overrides and ambiguous quoting retain opaque execution instead of invented jobs. Single-source -X context jobs conservatively cover contiguous input groups within the expansion budget. Unknown input is represented by typed runtime operands when its replacements belong to fixed command arguments; command-position and unsupported shell-frame substitutions remain unresolved. Ambient config contents are not dynamically read.

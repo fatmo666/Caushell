@@ -1,4 +1,6 @@
 mod catastrophic_delete_guard;
+mod unbounded_file_write_guard;
+pub use unbounded_file_write_guard::UnboundedFileWriteGuardPass;
 mod catastrophic_shell_effects;
 mod code_load_path_guard;
 mod compute_effective_cwd;

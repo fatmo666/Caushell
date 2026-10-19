@@ -2,6 +2,7 @@ dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: permuted_options
 opaque_on_unresolved: true
+option_operand_matcher: &legacy_key {kind: regex_pattern, pattern: '^[+-][0-9]+(?:\.[0-9]*)?[bdfgiMhnrRV]*$'}
 identity: {canonical_name: sort, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
@@ -12,9 +13,20 @@ forms:
     parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 
+  - id: legacy_with_separator
+    selector: &mixed_legacy
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: has_dash_dash}
+        - {kind: has_positional_before_dash_dash_at, index: 0}
+        - {kind: has_positional_at_matching, index: 0, matcher: *legacy_key}
+    operation_semantics_unresolved: true
+    parameters: [{name: input_paths, semantic: {kind: path, role: read}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+
   - &quiet_check
     id: check_quiet
-    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, &quiet {kind: any, items: [{kind: has_modifier, modifier: check_quiet}, {kind: has_modifier_parameter_matching, modifier: check_long, parameter: check_method, matcher: {kind: regex_pattern, pattern: '^(q|qu|qui|quie|quiet|s|si|sil|sile|silen|silent)$'}}]}, &no_stdin {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    selector: {kind: all, items: [&running {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: no_dash_dash}]}, &quiet {kind: any, items: [{kind: has_modifier, modifier: check_quiet}, {kind: has_modifier_parameter_matching, modifier: check_long, parameter: check_method, matcher: {kind: regex_pattern, pattern: '^(q|qu|qui|quie|quiet|s|si|sil|sile|silen|silent)$'}}]}, &no_stdin {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_after_leading_matcher, matcher: *legacy_key}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
     remaining_selector: &valid_check
       kind: all
       items:
@@ -27,6 +39,7 @@ forms:
             - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: check_long, parameter: check_method, matcher: {kind: regex_pattern, pattern: '^.+$'}}}
             - {kind: has_modifier_parameter_matching, modifier: check_long, parameter: check_method, matcher: {kind: regex_pattern, pattern: '^(q|qu|qui|quie|quiet|s|si|sil|sile|silen|silent|d|di|dia|diag|diagn|diagno|diagnos|diagnose|diagnose-|diagnose-f|diagnose-fi|diagnose-fir|diagnose-firs|diagnose-first)$'}}
     parameters: &check_input
+      - {name: legacy_keys, semantic: {kind: plain_value}, binding: {kind: leading_positionals_while, matcher: *legacy_key}, cardinality: optional_many}
       - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_one}
       - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: optional_one}
     effects: &read [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}]
@@ -56,6 +69,7 @@ forms:
     selector: {kind: all, items: [*running, &sorting {kind: not, item: *check}, {kind: not, item: &file_output {kind: has_modifier, modifier: output_path}}, *no_stdin]}
     remaining_selector: &complete {kind: no_positional_args}
     parameters: &inputs
+      - {name: legacy_keys, semantic: {kind: plain_value}, binding: {kind: leading_positionals_while, matcher: *legacy_key}, cardinality: optional_many}
       - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
       - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     effects: &sort_effects
@@ -82,6 +96,60 @@ forms:
     selector: {kind: all, items: [*running, *sorting, *file_output, *stdin]}
     remaining_selector: *complete
     parameters: *inputs
+    effects: *sort_effects
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+
+  # The separator makes numeric-looking names literal files, never legacy keys.
+  - id: separated_check_quiet
+    selector: {kind: all, items: [&separated {kind: all, items: [{kind: has_dash_dash}, {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: *mixed_legacy}]}, *quiet, &separated_file {kind: not, item: &separated_stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
+    parameters: &separated_check_input
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_one}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: optional_one}
+    remaining_selector: *valid_check
+    effects: *read
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+  - id: separated_check_quiet_stdin
+    selector: {kind: all, items: [*separated, *quiet, *separated_stdin]}
+    parameters: *separated_check_input
+    remaining_selector: *valid_check
+    effects: *read
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+  - id: separated_check_diagnostic
+    selector: {kind: all, items: [*separated, {kind: not, item: *quiet}, *check, *separated_file]}
+    parameters: *separated_check_input
+    remaining_selector: *valid_check
+    effects: *read
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+  - id: separated_check_diagnostic_stdin
+    selector: {kind: all, items: [*separated, {kind: not, item: *quiet}, *check, *separated_stdin]}
+    parameters: *separated_check_input
+    remaining_selector: *valid_check
+    effects: *read
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: data, stdout_dependency: independent, stderr_dependency: inputs}
+  - id: separated_sort_to_stdout
+    selector: {kind: all, items: [*separated, *sorting, {kind: not, item: *file_output}, *separated_file]}
+    parameters: &separated_inputs
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    remaining_selector: *complete
+    effects: *sort_effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: independent}
+  - id: separated_sort_stdin_to_stdout
+    selector: {kind: all, items: [*separated, *sorting, {kind: not, item: *file_output}, *separated_stdin]}
+    parameters: *separated_inputs
+    remaining_selector: *complete
+    effects: *sort_effects
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: independent}
+  - id: separated_sort_to_file
+    selector: {kind: all, items: [*separated, *sorting, *file_output, *separated_file]}
+    parameters: *separated_inputs
+    remaining_selector: *complete
+    effects: *sort_effects
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+  - id: separated_sort_stdin_to_file
+    selector: {kind: all, items: [*separated, *sorting, *file_output, *separated_stdin]}
+    parameters: *separated_inputs
+    remaining_selector: *complete
     effects: *sort_effects
     stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 

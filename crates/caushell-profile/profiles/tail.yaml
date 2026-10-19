@@ -37,6 +37,7 @@ forms:
           - kind: exclude_literal
             value: "-"
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_growth: &follow_growth {kind: continuous, required_modifier: follow}
     effects: &effects
       - kind: read_path
         path_access: content_open
@@ -47,6 +48,7 @@ forms:
     selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin]}
     parameters: *inputs
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_growth: *follow_growth
     effects: *effects
 
 modifiers:
@@ -88,7 +90,7 @@ modifiers:
         - "-f"
         - "--follow"
         - "-F"
-        - "--retry"
+  - {id: retry, matcher: {kind: any_flag, flags: [--retry]}}
 
   - id: pid
     matcher:

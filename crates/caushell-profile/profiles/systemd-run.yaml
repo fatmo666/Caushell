@@ -64,6 +64,7 @@ forms:
                 semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
                 unresolved: true
     effects:
+      - &create_unit {kind: state_operation, state_operation: {domain: service_manager, operation: mutate}, target: {kind: none}}
       - kind: set_execution_working_directory
         target: &service_directory
           kind: configured_path
@@ -98,6 +99,7 @@ forms:
         - {kind: not, item: {kind: has_modifier, modifier: property}}
     parameters: *command_parameters
     effects:
+      - *create_unit
       - {kind: dispatch_command, target: *service_dispatch}
       - *unresolved_tool_expansion
 
@@ -114,6 +116,7 @@ forms:
         - {kind: not, item: {kind: all, items: [{kind: has_modifier, modifier: same_dir}, {kind: has_modifier, modifier: directory}]}}
     parameters: *command_parameters
     effects:
+      - *create_unit
       - kind: set_execution_working_directory
         target: {kind: configured_path, sources: [{slot: service_directory_option, projection: {kind: identity}}], missing: skip}
       - kind: dispatch_command
@@ -129,6 +132,8 @@ forms:
 
   - id: help_or_version
     selector: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    extensions: {caushell.form/suppress_modifier_effects: true}
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
 
 modifiers:
@@ -250,6 +255,7 @@ modifiers:
         cardinality: required_one
 
   - id: help
+    ends_option_scope: true
     matcher:
       kind: any_flag
       flags:
@@ -257,6 +263,7 @@ modifiers:
         - "--help"
 
   - id: version
+    ends_option_scope: true
     matcher:
       kind: any_flag
       flags:

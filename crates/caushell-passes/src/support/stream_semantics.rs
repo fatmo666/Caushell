@@ -12,6 +12,7 @@ use caushell_types::{
 pub(crate) struct StreamSemanticsIndex(BTreeMap<NodeId, InvocationStreams>);
 
 struct InvocationStreams {
+    stdout_growth: Option<caushell_types::StreamGrowth>,
     ignores_stdin: bool,
     stdin: IoTarget,
     pipeline_has_upstream: bool,
@@ -44,6 +45,12 @@ impl StreamSemanticsIndex {
                     shell_scopes.contains(&record.source_node_id),
                 ),
             );
+            if let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result {
+                entries
+                    .get_mut(&record.source_node_id)
+                    .unwrap()
+                    .stdout_growth = resolved.proven_stdout_growth();
+            }
         }
         // Function callers are graph-backed shell events, but their body
         // expansion can replace the caller's ordinary resolution record.
@@ -116,6 +123,7 @@ fn invocation_streams(
         target
     };
     InvocationStreams {
+        stdout_growth: None,
         stdin: target("0"),
         pipeline_has_upstream: super::pipeline_has_upstream(parsed, index),
         projected_shell_scope,
@@ -146,6 +154,50 @@ fn invocation_streams(
 }
 
 impl StreamSemanticsIndex {
+    pub(crate) fn growth(
+        &self,
+        node: &NodeId,
+        target: &IoTarget,
+    ) -> Option<caushell_types::StreamGrowth> {
+        let streams = self.0.get(node)?;
+        if streams.projected_shell_scope {
+            return None;
+        }
+        if same_target(&streams.outputs[0].0, target)
+            && matches!(
+                streams.stdout_growth,
+                Some(caushell_types::StreamGrowth::Continuous { .. })
+            )
+        {
+            return streams.stdout_growth;
+        }
+        // A stdout limit says nothing about a separately routed stderr port.
+        if same_target(&streams.outputs[1].0, target)
+            || matches!(streams.outputs[1].0, IoTarget::UnknownDescriptor { .. })
+        {
+            return None;
+        }
+        same_target(&streams.outputs[0].0, target)
+            .then_some(streams.stdout_growth)
+            .flatten()
+    }
+
+    pub(crate) fn inherited_growth(&self, node: &NodeId) -> Option<caushell_types::StreamGrowth> {
+        self.growth(
+            node,
+            &IoTarget::InheritedDescriptor {
+                descriptor: "1".into(),
+            },
+        )
+    }
+
+    pub(crate) fn scope_growth(&self, node: &NodeId) -> Option<caushell_types::StreamGrowth> {
+        if self.pipeline_nonterminal(node) {
+            None
+        } else {
+            self.inherited_growth(node)
+        }
+    }
     /// Include every output FD reaching the target, including stderr aliases.
     /// Unknown routing remains unknown; opaque output is never a sanitizer.
     pub(crate) fn dependency(&self, node: &NodeId, target: &IoTarget) -> StreamDataDependency {
@@ -229,13 +281,15 @@ pub(super) fn same_target(a: &IoTarget, b: &IoTarget) -> bool {
 pub(crate) fn annotate_stream_output(
     semantics: &mut ProvenanceEdgeSemantics,
     dependency: StreamDataDependency,
+    growth: Option<caushell_types::StreamGrowth>,
 ) {
-    if dependency == StreamDataDependency::Unknown {
+    if dependency == StreamDataDependency::Unknown && growth.is_none() {
         return;
     }
     if let ProvenanceEdgeSemantics::Produce { domain_label, .. } = semantics {
         *domain_label = Some(ProvenanceDomainLabel::StreamOutput {
             dependency,
+            growth,
             domain: domain_label.take().map(Box::new),
         });
     }

@@ -30,6 +30,7 @@ forms:
     selector: {kind: all, items: [ &running {kind: not, item: *information}, &batch {kind: has_modifier, modifier: batch}]}
     remaining_selector: &no_operands {kind: no_positional_args}
     stream_contract: *query_stream
+    stdout_growth: {kind: continuous, records: lines, finite_count_slots: [count]}
 
   - id: logging
     selector:
@@ -41,6 +42,7 @@ forms:
         - {kind: not, item: &force_interactive {kind: has_modifier, modifier: force_interactive}}
     remaining_selector: *no_operands
     stream_contract: *query_stream
+    stdout_growth: {kind: continuous, records: lines, finite_count_slots: [samples]}
 
   - id: interactive
     selector:
@@ -76,13 +78,13 @@ modifiers:
   - id: logging
     matcher: {kind: any_flag, flags: [-l]}
     parameters:
-      - {name: samples, semantic: {kind: plain_value}, binding: &required_value {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+      - {name: samples, semantic: {kind: plain_value}, binding: &required_value {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
   # Older Darwin versions can force terminal interaction again with -L.
   # Preserve that boundary when both mode controls occur; do not assume order.
   - {id: force_interactive, matcher: {kind: any_flag, flags: [-L]}}
   - id: count
     matcher: {kind: any_flag, flags: [-n, --iterations]}
-    parameters: [{name: count, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]
+    parameters: [{name: count, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_many}]
   - id: delay
     matcher: {kind: any_flag, flags: [--delay]}
     parameters: [{name: delay, semantic: {kind: plain_value}, binding: *required_value, cardinality: required_one}]

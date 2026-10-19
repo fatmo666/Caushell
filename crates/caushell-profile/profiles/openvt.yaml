@@ -8,16 +8,21 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [linux], shell_families: [], requires_features: []}
 
 forms:
+  - id: information
+    selector: &information {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
   - id: virtual_terminal_child
     selector:
       kind: all
       items:
-        - {kind: has_dash_dash}
+        - {kind: not, item: *information}
         - {kind: has_positional_at, index: 0}
     parameters:
-      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional_after_dashdash}, cardinality: required_one}
-      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_positionals_after_dash_dash}, cardinality: optional_many}
+      - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
     effects:
+      - {kind: terminal_session_operation, terminal_session_operation: create, target: {kind: none}}
       - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: false, stdout_to_parent: false}}
 modifiers:
   - {id: console, matcher: {kind: any_flag, flags: ['-c', '--console']}, parameters: [{name: vt_number, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]}
@@ -25,11 +30,11 @@ modifiers:
   - {id: execute, matcher: {kind: any_flag, flags: ['-e', '--exec']}}
   - {id: switch, matcher: {kind: any_flag, flags: ['-s', '--switch']}}
   - {id: wait, matcher: {kind: any_flag, flags: ['-w', '--wait']}}
-  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}}
-  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}}
+  - {id: help, matcher: {kind: any_flag, flags: ['-h', '--help']}, ends_option_scope: true}
+  - {id: version, matcher: {kind: any_flag, flags: ['-V', '--version']}, ends_option_scope: true}
 subcommands: null
 extensions:
   caushell.profile/sources:
     - https://gtfobins.org/gtfobins/openvt/
     - https://man7.org/linux/man-pages/man1/openvt.1.html
-  caushell.profile/scope: The nested command's stdin, stdout, and stderr attach to the newly allocated virtual terminal, not the invoking shell's streams. A missing command defaults to SHELL and remains unresolved; VT allocation and switching are not represented as parent stream effects.
+  caushell.profile/scope: Terminal allocation is a terminal-session operation. Child streams attach to the virtual terminal, not parent streams. A missing command defaults to SHELL and remains unresolved.

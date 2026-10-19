@@ -18,10 +18,14 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_help
+    selector: &information {kind: all, items: [{kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^--(?:help|version)$'}}, {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '.*'}}}]}
+    parameters: [{name: information, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_one}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    stdout_growth: {kind: finite}
   - id: repeat_output
-    selector:
-      kind: all
-      items: []
+    selector: {kind: not, item: *information}
+    stdout_growth: {kind: continuous, records: lines}
     parameters:
       - name: output_values
         semantic:

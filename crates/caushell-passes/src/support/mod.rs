@@ -16,7 +16,7 @@ pub(crate) use io_target::{
 pub(crate) use listener::{environment_default, network_listeners, shell_variable_default};
 mod node_ids;
 mod native_template;
-pub(crate) use native_template::collect_native_template_input_mutations;
+pub(crate) use native_template::{bind_symbolic_template_inputs, collect_native_template_input_mutations};
 mod outside_workspace;
 pub(crate) mod parallel_jobs;
 mod payload_hard_deny;

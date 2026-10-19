@@ -2720,9 +2720,11 @@ fn native_template_frame_input_unresolved(
     };
     let parameter_uses_input = |parameter: &BoundParameter| {
         parameter.values.iter().any(|value| {
-            matches!(
-                value, BoundValue::Argument { span, .. } if overlaps(span)
-            )
+            match value {
+                BoundValue::Argument { span, .. } => overlaps(span),
+                BoundValue::ImplicitInput { origin: Some(input), .. } => overlaps(&input.span),
+                _ => false,
+            }
         })
     };
     resolved
@@ -3517,12 +3519,20 @@ fn expanded_shell_payload_children(
     else {
         return Vec::new();
     };
-    let (mut parsed_payload, unknown_index) = execution_body_scope(
+    let (mut parsed_payload, mut unknown_index) = execution_body_scope(
         &shell_payload,
         shell_kind,
         entry.depth.saturating_add(1) > max_nested_parse_depth,
         "shell command-string payload",
     );
+    if let Some(origin) = entry.inherited_scope.native_template_input.as_ref()
+        .filter(|origin| origin.symbolic_parameters && origin.source_text == shell_payload)
+        && !crate::support::bind_symbolic_template_inputs(&mut parsed_payload, &positional_args, origin)
+    {
+        (parsed_payload, unknown_index) = execution_body_scope(
+            &shell_payload, shell_kind, true, "native template parameter frame",
+        );
+    }
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
     if parsed_payload.commands.is_empty() {
@@ -4656,6 +4666,23 @@ fn native_shell_job_children(
     opaque: bool,
     max_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
+    native_shell_job_children_with_inputs(
+        registry, request, entry, prefix, job_index, source, opaque, max_depth, &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_shell_job_children_with_inputs(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    prefix: &str,
+    job_index: usize,
+    source: &str,
+    opaque: bool,
+    max_depth: u8,
+    inputs: &[crate::support::parallel_jobs::SymbolicInput],
+) -> Vec<ExpandedFrontierEntry> {
     // Parallel actually executes a generated shell -c invocation. Route that
     // child through the existing interpreter machinery, including assignment
     // substitutions, cwd replay, positional/environment frames and budgets.
@@ -4672,10 +4699,17 @@ fn native_shell_job_children(
             caushell_types::ShellKind::Sh => "/bin/sh",
             _ => unreachable!("unsupported native shell is opaque"),
         };
-        format!(
+        let mut invocation = format!(
             "{shell} -c {}",
             crate::support::parallel_jobs::quote(source)
-        )
+        );
+        if !inputs.is_empty() {
+            invocation.push_str(" caushell-native-job");
+            for _ in inputs {
+                invocation.push_str(" \"$__caushell_native_input\"");
+            }
+        }
+        invocation
     };
     let (mut parsed, unknown_index) = execution_body_scope(
         &invocation,
@@ -4683,6 +4717,18 @@ fn native_shell_job_children(
         opaque || entry.depth.saturating_add(1) > max_depth,
         "native shell job",
     );
+    if !inputs.is_empty() && unknown_index.is_none() {
+        let command = &mut parsed.commands[0];
+        let first_input = command.tokens.len() - inputs.len();
+        for (token, input) in command.tokens[first_input..].iter_mut().zip(inputs) {
+            token.text.clear();
+            token.implicit_input_source = Some(caushell_types::ImplicitInputSource::StdinData);
+            token.runtime_argument_domain = Some(input.domain.clone());
+            token.runtime_data = false;
+            token.node_kind = if input.batch { "runtime_argument_list" } else { "runtime_scalar" }.into();
+            token.command_substitutions.clear();
+        }
+    }
     if opaque {
         for diagnostic in &mut parsed.diagnostics {
             if diagnostic.node_kind == "execution_body" {
@@ -4838,9 +4884,40 @@ fn expanded_native_parallel_children(
             max_depth.saturating_sub(entry.depth),
         )
     };
-    // Do not treat partial byte fragments as independently complete records.
+    let quoted = has_applied_modifier(&resolved.bound, "quote_template");
+    let grouped = has_applied_modifier(&resolved.bound, "context_grouping");
+    let annotate = |jobs: &mut Vec<ExpandedFrontierEntry>, rendered: crate::support::parallel_jobs::RenderedJob, symbolic_parameters: bool| {
+        let origin = std::sync::Arc::new(caushell_runner::NativeTemplateInput {
+            producer_node_id: entry.source_node_id.clone(),
+            source_text: rendered.source,
+            data_ranges: rendered.data_ranges,
+            input_slots: vec![if has_applied_modifier(&resolved.bound, "arg_file") { "arg_file" } else { slot }.into()],
+            stdin: separator.is_none() && !has_applied_modifier(&resolved.bound, "arg_file"),
+            symbolic_parameters,
+        });
+        for job in jobs {
+            job.inherited_scope.native_template_input = Some(origin.clone());
+            job.inherited_scope.dispatch_stdout_to_parent = true;
+        }
+    };
+    // Unknown bytes are not an unknown template. Compile only replacements
+    // proven to remain argv data, keeping their arity/domain and input origin.
     if !evidence.complete {
-        return opaque("native job input is incomplete");
+        let domain = (delimiter == '\0' && !has_applied_modifier(&resolved.bound, "arg_file"))
+            .then(|| xargs_stdin_path_domain(registry, session, request, entry, max_depth))
+            .flatten()
+            .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded);
+        let Some(symbolic) = crate::support::parallel_jobs::symbolic_job(
+            &words, quoted, grouped, entry.shell_kind, &domain,
+        ) else {
+            return opaque("native job input or replacement structure is unresolved");
+        };
+        let mut jobs = native_shell_job_children_with_inputs(
+            registry, request, entry, "parallel", 0, &symbolic.rendered.source,
+            false, max_depth, &symbolic.inputs,
+        );
+        annotate(&mut jobs, symbolic.rendered, true);
+        return jobs;
     }
     let payload = evidence.known_fragments.concat();
     let items = direct_items.unwrap_or_else(|| {
@@ -4852,8 +4929,6 @@ fn expanded_native_parallel_children(
     if items.len() > 128 || items.iter().map(String::len).sum::<usize>() > 64 * 1024 {
         return opaque("native job expansion budget exceeded");
     }
-    let quoted = has_applied_modifier(&resolved.bound, "quote_template");
-    let grouped = has_applied_modifier(&resolved.bound, "context_grouping");
     let mut candidates = Vec::new();
     if grouped {
         // Native batching consumes consecutive source records. Enumerate
@@ -4901,30 +4976,7 @@ fn expanded_native_parallel_children(
             false,
             max_depth,
         );
-        {
-            // Even a {#}-only job needs the native stdin-routing boundary.
-            // Empty ranges simply mean no replacement consumes input bytes.
-            let origin = std::sync::Arc::new(caushell_runner::NativeTemplateInput {
-                producer_node_id: entry.source_node_id.clone(),
-                source_text: rendered.source,
-                data_ranges: rendered.data_ranges,
-                input_slots: vec![
-                    if has_applied_modifier(&resolved.bound, "arg_file") {
-                        "arg_file"
-                    } else {
-                        slot
-                    }
-                    .into(),
-                ],
-                stdin: separator.is_none() && !has_applied_modifier(&resolved.bound, "arg_file"),
-            });
-            for job in &mut jobs {
-                job.inherited_scope.native_template_input = Some(origin.clone());
-            }
-        }
-        for job in &mut jobs {
-            job.inherited_scope.dispatch_stdout_to_parent = true;
-        }
+        annotate(&mut jobs, rendered, false);
         children.extend(jobs);
     }
     children
@@ -9565,6 +9617,24 @@ modifiers:
             record.origin_kind
                 == caushell_runner::ExecutionUnitOriginKind::CommandSubstitutionMaterialization
         }));
+    }
+
+    #[test]
+    fn symbolic_native_jobs_keep_the_shared_expansion_depth_limit() {
+        let policy = PolicyConfig {
+            semantic_expansion: caushell_types::SemanticExpansionPolicy {
+                max_nested_parse_depth: 1,
+            },
+            ..PolicyConfig::default()
+        };
+        let ctx = run_pass_with_policy(
+            &SessionSummary::new(), ShellKind::Bash,
+            "cat unknown | parallel echo {}", policy,
+        );
+        assert!(ctx.execution_unit_resolve_records().iter().all(|record| record.depth <= 1));
+        assert!(ctx.evidence.iter().any(|evidence| matches!(
+            evidence.kind, caushell_types::EvidenceKind::ExecutionExpansionTruncated(_)
+        )));
     }
 
     #[test]

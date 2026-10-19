@@ -98,6 +98,7 @@ or a supplied, known `TMPDIR` is checked against these roots normally.
 | `policy.rules.privilege_boundary` | `allow` / `need_approval` / `deny` | `need_approval` | Declared execution-identity or privilege changes |
 | `policy.rules.network_upload` | `allow` / `need_approval` / `deny` | `need_approval` | Declared outbound data transfers not statically confined to loopback |
 | `policy.rules.file_deletion` | `allow` / `need_approval` / `deny` | `need_approval` | Declared filesystem deletion, irrespective of workspace or temporary-path location |
+| `policy.rules.file_content_erasure` | `allow` / `need_approval` / `deny` | `need_approval` | Declared destruction of existing file contents, irrespective of workspace or temporary-path location |
 
 The upload guard consumes existing `upload_target` endpoint declarations,
 including nested and partial calls. It does not require a sensitive source.

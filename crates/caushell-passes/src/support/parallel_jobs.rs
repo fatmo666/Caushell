@@ -10,6 +10,138 @@ pub(crate) struct RenderedJob {
     pub data_ranges: Vec<std::ops::Range<usize>>,
 }
 
+pub(crate) struct SymbolicInput {
+    pub domain: caushell_types::RuntimeArgumentDomain,
+    pub batch: bool,
+}
+
+pub(crate) struct SymbolicJob {
+    pub rendered: RenderedJob,
+    pub inputs: Vec<SymbolicInput>,
+}
+
+/// Compile data replacements to typed shell parameters, not example filenames.
+/// The existing renderer owns native quoting; its ranges identify holes before
+/// the shell parser proves that each hole belongs entirely to an argv operand.
+pub(crate) fn symbolic_job(
+    words: &[String],
+    quoted: bool,
+    grouped: bool,
+    shell: caushell_types::ShellKind,
+    domain: &caushell_types::RuntimeArgumentDomain,
+) -> Option<SymbolicJob> {
+    use caushell_parse::{ParseStatus, decode_static_shell_argument, parse_command};
+    use caushell_types::RuntimeArgumentDomain;
+
+    const MARKER: &str = "__CAUSHELL_NATIVE_INPUT_HOLE__";
+    if words.is_empty()
+        || words.iter().any(|word| {
+            // Synthetic positionals must not change the template's own shell
+            // frame. Dynamic shell programs retain the ordinary opaque path.
+            word.contains(['$', '`']) || word.contains(MARKER) || word.contains("{#}")
+        })
+    {
+        return None;
+    }
+    let rendered = if grouped {
+        render_group_tracked(words, &[MARKER.into()], quoted, 1)?
+    } else {
+        render_tracked(words, MARKER, quoted, 1)?
+    };
+    if rendered.source.len() > 256 * 1024 || rendered.data_ranges.len() > 128 {
+        return None;
+    }
+    let parsed = parse_command(&rendered.source, shell).ok()?;
+    if parsed.status != ParseStatus::Complete
+        || !parsed.diagnostics.is_empty()
+        || !parsed.function_definitions.is_empty()
+        || !parsed.assignment_commands.is_empty()
+        || !parsed.declaration_commands.is_empty()
+        || parsed.commands.iter().any(|command| {
+            !command.prefix_assignments.is_empty() || command.control_flow_span.is_some()
+        })
+    {
+        return None;
+    }
+    // A transform's result is not necessarily in the original path set.
+    // Literal surrounding bytes remain useful even after widening its value.
+    let identity = !words.iter().any(|word| {
+        ["{.}", "{/}", "{/.}", "{//}"]
+            .iter()
+            .any(|key| word.contains(key))
+    });
+    let input_domain = if identity {
+        domain
+    } else {
+        &RuntimeArgumentDomain::Unbounded
+    };
+    let mut edits = Vec::new();
+    let mut inputs = Vec::new();
+    let mut owned = 0;
+    for command in &parsed.commands {
+        for token in &command.tokens {
+            let ranges: Vec<_> = rendered
+                .data_ranges
+                .iter()
+                .filter(|range| {
+                    token.span.start_byte <= range.start && range.end <= token.span.end_byte
+                })
+                .collect();
+            if ranges.is_empty() {
+                continue;
+            }
+            let mut word = String::new();
+            let mut cursor = token.span.start_byte;
+            for range in &ranges {
+                word.push_str(rendered.source.get(cursor..range.start)?);
+                word.push_str(MARKER);
+                cursor = range.end;
+            }
+            word.push_str(rendered.source.get(cursor..token.span.end_byte)?);
+            let value = decode_static_shell_argument(&word, false, "concatenation")?;
+            owned += ranges.len();
+            inputs.push(SymbolicInput {
+                domain: input_domain.substitute_into(&value, MARKER),
+                batch: grouped,
+            });
+            // -X's single repeated context uses the existing quoted argv-tail
+            // representation. Multiple independent groups need a richer frame.
+            if grouped && inputs.len() != 1 {
+                return None;
+            }
+            let parameter = if grouped {
+                "\"$@\"".to_string()
+            } else {
+                format!("\"${{{}}}\"", inputs.len())
+            };
+            edits.push((token.span.start_byte..token.span.end_byte, parameter));
+        }
+    }
+    if owned != rendered.data_ranges.len() || inputs.is_empty() {
+        // This also rejects command-position, redirection and assignment holes.
+        return None;
+    }
+    edits.sort_by_key(|(range, _)| range.start);
+    let mut source = String::new();
+    let mut data_ranges = Vec::new();
+    let mut cursor = 0;
+    for (range, parameter) in edits {
+        source.push_str(rendered.source.get(cursor..range.start)?);
+        let start = source.len();
+        source.push_str(&parameter);
+        data_ranges.push(start..source.len());
+        cursor = range.end;
+    }
+    source.push_str(rendered.source.get(cursor..)?);
+    Some(SymbolicJob {
+        rendered: RenderedJob {
+            source,
+            data_ranges,
+        },
+        inputs,
+    })
+}
+
 pub(crate) fn render_tracked(
     words: &[String],
     input: &str,
@@ -277,6 +409,107 @@ fn context_words(template: &str) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use caushell_types::{RuntimeArgumentDomain, ShellKind};
+
+    #[test]
+    fn symbolic_jobs_replace_holes_not_fixed_words() {
+        let job = symbolic_job(
+            &["echo".into(), "pre{}post".into(), "fixed".into()],
+            false,
+            false,
+            ShellKind::Bash,
+            &RuntimeArgumentDomain::Unbounded,
+        )
+        .unwrap();
+        assert_eq!(job.rendered.source, "echo \"${1}\" fixed");
+        assert_eq!(job.inputs.len(), 1);
+        assert_eq!(
+            job.inputs[0].domain,
+            RuntimeArgumentDomain::TextTemplate {
+                prefix: "pre".into(),
+                suffix: "post".into(),
+            }
+        );
+        assert_eq!(
+            &job.rendered.source[job.rendered.data_ranges[0].clone()],
+            "\"${1}\""
+        );
+        assert!(!job.inputs[0].batch);
+    }
+
+    #[test]
+    fn symbolic_contexts_retain_batch_width_and_literal_affixes() {
+        let job = symbolic_job(
+            &["echo".into(), "prefix{}suffix".into()],
+            true,
+            true,
+            ShellKind::Bash,
+            &RuntimeArgumentDomain::Unbounded,
+        )
+        .unwrap();
+        assert_eq!(job.rendered.source, "'echo' \"$@\"");
+        assert!(job.inputs[0].batch);
+        assert_eq!(
+            job.inputs[0].domain,
+            RuntimeArgumentDomain::TextTemplate {
+                prefix: "prefix".into(),
+                suffix: "suffix".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn symbolic_path_transforms_do_not_borrow_identity_domain() {
+        let domain = RuntimeArgumentDomain::PathSet {
+            roots: vec!["./cache".into()],
+            may_escape: false,
+        };
+        let identity =
+            symbolic_job(&["echo {}".into()], false, false, ShellKind::Bash, &domain).unwrap();
+        assert_eq!(identity.inputs[0].domain, domain);
+        let basename =
+            symbolic_job(&["echo {/}".into()], false, false, ShellKind::Bash, &domain).unwrap();
+        assert_eq!(basename.inputs[0].domain, RuntimeArgumentDomain::Unbounded);
+    }
+
+    #[test]
+    fn symbolic_compilation_rejects_unowned_holes_and_frame_changes() {
+        for template in [
+            "{}",
+            "./{}",
+            "echo {} > {}",
+            "name={}; echo safe",
+            "echo $@ {}",
+            "echo {#}",
+            "echo {2}",
+            "echo {= $_ =}",
+            "f(){ echo {}; }; f",
+            "for i in a; do echo {}; done",
+            "echo __CAUSHELL_NATIVE_INPUT_HOLE__ {}",
+        ] {
+            assert!(
+                symbolic_job(
+                    &[template.into()],
+                    false,
+                    false,
+                    ShellKind::Bash,
+                    &RuntimeArgumentDomain::Unbounded
+                )
+                .is_none(),
+                "{template}"
+            );
+        }
+        assert!(
+            symbolic_job(
+                &["echo {} prefix{}".into()],
+                false,
+                true,
+                ShellKind::Bash,
+                &RuntimeArgumentDomain::Unbounded
+            )
+            .is_none()
+        );
+    }
     #[test]
     fn context_group_repeats_each_word_and_preserves_data_ranges() {
         let inputs = vec!["dir/A.c".into(), "dir/B.c".into()];

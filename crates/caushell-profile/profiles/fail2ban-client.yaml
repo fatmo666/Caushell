@@ -13,6 +13,7 @@ platform:
   shell_families: []
   requires_features: []
 opaque_on_unresolved: true
+option_scope: leading_options
 forms:
 - id: information
   selector:
@@ -57,7 +58,8 @@ forms:
     binding:
       kind: remaining_positionals
     cardinality: optional_many
-  effects: []
+  effects: &service_mutation
+  - {kind: state_operation, state_operation: {domain: service_manager, operation: mutate}, target: {kind: none}}
 - id: jail_mutation
   selector:
     kind: all
@@ -85,7 +87,7 @@ forms:
     binding:
       kind: remaining_positionals
     cardinality: optional_many
-  effects: []
+  effects: *service_mutation
 - id: action_hook_trigger
   selector:
     kind: all
@@ -107,6 +109,7 @@ forms:
       kind: remaining_positionals
     cardinality: optional_many
   effects:
+  - {kind: state_operation, state_operation: {domain: service_manager, operation: control}, target: {kind: none}}
   - kind: execute_hook
     target:
       kind: none

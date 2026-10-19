@@ -41,7 +41,7 @@ fn information_queries_remain_allowed_and_distinct_from_wrappers() {
         "ssh -V",
         "gcc -print-search-dirs",
         "npm config get prefix",
-        "git help config",
+        "git help",
         "cargo help doc",
         "brew --version",
     ] {

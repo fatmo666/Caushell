@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use caushell_profile::{BoundInvocation, EffectKind};
+use caushell_profile::{BoundInvocation, Effect, EffectKind, HostRiskSemanticClass};
 use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::RuleId;
 
@@ -11,15 +11,26 @@ use crate::support::{
     bound_invocation, decision_for_rule_action, graph_backed_execution_resolve_records,
 };
 
-/// Ordinary filesystem deletion requires approval independently of location.
+/// Filesystem deletion and declared content erasure are location independent.
 /// Moves are a distinct declared effect and remain governed by path policies.
 pub struct FileDeletionGuardPass;
 
+fn erases_contents(bound: &BoundInvocation, effect: &Effect) -> bool {
+    effect.kind == EffectKind::WritePath
+        && effect.host_risk.semantic_class == Some(HostRiskSemanticClass::FileContentErasureTarget)
+        && effect
+            .host_risk
+            .required_modifiers
+            .iter()
+            .all(|modifier| bound.applied_modifiers.contains(modifier))
+        && !path_target_is_inapplicable(bound, &effect.target)
+}
+
 fn has_candidate(bound: &BoundInvocation) -> bool {
-    bound
-        .effects
-        .iter()
-        .any(|e| e.kind == EffectKind::DeletePath && !path_target_is_inapplicable(bound, &e.target))
+    bound.effects.iter().any(|e| {
+        (e.kind == EffectKind::DeletePath && !path_target_is_inapplicable(bound, &e.target))
+            || erases_contents(bound, e)
+    })
 }
 
 #[cfg(test)]
@@ -62,6 +73,31 @@ mod tests {
             .with_effect(Effect::new(EffectKind::WritePath).for_slot("destination"));
         assert!(!has_candidate(&bound));
     }
+
+    #[test]
+    fn erasure_is_generic_modifier_gated_and_skips_only_proven_empty_targets() {
+        let mut effect = Effect::new(EffectKind::WritePath).for_slot("targets");
+        effect.host_risk.semantic_class = Some(HostRiskSemanticClass::FileContentErasureTarget);
+        effect
+            .host_risk
+            .required_modifiers
+            .push(caushell_profile::ModifierId::new("erase"));
+        let mut bound =
+            BoundInvocation::new(CommandName::new("arbitrary_tool"), FormId::new("write"))
+                .with_effect(effect);
+        assert!(!has_candidate(&bound));
+        bound
+            .applied_modifiers
+            .push(caushell_profile::ModifierId::new("erase"));
+        assert!(has_candidate(&bound));
+        bound.bound_parameters.push(BoundParameter::new(
+            SlotName::new("targets"),
+            SemanticType::PlainValue,
+        ));
+        assert!(has_candidate(&bound));
+        bound.bound_parameters[0].projected_values = Some(Vec::new());
+        assert!(!has_candidate(&bound));
+    }
 }
 
 impl SessionAnalysisPass for FileDeletionGuardPass {
@@ -87,10 +123,30 @@ impl SessionAnalysisPass for FileDeletionGuardPass {
         let fallback = ctx.request().shell_state_before.cwd();
         let home = ctx.request().home.as_deref();
         let mut reasons = BTreeSet::new();
+        let mut erasure_reasons = BTreeSet::new();
         for record in graph_backed_execution_resolve_records(ctx) {
             let Some(bound) = bound_invocation(record.result()).filter(|b| has_candidate(b)) else {
                 continue;
             };
+            // Erasure is a property of the declared write, not its location or
+            // whether its target can be concretized. Empty projections skip.
+            for effect in bound
+                .effects
+                .iter()
+                .filter(|effect| erases_contents(bound, effect))
+            {
+                erasure_reasons.insert(format!(
+                    "{} ({}) erases file contents via {:?}; content erasure requires approval regardless of workspace or temporary-path location",
+                    bound.command_name.as_str(), bound.form_id.as_str(), effect.target,
+                ));
+            }
+            if !bound
+                .effects
+                .iter()
+                .any(|effect| effect.kind == EffectKind::DeletePath)
+            {
+                continue;
+            }
             for case in effective_cwd_cases(
                 ctx.execution_cwd_for_node(record.source_node_id()),
                 fallback,
@@ -110,6 +166,16 @@ impl SessionAnalysisPass for FileDeletionGuardPass {
             ctx.add_finding(RuleId::FileDeletion, reason.clone());
             if let Some(decision) = decision_for_rule_action(action) {
                 ctx.propose_decision(self.name(), RuleId::FileDeletion, decision, reason);
+            }
+        }
+        let action = ctx
+            .policy()
+            .rule_policy
+            .action_for(RuleId::FileContentErasure);
+        for reason in erasure_reasons {
+            ctx.add_finding(RuleId::FileContentErasure, reason.clone());
+            if let Some(decision) = decision_for_rule_action(action) {
+                ctx.propose_decision(self.name(), RuleId::FileContentErasure, decision, reason);
             }
         }
     }

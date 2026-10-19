@@ -463,6 +463,40 @@ fn collect_redirection_path_mutations(
         }
     }
 
+    // Compound statements own the file opening, while their actual children
+    // produce the bytes. Project those effective output ports independently.
+    if !ctx.shell_redirection_scopes().is_empty() {
+        for record in records {
+            for port in ["1", "2"] {
+                let Some(target @ IoTarget::Path { resolution, .. }) =
+                    streams.output_target(record.source_node_id(), port)
+                else {
+                    continue;
+                };
+                let Some(path) = resolution.concrete_path().filter(|p| *p != "/dev/null") else {
+                    continue;
+                };
+                let Some((relation, mut semantics)) =
+                    provenance_edge_for_path_fact(PathRole::Write, None, "scope_output", None)
+                else {
+                    continue;
+                };
+                annotate_stream_output(
+                    &mut semantics,
+                    streams.dependency(record.source_node_id(), target),
+                    streams.growth(record.source_node_id(), target),
+                );
+                mutations.push(PendingMutation::AddProvenanceArtifact {
+                    source_node_id: record.source_node_id().clone(),
+                    node_id: provenance_path_artifact_node_id(path),
+                    artifact: provenance_artifact_for_path(path),
+                    relation,
+                    semantics,
+                });
+            }
+        }
+    }
+
     if !ctx
         .shell_redirection_scopes()
         .iter()
@@ -537,7 +571,11 @@ fn adjust_redirect_provenance(
             ..
         } = mutation
         {
-            annotate_stream_output(semantics, streams.dependency(source, target));
+            annotate_stream_output(
+                semantics,
+                streams.dependency(source, target),
+                streams.growth(source, target),
+            );
         }
     }
 }

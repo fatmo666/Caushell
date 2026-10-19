@@ -455,6 +455,7 @@ impl Evidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    UnboundedFileWrite(UnboundedFileWriteEvidence),
     NetworkUpload(NetworkUploadEvidence),
     NetworkListenerExposure(NetworkListenerExposureEvidence),
     CatastrophicShellProcessExplosion(CatastrophicShellProcessExplosionEvidence),
@@ -489,6 +490,16 @@ pub struct NetworkListenerExposureEvidence {
     pub node_id: String,
     pub command: String,
     pub listener: crate::NetworkListener,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnboundedFileWriteEvidence {
+    pub producer_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub traversal_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

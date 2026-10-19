@@ -345,6 +345,7 @@ impl RulePolicyEntry {
 
 fn default_rule_action(rule_id: RuleId) -> RuleAction {
     match rule_id {
+        RuleId::UnboundedFileWrite => RuleAction::NeedApproval,
         RuleId::NetworkListenerExposure => RuleAction::NeedApproval,
         RuleId::NetworkUpload => RuleAction::NeedApproval,
         RuleId::CommandParseFailure => RuleAction::NeedApproval,
@@ -354,6 +355,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::OutsideWorkspaceMutation => RuleAction::NeedApproval,
         RuleId::CodeLoadPath => RuleAction::NeedApproval,
         RuleId::FileDeletion => RuleAction::NeedApproval,
+        RuleId::FileContentErasure => RuleAction::NeedApproval,
         RuleId::ProcessControl => RuleAction::NeedApproval,
         RuleId::PrivilegeBoundary => RuleAction::NeedApproval,
         RuleId::DatabaseStateMutation

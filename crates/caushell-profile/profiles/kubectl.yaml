@@ -1,298 +1,86 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-identity:
-  canonical_name: kubectl
-  aliases: []
-trust:
-  tier: tier_a
-  source: built_in
-platform:
-  os_families:
-  - posix
-  - linux
-  shell_families: []
-  requires_features: []
+identity: {canonical_name: kubectl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
 opaque_on_unresolved: true
 forms:
-- id: remote_pod_command
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: exec
-    - kind: has_positional_at
-      index: 1
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-  - name: pod
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 1
-    cardinality: required_one
-  - name: remote_command
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_positionals
-    cardinality: required_many
-  effects:
-  - kind: execute_remote_command
-    target:
-      kind: slot
-      name: remote_command
-  - kind: state_operation
-    state_operation:
-      domain: remote_access
-      operation: control
-    target:
-      kind: none
-- id: create_cluster_workload
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: run
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-  - name: workload_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  effects:
-  - kind: state_operation
-    state_operation:
-      domain: cloud_resource
-      operation: mutate
-    target:
-      kind: none
-
-- id: information
-  selector:
-    kind: has_modifier
-    modifier: information
-  parameters:
-  - name: ignored_help_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_args
-    cardinality: optional_many
-- id: executable_configuration_config_kubeconfig
-  selector:
-    kind: all
-    items:
-    - kind: has_modifier
-      modifier: config_kubeconfig
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: configuration_payload
-    semantic:
-      kind: payload
-      language: opaque
-      source: script_file_ref
-      recursive: true
-    binding:
-      kind: following_flag
-      flag: "--kubeconfig"
-      operand_mode: next_arg
-    cardinality: required_one
-    structured_projection:
-      branches: []
-      fallback:
-        name: configuration_path
-        semantic:
-          kind: path
-          role: read
-          purpose: tool_config
-  - name: request_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: configuration_path
-  - kind: load_config
-    target:
-      kind: slot
-      name: configuration_path
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: configuration_payload
-- id: executable_configuration_config_kubeconfig_attached
-  selector:
-    kind: all
-    items:
-    - kind: has_argument_at_matching
-      index: 2
-      matcher:
-        kind: regex_pattern
-        pattern: "^--kubeconfig="
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: configuration_payload
-    semantic:
-      kind: payload
-      language: opaque
-      source: script_file_ref
-      recursive: true
-    binding:
-      kind: args_with_prefix
-      prefix: "--kubeconfig="
-    cardinality: required_one
-    structured_projection:
-      branches: []
-      fallback:
-        name: configuration_path
-        semantic:
-          kind: path
-          role: read
-          purpose: tool_config
-  - name: request_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: configuration_path
-  - kind: load_config
-    target:
-      kind: slot
-      name: configuration_path
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: configuration_payload
-- id: proxy_listener
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: proxy
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-  - name: bind_host
-    semantic:
-      kind: plain_value
-    binding:
-      kind: args_with_prefix
-      prefix: "--address="
-    cardinality: optional_one
-  - name: listen_port
-    semantic:
-      kind: plain_value
-    binding:
-      kind: args_with_prefix
-      prefix: "--port="
-    cardinality: optional_one
-  - name: web_root
-    semantic:
-      kind: path
-      role: read
-      purpose: generic_operand
-    binding:
-      kind: args_with_prefix
-      prefix: "--www="
-    cardinality: optional_one
-  - name: web_prefix
-    semantic:
-      kind: plain_value
-    binding:
-      kind: args_with_prefix
-      prefix: "--www-prefix="
-    cardinality: optional_one
-  effects:
-  - kind: listen_network
-    target:
-      kind: network_listener
-      host:
-        slot: bind_host
-        default_value: 127.0.0.1
-      port:
-        slot: listen_port
-        default_value: '8001'
-  - kind: read_path
-    target:
-      kind: slot
-      name: web_root
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    extensions: {caushell.form/suppress_modifier_effects: true}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: remote_pod_command
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: exec}}, {kind: has_positional_at, index: 1}, {kind: has_dash_dash}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: pod, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: remote_command, semantic: {kind: plain_value}, binding: {kind: remaining_positionals_after_dash_dash}, cardinality: required_many}
+    effects:
+      - {kind: execute_remote_command, target: {kind: slot, name: remote_command}}
+      - {kind: state_operation, state_operation: {domain: remote_access, operation: control}, target: {kind: none}}
+  - id: configured_request
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: *information}
+        - {kind: has_modifier, modifier: config_kubeconfig}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(exec|run|proxy)$'}}}
+    parameters: [{name: request_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+  - id: create_cluster_workload
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: run}}]}
+    parameters: [{name: workload_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+    effects: [{kind: state_operation, state_operation: {domain: cloud_resource, operation: mutate}, target: {kind: none}}]
+  - id: proxy_listener
+    selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: proxy}}]}
+    parameters: [{name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}]
+    remaining_selector: {kind: no_positional_args}
+    effects:
+      - kind: listen_network
+        target: {kind: network_listener, host: {slot: bind_host, default_value: 127.0.0.1}, port: {slot: listen_port, default_value: '8001'}}
+      - {kind: read_path, target: {kind: slot, name: web_root}}
 modifiers:
-- id: information
-  matcher:
-    kind: any_flag
-    flags:
-    - "--help"
-    - "-h"
-- id: config_kubeconfig
-  matcher:
-    kind: any_flag
-    flags:
-    - "--kubeconfig"
-subcommands:
+  - {id: information, matcher: {kind: any_flag, flags: [--help, -h]}, ends_option_scope: true}
+  - id: global_selection
+    matcher: {kind: any_flag, flags: [--context, --namespace, -n, --cluster, --user, --server, -s, --request-timeout]}
+    parameters: [{name: global_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - id: exec_container
+    matcher: {kind: any_flag, flags: [--container, -c, --pod-running-timeout]}
+    parameters: [{name: exec_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: exec_streams, matcher: {kind: any_flag, flags: [-i, --stdin, -t, --tty, -q, --quiet]}}
+  - id: config_kubeconfig
+    matcher: {kind: any_flag, flags: [--kubeconfig]}
+    parameters:
+      - name: configuration_payload
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches: []
+          fallback: {name: configuration_path, semantic: {kind: path, role: read, purpose: tool_config}}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: configuration_path}}
+      - {kind: load_config, target: {kind: slot, name: configuration_path}}
+      - {kind: execute_payload, target: {kind: slot, name: configuration_payload}}
+  - id: address
+    matcher: {kind: any_flag, flags: [--address]}
+    parameters: [{name: bind_host, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: port
+    matcher: {kind: any_flag, flags: [--port]}
+    parameters: [{name: listen_port, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: web_root
+    matcher: {kind: any_flag, flags: [--www]}
+    parameters: [{name: web_root, semantic: {kind: path, role: read}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: web_prefix
+    matcher: {kind: any_flag, flags: [--www-prefix]}
+    parameters: [{name: web_prefix, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: workload_options
+    matcher: {kind: any_flag, flags: [--image, --restart, --env, --overrides]}
+    parameters: [{name: workload_options, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 extensions:
-  caushell.profile/source_research:
-  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/kubectl (GTFOBins
-    acd524623f9c406acedd2754ebd9c2431f3675ad)
-  - https://kubernetes.io/docs/reference/config-api/kubeconfig.v1/
-  caushell.profile/known_limitations:
-  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
-    opaque.
-  - The shell is spawn multiple times.
-  - Inner configuration payloads and generated native child argv not explicitly represented
-    by a form remain partial.
+  caushell.profile/sources:
+    - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_exec/
+    - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_proxy/
+    - https://kubernetes.io/docs/reference/config-api/kubeconfig.v1/

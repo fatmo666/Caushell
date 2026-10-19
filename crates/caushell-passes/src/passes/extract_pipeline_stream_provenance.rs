@@ -146,9 +146,7 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
         for mutation in collect_shell_io_scope_mutations(ctx, &streams) {
             ctx.stage_mutation(mutation);
         }
-        for mutation in
-            crate::support::collect_native_template_input_mutations(session, ctx)
-        {
+        for mutation in crate::support::collect_native_template_input_mutations(session, ctx) {
             ctx.stage_mutation(mutation);
         }
     }
@@ -162,7 +160,11 @@ fn annotate_output_mutation(streams: &StreamSemanticsIndex, mutation: &mut Pendi
         ..
     } = mutation
     {
-        annotate_stream_output(semantics, streams.inherited_stdout(source_node_id));
+        annotate_stream_output(
+            semantics,
+            streams.inherited_stdout(source_node_id),
+            streams.inherited_growth(source_node_id),
+        );
     }
 }
 
@@ -171,7 +173,35 @@ fn collect_dispatch_stream_provenance_mutations(
     streams: &StreamSemanticsIndex,
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
-    let mut inherited_streams: BTreeMap<NodeId, (NodeId, ProvenanceArtifact)> = BTreeMap::new();
+    let mut inherited_streams: BTreeMap<NodeId, Vec<(NodeId, ProvenanceArtifact)>> =
+        BTreeMap::new();
+    if ctx.execution_unit_resolve_records().iter().any(|r| {
+        r.origin_locator == caushell_runner::ExecutionUnitOriginLocator::DispatchInheritedStdin
+    }) {
+        for mutation in ctx.pending_mutations() {
+            if let PendingMutation::AddProvenanceArtifact {
+                source_node_id,
+                node_id,
+                artifact,
+                relation: EdgeKind::Consumes,
+                semantics:
+                    ProvenanceEdgeSemantics::Consume {
+                        consume_kind:
+                            ProvenanceConsumeKind::PipelineInput
+                            | ProvenanceConsumeKind::StdinExplicit
+                            | ProvenanceConsumeKind::StdinImplicit,
+                        ..
+                    },
+            } = mutation
+            {
+                let inputs = inherited_streams.entry(source_node_id.clone()).or_default();
+                let input = (node_id.clone(), artifact.clone());
+                if !inputs.contains(&input) {
+                    inputs.push(input);
+                }
+            }
+        }
+    }
     for record in ctx.execution_unit_resolve_records() {
         if record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
             && record.inherited_scope.dispatch_stdout_to_parent
@@ -221,23 +251,25 @@ fn collect_dispatch_stream_provenance_mutations(
             {
                 continue;
             }
-            if let Some((node_id, artifact)) = inherited_streams
+            if let Some(inputs) = inherited_streams
                 .get(&record.parent_execution_node_id)
                 .cloned()
             {
-                mutations.push(PendingMutation::AddProvenanceArtifact {
-                    source_node_id: record.source_node_id.clone(),
-                    node_id: node_id.clone(),
-                    artifact: artifact.clone(),
-                    relation: EdgeKind::Consumes,
-                    semantics: ProvenanceEdgeSemantics::Consume {
-                        consume_kind: ProvenanceConsumeKind::StdinImplicit,
-                        slot_name: Some("stdin".into()),
-                        normalized_command_name: None,
-                        domain_label: None,
-                    },
-                });
-                inherited_streams.insert(record.source_node_id.clone(), (node_id, artifact));
+                for (node_id, artifact) in &inputs {
+                    mutations.push(PendingMutation::AddProvenanceArtifact {
+                        source_node_id: record.source_node_id.clone(),
+                        node_id: node_id.clone(),
+                        artifact: artifact.clone(),
+                        relation: EdgeKind::Consumes,
+                        semantics: ProvenanceEdgeSemantics::Consume {
+                            consume_kind: ProvenanceConsumeKind::StdinImplicit,
+                            slot_name: Some("stdin".into()),
+                            normalized_command_name: None,
+                            domain_label: None,
+                        },
+                    });
+                }
+                inherited_streams.insert(record.source_node_id.clone(), inputs);
             }
             continue;
         }
@@ -260,7 +292,7 @@ fn collect_dispatch_stream_provenance_mutations(
         ));
         inherited_streams.insert(
             record.source_node_id.clone(),
-            (node_id.clone(), artifact.clone()),
+            vec![(node_id.clone(), artifact.clone())],
         );
         for (source_node_id, relation, semantics) in [
             (
@@ -766,6 +798,7 @@ mod tests {
                         normalized_command_name: Some("cat".to_string()),
                         domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
                             dependency: caushell_types::StreamDataDependency::Inputs,
+                            growth: None,
                             domain: None
                         }),
                     },
@@ -942,6 +975,7 @@ mod tests {
                         normalized_command_name: Some("base64".to_string()),
                         domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
                             dependency: caushell_types::StreamDataDependency::Inputs,
+                            growth: None,
                             domain: None
                         }),
                     },
@@ -996,6 +1030,7 @@ mod tests {
                         normalized_command_name: Some("xxd".to_string()),
                         domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
                             dependency: caushell_types::StreamDataDependency::Inputs,
+                            growth: None,
                             domain: None
                         }),
                     },
@@ -1060,6 +1095,7 @@ mod tests {
                         normalized_command_name: Some("cat".to_string()),
                         domain_label: Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
                             dependency: caushell_types::StreamDataDependency::Inputs,
+                            growth: None,
                             domain: None
                         }),
                     },

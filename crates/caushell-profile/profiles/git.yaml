@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
 
 identity:
   canonical_name: git
@@ -18,6 +19,98 @@ platform:
   requires_features: []
 
 forms: []
+
+dispatch_overrides:
+  - subcommand_depth: 0
+    first_arguments: [--help, '-h']
+    option_scope: permuted_options
+    modifiers: &help_modifiers
+      - {id: help_entry, matcher: {kind: any_flag, flags: ['-h', --help]}}
+      - {id: help_mode, matcher: {kind: any_flag, flags: ['-a', --all, '-c', --config, '-g', --guides, --user-interfaces, --developer-interfaces, --config-for-completion, --config-sections-for-completion, --aliases-for-completion, --exclude-guides]}}
+      - {id: help_format, matcher: {kind: any_flag, flags: ['-m', --man, '-i', --info, '-w', --web]}}
+      - {id: help_filters, matcher: {kind: any_flag, flags: [--external-commands, --no-external-commands, --aliases, --no-aliases]}}
+      - id: help_verbosity
+        matcher: {kind: any_flag, flags: ['-v', --verbose, --no-verbose]}
+        effects_when:
+          unless_forms: [help_information, help_through_viewer, help_through_pager]
+          last_option_not_matching: {kind: literal, value: --no-verbose}
+        effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+    forms: &help_forms
+      - id: help_through_viewer
+        selector: &manual_help
+          kind: all
+          items:
+            - {kind: has_positional_at, index: 0}
+            - kind: not
+              item:
+                kind: any
+                items:
+                  - {kind: has_flag, flag: '-a'}
+                  - {kind: has_flag, flag: --all}
+                  - {kind: has_flag, flag: '-c'}
+                  - {kind: has_flag, flag: --config}
+                  - {kind: has_flag, flag: '-g'}
+                  - {kind: has_flag, flag: --guides}
+                  - {kind: has_flag, flag: --user-interfaces}
+                  - {kind: has_flag, flag: --developer-interfaces}
+                  - {kind: has_flag, flag: --config-for-completion}
+                  - {kind: has_flag, flag: --config-sections-for-completion}
+                  - {kind: has_flag, flag: --aliases-for-completion}
+        parameters: &help_parameters
+          - {name: help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+        effects: &help_viewer_effects
+          - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: generic, requires_tty: false, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+        stream_contract: &help_streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+      - id: help_through_pager
+        selector: &paged_help
+          kind: all
+          items:
+            - {kind: not, item: *manual_help}
+            - {kind: not, item: {kind: has_modifier, modifier: no_pager}}
+            - kind: any
+              items:
+                - {kind: has_flag, flag: '-c'}
+                - {kind: has_flag, flag: --config}
+                - kind: all
+                  items:
+                    - {kind: any, items: [{kind: has_flag, flag: '-a'}, {kind: has_flag, flag: --all}]}
+                    - {kind: not, item: {kind: has_modifier, modifier: help_verbosity}}
+        parameters: *help_parameters
+        effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+        stream_contract: *help_streams
+      - id: help_listing_with_verbosity
+        selector: &verbosity_help
+          kind: all
+          items:
+            - {kind: not, item: *manual_help}
+            - {kind: any, items: [{kind: has_flag, flag: '-a'}, {kind: has_flag, flag: --all}]}
+            - {kind: has_modifier, modifier: help_verbosity}
+            - {kind: not, item: {kind: has_modifier, modifier: no_pager}}
+        parameters: *help_parameters
+        stream_contract: *help_streams
+      - id: help_information
+        selector: {kind: not, item: {kind: any, items: [*manual_help, *paged_help, *verbosity_help]}}
+        parameters: *help_parameters
+        stream_contract: *help_streams
+  - subcommand_depth: 0
+    first_arguments: [--version, '-v']
+    forms:
+      - id: version_information
+        parameters: *help_parameters
+        stream_contract: *help_streams
+  - subcommand_depth: 1
+    first_arguments: [--help]
+    forms:
+      - id: help_through_viewer
+        parameters: *help_parameters
+        effects: *help_viewer_effects
+        stream_contract: *help_streams
+  - subcommand_depth: 1
+    first_arguments: ['-h']
+    forms:
+      - id: short_help_information
+        parameters: *help_parameters
+        stream_contract: *help_streams
 
 modifiers:
   - id: work_tree
@@ -41,17 +134,16 @@ modifiers:
           kind: slot
           name: working_directory
 
-  - id: no_verify
-    matcher:
-      kind: any_flag
-      flags:
-        - "-n"
-        - "--no-verify"
   - id: configuration_override
     matcher: {kind: any_flag, flags: ["-c"]}
     parameters:
       - {name: configuration_overrides, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
-  - {id: pager, matcher: {kind: any_flag, flags: ["-p", "--paginate"]}}
+  - id: pager
+    matcher: {kind: any_flag, flags: ['-p', --paginate, '-P', --no-pager]}
+    effects_when:
+      last_option_not_matching: {kind: regex_pattern, pattern: '^(-P|--no-pager)$'}
+    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+  - {id: no_pager, matcher: {kind: any_flag, flags: ["-P", "--no-pager"]}}
 
 subcommands:
   roots:
@@ -748,17 +840,9 @@ subcommands:
 
     - name: help
       aliases: []
-      forms:
-        - id: help_through_pager
-          selector: {kind: has_modifier, modifier: pager}
-          parameters: [{name: help_topics, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
-          effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
-          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
-        - id: help_information
-          selector: {kind: not, item: {kind: has_modifier, modifier: pager}}
-          parameters: [{name: help_topics, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
-          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
-      modifiers: []
+      option_scope: permuted_options
+      forms: *help_forms
+      modifiers: *help_modifiers
       children: []
       default_behavior: reject_unknown
       extensions: {}
@@ -2653,6 +2737,7 @@ subcommands:
                 scope_kind: repository_worktree
                 path_set: tracked
       modifiers:
+        - {id: no_verify, matcher: {kind: any_flag, flags: [--no-verify]}}
         - id: abort
           matcher:
             kind: any_flag
@@ -2956,6 +3041,7 @@ subcommands:
                 scope_kind: repository_worktree
                 path_set: tracked
       modifiers:
+        - {id: no_verify, matcher: {kind: any_flag, flags: [--no-verify]}}
         - id: interactive
           matcher:
             kind: any_flag
@@ -3560,6 +3646,7 @@ subcommands:
                   - run_command
                   - write_buffer_to_path
       modifiers:
+        - {id: no_verify, matcher: {kind: any_flag, flags: ['-n', --no-verify]}}
         - id: message
           matcher:
             kind: any_flag
@@ -3921,7 +4008,8 @@ subcommands:
                 kind: mutation_scope
                 scope_kind: repository_worktree
                 path_set: patch_selected_tracked
-      modifiers: []
+      modifiers:
+        - {id: no_verify, matcher: {kind: any_flag, flags: [--no-verify]}}
       children: []
       default_behavior: reject_unknown
       extensions: {}

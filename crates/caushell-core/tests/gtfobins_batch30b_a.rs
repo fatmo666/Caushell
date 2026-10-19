@@ -95,14 +95,16 @@ fn source_entrypoints_register_and_dispatch_the_documented_child() {
     ];
     for (index, (command, executable, form)) in cases.into_iter().enumerate() {
         let (_, response) = check(command, index as u64 + 1);
-        // Interactive surfaces alone remain Observe; a declared identity
-        // change has its own independent approval policy.
-        let expected = if matches!(executable, "chroot" | "openvt") {
-            Decision::Allow
-        } else {
-            Decision::NeedApproval
-        };
-        assert_eq!(response.decision, expected, "{command}: {response:#?}");
+        // Identity changes and creation of virtual terminal sessions have
+        // independent approval policies.
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {response:#?}"
+        );
+        if executable == "openvt" {
+            assert!(has_rule(&response, RuleId::TerminalSessionOperation));
+        }
         if matches!(executable, "pkexec" | "ksu" | "sg") {
             assert!(
                 has_rule(&response, RuleId::PrivilegeBoundary),

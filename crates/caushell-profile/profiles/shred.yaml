@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: shred
@@ -22,6 +24,8 @@ forms:
     selector:
       kind: has_flag
       flag: "--help"
+    parameters: &ignored
+      - {name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
 
   - id: show_version
     selector:
@@ -33,78 +37,72 @@ forms:
           item:
             kind: has_flag
             flag: "--help"
+    parameters: *ignored
+
+  - id: no_overwrite
+    selector:
+      kind: all
+      items:
+        - &operating
+          kind: all
+          items:
+            - {kind: has_positional_at, index: 0}
+            - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}}
+        - &no_overwrite
+          kind: any
+          items:
+            - {kind: has_modifier_parameter_matching, modifier: size, parameter: size_value, matcher: {kind: regex_pattern, pattern: '^0+$'}}
+            - kind: all
+              items:
+                - {kind: has_modifier_parameter_matching, modifier: iterations, parameter: iteration_count, matcher: {kind: regex_pattern, pattern: '^0+$'}}
+                - {kind: not, item: {kind: has_modifier, modifier: zero}}
+        - {kind: not, item: {kind: has_modifier, modifier: remove_targets}}
+    parameters: &targets
+      - name: stdout_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
+        cardinality: optional_many
+      - name: path_targets
+        semantic: {kind: path, role: target, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_projection: {kind: identity}
+        value_constraints: [{kind: exclude_literal, value: '-'}]
+    remaining_selector: {kind: no_positional_args}
 
   - id: overwrite_and_remove_targets
     selector:
       kind: all
       items:
-        - kind: has_positional_at
-          index: 0
-        - kind: has_modifier
-          modifier: remove_targets
-        - kind: not
-          item:
-            kind: any
-            items:
-              - kind: has_flag
-                flag: "--help"
-              - kind: has_flag
-                flag: "--version"
-    parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
+        - *operating
+        - {kind: has_modifier, modifier: remove_targets}
+    parameters: *targets
+    remaining_selector: {kind: no_positional_args}
     effects:
-      - kind: write_path
+      - &erase
+        kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: path_targets
         catastrophic:
           semantic_class: raw_write_target
+        host_risk:
+          semantic_class: file_content_erasure_target
       - kind: delete_path
-        target:
-          kind: slot
-          name: path_targets
-        catastrophic:
-          semantic_class: delete_path
+        target: {kind: slot, name: path_targets}
+        catastrophic: {semantic_class: delete_path}
 
   - id: overwrite_targets
     selector:
       kind: all
       items:
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: any
-            items:
-              - kind: has_modifier
-                modifier: remove_targets
-              - kind: has_flag
-                flag: "--help"
-              - kind: has_flag
-                flag: "--version"
-    parameters:
-      - name: path_targets
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: remaining_positionals
-        cardinality: required_many
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: path_targets
-        catastrophic:
-          semantic_class: raw_write_target
+        - *operating
+        - {kind: not, item: *no_overwrite}
+        - {kind: not, item: {kind: has_modifier, modifier: remove_targets}}
+    parameters: *targets
+    remaining_selector: {kind: no_positional_args}
+    effects: [*erase]
 
 modifiers:
   - id: force
@@ -113,6 +111,9 @@ modifiers:
       flags:
         - "-f"
         - "--force"
+    effects:
+      - kind: change_mode
+        target: {kind: slot, name: path_targets}
 
   - id: iterations
     matcher:
@@ -202,16 +203,20 @@ modifiers:
         - "--zero"
 
   - id: help
+    ends_option_scope: true
     matcher:
       kind: any_flag
       flags:
         - "--help"
 
   - id: version
+    ends_option_scope: true
     matcher:
       kind: any_flag
       flags:
         - "--version"
 
 subcommands: null
-extensions: {}
+extensions:
+  caushell.profile/sources:
+    - https://github.com/coreutils/coreutils/blob/master/src/shred.c

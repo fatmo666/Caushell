@@ -18,6 +18,7 @@ mod shell_state;
 
 pub use decision::Decision;
 pub use evidence::{
+    UnboundedFileWriteEvidence,
     CatastrophicShellExpansionModeEvidence, CatastrophicShellProcessExplosionEvidence, Evidence,
     EvidenceKind, ExecutionExpansionTruncatedEvidence, ExecutionRiskSubtype,
     ImportedPackageExecutionEvidence, ImportedPackageExecutionSinkEvidence,
@@ -63,6 +64,7 @@ pub use provenance::{
     ProvenanceEndpointKind, ProvenanceEndpointUsage, ProvenanceMaterializedValueState,
     ProvenanceProduceKind, ProvenanceTransformKind, ProvenanceVariableValueState,
     RuntimeArgumentDomain, RuntimeInputCapture, RuntimeInputSource, StreamDataDependency,
+    StreamGrowth, StreamRecordFraming,
 };
 pub use query::{
     AliasHistoryAction, AliasHistoryEntry, AliasHistoryQueryRequest, AliasHistoryQueryResponse,

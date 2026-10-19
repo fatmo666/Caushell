@@ -43,7 +43,11 @@ impl SessionTransformPass for ExtractCommandSubstitutionProvenancePass {
                         .cloned(),
                     domain_label: None,
                 };
-                annotate_stream_output(&mut semantics, streams.scope_stdout(producer_node_id));
+                annotate_stream_output(
+                    &mut semantics,
+                    streams.scope_stdout(producer_node_id),
+                    streams.scope_growth(producer_node_id),
+                );
                 ctx.stage_mutation(PendingMutation::AddProvenanceArtifact {
                     source_node_id: producer_node_id.clone(),
                     node_id: artifact_node_id.clone(),

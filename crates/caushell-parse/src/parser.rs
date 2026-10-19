@@ -499,6 +499,20 @@ fn parse_with_descriptor_ownership(
     let mut descriptors = Vec::new();
     let mut here_strings = Vec::new();
     walk(tree.root_node(), &mut |node| {
+        // Bash IO numbers are unsigned decimal words. The grammar can absorb
+        // a signed argv word into a redirect descriptor (e.g. -200>out).
+        // Project only this AST-qualified sign as a word character; extraction
+        // still reads the original bytes and source coordinates.
+        if node.kind() == "file_descriptor" {
+            let text = &bytes[node.start_byte()..node.end_byte()];
+            if matches!(text.first(), Some(b'-' | b'+'))
+                && text.len() > 1
+                && text[1..].iter().all(u8::is_ascii_digit)
+            {
+                repaired_source.get_or_insert_with(|| bytes.to_vec())[node.start_byte()] = b'x';
+                return;
+            }
+        }
         // A close-FD operator followed by argv can hit the grammar's optional
         // destination branch and swallow/error on the first argument. Project
         // ONLY an AST-recognized close operator as duplication of FD 0. The

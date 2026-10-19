@@ -19,6 +19,7 @@ pub enum RuleFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleId {
+    UnboundedFileWrite,
     NetworkListenerExposure,
     NetworkUpload,
     CommandParseFailure,
@@ -27,6 +28,7 @@ pub enum RuleId {
     CwdOutsideWorkspaceRoot,
     OutsideWorkspaceMutation,
     FileDeletion,
+    FileContentErasure,
     ProcessControl,
     PrivilegeBoundary,
     OutsideWorkspaceScriptSource,
@@ -67,6 +69,7 @@ pub enum RuleId {
 impl RuleId {
     pub const fn family(self) -> RuleFamily {
         match self {
+            Self::UnboundedFileWrite => RuleFamily::HostSafety,
             Self::NetworkListenerExposure | Self::NetworkUpload => RuleFamily::NetworkSafety,
             Self::CommandParseFailure => RuleFamily::ResolveGap,
             Self::InteractiveEscapeSurface | Self::TerminalSessionOperation => {
@@ -75,6 +78,7 @@ impl RuleId {
             Self::CwdOutsideWorkspaceRoot => RuleFamily::Path,
             Self::OutsideWorkspaceMutation => RuleFamily::Path,
             Self::FileDeletion => RuleFamily::Path,
+            Self::FileContentErasure => RuleFamily::Path,
             Self::ProcessControl => RuleFamily::HostSafety,
             Self::PrivilegeBoundary => RuleFamily::HostSafety,
             Self::OutsideWorkspaceScriptSource => RuleFamily::Path,

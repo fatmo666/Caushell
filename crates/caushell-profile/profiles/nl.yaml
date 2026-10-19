@@ -23,6 +23,7 @@ forms:
     parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: number_lines
+    stdout_growth: {kind: preserve_records, empty_slots: [input_paths]}
     selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
     remaining_selector: {kind: no_positional_args}
     parameters: &inputs
@@ -38,6 +39,7 @@ forms:
       - {kind: transform_data, target: {kind: none}}
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
   - id: number_lines_stdin
+    stdout_growth: {kind: preserve_records, empty_slots: [input_paths]}
     selector: {kind: all, items: [*running, *stdin, {kind: not, item: {kind: has_positional_at, index: 1}}]}
     remaining_selector: {kind: no_positional_args}
     parameters: *inputs

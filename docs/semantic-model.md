@@ -48,6 +48,14 @@ permission does not grant execution, execution does not grant startup-config
 loading, and no path exemption bypasses the deletion guard. Risk passes retain
 their own decisions: an exempt path is not a global Allow.
 
+`write_path` may declare `host_risk.semantic_class: file_content_erasure_target`
+for deliberate destruction of existing file contents. The existing file-deletion
+pass enforces the separate `file_content_erasure` rule (approval by default),
+independently of path exemptions. Ordinary writes and moves are unchanged.
+Proven empty target projections do not trigger erasure; unresolved targets do.
+The shred Profile separates stdout (`-`), zero-overwrite forms, and actual file
+erasure. Removal remains a distinct deletion effect.
+
 File execution uses the owning execution unit, its `execute_payload` effect and
 its `script_source` path facts, including derived/wrapped calls. Every target
 must be proven in an execution-granted scope. Workspace and temporary file
@@ -642,6 +650,43 @@ does not set `operation_semantics_unresolved`, and failed shape selection uses
 its ordinary resolve-gap category. Other residuals and independently modeled
 redirections, substitutions and child actions retain their existing checks.
 The declaration is not a command-name allowlist or a rule-policy override.
+
+### Pre-dispatch forms
+
+`dispatch_overrides` optionally selects native forms before ordinary subcommand
+dispatch. It requires a subcommand tree and root `option_scope: leading_options`.
+Each rule declares `subcommand_depth`, exact `first_arguments`, and `forms`:
+
+```yaml
+dispatch_overrides:
+  - subcommand_depth: 1
+    first_arguments: [--help]
+    forms:
+      - id: manual
+        parameters:
+          - {name: arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+        effects:
+          - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: generic, requires_tty: false, capabilities: [run_command]}}
+```
+
+Depth zero is the command boundary after owned global options; depth one is
+immediately after the first subcommand name. Matching precedes that node's
+options and descendants. The selected form owns the current scope, while
+previously parsed ancestor modifier effects remain. Option operands, later
+arguments and words beyond a root `--` do not select a mode. Uncertain argv
+width or a first word that may match uses the existing `OpaqueInvocation`
+policy. Declarations are validated for nonempty, unique mode words at each
+depth and the usual form contracts. Profiles without this field are unchanged.
+Rules may also declare their own `modifiers` and `option_scope`; these bind
+the replacement mode's options, not the skipped subcommand's options. Known
+modifier effects remain available even if replacement form selection fails.
+
+Git uses this declaration for its initial help/version spellings and the
+first-level `--help` redirect. Its Profile distinguishes manual viewers and
+paged listings from plain usage output. `--no-pager` suppresses Git's own
+listing pager, not the separate manual viewer. The behavior follows
+[Git dispatch](https://github.com/git/git/blob/master/git.c) and
+[help modes](https://github.com/git/git/blob/master/builtin/help.c).
 
 The shared shell-word materializer expands a lexically unquoted, leading `~`
 using the current shell's known `HOME`, or the request's default account-home
@@ -1627,6 +1672,27 @@ statistics/JSON modes retain input dependency. File listing does not read file
 contents. `mv` preserves move/write facts and moved-file origins without treating
 them as stdout content; help/version do not produce filesystem mutations.
 
+## Continuous stream growth
+
+Forms may declare `stdout_growth` independently of data provenance:
+`continuous` (optional record framing, required modifier and finite-count
+slots), `preserve_records` (optional `empty_slots`), `finite`, or `prefix`
+(default count/unit, ordered counter slots and optional NUL modifier).
+Prefix counters use the last owned occurrence across all declared units.
+Negative/all-but-last and unknown values do not prove a finite prefix.
+Record limits require matching upstream framing and no additional input in
+`record_bound_empty_slots`; a byte limit does not require record framing.
+
+Output extent travels on the actual output edge, respecting descriptor aliases,
+compound-statement inheritance, pipelines and process substitutions.
+`StreamGrowthQuery` follows live content edges within the current request and
+stops at persistent files and value captures. Extent limits never remove content
+provenance. `unbounded_file_write_guard` skips requests without declared
+continuous output, uses a bounded traversal and applies the configurable
+`unbounded_file_write` rule (default `need_approval`). Normal files under the
+workspace or temporary roots remain sinks; terminal and discard output do not.
+Traversal exhaustion requires approval rather than silently dropping a flow.
+
 ## Parsed shell execution I/O boundaries
 
 Fully parsed shell command strings, recursive shell scripts and expanded
@@ -2021,7 +2087,9 @@ it adds no command-name branch, risk Pass, runtime probe or Harness input.
   Every `-i` is an input and every remaining positional is an output, not merely
   the last one. Explicit `-` is stdin/stdout, not a file named dash. File outputs
   retain both the explicit write and a bounded sibling family for implicit
-  container side files. Filters, protocol URLs, filename patterns, unlisted
+  container side files. Percent substitutions confined to the basename retain
+  that parent bound; a percent-bearing directory remains unresolved. Filters,
+  protocol URLs, unlisted
   options and mixed/repeated `-f` declarations do not enter the ordinary form.
   The existing LADSPA code-loading form remains separate.
   Unknown read operands retain unknown path facts under the existing read
@@ -2690,6 +2758,29 @@ Perl option parsing. An owned util-linux no-act option proves no mutation,
 including for unresolved filename collections; Perl dry-run still checks the
 program. All rename variants delegate full argv (including clusters) to their
 native decoder through the existing exact-name option-matching declaration.
+
+## Local invocation completeness
+
+Profiles distinguish a wrapper's own effects from its child: `systemd-run`
+declares transient service/scope mutation, `openvt` declares terminal-session
+creation, and fail2ban control/configuration forms declare service operations.
+The existing state and terminal guards evaluate them independently of child
+effects. Information-only forms do not create these resources.
+
+Native argument ownership also applies to `file -I`, GNU `uniq` unambiguous
+grouping options, and legacy `sort +POS -POS` keys. Sort keys are plain values,
+not file reads; names after `--` remain literal files. Mixed legacy keys and
+`--` retain unresolved semantics. Kubectl global options own their values,
+while the remote argv after `exec POD --` is not reinterpreted as kubectl flags
+or a local shell. Explicit kubeconfig execution semantics remain independent.
+
+Recursive gzip compression with the default suffix uses directory-subtree
+bounds for lexical directory operands and parent bounds for operands whose
+file/directory kind is unknown. No directory enumeration or stat is needed.
+Replacement still declares deletion; decompression with unresolved output names
+retains approval. Rsync's exact standard SSH transports use transfer semantics
+without fabricating an incomplete SSH invocation. Nonstandard explicit
+transports declare opaque execution only on remote transfers, not local copies.
 
 ## Further Reading
 

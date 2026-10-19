@@ -31,7 +31,9 @@ forms:
     - {kind: not, item: {kind: has_modifier, modifier: audio_filter}}
     - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: media_input, parameter: input_source, matcher: &protocol {kind: regex_pattern, pattern: '^[A-Za-z][A-Za-z0-9+.-]*:'}}}
     - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: *protocol}}
-    - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '%'}}}
+    # Numeric output templates in a basename stay in the declared sibling
+    # family. Templated directories cannot use that fixed-parent proof.
+    - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '%[^/]*[/]'}}}
     # -f is file-scoped and order-sensitive. A single known single-file format
     # is bounded; mixed/repeated format declarations retain opaque semantics.
     - {kind: not, item: {kind: has_flag_at_least, flag: '-f', count: 2}}

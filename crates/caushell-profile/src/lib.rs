@@ -22,11 +22,14 @@ mod recursive;
 mod registry;
 mod rename_payload;
 mod resolve;
+mod stream_growth;
 mod runtime_matcher;
 mod runtime_variables;
 mod sed_payload;
 mod structured_projection;
 mod types;
+pub use raw::RawDispatchOverride;
+pub use types::DispatchOverride;
 mod value_projection;
 mod value_shape;
 
@@ -147,7 +150,8 @@ pub use types::{
     ProjectedSemanticValue, ProjectionAbsentPolicy, ProjectionUnknownReason, Residual,
     ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType,
     SemanticValueRef, SemanticValueResolution, ShellFamily, ShellVariableValueSource, SlotName,
-    StreamContract, StreamInputMode, StreamOutputMode, StructuredValueContext,
+    StreamContract, StreamInputMode, StreamOutputMode, StreamGrowthContract, StreamCountUnit,
+    StreamCountSlot, StructuredValueContext,
     StructuredValueSemantic, SubcommandNode, SubcommandTree, ToolConventionPathTarget,
     ValueConstraint, ValueMatcher, ValueProjection,
 };

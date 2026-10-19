@@ -26,7 +26,21 @@ pub struct RawCommandProfile {
     pub option_prefixes: RawOptionPrefixPolicy,
     pub option_operand_matcher: Option<RawValueMatcher>,
     pub subcommands: Option<RawSubcommandTree>,
+    pub dispatch_overrides: Vec<RawDispatchOverride>,
     pub extensions: BTreeMap<String, JsonValue>,
+}
+
+/// A native mode selected by the first argument before subcommand parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawDispatchOverride {
+    pub subcommand_depth: usize,
+    pub first_arguments: Vec<String>,
+    pub forms: Vec<RawForm>,
+    #[serde(default)]
+    pub modifiers: Vec<RawModifier>,
+    #[serde(default)]
+    pub option_scope: RawOptionScopePolicy,
 }
 
 /// Explicitly evidenced native environment inputs, not ambient discovery.
@@ -196,6 +210,7 @@ pub struct RawForm {
     pub implicit_inputs: Vec<RawImplicitInput>,
     pub effects: Vec<RawEffect>,
     pub stream_contract: Option<RawStreamContract>,
+    pub stdout_growth: Option<crate::StreamGrowthContract>,
     pub stdout_records: Option<RawStdoutRecordContract>,
     pub stdout_scalar: Option<crate::StdoutScalarShape>,
     pub extensions: BTreeMap<String, JsonValue>,
@@ -939,6 +954,7 @@ pub enum RawCatastrophicSemanticClass {
 pub enum RawHostRiskSemanticClass {
     MoveSourcePath,
     PathContentOverwriteTarget,
+    FileContentErasureTarget,
     PartitionLayoutMutationTarget,
     PartitionTableStateMutationTarget,
     PartitionTableSessionTarget,

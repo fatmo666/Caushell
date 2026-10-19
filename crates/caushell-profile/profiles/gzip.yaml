@@ -173,6 +173,50 @@ forms:
     effects: [*read, *compressed_write, *compress_transform]
     stream_contract: *stdin_stdout
 
+  - id: recursive_compress_keep
+    selector: {kind: all, items: [*file_operation, *compress, &recursive_compression {kind: all, items: [{kind: has_modifier, modifier: recursive}, *default_suffix]}, *keep, *no_stdin]}
+    parameters: &recursive_inputs
+      - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
+      - name: recursive_operands
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        structured_projection:
+          branches:
+            - {matcher: {kind: regex_capture, pattern: '^(?:[.]{1,2}|[/]+|.*[/])$', group: 0}, target: {name: recursive_directories, semantic: {kind: path, role: read}}}
+          fallback: {name: recursive_entries, semantic: {kind: path, role: read}}
+    effects: &recursive_keep_effects
+      - {kind: read_path, target: {kind: slot, name: recursive_directories}}
+      - {kind: read_path, target: {kind: slot, name: recursive_entries}}
+      - {kind: write_path, path_scope: {kind: subtree}, target: {kind: slot, name: recursive_directories}}
+      # An operand without directory syntax may be a file or directory. Its
+      # parent bounds both the sibling .gz and descendants; no stat is needed.
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: recursive_entries}, rule: {kind: sibling_files}}}
+      - *compress_transform
+    stream_contract: *opaque_streams
+  - id: recursive_compress_keep_with_stdin
+    selector: {kind: all, items: [*file_operation, *compress, *recursive_compression, *keep, *stdin]}
+    parameters: *recursive_inputs
+    effects: *recursive_keep_effects
+    stream_contract: *stdin_stdout
+  - id: recursive_compress_replace
+    selector: {kind: all, items: [*file_operation, *compress, *recursive_compression, *not_keep, *no_stdin]}
+    parameters: *recursive_inputs
+    effects: &recursive_replace_effects
+      - {kind: read_path, target: {kind: slot, name: recursive_directories}}
+      - {kind: read_path, target: {kind: slot, name: recursive_entries}}
+      - {kind: write_path, path_scope: {kind: subtree}, target: {kind: slot, name: recursive_directories}}
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: recursive_entries}, rule: {kind: sibling_files}}}
+      - {kind: delete_path, path_scope: {kind: subtree}, target: {kind: slot, name: recursive_directories}}
+      - {kind: delete_path, path_scope: {kind: subtree}, target: {kind: slot, name: recursive_entries}}
+      - *compress_transform
+    stream_contract: *opaque_streams
+  - id: recursive_compress_replace_with_stdin
+    selector: {kind: all, items: [*file_operation, *compress, *recursive_compression, *not_keep, *stdin]}
+    parameters: *recursive_inputs
+    effects: *recursive_replace_effects
+    stream_contract: *stdin_stdout
+
   - id: decompress_files
     selector:
       kind: all
@@ -220,7 +264,7 @@ forms:
           items:
             - *file_operation
             - kind: not
-              item: {kind: any, items: [{kind: all, items: [*compress, *simple_compression]}, {kind: all, items: [*decompress, *simple_decompression]}]}
+              item: {kind: any, items: [{kind: all, items: [*compress, {kind: any, items: [*simple_compression, *recursive_compression]}]}, {kind: all, items: [*decompress, *simple_decompression]}]}
         - *not_keep
         - *no_stdin
     parameters: *inputs
@@ -272,10 +316,10 @@ extensions:
   caushell.profile/source_research:
     - https://www.gnu.org/software/gzip/manual/html_node/Invoking-gzip.html
     - GTFOBins gzip/file-read/0 at acd524623f9c406acedd2754ebd9c2431f3675ad
-  caushell.profile/scope: GNU gzip stdin/stdout compression and decompression, mixed explicit stdin and file operands, test/list queries, default .gz file replacement and keep mode, with declared unknown output boundaries.
+  caushell.profile/scope: GNU gzip stdin/stdout compression and decompression, mixed explicit stdin and file operands, test/list queries, default .gz file replacement and keep mode, recursive compression with bounded output roots, and declared unknown output boundaries.
   caushell.profile/known_limitations:
     - File writes and input deletions describe possible successful effects, not evidence that gzip actually ran or succeeded. No filesystem, content, SUID or capability probes are performed.
     - Exact .gz stripping is supported. Other native decode suffixes (.z, .Z, -gz, -z, _z, .tgz, .taz and case variants), implicit missing-file suffix lookup and filesystem name truncation are not reconstructed as known output paths.
-    - Recursive file mutations, non-default configured suffixes and --name header-based output names retain unknown mutation targets and use the existing approval guard. Recursive read-only/stdout forms preserve the supplied read root without enumerating members.
+    - Recursive compression with the default .gz suffix bounds writes by a syntactic directory root, or the operand's parent when its file/directory kind is unknown. Replacement retains input deletion. Recursive decompression, non-default configured suffixes and --name header-based output names retain unknown mutation targets and use the existing approval guard. Recursive read-only/stdout forms preserve the supplied read root without enumerating members.
     - Repeated suffix options and both --name and --no-name are conservatively represented rather than reimplementing last-option precedence. Unknown options or unresolved mode selection use opaque_on_unresolved.
     - GNU 1.12+ GZIP defaults affect tuning only; earlier GNU releases, BusyBox and BSD-specific extensions are not certified by this profile. gunzip and zcat remain separately registered profiles, not aliases silently redirected to this one.

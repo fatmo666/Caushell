@@ -38,6 +38,9 @@ forms:
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
       - {kind: consume_stdin, target: {kind: slot, name: stdin_markers}}
     stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: no_file_operands
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: {kind: has_modifier, modifier: files_from}}, {kind: no_positional_args}]}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   # A file-selection list may itself name '-', so unknown list bytes cannot
   # prove stdin unused even when the list is read from a named file.
   - id: classify_from_list
@@ -68,7 +71,7 @@ modifiers:
     effects:
       - {kind: load_config, target: {kind: slot, name: magic_file}}
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: magic_file}}
-  - {id: output_mode, matcher: {kind: any_flag, flags: ['-b', --brief, '-i', --mime, --mime-type, --mime-encoding, '-L', --dereference, '-h', --no-dereference, '-z', --uncompress, '-Z', --uncompress-noreport, '-0', --print0, '-N', --no-pad, '-p', --preserve-date, '-s', --special-files, '-k', --keep-going, '-n', --no-buffer, '-E', --error, --extension, --apple]}}
+  - {id: output_mode, matcher: {kind: any_flag, flags: ['-b', --brief, '-i', '-I', --mime, --mime-type, --mime-encoding, '-L', --dereference, '-h', --no-dereference, '-z', --uncompress, '-Z', --uncompress-noreport, '-0', --print0, '-N', --no-pad, '-p', --preserve-date, '-s', --special-files, '-k', --keep-going, '-n', --no-buffer, '-E', --error, --extension, --apple]}}
   - id: separator
     matcher: {kind: any_flag, flags: ['-F', --separator]}
     parameters: [{name: separator, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -82,5 +85,7 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/file/blob/main/file/src/file.c
+    - https://github.com/file/file/blob/master/src/file.c
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv

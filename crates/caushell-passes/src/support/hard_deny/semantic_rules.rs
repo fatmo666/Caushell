@@ -449,12 +449,21 @@ fn sink_matches_host_target(
         }
         ResolvedHostRiskSemanticClass::HostRisk(
             HostRiskSemanticClass::PartitionTableStateMutationTarget,
+        )
+        | ResolvedHostRiskSemanticClass::HostRisk(
+            HostRiskSemanticClass::FileContentErasureTarget,
         ) => false,
     }
 }
 
 fn sink_reason(sink: &ResolvedHostRiskSink<'_>, target: &str) -> String {
     match sink.semantic_class {
+        ResolvedHostRiskSemanticClass::HostRisk(
+            HostRiskSemanticClass::FileContentErasureTarget,
+        ) => format!(
+            "file content erasure target {target} via {}",
+            sink.normalized_command_name
+        ),
         ResolvedHostRiskSemanticClass::Catastrophic(CatastrophicSemanticClass::DeletePath) => {
             format!(
                 "delete target {target} in command {} is a catastrophic filesystem root delete",

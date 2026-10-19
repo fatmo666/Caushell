@@ -138,6 +138,7 @@ impl SessionTransformPass for ExtractProcessSubstitutionProvenancePass {
                         annotate_stream_output(
                             &mut semantics,
                             streams.scope_stdout(producer_node_id),
+                            streams.scope_growth(producer_node_id),
                         );
                         ctx.stage_mutation(PendingMutation::AddProvenanceArtifact {
                             source_node_id: producer_node_id.clone(),
@@ -190,9 +191,21 @@ impl SessionTransformPass for ExtractProcessSubstitutionProvenancePass {
                                             .unwrap_or(usize::MAX),
                                     },
                                 );
-                                if dependency != caushell_types::StreamDataDependency::Unknown {
+                                let growth = streams.growth(
+                                    &record.parent_execution_node_id,
+                                    &caushell_query::IoTarget::ProcessSubstitution {
+                                        redirection_index: slot
+                                            .trim_start_matches("redirect_target_")
+                                            .parse()
+                                            .unwrap_or(usize::MAX),
+                                    },
+                                );
+                                if dependency != caushell_types::StreamDataDependency::Unknown
+                                    || growth.is_some()
+                                {
                                     *domain_label = Some(ProvenanceDomainLabel::StreamOutput {
                                         dependency,
+                                        growth,
                                         domain: domain_label.take().map(Box::new),
                                     });
                                 }

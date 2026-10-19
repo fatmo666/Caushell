@@ -754,7 +754,9 @@ pub fn resolve_invocation_artifact_with_bindings(
 
 fn gap_kind_for_bind_error(error: &BindError) -> ResolveGapKind {
     match error {
-        BindError::UncertainFunctionBinding { .. } => ResolveGapKind::OpaqueInvocation,
+        BindError::UncertainFunctionBinding { .. } | BindError::IndeterminateDispatch { .. } => {
+            ResolveGapKind::OpaqueInvocation
+        }
         BindError::UnknownSubcommand { .. } => ResolveGapKind::UnknownSubcommandPath,
         BindError::MultipleFormsMatched { .. } => ResolveGapKind::FormSelectionAmbiguous,
         BindError::NoFormMatched { .. } | BindError::UnsupportedProfileFeature { .. } => {
@@ -3989,7 +3991,13 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "shred");
                 assert_eq!(resolved.selection.form.id.as_str(), "show_help");
                 assert_eq!(modifier_ids, vec!["help"]);
-                assert!(resolved.bound.bound_parameters.is_empty());
+                assert!(
+                    resolved
+                        .bound
+                        .bound_parameters
+                        .iter()
+                        .all(|p| p.values.is_empty())
+                );
                 assert!(resolved.bound.effects.is_empty());
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -4019,15 +4027,15 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "shred");
                 assert_eq!(resolved.selection.form.id.as_str(), "show_help");
-                assert!(modifier_ids.contains(&"help"));
-                assert!(modifier_ids.contains(&"iterations"));
-                assert!(modifier_ids.contains(&"size"));
-                assert!(modifier_ids.contains(&"random_source"));
-                assert_eq!(first_argument_text(&resolved.bound, "iteration_count"), "5");
-                assert_eq!(first_argument_text(&resolved.bound, "size_value"), "4K");
+                assert_eq!(modifier_ids, vec!["help"]);
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "random_source_path"),
-                    "/dev/urandom"
+                    argument_texts(&resolved.bound, "ignored"),
+                    vec![
+                        "--iterations=5",
+                        "--size=4K",
+                        "--random-source=/dev/urandom",
+                        "/dev/sda"
+                    ]
                 );
                 assert!(resolved.bound.effects.is_empty());
             }
@@ -4058,11 +4066,10 @@ mod tests {
 
                 assert_eq!(resolved.normalized_command_name, "shred");
                 assert_eq!(resolved.selection.form.id.as_str(), "show_help");
-                assert!(modifier_ids.contains(&"help"));
-                assert!(modifier_ids.contains(&"random_source"));
+                assert_eq!(modifier_ids, vec!["help"]);
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "random_source_path"),
-                    "/dev/urandom"
+                    argument_texts(&resolved.bound, "ignored"),
+                    vec!["--random-source=/dev/urandom", "/dev/sda"]
                 );
                 assert!(resolved.bound.effects.is_empty());
             }
@@ -12575,11 +12582,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::DispatchCommand,
-                        EffectKind::NetworkEndpoint,
-                        EffectKind::WritePath
-                    ]
+                    vec![EffectKind::NetworkEndpoint, EffectKind::WritePath]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),

@@ -404,8 +404,32 @@ pub enum ProvenanceDomainLabel {
     StreamOutput {
         dependency: StreamDataDependency,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        growth: Option<StreamGrowth>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         domain: Option<Box<ProvenanceDomainLabel>>,
     },
+}
+
+/// Output extent is separate from content provenance: truncation does not
+/// sanitize sensitive bytes. Unknown framing is not a finite-record proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StreamGrowth {
+    Continuous { records: StreamRecordFraming },
+    PreserveRecords,
+    Finite,
+    RecordPrefix { records: StreamRecordFraming },
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamRecordFraming {
+    #[default]
+    Unknown,
+    Lines,
+    Nul,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -465,6 +489,7 @@ mod tests {
                 normalized_command_name: None,
                 domain_label: Some(ProvenanceDomainLabel::StreamOutput {
                     dependency,
+                    growth: None,
                     domain: Some(Box::new(ProvenanceDomainLabel::Path {
                         role: ResolvedPathRole::Write,
                         purpose: None,
@@ -475,6 +500,39 @@ mod tests {
             assert_eq!(
                 serde_json::from_str::<ProvenanceEdgeSemantics>(&json).unwrap(),
                 semantics
+            );
+        }
+    }
+
+    #[test]
+    fn output_growth_roundtrips_and_legacy_stream_labels_remain_readable() {
+        let legacy: ProvenanceDomainLabel =
+            serde_json::from_str(r#"{"kind":"stream_output","dependency":"inputs"}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            ProvenanceDomainLabel::StreamOutput { growth: None, .. }
+        ));
+        for growth in [
+            super::StreamGrowth::Continuous {
+                records: super::StreamRecordFraming::Lines,
+            },
+            super::StreamGrowth::Finite,
+            super::StreamGrowth::PreserveRecords,
+            super::StreamGrowth::RecordPrefix {
+                records: super::StreamRecordFraming::Nul,
+            },
+        ] {
+            let label = ProvenanceDomainLabel::StreamOutput {
+                dependency: super::StreamDataDependency::Inputs,
+                growth: Some(growth),
+                domain: None,
+            };
+            assert_eq!(
+                serde_json::from_str::<ProvenanceDomainLabel>(
+                    &serde_json::to_string(&label).unwrap()
+                )
+                .unwrap(),
+                label
             );
         }
     }

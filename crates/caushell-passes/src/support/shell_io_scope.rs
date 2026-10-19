@@ -534,6 +534,7 @@ pub(crate) fn collect_shell_io_scope_mutations(
                         } else {
                             streams.dependency(node, target)
                         },
+                        streams.growth(node, target),
                     );
                     mutations.push(PendingMutation::AddProvenanceArtifact {
                         source_node_id: node.clone(),

@@ -77,7 +77,9 @@ pub enum NormalizeError {
     InvalidPayloadProjection(String),
     InvalidStdoutRecords(String),
     InvalidStdoutScalar(String),
+    InvalidStreamGrowth(String),
     InvalidVariableTarget(String),
+    InvalidDispatchOverride(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -398,6 +400,74 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         validate_subcommand_configured_paths(&tree.roots, &names, &modifier_names)?;
     }
 
+    let mut dispatch_overrides = Vec::new();
+    let mut override_words = BTreeSet::new();
+    for rule in raw.dispatch_overrides {
+        if subcommands.is_none()
+            || option_scope != OptionScopePolicy::LeadingOptions
+            || rule.first_arguments.is_empty()
+            || rule.forms.is_empty()
+        {
+            return Err(NormalizeError::InvalidDispatchOverride(
+                "dispatch overrides require leading_options, a subcommand tree, first arguments and forms".into(),
+            ));
+        }
+        for word in &rule.first_arguments {
+            if word.is_empty()
+                || word.contains('\0')
+                || !override_words.insert((rule.subcommand_depth, word.clone()))
+            {
+                return Err(NormalizeError::InvalidDispatchOverride(
+                    "first arguments must be nonempty, NUL-free and unique at each depth".into(),
+                ));
+            }
+        }
+        let override_forms = normalize_forms(rule.forms)?;
+        let override_modifiers = normalize_modifiers(rule.modifiers)?;
+        if override_modifiers
+            .iter()
+            .any(|m| modifiers.iter().any(|root| root.id == m.id))
+        {
+            return Err(NormalizeError::InvalidDispatchOverride(
+                "override modifiers must not duplicate root modifier ids".into(),
+            ));
+        }
+        let mut inherited_modifiers = modifiers.clone();
+        inherited_modifiers.extend(override_modifiers.iter().cloned());
+        let override_option_scope = normalize_option_scope(rule.option_scope);
+        validate_option_scope(
+            override_option_scope,
+            option_matching,
+            &override_modifiers,
+            &override_forms,
+            &[],
+        )?;
+        validate_endpoint_input_scopes(&override_forms, &inherited_modifiers)?;
+        validate_stdout_records(&override_forms, &inherited_modifiers)?;
+        validate_stdout_scalars(&override_forms)?;
+        validate_configured_path_references(
+            &override_forms,
+            &inherited_modifiers,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )?;
+        if declared_parameter_names(&override_forms, &override_modifiers, &BTreeSet::new())
+            .iter()
+            .any(|name| environment_names.contains(name))
+        {
+            return Err(NormalizeError::InvalidDispatchOverride(
+                "override slots collide with an environment input".into(),
+            ));
+        }
+        dispatch_overrides.push(crate::DispatchOverride {
+            subcommand_depth: rule.subcommand_depth,
+            first_arguments: rule.first_arguments,
+            forms: override_forms,
+            modifiers: override_modifiers,
+            option_scope: override_option_scope,
+        });
+    }
+
     Ok(CommandProfile {
         identity,
         trust: normalize_trust(raw.trust),
@@ -417,6 +487,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         exact_option_words,
         option_operand_matcher,
         subcommands,
+        dispatch_overrides,
         extensions: normalize_extensions(raw.extensions)?,
     })
 }
@@ -1047,6 +1118,7 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .map(normalize_effect)
             .collect::<Result<Vec<_>, _>>()?,
         stream_contract: raw.stream_contract.map(normalize_stream_contract),
+        stdout_growth: raw.stdout_growth,
         stdout_records: raw
             .stdout_records
             .map(normalize_stdout_records)
@@ -1118,6 +1190,7 @@ fn normalize_stdout_records(
 }
 
 fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(), NormalizeError> {
+    validate_stream_growth(forms, modifiers)?;
     for form in forms {
         let Some(records) = &form.stdout_records else {
             continue;
@@ -1176,6 +1249,101 @@ fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(),
         {
             return Err(NormalizeError::InvalidStdoutRecords(
                 "unknown or contradictory modifier".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_stream_growth(forms: &[Form], modifiers: &[Modifier]) -> Result<(), NormalizeError> {
+    use crate::StreamGrowthContract;
+    for form in forms {
+        let Some(contract) = &form.stdout_growth else {
+            continue;
+        };
+        if form.stream_contract.is_none() {
+            return Err(NormalizeError::InvalidStreamGrowth(
+                "stdout_growth requires stream_contract".into(),
+            ));
+        }
+        let mut slots = Vec::new();
+        let mut ids = Vec::new();
+        let mut count_slots = Vec::new();
+        match contract {
+            StreamGrowthContract::Continuous {
+                required_modifier,
+                finite_count_slots,
+                ..
+            } => {
+                ids.extend(required_modifier.iter());
+                slots.extend(finite_count_slots.iter());
+                count_slots.extend(finite_count_slots.iter());
+            }
+            StreamGrowthContract::PreserveRecords { empty_slots } => slots.extend(empty_slots),
+            StreamGrowthContract::Prefix {
+                counters,
+                nul_modifier,
+                record_bound_empty_slots,
+                ..
+            } => {
+                ids.extend(nul_modifier.iter());
+                slots.extend(counters.iter().map(|counter| &counter.slot));
+                count_slots.extend(counters.iter().map(|counter| &counter.slot));
+                slots.extend(record_bound_empty_slots);
+                let mut unique = BTreeSet::new();
+                if counters.is_empty() || counters.iter().any(|c| !unique.insert(&c.slot)) {
+                    return Err(NormalizeError::InvalidStreamGrowth(
+                        "prefix counters must be nonempty and unique".into(),
+                    ));
+                }
+            }
+            StreamGrowthContract::Finite => {}
+        }
+        if ids
+            .into_iter()
+            .any(|id| id.is_empty() || !modifiers.iter().any(|m| m.id.as_str() == id))
+        {
+            return Err(NormalizeError::InvalidStreamGrowth(
+                "growth references an undeclared modifier".into(),
+            ));
+        }
+        // Structured projections can publish named virtual semantic slots.
+        let declared = |slot: &String| {
+            form.parameters
+                .iter()
+                .chain(modifiers.iter().flat_map(|m| &m.parameters))
+                .any(|p| {
+                    p.name.as_str() == slot
+                        || p.structured_projection.as_ref().is_some_and(|s| {
+                            s.branches
+                                .iter()
+                                .filter_map(|b| b.target.as_ref())
+                                .chain(s.fallback.iter())
+                                .any(|t| t.name.as_str() == slot)
+                        })
+                })
+        };
+        if slots
+            .into_iter()
+            .any(|slot| slot.is_empty() || !declared(slot))
+        {
+            return Err(NormalizeError::InvalidStreamGrowth(
+                "growth references an undeclared slot".into(),
+            ));
+        }
+        if count_slots.into_iter().any(|slot| {
+            !modifiers.iter().flat_map(|m| &m.parameters).any(|p| {
+                p.name.as_str() == slot
+                    && p.semantic == SemanticType::PlainValue
+                    && matches!(p.binding, BindingSpec::FollowingMatchedFlag { .. })
+                    && matches!(
+                        p.cardinality,
+                        Cardinality::RequiredOne | Cardinality::RequiredMany
+                    )
+            })
+        }) {
+            return Err(NormalizeError::InvalidStreamGrowth(
+                "growth counters require owned, required plain-value modifier operands".into(),
             ));
         }
     }
@@ -2535,6 +2703,21 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if raw.host_risk.as_ref().is_some_and(|risk| {
+        risk.semantic_class == Some(RawHostRiskSemanticClass::FileContentErasureTarget)
+    }) && (kind != EffectKind::WritePath
+        || !matches!(
+            target,
+            EffectTarget::Slot(_)
+                | EffectTarget::DerivedPath(_)
+                | EffectTarget::ConfiguredPath(_)
+                | EffectTarget::ToolConventionPath(_)
+        ))
+    {
+        return Err(NormalizeError::InvalidPathAccess(
+            "file_content_erasure_target requires a filesystem write_path target".into(),
+        ));
+    }
     if let Some(scope) = &raw.input_scope {
         if kind != EffectKind::NetworkEndpoint || !matches!(target, EffectTarget::Slot(_)) {
             return Err(NormalizeError::InvalidEndpointInputScope(
@@ -2844,6 +3027,9 @@ fn normalize_host_risk_semantic_class(raw: RawHostRiskSemanticClass) -> HostRisk
         RawHostRiskSemanticClass::MoveSourcePath => HostRiskSemanticClass::MoveSourcePath,
         RawHostRiskSemanticClass::PathContentOverwriteTarget => {
             HostRiskSemanticClass::PathContentOverwriteTarget
+        }
+        RawHostRiskSemanticClass::FileContentErasureTarget => {
+            HostRiskSemanticClass::FileContentErasureTarget
         }
         RawHostRiskSemanticClass::PartitionLayoutMutationTarget => {
             HostRiskSemanticClass::PartitionLayoutMutationTarget
@@ -3683,6 +3869,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
@@ -3756,6 +3943,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
                 extensions: BTreeMap::new(),
@@ -3872,6 +4060,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
@@ -3937,6 +4126,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
                 extensions: BTreeMap::new(),
@@ -3981,6 +4171,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
@@ -4046,6 +4237,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
                 extensions: BTreeMap::new(),
@@ -4090,6 +4282,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
@@ -4138,6 +4331,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: Vec::new(),
                 stream_contract: None,
+                stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
                 extensions: BTreeMap::new(),
@@ -4158,6 +4352,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_metadata_mutation_semantics() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4222,6 +4417,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
                 extensions: BTreeMap::new(),
@@ -4244,6 +4440,7 @@ mod tests {
     #[test]
     fn normalize_rejects_invalid_dsl_version() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4270,6 +4467,7 @@ mod tests {
     #[test]
     fn normalize_rejects_duplicate_form_ids() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4306,6 +4504,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
+            dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
@@ -4370,6 +4569,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 stream_contract: None,
+                stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
                 extensions: BTreeMap::new(),

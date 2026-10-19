@@ -6,6 +6,61 @@ use caushell_types::{
     ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceEdgeSemantics, RuntimeInputSource,
 };
 
+/// Reify compiler-owned data holes before ordinary shell-frame replay. A job
+/// may run `set` or `shift`; that cannot alter replacements already performed
+/// by the native tool. User-written positional references never enter here.
+pub(crate) fn bind_symbolic_template_inputs(
+    parsed: &mut caushell_parse::ParsedCommandArtifact,
+    arguments: &[caushell_profile::ProjectedArg],
+    origin: &caushell_runner::NativeTemplateInput,
+) -> bool {
+    if parsed.raw_command != origin.source_text {
+        return false;
+    }
+    let mut owned = 0;
+    for command in &mut parsed.commands {
+        for token in &mut command.tokens {
+            if !origin.data_ranges.iter().any(|range| {
+                range.start == token.span.start_byte && range.end == token.span.end_byte
+            }) {
+                continue;
+            }
+            let batch = token.text == "$@";
+            let position = if batch {
+                Some(1)
+            } else {
+                token
+                    .text
+                    .strip_prefix("${")
+                    .and_then(|text| text.strip_suffix('}'))
+                    .and_then(|text| text.parse::<usize>().ok())
+            };
+            let Some(argument) = position
+                .filter(|position| *position > 0)
+                .and_then(|position| arguments.get(position))
+            else {
+                return false;
+            };
+            let Some(source) = argument.implicit_input_source else {
+                return false;
+            };
+            if !token.quoted
+                || token.node_kind != "string"
+                || batch != (argument.node_kind == "runtime_argument_list")
+            {
+                return false;
+            }
+            token.text.clear();
+            token.implicit_input_source = Some(source);
+            token.runtime_argument_domain = argument.runtime_argument_domain.clone();
+            token.runtime_data = false;
+            token.node_kind = argument.node_kind.clone();
+            owned += 1;
+        }
+    }
+    owned == origin.data_ranges.len()
+}
+
 /// Connect replacements to actual parameter slots, not a blanket dispatcher
 /// control edge. Native decoding must not erase known bytes' data origins.
 pub(crate) fn collect_native_template_input_mutations(
@@ -44,9 +99,20 @@ pub(crate) fn collect_native_template_input_mutations(
         };
         for parameter in &bound.bound_parameters {
             if !parameter.values.iter().any(|value| {
-                matches!(value,
-                BoundValue::Argument {span, ..} if origin.data_ranges.iter().any(|range|
-                    span.start_byte < range.end && range.start < span.end_byte))
+                let span = match value {
+                    BoundValue::Argument { span, .. } => Some(span),
+                    BoundValue::ImplicitInput {
+                        origin: Some(input),
+                        ..
+                    } => Some(&input.span),
+                    _ => None,
+                };
+                span.is_some_and(|span| {
+                    origin
+                        .data_ranges
+                        .iter()
+                        .any(|range| span.start_byte < range.end && range.start < span.end_byte)
+                })
             }) {
                 continue;
             }

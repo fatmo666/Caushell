@@ -213,6 +213,10 @@ enum FlagTokenMatch<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindError {
+    IndeterminateDispatch {
+        command_name: String,
+        reason: String,
+    },
     UncertainFunctionBinding {
         command_name: String,
         reason: String,
@@ -237,6 +241,9 @@ pub enum BindError {
 impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::IndeterminateDispatch { command_name, reason } => write!(
+                f, "native dispatch for {command_name:?} is unresolved: {reason}"
+            ),
             Self::UncertainFunctionBinding {
                 command_name,
                 reason,
@@ -471,8 +478,18 @@ pub fn bind_invocation(
     let projection = prefixed.as_ref();
     let targets = collect_parameter_targets(selection);
     let mut state = BindingState::with_modifier_context(projection, &selection.modifiers);
-    state.audit_operation_semantics = profile.opaque_on_unresolved;
-    if profile.opaque_on_unresolved {
+    let audit_growth = selection
+        .form
+        .stdout_growth
+        .as_ref()
+        .is_some_and(|growth| match growth {
+            crate::StreamGrowthContract::Continuous { finite_count_slots, .. } => {
+                !finite_count_slots.is_empty()
+            }
+            _ => true,
+        });
+    state.audit_operation_semantics = profile.opaque_on_unresolved || audit_growth;
+    if state.audit_operation_semantics {
         state.flag_operand_indices = vec![false; projection.args.len()];
     }
     state.set_option_scope(selection.option_scope.as_ref());
@@ -505,6 +522,7 @@ pub fn bind_invocation(
     )
     .with_subcommand_path(selection.subcommand_path.clone());
     bound.stream_contract = selection.form.stream_contract;
+    bound.stdout_growth = selection.form.stdout_growth.clone();
     bound.stdout_records = selection.form.stdout_records.clone();
     bound.stdout_scalar = selection.form.stdout_scalar;
     bound.argument_regions = selection
@@ -592,8 +610,14 @@ pub fn bind_invocation(
         }
     }
 
-    if profile.opaque_on_unresolved {
-        collect_unresolved_arguments(&state, selection, &mut residuals);
+    bound.stdout_growth_complete = true;
+    if state.audit_operation_semantics {
+        let mut accounting_gaps = Vec::new();
+        collect_unresolved_arguments(&state, selection, &mut accounting_gaps);
+        bound.stdout_growth_complete = accounting_gaps.is_empty();
+        if profile.opaque_on_unresolved {
+            residuals.extend(accounting_gaps);
+        }
     }
     if selection
         .option_scope
@@ -853,7 +877,9 @@ pub(crate) fn bind_modifier_only_invocation(
     let (modifiers, option_scope, option_terminators, subcommand_path) =
         if let Some(subcommands) = &profile.subcommands {
             let scan = scan_subcommand_path(profile, projection, subcommands);
-            let options = if scan.selected_node.is_some() {
+            let options = if scan.dispatch_override.is_some() {
+                scan.node_options
+            } else if scan.selected_node.is_some() {
                 scan.node_options
             } else {
                 scan.root_options
@@ -1073,7 +1099,59 @@ struct SubcommandScan<'p, 'a> {
     path: Vec<String>,
     scan_start: usize,
     selected_node: Option<&'a SubcommandNode>,
+    dispatch_override: Option<(&'a crate::DispatchOverride, ArgumentScope)>,
     error: Option<BindError>,
+}
+
+fn dispatch_override_forms<'a>(
+    profile: &'a CommandProfile,
+    projection: &ProjectedInvocation,
+    depth: usize,
+    start: usize,
+) -> Result<Option<&'a crate::DispatchOverride>, BindError> {
+    if !profile
+        .dispatch_overrides
+        .iter()
+        .any(|rule| rule.subcommand_depth == depth)
+    {
+        return Ok(None);
+    }
+    let unresolved = || BindError::IndeterminateDispatch {
+        command_name: profile.primary_name().to_owned(),
+        reason: "runtime argv cannot determine the pre-dispatch mode".into(),
+    };
+    // Expansion in an earlier option operand can move the native boundary.
+    if projection.args[..start]
+        .iter()
+        .any(|arg| crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne)
+    {
+        return Err(unresolved());
+    }
+    let Some(arg) = projection.args.get(start) else {
+        return Ok(None);
+    };
+    let structure = crate::argument_structure(arg);
+    if structure.fields != crate::ArgumentFieldCount::ExactlyOne {
+        return Err(unresolved());
+    }
+    for rule in profile
+        .dispatch_overrides
+        .iter()
+        .filter(|rule| rule.subcommand_depth == depth)
+    {
+        if let Some(value) = structure.exact_value() {
+            if rule.first_arguments.iter().any(|word| word == value) {
+                return Ok(Some(rule));
+            }
+        } else if rule
+            .first_arguments
+            .iter()
+            .any(|word| structure.may_equal(word))
+        {
+            return Err(unresolved());
+        }
+    }
+    Ok(None)
 }
 
 fn scan_subcommand_path<'p, 'a>(
@@ -1122,6 +1200,53 @@ fn scan_subcommand_path<'p, 'a>(
     let mut children = subcommands.roots.as_slice();
     let mut selected_node = None;
     let mut node_options = None;
+    let mut dispatch_override = None;
+
+    if !profile.dispatch_overrides.is_empty()
+        && root_options
+            .as_ref()
+            .is_none_or(|options| options.terminator.is_none())
+    {
+        let start = root_options
+            .as_ref()
+            .map_or(0, |options| options.scope.end_index);
+        match dispatch_override_forms(profile, projection, 0, start) {
+            Ok(Some(forms)) => {
+                let prefix = scoped_options(
+                    profile.option_scope,
+                    profile.option_matching,
+                    profile.option_prefixes,
+                    projection,
+                    ArgumentScope::new(0, start),
+                    &profile.modifiers,
+                    &profile.forms,
+                    &profile.argument_regions,
+                    profile.argument_control_vocabulary.as_ref(),
+                    profile.option_operand_matcher.as_ref(),
+                    &profile.exact_option_words,
+                );
+                if let Err(problem) = ensure_option_scope(profile.primary_name(), prefix.as_ref()) {
+                    error = Some(problem);
+                } else {
+                    dispatch_override =
+                        Some((forms, ArgumentScope::new(start, projection.args.len())));
+                    error = None;
+                }
+            }
+            Err(problem) => error = Some(problem),
+            Ok(None) => {}
+        }
+        if root_options
+            .as_ref()
+            .is_some_and(|options| options.error.is_some())
+            && dispatch_override.is_none()
+        {
+            error = Some(BindError::IndeterminateDispatch {
+                command_name: profile.primary_name().to_owned(),
+                reason: "global option ownership does not determine the dispatch boundary".into(),
+            });
+        }
+    }
 
     while let Some((index, text)) = next_unconsumed_operand_from(
         projection,
@@ -1133,7 +1258,7 @@ fn scan_subcommand_path<'p, 'a>(
             node_options.as_ref()
         },
     ) {
-        if error.is_some() {
+        if error.is_some() || dispatch_override.is_some() {
             break;
         }
         let argument = &projection.args[index];
@@ -1165,6 +1290,17 @@ fn scan_subcommand_path<'p, 'a>(
         scan_start = index + 1;
 
         let node_scope = ArgumentScope::new(scan_start, projection.args.len());
+        match dispatch_override_forms(profile, projection, path.len(), scan_start) {
+            Ok(Some(forms)) => {
+                dispatch_override = Some((forms, node_scope));
+                break;
+            }
+            Err(problem) => {
+                error = Some(problem);
+                break;
+            }
+            Ok(None) => {}
+        }
         node_options = scoped_options(
             node.option_scope,
             node.option_matching,
@@ -1207,6 +1343,58 @@ fn scan_subcommand_path<'p, 'a>(
         children = node.children.as_slice();
     }
 
+    if let Some((rule, scope)) = dispatch_override {
+        node_options = scoped_options(
+            rule.option_scope,
+            profile.option_matching,
+            profile.option_prefixes,
+            projection,
+            scope,
+            &rule.modifiers,
+            &rule.forms,
+            &[],
+            None,
+            None,
+            &[],
+        );
+        if let Err(problem) = ensure_option_scope(profile.primary_name(), node_options.as_ref()) {
+            error = Some(BindError::IndeterminateDispatch {
+                command_name: profile.primary_name().to_owned(),
+                reason: problem.to_string(),
+            });
+        } else if node_options
+            .as_ref()
+            .is_some_and(|options| options.ownership_unresolved)
+        {
+            error = Some(BindError::IndeterminateDispatch {
+                command_name: profile.primary_name().to_owned(),
+                reason: "pre-dispatch option ownership is unresolved".into(),
+            });
+        }
+        let modifiers = if let Some(options) = &node_options {
+            match_owned_modifiers(
+                &rule.modifiers,
+                options,
+                &selected_modifiers,
+                profile.option_matching,
+            )
+        } else {
+            match_scoped_modifiers(
+                &rule.modifiers,
+                projection,
+                scope,
+                Some(&scan_state.consumed),
+                &selected_modifiers,
+                profile.option_matching,
+            )
+        };
+        selected_modifiers.extend(modifiers.iter().cloned());
+        scan_state.set_modifier_context(&selected_modifiers);
+        scan_state.set_option_scope(node_options.as_ref());
+        option_terminators.extend(node_options.as_ref().and_then(|options| options.terminator));
+        consume_selected_modifiers_for_scanning(&modifiers, &mut scan_state);
+    }
+
     SubcommandScan {
         root_options,
         node_options,
@@ -1216,6 +1404,7 @@ fn scan_subcommand_path<'p, 'a>(
         path,
         scan_start,
         selected_node,
+        dispatch_override,
         error,
     }
 }
@@ -1235,12 +1424,52 @@ fn select_subcommand_invocation<'a>(
         path,
         scan_start,
         selected_node,
+        dispatch_override,
         error,
     } = scan_subcommand_path(profile, projection, subcommands);
     if let Some(error) = error {
         return Err(error);
     }
     let root_scope = ArgumentScope::for_invocation(projection);
+
+    if let Some((rule, scope)) = dispatch_override {
+        let form = select_form_for_scope(
+            profile.primary_name(),
+            &rule.forms,
+            projection,
+            scope,
+            &scan_state.consumed,
+            &selected_modifiers,
+            &path,
+            node_options.as_ref(),
+            profile.option_matching,
+        )
+        .map_err(|problem| BindError::IndeterminateDispatch {
+            command_name: profile.primary_name().to_owned(),
+            reason: problem.to_string(),
+        })?;
+        return Ok(InvocationSelection {
+            option_matching: profile.option_matching,
+            form,
+            form_scope: scope,
+            modifiers: selected_modifiers,
+            subcommand_path: path,
+            residuals: if node_options
+                .as_ref()
+                .is_some_and(|options| options.ownership_unresolved)
+            {
+                vec![Residual::new(
+                    ResidualKind::UnboundControlSurface,
+                    ResidualSurface::Control,
+                    "pre-dispatch argument ownership is unresolved",
+                )]
+            } else {
+                Vec::new()
+            },
+            option_scope: node_options,
+            option_terminators,
+        });
+    }
 
     let Some(node) = selected_node else {
         if !profile.forms.is_empty() {
@@ -2226,6 +2455,12 @@ fn emit_effects(
             },
             EffectTarget::ImplicitInput(source) => bound_implicit_sources.contains(source),
             EffectTarget::Dispatch(dispatch) => match &dispatch.command {
+                // An empty native job template means that input records ARE
+                // programs, not that the tool no longer dispatches anything.
+                // Retain the grammar for its projector even with no bound argv.
+                crate::DispatchCommandSource::CommandString {
+                    syntax: crate::DispatchStringSyntax::GnuParallel, ..
+                } => true,
                 crate::DispatchCommandSource::Slot(slot)
                 | crate::DispatchCommandSource::WhitespaceArgv(slot)
                 | crate::DispatchCommandSource::CommandString { slot, .. } => {

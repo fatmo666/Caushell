@@ -277,6 +277,48 @@ pub struct StreamContract {
     pub stdout_from_payload: bool,
 }
 
+/// Declarative stdout extent; resolved from owned parameter occurrences.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StreamGrowthContract {
+    Continuous {
+        #[serde(default)]
+        records: caushell_types::StreamRecordFraming,
+        #[serde(default)]
+        required_modifier: Option<String>,
+        #[serde(default)]
+        finite_count_slots: Vec<String>,
+    },
+    PreserveRecords {
+        #[serde(default)]
+        empty_slots: Vec<String>,
+    },
+    Finite,
+    Prefix {
+        default_count: u64,
+        default_unit: StreamCountUnit,
+        counters: Vec<StreamCountSlot>,
+        #[serde(default)]
+        nul_modifier: Option<String>,
+        #[serde(default)]
+        record_bound_empty_slots: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamCountUnit {
+    Bytes,
+    Records,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamCountSlot {
+    pub slot: String,
+    pub unit: StreamCountUnit,
+}
+
 /// A positive guarantee about complete stdout records, separate from data
 /// provenance. `path_list` alone makes no claim about record boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -968,6 +1010,7 @@ pub struct Form {
     pub implicit_inputs: Vec<ImplicitInput>,
     pub effects: Vec<Effect>,
     pub stream_contract: Option<StreamContract>,
+    pub stdout_growth: Option<StreamGrowthContract>,
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
     pub extensions: ExtensionMap,
@@ -985,6 +1028,7 @@ impl Form {
             implicit_inputs: Vec::new(),
             effects: Vec::new(),
             stream_contract: None,
+            stdout_growth: None,
             stdout_records: None,
             stdout_scalar: None,
             extensions: ExtensionMap::new(),
@@ -1327,6 +1371,8 @@ pub enum CatastrophicSemanticClass {
 pub enum HostRiskSemanticClass {
     MoveSourcePath,
     PathContentOverwriteTarget,
+    /// Deliberate destruction of existing file contents, not an ordinary edit.
+    FileContentErasureTarget,
     PartitionLayoutMutationTarget,
     PartitionTableStateMutationTarget,
     PartitionTableSessionTarget,
@@ -1855,6 +1901,9 @@ pub struct BoundInvocation {
     pub form_id: FormId,
     /// Retained after form selection for command-independent stream projection.
     pub stream_contract: Option<StreamContract>,
+    pub stdout_growth: Option<StreamGrowthContract>,
+    /// Whole-argv accounting for extent guarantees, not a global risk policy.
+    pub stdout_growth_complete: bool,
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
     pub bound_parameters: Vec<BoundParameter>,
@@ -1903,6 +1952,8 @@ impl BoundInvocation {
             subcommand_path: Vec::new(),
             form_id,
             stream_contract: None,
+            stdout_growth: None,
+            stdout_growth_complete: false,
             stdout_records: None,
             stdout_scalar: None,
             bound_parameters: Vec::new(),
@@ -1979,7 +2030,19 @@ pub struct CommandProfile {
     /// prefix. Tested before option decoding; it does not rewrite argv.
     pub option_operand_matcher: Option<OptionOperandMatcher>,
     pub subcommands: Option<SubcommandTree>,
+    pub dispatch_overrides: Vec<DispatchOverride>,
     pub extensions: ExtensionMap,
+}
+
+/// Depth zero precedes root dispatch; each selected subcommand adds one.
+/// Only the first argv word at that boundary can select these forms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchOverride {
+    pub subcommand_depth: usize,
+    pub first_arguments: Vec<String>,
+    pub forms: Vec<Form>,
+    pub modifiers: Vec<Modifier>,
+    pub option_scope: OptionScopePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2026,6 +2089,7 @@ impl CommandProfile {
             exact_option_words: Vec::new(),
             option_operand_matcher: None,
             subcommands: None,
+            dispatch_overrides: Vec::new(),
             extensions: ExtensionMap::new(),
         }
     }

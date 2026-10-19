@@ -93,6 +93,7 @@ mutation_path_exemptions:
 | `policy.rules.privilege_boundary` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的执行身份或权限切换 |
 | `policy.rules.network_upload` | `allow` / `need_approval` / `deny` | `need_approval` | 无法静态限定为回环目标的已声明数据上传 |
 | `policy.rules.file_deletion` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的文件系统删除，不因工作区或临时目录位置豁免 |
+| `policy.rules.file_content_erasure` | `allow` / `need_approval` / `deny` | `need_approval` | 声明的文件原内容销毁，不因工作区或临时目录位置豁免 |
 
 上传护栏消费已有的 `upload_target` 端点声明，包括嵌套调用和保留的部分解析效果，
 不要求源文件敏感。普通下载、查询及 dry-run 不改判为上传；显式请求数据范围中

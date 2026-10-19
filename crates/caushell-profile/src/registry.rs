@@ -240,6 +240,13 @@ fn profile_has_effect(profile: &CommandProfile, kind: crate::EffectKind) -> bool
     }
     profile.forms.iter().any(|f| effects(&f.effects, kind))
         || profile.modifiers.iter().any(|m| effects(&m.effects, kind))
+        || profile.dispatch_overrides.iter().any(|rule| {
+            rule.forms.iter().any(|form| effects(&form.effects, kind))
+                || rule
+                    .modifiers
+                    .iter()
+                    .any(|modifier| effects(&modifier.effects, kind))
+        })
         || effects(&profile.selection_failure_effects, kind)
         || profile
             .subcommands
