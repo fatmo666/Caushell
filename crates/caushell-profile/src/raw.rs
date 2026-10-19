@@ -481,6 +481,7 @@ pub struct RawParameter {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RawValueProjection {
     Identity,
+    Unknown,
     DescriptorPath,
     TomlString {
         key: String,
@@ -895,6 +896,8 @@ pub struct RawEffect {
     #[serde(default)]
     pub input_scope: Option<crate::EndpointInputScope>,
     #[serde(default)]
+    pub path_list: Option<crate::PathListContract>,
+    #[serde(default)]
     pub state_operation: Option<caushell_types::StateOperation>,
     pub kind: RawEffectKind,
     pub target: RawEffectTarget,
@@ -1179,6 +1182,8 @@ pub enum RawEffectTarget {
         #[serde(default)]
         environment: Vec<String>,
         #[serde(default)]
+        clear_environment: bool,
+        #[serde(default)]
         clear_environment_when: Vec<String>,
         #[serde(default)]
         unset_environment: Vec<String>,
@@ -1192,6 +1197,8 @@ pub enum RawEffectTarget {
         unknown_environment_from: Vec<RawEnvironmentValueSource>,
         #[serde(default)]
         unknown_environment_names: Vec<String>,
+        #[serde(default)]
+        generated_environment: Vec<crate::GeneratedEnvironment>,
         #[serde(default)]
         stdin_from_parent: bool,
         #[serde(default)]

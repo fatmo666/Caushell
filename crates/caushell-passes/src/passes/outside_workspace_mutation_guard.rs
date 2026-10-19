@@ -61,6 +61,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                             Some(record.command_index()),
                             resolution_cwd,
                             home,
+                            Some(record.bindings()),
                         )
                     } else {
                         collect_effect_mutation_targets(record, resolution_cwd, home)
@@ -171,9 +172,13 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
             .any(|s| s.is_request_scope)
             && let Some(parsed) = ctx.parsed_command()
         {
-            for target in
-                collect_redirection_mutation_targets(parsed, None, &fallback_cwd, home.as_deref())
-            {
+            for target in collect_redirection_mutation_targets(
+                parsed,
+                None,
+                &fallback_cwd,
+                home.as_deref(),
+                None,
+            ) {
                 add_reason_for_target(
                     &mut reasons,
                     target.operation,
@@ -211,8 +216,9 @@ fn collect_redirection_mutation_targets(
     command_index: Option<usize>,
     cwd: &str,
     home: Option<&str>,
+    bindings: Option<&caushell_profile::SessionBindings>,
 ) -> Vec<MutationTargetCandidate> {
-    collect_redirection_path_facts(parsed, cwd, home)
+    collect_redirection_path_facts(parsed, cwd, home, bindings)
         .into_iter()
         .filter(|path| redirection_parent_command_index(parsed, &path.fact) == command_index)
         .filter(|path| {

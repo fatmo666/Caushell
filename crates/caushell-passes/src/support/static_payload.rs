@@ -325,6 +325,9 @@ pub(crate) fn static_stdin_evidence_for_scoped_command(
                 ) else {
                     return StaticStreamEvidence::unknown();
                 };
+                if path == "/dev/null" {
+                    return StaticStreamEvidence::known(String::new());
+                }
                 match known_literal_path_content_before_scoped_command_with_depth(
                     session,
                     parsed,
@@ -421,6 +424,30 @@ fn scoped_stdout_evidence(
     let Some(command) = parsed.commands.get(command_index) else {
         return StaticStreamEvidence::unknown();
     };
+    let Some(name @ ("printf" | "echo" | "cat" | "base64" | "bash" | "sh")) =
+        command.command_name.as_deref()
+    else {
+        return StaticStreamEvidence::unknown();
+    };
+    {
+        let visible = bindings.apply_before(
+            bindings.base().clone(),
+            parsed,
+            command.span.start_byte,
+            sequence_no,
+        );
+        let mut aliases = session
+            .summary()
+            .alias_bindings()
+            .map(|binding| (binding.name.clone(), binding.clone()))
+            .collect();
+        for earlier in parsed.commands.iter().take(command_index) {
+            super::apply_alias_command(&mut aliases, earlier, sequence_no);
+        }
+        if visible.function_binding(name).is_some() || aliases.contains_key(name) {
+            return StaticStreamEvidence::unknown();
+        }
+    }
     let cwd_reliable = cwd_reliable && !scope_has_prior_directory_transition(parsed, command_index);
     if command.control_flow_span.is_some()
         || command.guarded

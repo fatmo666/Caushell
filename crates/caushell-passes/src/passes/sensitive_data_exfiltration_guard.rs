@@ -734,7 +734,9 @@ fn request_endpoint_for_artifact(
         return None;
     };
 
-    if caushell_query::endpoint_has_loopback_scope(endpoint, *endpoint_kind)
+    if endpoint
+        .as_deref()
+        .is_some_and(|address| caushell_query::endpoint_has_loopback_scope(address, *endpoint_kind))
         && !caushell_query::NetworkEndpointQuery::has_nonlocal_transport_target(graph, execution)
     {
         return None;
@@ -742,8 +744,11 @@ fn request_endpoint_for_artifact(
 
     // A fetch still sends request bytes. Only an explicit per-edge scope opts
     // it in; legacy unscoped downloads do not become unrestricted uploads.
-    (*usage == ProvenanceEndpointUsage::UploadTarget || declared_request_inputs)
-        .then(|| endpoint.clone())
+    (*usage == ProvenanceEndpointUsage::UploadTarget || declared_request_inputs).then(|| {
+        endpoint
+            .clone()
+            .unwrap_or_else(|| "unknown network endpoint".into())
+    })
 }
 
 fn find_sensitive_source(

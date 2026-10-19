@@ -7,10 +7,21 @@ use caushell_types::{
 pub struct NetworkEndpointRef<'a> {
     pub execution_node_id: &'a NodeId,
     pub command: &'a str,
-    pub endpoint: &'a str,
+    pub endpoint: Option<&'a str>,
     pub kind: ProvenanceEndpointKind,
     pub usage: ProvenanceEndpointUsage,
     pub input_scope: Option<(Vec<String>, bool)>,
+}
+
+impl NetworkEndpointRef<'_> {
+    pub fn has_loopback_scope(&self) -> bool {
+        self.endpoint
+            .is_some_and(|address| endpoint_has_loopback_scope(address, self.kind))
+    }
+
+    pub fn description(&self) -> &str {
+        self.endpoint.unwrap_or("unknown network endpoint")
+    }
 }
 
 pub struct NetworkEndpointQuery;
@@ -21,7 +32,7 @@ impl NetworkEndpointQuery {
     pub fn has_nonlocal_transport_target(graph: &dyn GraphRead, execution: &NodeId) -> bool {
         graph.outgoing_edges(execution).any(|edge| edge.kind == EdgeKind::Consumes
             && matches!(&edge.semantics, Some(caushell_types::ProvenanceEdgeSemantics::Consume {consume_kind: caushell_types::ProvenanceConsumeKind::NetworkEndpoint, ..}))
-            && graph.get_node(&edge.to).is_some_and(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact {artifact: ProvenanceArtifact::NetworkEndpoint {endpoint, endpoint_kind, usage: ProvenanceEndpointUsage::TransportTarget}} if !endpoint_has_loopback_scope(endpoint, *endpoint_kind))))
+            && graph.get_node(&edge.to).is_some_and(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact {artifact: ProvenanceArtifact::NetworkEndpoint {endpoint, endpoint_kind, usage: ProvenanceEndpointUsage::TransportTarget}} if !endpoint.as_deref().is_some_and(|address| endpoint_has_loopback_scope(address, *endpoint_kind)))))
     }
     /// Walk only supplied execution units, including partial and derived calls.
     pub fn for_execution_units<'a>(
@@ -71,7 +82,7 @@ impl NetworkEndpointQuery {
                 result.push(NetworkEndpointRef {
                     execution_node_id: &node.id,
                     command,
-                    endpoint,
+                    endpoint: endpoint.as_deref(),
                     kind: *endpoint_kind,
                     usage: *usage,
                     input_scope: match &edge.semantics {
@@ -213,9 +224,9 @@ fn url_host(endpoint: &str) -> Option<&str> {
     }
     // Local-file/custom schemes do not establish loopback network transport.
     if ![
-        "http", "https", "ftp", "ftps", "sftp", "scp", "ssh", "rsync", "tftp", "ws", "wss", "smtp", "gopher", "gophers",
-        "smtps", "imap", "imaps", "pop3", "pop3s", "ldap", "ldaps", "rtsp", "socks4", "socks4a",
-        "socks5", "socks5h",
+        "http", "https", "ftp", "ftps", "sftp", "scp", "ssh", "rsync", "tftp", "ws", "wss", "smtp",
+        "gopher", "gophers", "smtps", "imap", "imaps", "pop3", "pop3s", "ldap", "ldaps", "rtsp",
+        "socks4", "socks4a", "socks5", "socks5h",
     ]
     .iter()
     .any(|known| scheme.eq_ignore_ascii_case(known))

@@ -584,8 +584,34 @@ impl SessionBindings {
         self.set_environment_value(name, value);
     }
 
+    pub fn set_child_environment_domain(
+        &mut self,
+        name: &str,
+        domain: Option<caushell_types::RuntimeArgumentDomain>,
+    ) {
+        self.set_child_environment_value(
+            name,
+            SessionValue::opaque_dynamic("tool-generated environment value"),
+        );
+        if let Some(domain) = domain {
+            self.argument_domains.insert(name.into(), domain);
+        }
+    }
+
     pub fn enter_child_shell_environment(&mut self) {
-        self.argument_domains.clear();
+        let exported: std::collections::BTreeSet<_> = self
+            .argument_domains
+            .keys()
+            .filter(|name| {
+                self.get(name).is_some_and(|binding| {
+                    self.child_environment.get(*name).and_then(Option::as_ref)
+                        == Some(binding.value)
+                })
+            })
+            .cloned()
+            .collect();
+        self.argument_domains
+            .retain(|name, _| exported.contains(name));
         self.in_function_scope = false;
         // Function export is deliberately not modeled. Ordinary shell
         // functions must not leak into a new interpreter's namespace.
@@ -1359,16 +1385,26 @@ pub fn materialize_projected_invocation(
             .unwrap_or(std::slice::from_ref(original))
         {
             if let Some(domain) = materialize_argument_domain(arg, bindings) {
+                let source = if matches!(
+                    domain,
+                    caushell_types::RuntimeArgumentDomain::GeneratedFileName { .. }
+                ) {
+                    ImplicitInputSource::InheritedEnvironment
+                } else {
+                    ImplicitInputSource::ShellIteration
+                };
                 let mut argument = arg.clone();
-                argument.implicit_input_source =
-                    Some(caushell_types::ImplicitInputSource::ShellIteration);
+                argument.implicit_input_source = Some(match source {
+                    ImplicitInputSource::InheritedEnvironment => {
+                        caushell_types::ImplicitInputSource::InheritedEnvironment
+                    }
+                    _ => caushell_types::ImplicitInputSource::ShellIteration,
+                });
                 argument.runtime_argument_domain = Some(domain);
                 argument.runtime_data = true;
                 argument.node_kind = "runtime_scalar".into();
                 args.push(argument);
-                arg_resolutions.push(ValueMaterialization::RequiresImplicitInput {
-                    source: ImplicitInputSource::ShellIteration,
-                });
+                arg_resolutions.push(ValueMaterialization::RequiresImplicitInput { source });
                 continue;
             }
             for materialized in materialize_argument_fields(arg, bindings) {
@@ -1428,17 +1464,22 @@ pub fn materialize_projected_invocation(
     }
 }
 
-fn materialize_argument_domain(
+pub fn materialize_argument_domain(
     arg: &ProjectedArg,
     bindings: &SessionBindings,
 ) -> Option<caushell_types::RuntimeArgumentDomain> {
-    // A loop assigns one item, but an unquoted use can split/glob it again.
-    // Only whole double-quoted scalars carry a one-field domain here.
+    // Unquoted fields need a positive no-splitting/no-globbing proof.
+    let whole_double_quoted = arg.quoted && arg.node_kind == "string";
+    let ordinary_field_separators = bindings.get("IFS").is_none_or(|binding| {
+        matches!(binding.value, SessionValue::ExactScalar(value) if value.chars().all(char::is_whitespace))
+    });
     if bindings.argument_domains.is_empty()
         || arg.text.len() > 4096
         || arg.runtime_data
-        || !arg.quoted
-        || arg.node_kind != "string"
+        || !matches!(
+            arg.node_kind.as_str(),
+            "string" | "word" | "simple_expansion" | "expansion" | "concatenation"
+        )
         || arg.implicit_input_source.is_some()
     {
         return None;
@@ -1446,20 +1487,35 @@ fn materialize_argument_domain(
     if let Some(ShellParameterReference::Variable(name)) =
         exact_shell_parameter_reference(&arg.text)
     {
-        return bindings.argument_domain(&name).cloned();
+        return bindings
+            .argument_domain(&name)
+            .filter(|domain| {
+                whole_double_quoted
+                    || ordinary_field_separators && domain.unquoted_generated_field()
+            })
+            .cloned();
     }
     const MARKER: &str = "__CAUSHELL_ABSTRACT_VALUE__";
     if arg.text.contains(MARKER) {
         return None;
     }
     for (name, domain) in &bindings.argument_domains {
+        if !whole_double_quoted
+            && (!ordinary_field_separators || !domain.unquoted_generated_field())
+        {
+            continue;
+        }
         let mut proof_bindings = bindings.clone();
         proof_bindings.insert_exact_scalar(name, MARKER);
         let Some((template, refs)) = materialize_shell_word_with_references(
             &arg.text,
             &proof_bindings,
             ShellWordMode::PositionalArgument,
-            ShellWordQuote::Double,
+            if whole_double_quoted {
+                ShellWordQuote::Double
+            } else {
+                ShellWordQuote::None
+            },
             false,
         ) else {
             continue;
@@ -1467,7 +1523,10 @@ fn materialize_argument_domain(
         if refs != [ShellParameterReference::Variable(name.clone())] {
             continue;
         }
-        return Some(domain.substitute_into(&template, MARKER));
+        let result = domain.substitute_into(&template, MARKER);
+        if whole_double_quoted || result.unquoted_generated_field() {
+            return Some(result);
+        }
     }
     None
 }

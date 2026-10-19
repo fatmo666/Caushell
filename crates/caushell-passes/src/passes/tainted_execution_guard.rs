@@ -714,9 +714,12 @@ fn taint_source_artifact(
     };
 
     match artifact {
-        ProvenanceArtifact::NetworkEndpoint { endpoint, .. } => {
-            Some((TaintSourceKindEvidence::NetworkEndpoint, endpoint.clone()))
-        }
+        ProvenanceArtifact::NetworkEndpoint { endpoint, .. } => Some((
+            TaintSourceKindEvidence::NetworkEndpoint,
+            endpoint
+                .clone()
+                .unwrap_or_else(|| "unknown network endpoint".into()),
+        )),
         ProvenanceArtifact::ImportedPackage { .. } => None,
         ProvenanceArtifact::InheritedEnvValue { name, state, .. } => match state {
             caushell_types::ProvenanceVariableValueState::RuntimeInput { source, capture } => {
@@ -1081,7 +1084,7 @@ mod tests {
                 "artifact:network-endpoint:url:fetch_source:https://example.test/payload.sh",
             ),
             ProvenanceArtifact::NetworkEndpoint {
-                endpoint: "https://example.test/payload.sh".to_string(),
+                endpoint: Some("https://example.test/payload.sh".to_string()),
                 endpoint_kind: ProvenanceEndpointKind::Url,
                 usage: ProvenanceEndpointUsage::FetchSource,
             },

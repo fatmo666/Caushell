@@ -13,6 +13,23 @@ pub(crate) struct RuntimePathBounds<'a> {
 pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<RuntimePathBounds<'_>> {
     match domain {
         RuntimeArgumentDomain::Unbounded | RuntimeArgumentDomain::TextTemplate { .. } => None,
+        RuntimeArgumentDomain::GeneratedFileName { prefix, suffix } => {
+            if prefix.len() + suffix.len() > 4096
+                || prefix.contains('\0')
+                || suffix.contains(['/', '\0'])
+            {
+                return None;
+            }
+            let parent = match prefix.rsplit_once('/') {
+                Some(("", _)) => "/",
+                Some((parent, _)) => parent,
+                None => ".",
+            };
+            Some(RuntimePathBounds {
+                roots: Cow::Owned(vec![directory_anchor(parent.into())]),
+                may_escape: false,
+            })
+        }
         RuntimeArgumentDomain::PathSet { roots, may_escape } => Some(RuntimePathBounds {
             roots: Cow::Borrowed(roots),
             may_escape: *may_escape,
@@ -93,6 +110,37 @@ mod tests {
             may_escape: false,
             prefix: prefix.into(),
             suffix: suffix.into(),
+        }
+    }
+
+    #[test]
+    fn generated_filename_bounds_cover_every_name_without_claiming_an_exact_path() {
+        for (prefix, expected) in [
+            ("x", "./"),
+            ("", "./"),
+            ("..", "./"),
+            ("cache/p_", "cache/"),
+            ("/opt/out_", "/opt/"),
+            ("./cache/../p_", "./cache/../"),
+            ("/opt/", "/opt/"),
+        ] {
+            let domain = RuntimeArgumentDomain::GeneratedFileName {
+                prefix: prefix.into(),
+                suffix: ".gz".into(),
+            };
+            assert_eq!(
+                runtime_path_bounds(&domain).unwrap().roots.as_ref(),
+                &[expected.to_string()]
+            );
+            let derived = domain.substitute_into("../{}", "{}");
+            assert!(runtime_path_bounds(&derived).is_some());
+        }
+        for suffix in ["/../../out", "/child", "\0"] {
+            let domain = RuntimeArgumentDomain::GeneratedFileName {
+                prefix: "x".into(),
+                suffix: suffix.into(),
+            };
+            assert!(runtime_path_bounds(&domain).is_none());
         }
     }
 

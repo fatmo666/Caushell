@@ -70,10 +70,8 @@ fn collect_endpoint_provenance_mutations(
                     if !slots.contains(&endpoint_slot) {
                         slots.push(endpoint_slot);
                     }
-                    caushell_types::ProvenanceDomainLabel::EndpointInputScope {
-                        slots,
-                        stdin: scope.stdin && bound_consumes_stdin(bound, &scope.slots),
-                    }
+                    let stdin = scope.stdin && bound_consumes_stdin(bound, &slots);
+                    caushell_types::ProvenanceDomainLabel::EndpointInputScope { slots, stdin }
                 }),
             ));
         }
@@ -119,24 +117,26 @@ fn parameter_endpoint_provenance_mutations(
 ) -> Vec<PendingMutation> {
     let mut mutations = Vec::new();
 
-    for value in parameter.semantic_values() {
-        let text = match value {
+    for (index, value) in parameter.semantic_values().enumerate() {
+        let endpoint = match value {
             caushell_profile::SemanticValueRef::Original(BoundValue::Argument { text, .. }) => {
-                text.clone()
+                Some(text.clone())
             }
-            caushell_profile::SemanticValueRef::Projected { value, source } => {
-                match &value.resolution {
-                    caushell_profile::SemanticValueResolution::Known(text) => text.clone(),
-                    // Keep the original unresolved operand expression, as
-                    // legacy endpoint parameters do. Unknown fetch addresses
-                    // must not erase the response's network origin.
-                    _ => match source {
-                        BoundValue::Argument { text, .. } => text.clone(),
-                        _ => continue,
-                    },
+            caushell_profile::SemanticValueRef::Projected { value, source } => match &value
+                .resolution
+            {
+                caushell_profile::SemanticValueResolution::Known(text) => Some(text.clone()),
+                // Only identity projections may retain an address expression;
+                // a source/container cannot stand in for its unknown value.
+                caushell_profile::SemanticValueResolution::Unknown(_) if value.preserves_source => {
+                    match source {
+                        BoundValue::Argument { text, .. } => Some(text.clone()),
+                        BoundValue::ImplicitInput { .. } => None,
+                    }
                 }
-            }
-            _ => continue,
+                caushell_profile::SemanticValueResolution::Unknown(_) => None,
+            },
+            caushell_profile::SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
         };
 
         let endpoint_kind = provenance_endpoint_kind(endpoint_semantic.kind);
@@ -144,9 +144,18 @@ fn parameter_endpoint_provenance_mutations(
 
         mutations.push(PendingMutation::AddProvenanceArtifact {
             source_node_id: source_node_id.clone(),
-            node_id: provenance_endpoint_artifact_node_id(&text, endpoint_kind, usage),
+            node_id: match &endpoint {
+                Some(text) => provenance_endpoint_artifact_node_id(text, endpoint_kind, usage),
+                None => NodeId::new(format!(
+                    "artifact:unknown-network-endpoint:{}:{}:{}:{}:{index}",
+                    endpoint_kind_slug(endpoint_kind),
+                    endpoint_usage_slug(usage),
+                    source_node_id.0,
+                    parameter.name.as_str(),
+                )),
+            },
             artifact: ProvenanceArtifact::NetworkEndpoint {
-                endpoint: text.clone(),
+                endpoint,
                 endpoint_kind,
                 usage,
             },
@@ -271,6 +280,7 @@ mod tests {
                 "request_header_operand",
                 "request_header_file",
                 "request_value",
+                "request_method",
                 "query_operand",
                 "query_file",
                 "netrc_file",
@@ -314,7 +324,7 @@ mod tests {
                         "artifact:network-endpoint:url:fetch_source:https://example.test/payload.sh"
                     ),
                     artifact: ProvenanceArtifact::NetworkEndpoint {
-                        endpoint: "https://example.test/payload.sh".to_string(),
+                        endpoint: Some("https://example.test/payload.sh".to_string()),
                         endpoint_kind: ProvenanceEndpointKind::Url,
                         usage: ProvenanceEndpointUsage::FetchSource,
                     },
@@ -325,7 +335,9 @@ mod tests {
                         normalized_command_name: Some("curl".to_string()),
                         domain_label: Some(curl_fetch_request_scope()),
                     },
-                })
+                }),
+            "{:#?}",
+            ctx.pending_mutations()
         );
     }
 
@@ -349,7 +361,7 @@ mod tests {
                         "artifact:network-endpoint:url:fetch_source:https://example.test/payload.sh"
                     ),
                     artifact: ProvenanceArtifact::NetworkEndpoint {
-                        endpoint: "https://example.test/payload.sh".to_string(),
+                        endpoint: Some("https://example.test/payload.sh".to_string()),
                         endpoint_kind: ProvenanceEndpointKind::Url,
                         usage: ProvenanceEndpointUsage::FetchSource,
                     },
@@ -360,7 +372,9 @@ mod tests {
                         normalized_command_name: Some("curl".to_string()),
                         domain_label: Some(curl_fetch_request_scope()),
                     },
-                })
+                }),
+            "{:#?}",
+            ctx.pending_mutations()
         );
     }
 
@@ -371,8 +385,104 @@ mod tests {
             PendingMutation::AddProvenanceArtifact { node_id, artifact: ProvenanceArtifact::NetworkEndpoint {
                 endpoint, endpoint_kind: ProvenanceEndpointKind::EmailAddress,
                 usage: ProvenanceEndpointUsage::UploadTarget,
-            }, .. } if endpoint == "receiver@example.test"
+            }, .. } if endpoint.as_deref() == Some("receiver@example.test")
                 && node_id.0 == "artifact:network-endpoint:email_address:upload_target:receiver@example.test"
         )));
+    }
+
+    #[test]
+    fn implicit_endpoint_is_unknown_not_absent_and_is_scoped_to_its_consumer() {
+        use caushell_profile::{
+            BoundParameter, BoundValue, EndpointKind, EndpointSemantic, EndpointUsage,
+            ImplicitInputSource, SemanticType, SlotName,
+        };
+        let semantic = EndpointSemantic {
+            kind: EndpointKind::Url,
+            usage: EndpointUsage::FetchSource,
+        };
+        let mut parameter =
+            BoundParameter::new(SlotName::new("addresses"), SemanticType::Endpoint(semantic))
+                .with_value(BoundValue::implicit_input(ImplicitInputSource::StdinData));
+        let first = super::parameter_endpoint_provenance_mutations(
+            &NodeId::new("command:a:1:0"),
+            "fetch-list",
+            &parameter,
+            semantic,
+            None,
+        );
+        let second = super::parameter_endpoint_provenance_mutations(
+            &NodeId::new("command:a:2:0"),
+            "fetch-list",
+            &parameter,
+            semantic,
+            None,
+        );
+        let node_id = |mutations: &[PendingMutation]| match &mutations[0] {
+            PendingMutation::AddProvenanceArtifact {
+                node_id,
+                artifact: ProvenanceArtifact::NetworkEndpoint { endpoint: None, .. },
+                ..
+            } => node_id.clone(),
+            other => panic!("{other:#?}"),
+        };
+        assert_eq!(first.len(), 1);
+        assert_ne!(node_id(&first), node_id(&second));
+        parameter.projected_values = Some(Vec::new());
+        assert!(
+            super::parameter_endpoint_provenance_mutations(
+                &NodeId::new("command:a:3:0"),
+                "fetch-list",
+                &parameter,
+                semantic,
+                None
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_identity_projections_can_retain_the_source_address_expression() {
+        use caushell_profile::*;
+        let semantic = EndpointSemantic {
+            kind: EndpointKind::Url,
+            usage: EndpointUsage::FetchSource,
+        };
+        let source = BoundValue::argument(
+            "http://[::1]:8765/",
+            false,
+            caushell_parse::SourceSpan {
+                start_byte: 0,
+                end_byte: 0,
+                start_row: 0,
+                end_row: 0,
+                start_column: 0,
+                end_column: 0,
+            },
+            ArgumentBindingSource::RemainingArg,
+        );
+        let mut parameter =
+            BoundParameter::new(SlotName::new("addresses"), SemanticType::Endpoint(semantic))
+                .with_value(source);
+        for preserves_source in [false, true] {
+            parameter.projected_values = Some(vec![ProjectedSemanticValue {
+                source_index: 0,
+                preserves_source,
+                resolution: SemanticValueResolution::Unknown(
+                    ProjectionUnknownReason::DynamicArgument,
+                ),
+            }]);
+            let mutations = super::parameter_endpoint_provenance_mutations(
+                &NodeId::new("command:a:1:0"),
+                "fetch-list",
+                &parameter,
+                semantic,
+                None,
+            );
+            assert!(
+                matches!(&mutations[0], PendingMutation::AddProvenanceArtifact {
+                artifact: ProvenanceArtifact::NetworkEndpoint {endpoint, ..}, ..}
+                if endpoint.as_deref() == preserves_source.then_some("http://[::1]:8765/"))
+            );
+        }
     }
 }

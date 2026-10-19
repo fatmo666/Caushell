@@ -37,6 +37,8 @@ pub(crate) fn shell_syntax_redirections(ctx: &RunnerContext) -> Vec<ShellSyntaxR
                         index,
                         case.resolution_base(fallback),
                         home,
+                        Some(&unit.bindings),
+                        scope.parsed.shell_kind,
                     ) else {
                         continue;
                     };

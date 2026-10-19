@@ -11,9 +11,10 @@ mod staged;
 pub use context::{
     BlockDeviceSearchScope, CatastrophicSearchRootScope, CwdPathContext, DecisionProposal,
     EffectiveCwd, ExecutionUnitInheritedScope, ExecutionUnitOriginKind, ExecutionUnitOriginLocator,
-    ExecutionUnitResolveRecord, NativeTemplateInput, ParsedCommandRef, ParsedCommandScope,
-    ProcessSubstitutionLocationKind, ProcessSubstitutionOuterRelation, RunnerContext,
-    ShellRedirectionScope, ShellRedirectionUnit, ShellSourceCwdAnchor, UnresolvedDispatchRecord,
+    ExecutionUnitResolveRecord, NativeArgumentInput, NativeInputOrigin, NativeTemplateInput,
+    ParsedCommandRef, ParsedCommandScope, ProcessSubstitutionLocationKind,
+    ProcessSubstitutionOuterRelation, RunnerContext, ShellRedirectionScope, ShellRedirectionUnit,
+    ShellSourceCwdAnchor, UnresolvedDispatchRecord,
 };
 pub use mutation::{MutationGraphError, PendingMutation};
 pub use nested::{

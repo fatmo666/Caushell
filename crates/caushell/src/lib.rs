@@ -4534,7 +4534,7 @@ policy:
                             "artifact:network-endpoint:url:fetch_source:https://example.test/payload.sh"
                                 .to_string(),
                         artifact: ProvenanceArtifact::NetworkEndpoint {
-                            endpoint: "https://example.test/payload.sh".to_string(),
+                            endpoint: Some("https://example.test/payload.sh".to_string()),
                             endpoint_kind: caushell_types::ProvenanceEndpointKind::Url,
                             usage: caushell_types::ProvenanceEndpointUsage::FetchSource,
                         }

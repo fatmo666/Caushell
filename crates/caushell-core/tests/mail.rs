@@ -244,9 +244,9 @@ fn graph_records_email_destination_without_url_or_file_coercion_and_roundtrips()
     for address in ["receiver@example.test", "other@example.test"] {
         assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint {
             endpoint, endpoint_kind: ProvenanceEndpointKind::EmailAddress, usage: ProvenanceEndpointUsage::UploadTarget,
-        }} if endpoint == address)));
+        }} if endpoint.as_deref() == Some(address))));
     }
-    assert!(!graph.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, .. }} if endpoint == "./local")));
+    assert!(!graph.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, .. }} if endpoint.as_deref() == Some("./local"))));
     assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact { role: ResolvedPathRole::Write, resolution, .. } if resolution.concrete_path() == Some("/workspace/project/local"))));
     assert!(graph.edges().iter().any(|e| e.kind == EdgeKind::Consumes));
     assert!(graph.edges().iter().any(|e| e.kind == EdgeKind::Produces));

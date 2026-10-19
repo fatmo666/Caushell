@@ -240,7 +240,7 @@ fn getent_keeps_nl2bash_queries_read_only_without_fake_operand_paths() {
         );
         assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact {resolution, ..} if resolution.concrete_path() == Some("/etc/nsswitch.conf"))), "{command}");
         if command.contains("hosts") {
-            assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact {artifact: ProvenanceArtifact::NetworkEndpoint {endpoint, ..}} if endpoint == "example.test")), "{command}");
+            assert!(graph.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact {artifact: ProvenanceArtifact::NetworkEndpoint {endpoint, ..}} if endpoint.as_deref() == Some("example.test"))), "{command}");
         }
     }
 }

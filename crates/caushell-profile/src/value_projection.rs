@@ -32,6 +32,11 @@ pub fn project_value(
     projection: &ValueProjection,
     source: &BoundValue,
 ) -> Option<SemanticValueResolution> {
+    if *projection == ValueProjection::Unknown {
+        return Some(SemanticValueResolution::Unknown(
+            ProjectionUnknownReason::DynamicArgument,
+        ));
+    }
     let BoundValue::Argument {
         text,
         quoted,
@@ -92,6 +97,11 @@ fn project_text(
     complete: bool,
 ) -> Option<SemanticValueResolution> {
     let selected = match projection {
+        ValueProjection::Unknown => {
+            return Some(SemanticValueResolution::Unknown(
+                ProjectionUnknownReason::DynamicArgument,
+            ));
+        }
         ValueProjection::DescriptorPath => {
             let descriptor = complete
                 .then(|| {

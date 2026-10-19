@@ -271,6 +271,9 @@ modifiers:
     effects:
       - kind: metadata_mutation
         target: {kind: implicit_input, source: stdin_data}
+        path_list: {separator: newline, nul_modifier: name_list_format}
+    effects_when:
+      unless_forms: [remote_archive, list_archive, extract_to_stdout, verify_archive_only, extract_archive_from_stdin, extract_archive]
 
   - id: output_options
     matcher: {kind: any_flag, flags: ["-v", "--verbose", "-V", "--dot", "--quiet"]}

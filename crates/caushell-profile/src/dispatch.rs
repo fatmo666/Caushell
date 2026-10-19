@@ -42,6 +42,7 @@ pub struct DispatchCommandCandidate {
     pub unknown_environment: bool,
     pub unknown_environment_from: Vec<crate::EnvironmentValueSource>,
     pub unknown_environment_names: Vec<String>,
+    pub generated_environment: Vec<(String, Option<caushell_types::RuntimeArgumentDomain>)>,
     pub unset_environment: Vec<DispatchArgument>,
     pub working_directory: DispatchWorkingDirectory,
     pub stdin_from_parent: bool,
@@ -247,10 +248,11 @@ pub fn collect_dispatch_command_projection(
                             &mut next_span,
                         )
                         .values,
-                        clear_environment: target
-                            .clear_environment_when
-                            .iter()
-                            .any(|m| invocation.applied_modifiers.contains(m)),
+                        clear_environment: target.clear_environment
+                            || target
+                                .clear_environment_when
+                                .iter()
+                                .any(|m| invocation.applied_modifiers.contains(m)),
                         unknown_environment: target.unknown_environment
                             || target
                                 .unknown_environment_when
@@ -258,6 +260,7 @@ pub fn collect_dispatch_command_projection(
                                 .any(|m| invocation.applied_modifiers.contains(m)),
                         unknown_environment_from: target.unknown_environment_from.clone(),
                         unknown_environment_names: target.unknown_environment_names.clone(),
+                        generated_environment: generated_environment(invocation, target),
                         unset_environment: environment_removals(invocation, target, &mut next_span),
                         working_directory: DispatchWorkingDirectory::Inherit,
                         stdin_from_parent: target.stdin_from_parent
@@ -340,10 +343,11 @@ pub fn collect_dispatch_command_projection(
             )
             .values,
             working_directory: DispatchWorkingDirectory::Inherit,
-            clear_environment: target
-                .clear_environment_when
-                .iter()
-                .any(|modifier| invocation.applied_modifiers.contains(modifier)),
+            clear_environment: target.clear_environment
+                || target
+                    .clear_environment_when
+                    .iter()
+                    .any(|modifier| invocation.applied_modifiers.contains(modifier)),
             unknown_environment: target.unknown_environment
                 || target
                     .unknown_environment_when
@@ -351,6 +355,7 @@ pub fn collect_dispatch_command_projection(
                     .any(|modifier| invocation.applied_modifiers.contains(modifier)),
             unknown_environment_from: target.unknown_environment_from.clone(),
             unknown_environment_names: target.unknown_environment_names.clone(),
+            generated_environment: generated_environment(invocation, target),
             unset_environment: environment_removals(
                 invocation,
                 target,
@@ -374,6 +379,62 @@ pub fn collect_dispatch_command_projection(
         resolved,
         unresolved,
     }
+}
+
+fn generated_environment(
+    invocation: &BoundInvocation,
+    target: &crate::DispatchTarget,
+) -> Vec<(String, Option<caushell_types::RuntimeArgumentDomain>)> {
+    // An absent optional slot uses its declared default. A present but unknown
+    // slot must never fall back to that default or the caller's environment.
+    fn scalar(invocation: &BoundInvocation, slot: &str, default: &str) -> Option<String> {
+        let Some(parameter) = parameter_for_slot(invocation, &SlotName::new(slot)) else {
+            return Some(default.into());
+        };
+        let Some(value) = parameter.semantic_values().last() else {
+            return Some(default.into());
+        };
+        let resolution = match value {
+            crate::SemanticValueRef::Projected { value, .. } => Some(value.resolution.clone()),
+            crate::SemanticValueRef::Original(source) => {
+                crate::project_value(&crate::ValueProjection::Identity, source)
+            }
+        }?;
+        match resolution {
+            crate::SemanticValueResolution::Known(value) => Some(value),
+            _ => None,
+        }
+    }
+    target
+        .generated_environment
+        .iter()
+        .map(|entry| {
+            let domain = match &entry.value {
+                crate::GeneratedEnvironmentValue::AlphanumericFileName {
+                    prefix_slot,
+                    default_prefix,
+                    suffix_slot,
+                } => (|| {
+                    let prefix = scalar(invocation, prefix_slot, default_prefix)?;
+                    let suffix = match suffix_slot {
+                        Some(slot) => scalar(invocation, slot, "")?,
+                        None => String::new(),
+                    };
+                    if prefix.len() + suffix.len() > 4096
+                        || prefix.contains('\0')
+                        || suffix.contains(['/', '\0'])
+                    {
+                        return None;
+                    }
+                    Some(caushell_types::RuntimeArgumentDomain::GeneratedFileName {
+                        prefix,
+                        suffix,
+                    })
+                })(),
+            };
+            (entry.name.clone(), domain)
+        })
+        .collect()
 }
 
 fn environment_removals(
@@ -778,6 +839,7 @@ mod tests {
     fn dispatch_effect(command: &str, argv: &[&str], environment: &[&str]) -> Effect {
         Effect {
             input_scope: None,
+            path_list: None,
             kind: EffectKind::DispatchCommand,
             path_access: None,
             path_scope: None,
@@ -788,6 +850,7 @@ mod tests {
                 argv: argv.iter().copied().map(SlotName::new).collect(),
                 argv_suffix: Vec::new(),
                 environment: environment.iter().copied().map(SlotName::new).collect(),
+                clear_environment: false,
                 clear_environment_when: Vec::new(),
                 unset_environment: Vec::new(),
                 unset_environment_when: Vec::new(),
@@ -795,6 +858,7 @@ mod tests {
                 unknown_environment: false,
                 unknown_environment_from: Vec::new(),
                 unknown_environment_names: Vec::new(),
+                generated_environment: Vec::new(),
                 stdin_from_parent: false,
                 stdin_from_tool: false,
                 stdout_to_parent: false,

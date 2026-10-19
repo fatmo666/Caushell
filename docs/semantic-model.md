@@ -349,7 +349,20 @@ Unknown and inapplicable are distinct. Empty projected paths, malformed keyed op
 
 Path facts, path-content provenance, mutation targets, derived paths and catastrophic target classification consume the same semantic view. An unknown projected root remains unknown rather than erasing a derived effect. Existing guards decide approval or denial; projection adds no risk pass or command-name special case. Each bound operand is projected independently, without imposing a command-specific repeated-option precedence rule.
 
-The declaration currently supports filesystem `path` semantics except `cwd_anchor`, not command references or payloads. Omitting it preserves the existing identity view without allocating projected values. Projection alone does not activate a Profile or discover configuration. The built-in pytest Profile combines projections with the configured-path declaration below.
+The declaration supports filesystem `path` semantics except `cwd_anchor`, not command references or payloads. Endpoints additionally support `value_projection: {kind: unknown}` when an operand identifies the source of addresses rather than the addresses themselves. That endpoint may retain a structured view of its source metadata. Omitting projection preserves the existing identity view without allocating projected values. The built-in pytest Profile combines path projections with the configured-path declaration below.
+
+Network artifacts retain directly supplied address expressions and known
+projected addresses as strings. Unavailable projected or implicit addresses use
+`endpoint: null`; no artifact means that no endpoint value applies. Existing
+address serialization remains unchanged. Unknown artifacts are scoped to the
+consuming execution, slot and value occurrence. Endpoint extraction and network
+Queries retain this distinction, including transport overrides and download
+origin tracking. Wget `-i` separates file/stdin/remote-list inputs from unknown
+download addresses; list contents are not read by the guard. Existing request-
+data and execution guards apply independently.
+Only a projection with an explicit source-identity proof may retain the
+original address expression; an unavailable nonidentity value never falls back
+to its container operand.
 
 ### Structured operands and encoded argv
 
@@ -847,6 +860,13 @@ This relationship chain connects the network source, downloaded payload, file co
 
 ### Nested dispatch and runtime arguments
 
+Native argv replacements and appended input records retain their producer,
+selected input slots and data spans. Provenance links attach to the actual
+child parameter, independently of the child's stdin contract. Span-preserving
+wrappers forward these origins under the exact child identity; new shell-frame
+coordinates do not reuse the parent argv spans. Xargs argument files replace
+the list source without pulling unrelated pipeline stdin into the argument data.
+
 Profiles for leading-option command grammars can opt into `option_scope: leading_options` at the command root or an individual subcommand node. The shared binder parses declared options and their operands before stopping at the first non-option operand or an option terminator (`--`). This same ownership boundary governs modifier matching, form selectors, and parameter binding. For example, in `sshpass -e ssh -p 2222 host`, `-p 2222` belongs to `ssh`, not to `sshpass`. A flag-like option value is still a value, and the child's argv (including its own `--`) is preserved for normal nested dispatch. Positional parameters still span the invocation: `env` can consume environment assignments and `timeout` can consume its duration before selecting the child.
 
 The default remains `all_arguments`; ordinary profiles can still describe options after operands. Leading-option profiles declare option arity through modifier/form flag bindings. Unknown option arity is reported as a selection gap, retaining already established modifier effects rather than guessing a child boundary. This does not change the configured resolve-gap action or nested-expansion limit.
@@ -1288,6 +1308,40 @@ are mutually exclusive. An inner shell inherits input availability, but a tool
 stream is never filled from the caller's literal pipeline. Interpreter use of
 unresolved input continues through existing runtime-input guards.
 
+`dispatch.clear_environment: true` unconditionally starts the child with an
+empty environment. Its default is false; `clear_environment_when` retains its
+modifier-controlled behavior. Explicit child assignments are applied after
+the reset. The `env` Profile consumes one leading `-` before environment
+assignments and declares this reset, without treating later child argv as
+outer options. The marker can follow the outer `--`; after an assignment,
+`-` is the executable name instead. Unmodeled `env -S` forms require approval.
+
+`leading_positionals_while` matches native argv items. If an accepted source
+word may expand into multiple fields, the prefix boundary remains unresolved:
+an extra field may become the executable or a different operand. Known child
+effects are retained and the existing unresolved-operation guard applies.
+
+`generated_environment` can instead declare a bounded tool-generated value:
+
+```yaml
+generated_environment:
+  - name: FILE
+    value:
+      kind: alphanumeric_file_name
+      prefix_slot: output_prefix
+      default_prefix: x
+      suffix_slot: additional_suffix
+```
+
+This describes `prefix + nonempty ASCII-alphanumeric run + suffix`, not an
+exact filename. Missing optional slots use their defaults; unresolved operands
+remain unknown. The value overrides the caller's same-named variable only in
+the child. Exported domains survive nested shells; assignments, unsets and
+environment resets invalidate them. Unquoted expansion requires a spelling
+proof excluding field splitting and pathname generation. File operands and
+redirections share directory-bound path facts and the existing path guards.
+GNU `split --filter` uses this contract for `$FILE`.
+
 GNU tar 1.35's source uses `/bin/sh -c` for creation with `-I`, checkpoint exec,
 and `--to-command`; decompression uses GNU wordsplit and adds `-d`. The Profile
 declares these separately. Checkpoint `exec=` uses structured projection; echo
@@ -1426,6 +1480,15 @@ shared path query below. Ordinary whitespace-split find output stays unknown, si
 can contain whitespace/newlines and become different argv. The existing path
 extractor and mutation guards consume the resulting `PathSet`; no new risk
 Pass, dynamic probing or blanket xargs allow rule is added.
+
+A filesystem effect on `stdin_data` can declare
+`path_list: {separator: newline, nul_modifier: name_list_format}`. The optional
+modifier selects NUL-separated filenames. Complete static input is decoded as
+native filenames, with a 64 KiB / 4096-record budget; an unknown stream inherits
+a producer path domain only when both ends use NUL framing. The shared path
+extractor feeds these targets to existing mutation guards and Graph path facts.
+An empty list has no targets; an unknown list retains an unknown target.
+`cpio -a` uses this contract for source access-time restoration.
 
 ### Positive stdout scalar shapes
 
@@ -2365,7 +2428,7 @@ not introduce an install-specific approval rule.
 
 Structured projections may derive additional slots from unprojected read,
 write and target paths without replacing the source path semantic or raw argv.
-Cwd anchors and composition with `value_projection` remain excluded.
+Cwd anchors and composition with path `value_projection` remain excluded.
 
 References: [Wget log options](https://www.gnu.org/software/wget/manual/html_node/Logging-and-Input-File-Options.html),
 [Wget HTTP options](https://www.gnu.org/software/wget/manual/html_node/HTTP-Options.html),

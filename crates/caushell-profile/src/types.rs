@@ -725,6 +725,8 @@ impl Parameter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueProjection {
     Identity,
+    /// The operand identifies a source/container, not the value it supplies.
+    Unknown,
     /// Decimal descriptor operand projected to its content-open alias.
     DescriptorPath,
     /// Decode a top-level string from an opaque file-or-TOML operand.
@@ -1202,6 +1204,8 @@ pub struct DispatchTarget {
     pub argv: Vec<SlotName>,
     pub argv_suffix: Vec<String>,
     pub environment: Vec<SlotName>,
+    /// Reset inherited child values before applying explicit assignments.
+    pub clear_environment: bool,
     pub clear_environment_when: Vec<ModifierId>,
     pub unset_environment: Vec<SlotName>,
     pub unset_environment_when: Vec<ConditionalEnvironmentUnset>,
@@ -1212,6 +1216,7 @@ pub struct DispatchTarget {
     pub unknown_environment_from: Vec<EnvironmentValueSource>,
     /// Tool-generated values override inherited bindings, but only these names.
     pub unknown_environment_names: Vec<String>,
+    pub generated_environment: Vec<GeneratedEnvironment>,
     pub stdin_from_parent: bool,
     /// Opaque tool-produced input; never borrow the caller's pipeline contents.
     pub stdin_from_tool: bool,
@@ -1226,6 +1231,24 @@ pub struct DispatchTarget {
 pub struct ConditionalEnvironmentUnset {
     pub modifier: ModifierId,
     pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedEnvironment {
+    pub name: String,
+    pub value: GeneratedEnvironmentValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GeneratedEnvironmentValue {
+    AlphanumericFileName {
+        prefix_slot: String,
+        default_prefix: String,
+        #[serde(default)]
+        suffix_slot: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1394,6 +1417,7 @@ pub struct HostRiskEffectMetadata {
 pub struct Effect {
     /// Optional byte-input contract for this network endpoint only.
     pub input_scope: Option<EndpointInputScope>,
+    pub path_list: Option<PathListContract>,
     pub state_operation: Option<caushell_types::StateOperation>,
     pub kind: EffectKind,
     pub target: EffectTarget,
@@ -1415,6 +1439,7 @@ impl Effect {
         Self {
             kind,
             input_scope: None,
+            path_list: None,
             target: EffectTarget::None,
             path_access: None,
             path_scope: None,
@@ -1448,6 +1473,28 @@ pub struct EndpointInputScope {
     /// Consider stdin only if a bound consume_stdin effect actually uses it.
     #[serde(default)]
     pub stdin: bool,
+}
+
+/// Tool-owned filename records, not arbitrary stdin data or shell words.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathListContract {
+    pub separator: PathListSeparator,
+    #[serde(default)]
+    pub nul_modifier: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathListSeparator {
+    Newline,
+    Nul,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundPathList {
+    Paths(Vec<String>),
+    Domain(caushell_types::RuntimeArgumentDomain),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1916,6 +1963,9 @@ pub struct BoundInvocation {
     pub modifier_parameter_flags: Vec<ArgumentBindingSource>,
     pub effects: Vec<Effect>,
     pub residuals: Vec<Residual>,
+    /// Effect-indexed filename records. Absent means unknown; Paths(empty)
+    /// means a proven empty list. Raw effect declarations remain intact.
+    pub bound_path_lists: std::collections::BTreeMap<usize, BoundPathList>,
     /// A declared operation may have additional, unmodeled semantics.
     pub operation_semantics_unresolved: bool,
 }
@@ -1964,6 +2014,7 @@ impl BoundInvocation {
             modifier_parameter_flags: Vec::new(),
             effects: Vec::new(),
             residuals: Vec::new(),
+            bound_path_lists: std::collections::BTreeMap::new(),
             operation_semantics_unresolved: false,
         }
     }

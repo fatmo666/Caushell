@@ -241,8 +241,12 @@ pub enum BindError {
 impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::IndeterminateDispatch { command_name, reason } => write!(
-                f, "native dispatch for {command_name:?} is unresolved: {reason}"
+            Self::IndeterminateDispatch {
+                command_name,
+                reason,
+            } => write!(
+                f,
+                "native dispatch for {command_name:?} is unresolved: {reason}"
             ),
             Self::UncertainFunctionBinding {
                 command_name,
@@ -483,9 +487,9 @@ pub fn bind_invocation(
         .stdout_growth
         .as_ref()
         .is_some_and(|growth| match growth {
-            crate::StreamGrowthContract::Continuous { finite_count_slots, .. } => {
-                !finite_count_slots.is_empty()
-            }
+            crate::StreamGrowthContract::Continuous {
+                finite_count_slots, ..
+            } => !finite_count_slots.is_empty(),
             _ => true,
         });
     state.audit_operation_semantics = profile.opaque_on_unresolved || audit_growth;
@@ -674,7 +678,7 @@ pub fn bind_invocation(
                 && residual.kind == ResidualKind::UnboundControlSurface)
         });
     bound.operation_semantics_unresolved |=
-        state.group_binding_unresolved || selection.form.operation_semantics_unresolved;
+        state.binding_boundary_unresolved || selection.form.operation_semantics_unresolved;
     bound
 }
 
@@ -1050,7 +1054,7 @@ pub fn select_form<'a>(
             .iter()
             .any(|form| scoped_selector_certainty(&form.selector, &shape).is_none())
     {
-        return Err(BindError::UnsupportedProfileFeature {
+        return Err(BindError::IndeterminateDispatch {
             command_name: profile.primary_name().to_owned(),
             reason: "runtime argv content cannot determine the invocation form".into(),
         });
@@ -1274,7 +1278,7 @@ fn scan_subcommand_path<'p, 'a>(
                             || node.aliases.iter().any(|alias| structure.may_equal(alias))
                     }))
             {
-                error = Some(BindError::UnsupportedProfileFeature {
+                error = Some(BindError::IndeterminateDispatch {
                     command_name: profile.primary_name().to_owned(),
                     reason: "runtime argv content cannot determine the subcommand".into(),
                 });
@@ -1611,7 +1615,7 @@ fn select_form_for_scope<'a>(
         .values()
         .any(|s| s.fields != crate::ArgumentFieldCount::ExactlyOne)
     {
-        return Err(BindError::UnsupportedProfileFeature {
+        return Err(BindError::IndeterminateDispatch {
             command_name: command_name.to_owned(),
             reason: "native template batch has unresolved argv width".into(),
         });
@@ -1619,7 +1623,7 @@ fn select_form_for_scope<'a>(
     for form in forms {
         populate_argument_selector(&form.selector, projection, &mut shape);
     }
-    let unresolved = || BindError::UnsupportedProfileFeature {
+    let unresolved = || BindError::IndeterminateDispatch {
         command_name: command_name.to_owned(),
         reason: "runtime argv content cannot determine the invocation form".into(),
     };
@@ -2459,7 +2463,8 @@ fn emit_effects(
                 // programs, not that the tool no longer dispatches anything.
                 // Retain the grammar for its projector even with no bound argv.
                 crate::DispatchCommandSource::CommandString {
-                    syntax: crate::DispatchStringSyntax::GnuParallel, ..
+                    syntax: crate::DispatchStringSyntax::GnuParallel,
+                    ..
                 } => true,
                 crate::DispatchCommandSource::Slot(slot)
                 | crate::DispatchCommandSource::WhitespaceArgv(slot)
@@ -2493,7 +2498,7 @@ fn bind_parameter_target(
 ) -> Option<BoundParameter> {
     if let BindingSpec::PositionalGroups { group_size, .. } = &target.parameter.binding {
         if let Some(problem) = state.positional_group_problem(target.scope, *group_size) {
-            state.group_binding_unresolved = true;
+            state.binding_boundary_unresolved = true;
             residuals.push(
                 Residual::new(
                     ResidualKind::AmbiguousBinding,
@@ -2504,7 +2509,21 @@ fn bind_parameter_target(
             );
         }
     }
+    let boundary_was_unresolved = state.binding_boundary_unresolved;
     let values = state.bind_parameter_values(target);
+    if !boundary_was_unresolved
+        && state.binding_boundary_unresolved
+        && matches!(
+            target.parameter.binding,
+            BindingSpec::LeadingPositionalsWhile(_)
+        )
+    {
+        residuals.push(Residual::new(
+            ResidualKind::AmbiguousBinding,
+            ResidualSurface::Control,
+            "leading positional prefix may expand to multiple arguments; its boundary is unresolved",
+        ).for_slot(target.parameter.name.as_str()));
+    }
 
     if values.is_empty() {
         if !target.parameter.cardinality.is_optional() {
@@ -2653,7 +2672,7 @@ fn describe_binding(binding: &BindingSpec, modifier: Option<&Modifier>) -> Strin
 }
 
 struct BindingState<'p, 'm> {
-    group_binding_unresolved: bool,
+    binding_boundary_unresolved: bool,
     exact_option_words: bool,
     argument_regions: Vec<crate::BoundArgumentRegion>,
     audit_operation_semantics: bool,
@@ -2677,7 +2696,7 @@ struct BindingState<'p, 'm> {
 impl<'p, 'm> BindingState<'p, 'm> {
     fn new(projection: &'p ProjectedInvocation) -> Self {
         Self {
-            group_binding_unresolved: false,
+            binding_boundary_unresolved: false,
             exact_option_words: false,
             argument_regions: Vec::new(),
             projection,
@@ -2705,7 +2724,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
         modifiers: &[SelectedModifier<'m>],
     ) -> Self {
         let mut state = Self {
-            group_binding_unresolved: false,
+            binding_boundary_unresolved: false,
             exact_option_words: false,
             argument_regions: Vec::new(),
             projection,
@@ -4043,6 +4062,12 @@ impl<'p, 'm> BindingState<'p, 'm> {
             {
                 break;
             }
+
+            // This matcher classifies a native argv item, not every field
+            // of an unexpanded shell word. Extra fields can end the prefix
+            // and become a command or another semantic operand.
+            self.binding_boundary_unresolved |=
+                crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne;
 
             let value = BoundValue::argument_with_node_kind(
                 arg.text.clone(),

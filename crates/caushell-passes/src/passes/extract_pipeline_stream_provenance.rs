@@ -104,6 +104,7 @@ impl SessionTransformPass for ExtractPipelineStreamProvenancePass {
                 matches!(
                     record.origin_kind,
                     caushell_runner::ExecutionUnitOriginKind::Dispatch
+                        | caushell_runner::ExecutionUnitOriginKind::StaticXargs
                         | caushell_runner::ExecutionUnitOriginKind::ShellCommandStringPayload
                         | caushell_runner::ExecutionUnitOriginKind::RecursivePayload
                         | caushell_runner::ExecutionUnitOriginKind::NestedPayload

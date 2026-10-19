@@ -513,6 +513,20 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
             }
         }
         match &arg.runtime_argument_domain {
+            Some(caushell_types::RuntimeArgumentDomain::GeneratedFileName { prefix, suffix }) => {
+                structure.static_prefix = prefix.clone();
+                structure.static_suffix = suffix.clone();
+                structure.spelling = Some(
+                    prefix
+                        .chars()
+                        .map(SpellingPart::Literal)
+                        .chain(std::iter::once(SpellingPart::CharacterRun(
+                            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".into(),
+                        )))
+                        .chain(suffix.chars().map(SpellingPart::Literal))
+                        .collect(),
+                );
+            }
             Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix }) => {
                 structure.static_prefix = prefix.clone();
                 structure.static_suffix = suffix.clone();

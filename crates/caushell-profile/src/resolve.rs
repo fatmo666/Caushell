@@ -1079,6 +1079,37 @@ mod tests {
             .collect()
     }
 
+    fn assert_pip_install_effects(invocation: &BoundInvocation, package_slot: &str) {
+        assert_eq!(invocation.effects.len(), 3);
+        let write = invocation
+            .effects
+            .iter()
+            .find(|effect| effect.kind == EffectKind::WritePath)
+            .expect("expected installation write effect");
+        match &write.target {
+            EffectTarget::ConfiguredPath(target) => {
+                assert_eq!(
+                    target.sources.iter().map(|source| source.slot.as_str()).collect::<Vec<_>>(),
+                    vec!["target_directory", "root_directory", "prefix_directory"]
+                );
+                assert_eq!(target.environment.as_ref().unwrap().name, "PIP_TARGET");
+                assert_eq!(target.missing, crate::ConfiguredPathMissing::Unknown);
+            }
+            other => panic!("unexpected pip installation target: {other:?}"),
+        }
+        for kind in [EffectKind::ImportPackage, EffectKind::ExecuteImportedPackageLogic] {
+            let effect = invocation
+                .effects
+                .iter()
+                .find(|effect| effect.kind == kind)
+                .expect("expected package execution effect");
+            assert_eq!(
+                effect.target,
+                EffectTarget::Slot(crate::SlotName::new(package_slot))
+            );
+        }
+    }
+
     fn assert_resolves_command_with_effects(
         registry: &ProfileRegistry,
         command_line: &str,
@@ -1244,8 +1275,12 @@ mod tests {
             &registry,
             r#"PGPASSWORD=src_password_2026 psql -h localhost -U src_user -d src_pipeline_core -At -F $'\t' -c "SELECT 1""#,
             "psql",
-            "execute_sql_command",
-            &[EffectKind::NetworkEndpoint, EffectKind::TransformData],
+            "execute_actions",
+            &[
+                EffectKind::NetworkEndpoint,
+                EffectKind::DatabaseOperation,
+                EffectKind::ExecutePayload,
+            ],
         );
     }
 
@@ -1263,17 +1298,23 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "psql");
-                assert_eq!(resolved.selection.form.id.as_str(), "execute_sql_command");
+                assert_eq!(resolved.selection.form.id.as_str(), "execute_actions");
                 assert_eq!(first_argument_text(&resolved.bound, "host"), "localhost");
-                assert_eq!(first_argument_text(&resolved.bound, "username"), "src_user");
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "dbname"),
-                    "src_pipeline_core"
+                    argument_texts(&resolved.bound, "connection_values"),
+                    vec!["src_user", "src_pipeline_core"]
                 );
                 assert_eq!(first_argument_text(&resolved.bound, "sql"), "SELECT 1");
                 let effects = effect_kinds(&resolved.bound);
                 assert!(effects.contains(&EffectKind::NetworkEndpoint));
-                assert!(effects.contains(&EffectKind::TransformData));
+                assert!(effects.contains(&EffectKind::ExecutePayload));
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.database_operation == Some(caushell_types::DatabaseOperationKind::Opaque)
+                }));
+                let payload = crate::collect_recursive_payload_candidates(&resolved.bound);
+                assert_eq!(payload.len(), 1);
+                assert_eq!(payload[0].language, crate::PayloadLanguage::Opaque);
+                assert_eq!(payload[0].source, crate::PayloadSource::InlineString);
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -1289,7 +1330,7 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "psql");
-                assert_eq!(resolved.selection.form.id.as_str(), "execute_sql_file");
+                assert_eq!(resolved.selection.form.id.as_str(), "execute_actions");
                 assert_eq!(first_argument_text(&resolved.bound, "host"), "db.internal");
                 assert_eq!(
                     first_argument_text(&resolved.bound, "sql_file"),
@@ -1307,7 +1348,14 @@ mod tests {
                 assert!(effects.contains(&EffectKind::NetworkEndpoint));
                 assert!(effects.contains(&EffectKind::ReadPath));
                 assert!(effects.contains(&EffectKind::WritePath));
-                assert!(effects.contains(&EffectKind::TransformData));
+                assert!(effects.contains(&EffectKind::ExecutePayload));
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.database_operation == Some(caushell_types::DatabaseOperationKind::Opaque)
+                }));
+                let payload = crate::collect_recursive_payload_candidates(&resolved.bound);
+                assert_eq!(payload.len(), 1);
+                assert_eq!(payload[0].language, crate::PayloadLanguage::Opaque);
+                assert_eq!(payload[0].source, crate::PayloadSource::ScriptFileRef);
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -9351,18 +9399,34 @@ mod tests {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "make");
                 assert_eq!(resolved.selection.form.id.as_str(), "run_default");
-                assert_eq!(argument_texts(&resolved.bound, "targets"), vec!["build"]);
+                assert_eq!(
+                    argument_texts(&resolved.bound, "targets_and_assignments"),
+                    vec!["build"]
+                );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::LoadConfig, EffectKind::ExecuteConfigDefinedTask]
+                    vec![
+                        EffectKind::LoadConfig,
+                        EffectKind::LoadConfig,
+                        EffectKind::LoadConfig,
+                        EffectKind::ExecuteConfigDefinedTask,
+                    ]
                 );
-                assert!(matches!(
-                    &resolved.bound.effects[0].target,
-                    crate::EffectTarget::ToolConventionPath(target)
-                        if target.path == "Makefile"
-                            && target.convention == "make.makefile"
-                            && target.purpose == Some(crate::PathPurpose::TaskConfig)
-                ));
+                let paths = resolved
+                    .bound
+                    .effects
+                    .iter()
+                    .filter(|effect| effect.kind == EffectKind::LoadConfig)
+                    .map(|effect| match &effect.target {
+                        EffectTarget::ToolConventionPath(target) => {
+                            assert_eq!(target.convention, "make.makefile");
+                            assert_eq!(target.purpose, Some(crate::PathPurpose::TaskConfig));
+                            target.path.as_str()
+                        }
+                        other => panic!("unexpected make configuration target: {other:?}"),
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(paths, vec!["GNUmakefile", "makefile", "Makefile"]);
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -9657,9 +9721,17 @@ mod tests {
                 assert_eq!(
                     effect_kinds(&resolved.bound),
                     vec![
+                        EffectKind::DispatchCommand,
                         EffectKind::ImportPackage,
                         EffectKind::ExecuteImportedPackageLogic,
                     ]
+                );
+                let children = collect_dispatch_command_candidates(&resolved.bound);
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0].command.text, "cowsay");
+                assert_eq!(
+                    children[0].argv.iter().map(|arg| arg.text.as_str()).collect::<Vec<_>>(),
+                    vec!["hello"]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -12392,9 +12464,16 @@ mod tests {
                     vec![
                         EffectKind::NetworkEndpoint,
                         EffectKind::NetworkEndpoint,
-                        EffectKind::ConsumeStdin
+                        EffectKind::ConsumeStdin,
+                        EffectKind::StateOperation,
                     ]
                 );
+                assert!(resolved.bound.effects.iter().any(|effect| {
+                    effect.state_operation == Some(caushell_types::StateOperation {
+                        domain: caushell_types::StateOperationDomain::RemoteResource,
+                        operation: caushell_types::StateOperationKind::Mutate,
+                    })
+                }));
                 assert!(
                     resolved.bound.bound_parameters.iter().any(|p| matches!(
                         p.semantic,
@@ -14259,12 +14338,8 @@ mod tests {
             (
                 "docker run alpine echo hi",
                 "docker",
-                "daemon_control",
-                &[
-                    EffectKind::NetworkEndpoint,
-                    EffectKind::ExecuteImportedPackageLogic,
-                    EffectKind::MetadataMutation,
-                ],
+                "run_container",
+                &[EffectKind::StateOperation],
             ),
             (
                 "gh repo view",
@@ -16213,13 +16288,7 @@ mod tests {
                     argument_texts(&resolved.bound, "requirement_files"),
                     vec!["requirements.txt"]
                 );
-                assert_eq!(
-                    effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ImportPackage,
-                        EffectKind::ExecuteImportedPackageLogic,
-                    ]
-                );
+                assert_pip_install_effects(&resolved.bound, "requirement_files");
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -16243,14 +16312,7 @@ mod tests {
                     first_argument_text(&resolved.bound, "target_directory"),
                     "vendor"
                 );
-                assert_eq!(
-                    effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ImportPackage,
-                        EffectKind::ExecuteImportedPackageLogic,
-                        EffectKind::WritePath,
-                    ]
-                );
+                assert_pip_install_effects(&resolved.bound, "editable_specs");
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -16315,13 +16377,7 @@ mod tests {
                     argument_texts(&resolved.bound, "package_specs"),
                     vec!["$PKG"]
                 );
-                assert_eq!(
-                    effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ImportPackage,
-                        EffectKind::ExecuteImportedPackageLogic,
-                    ]
-                );
+                assert_pip_install_effects(&resolved.bound, "package_specs");
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -16344,13 +16400,7 @@ mod tests {
                     argument_texts(&resolved.bound, "package_specs"),
                     vec!["https://example.test/pkg.whl"]
                 );
-                assert_eq!(
-                    effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ImportPackage,
-                        EffectKind::ExecuteImportedPackageLogic,
-                    ]
-                );
+                assert_pip_install_effects(&resolved.bound, "package_specs");
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -16373,13 +16423,7 @@ mod tests {
                     argument_texts(&resolved.bound, "package_specs"),
                     vec!["./dist/pkg.whl"]
                 );
-                assert_eq!(
-                    effect_kinds(&resolved.bound),
-                    vec![
-                        EffectKind::ImportPackage,
-                        EffectKind::ExecuteImportedPackageLogic,
-                    ]
-                );
+                assert_pip_install_effects(&resolved.bound, "package_specs");
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

@@ -197,7 +197,7 @@ fn socat_transfer_direction_and_listener_role_follow_the_native_address_order() 
         "{:#?}",
         graph(upload)
     );
-    assert!(graph(upload).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::UploadTarget, .. } } if endpoint.contains("exfil.test"))), "{:#?}", graph(upload));
+    assert!(graph(upload).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::UploadTarget, .. } } if endpoint.as_deref().is_some_and(|value| value.contains("exfil.test")))), "{:#?}", graph(upload));
 
     let reverse_file = "socat -U file:/tmp/received tcp-connect:source.test:12345";
     assert!(
@@ -210,7 +210,7 @@ fn socat_transfer_direction_and_listener_role_follow_the_native_address_order() 
         "{:#?}",
         graph(reverse_file)
     );
-    assert!(graph(reverse_file).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::FetchSource, .. } } if endpoint.contains("source.test"))), "{:#?}", graph(reverse_file));
+    assert!(graph(reverse_file).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::FetchSource, .. } } if endpoint.as_deref().is_some_and(|value| value.contains("source.test")))), "{:#?}", graph(reverse_file));
 
     let download = "socat -u tcp-connect:source.test:12345 open:/tmp/downloaded,creat";
     assert!(
@@ -223,7 +223,7 @@ fn socat_transfer_direction_and_listener_role_follow_the_native_address_order() 
         "{:#?}",
         graph(download)
     );
-    assert!(graph(download).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::FetchSource, .. } } if endpoint.contains("source.test"))), "{:#?}", graph(download));
+    assert!(graph(download).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::FetchSource, .. } } if endpoint.as_deref().is_some_and(|value| value.contains("source.test")))), "{:#?}", graph(download));
 
     let listener =
         "socat tcp-listen:12345,reuseaddr,fork exec:/bin/sh,pty,stderr,setsid,sigint,sane";

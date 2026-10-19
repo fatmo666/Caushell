@@ -6,6 +6,32 @@ use caushell_types::{
     ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceEdgeSemantics, RuntimeInputSource,
 };
 
+/// Native wrappers preserve argv source spans; new shell bodies do not.
+/// Only origins owned by this parent and actually forwarded as argv survive.
+pub(crate) fn forwarded_native_argument_inputs(
+    inherited: &caushell_runner::ExecutionUnitInheritedScope,
+    parent: &caushell_graph::NodeId,
+    child: &caushell_graph::NodeId,
+    command: &caushell_parse::CommandFact,
+) -> Vec<caushell_runner::NativeArgumentInput> {
+    inherited
+        .native_argument_inputs
+        .iter()
+        .filter(|input| input.consumer_node_id == *parent)
+        .filter(|input| {
+            command.tokens.iter().any(|token| {
+                input.origin.data_ranges.iter().any(|range| {
+                    token.span.start_byte < range.end && range.start < token.span.end_byte
+                })
+            })
+        })
+        .map(|input| caushell_runner::NativeArgumentInput {
+            consumer_node_id: child.clone(),
+            origin: input.origin.clone(),
+        })
+        .collect()
+}
+
 /// Reify compiler-owned data holes before ordinary shell-frame replay. A job
 /// may run `set` or `shift`; that cannot alter replacements already performed
 /// by the native tool. User-written positional references never enter here.
@@ -20,7 +46,7 @@ pub(crate) fn bind_symbolic_template_inputs(
     let mut owned = 0;
     for command in &mut parsed.commands {
         for token in &mut command.tokens {
-            if !origin.data_ranges.iter().any(|range| {
+            if !origin.origin.data_ranges.iter().any(|range| {
                 range.start == token.span.start_byte && range.end == token.span.end_byte
             }) {
                 continue;
@@ -58,7 +84,7 @@ pub(crate) fn bind_symbolic_template_inputs(
             owned += 1;
         }
     }
-    owned == origin.data_ranges.len()
+    owned == origin.origin.data_ranges.len()
 }
 
 /// Connect replacements to actual parameter slots, not a blanket dispatcher
@@ -69,11 +95,13 @@ pub(crate) fn collect_native_template_input_mutations(
 ) -> Vec<PendingMutation> {
     use caushell_graph::{NodeKind, SessionRead};
     use caushell_runner::StagedSession;
-    if !ctx
-        .execution_unit_resolve_records()
-        .iter()
-        .any(|r| r.inherited_scope.native_template_input.is_some())
-    {
+    if !ctx.execution_unit_resolve_records().iter().any(|r| {
+        r.inherited_scope.native_template_input.is_some()
+            || r.inherited_scope
+                .native_argument_inputs
+                .iter()
+                .any(|input| input.consumer_node_id == r.source_node_id)
+    }) {
         return Vec::new();
     }
     let staged = StagedSession::new(
@@ -85,93 +113,108 @@ pub(crate) fn collect_native_template_input_mutations(
     let graph = staged.graph();
     let mut mutations = Vec::new();
     for record in ctx.execution_unit_resolve_records() {
-        let Some(origin) = &record.inherited_scope.native_template_input else {
-            continue;
-        };
-        if record.parsed_scope.raw_command != origin.source_text
-            && !(record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
-                && record.parent_execution_node_id != origin.producer_node_id)
-        {
-            continue;
-        }
+        let template = record
+            .inherited_scope
+            .native_template_input
+            .as_ref()
+            .filter(|input| {
+                record.parsed_scope.raw_command == input.source_text
+                    || (record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
+                        && record.parent_execution_node_id != input.origin.producer_node_id)
+            });
+        let origins = template
+            .map(|input| input.origin.as_ref())
+            .into_iter()
+            .chain(
+                record
+                    .inherited_scope
+                    .native_argument_inputs
+                    .iter()
+                    .filter(|input| input.consumer_node_id == record.source_node_id)
+                    .map(|input| input.origin.as_ref()),
+            );
         let Some(bound) = crate::support::bound_invocation(&record.result) else {
             continue;
         };
-        for parameter in &bound.bound_parameters {
-            if !parameter.values.iter().any(|value| {
-                let span = match value {
-                    BoundValue::Argument { span, .. } => Some(span),
-                    BoundValue::ImplicitInput {
-                        origin: Some(input),
-                        ..
-                    } => Some(&input.span),
-                    _ => None,
-                };
-                span.is_some_and(|span| {
-                    origin
-                        .data_ranges
-                        .iter()
-                        .any(|range| span.start_byte < range.end && range.start < span.end_byte)
-                })
-            }) {
-                continue;
-            }
-            // Copy only actual replacement inputs. Returned child stdout is
-            // not the source of jobs that were already generated from a list.
-            for edge in graph.outgoing_edges(&origin.producer_node_id) {
-                if edge.kind != EdgeKind::Consumes {
+        for origin in origins {
+            for parameter in &bound.bound_parameters {
+                if !parameter.values.iter().any(|value| {
+                    let span = match value {
+                        BoundValue::Argument { span, .. } => Some(span),
+                        BoundValue::ImplicitInput {
+                            origin: Some(input),
+                            ..
+                        } => Some(&input.span),
+                        _ => None,
+                    };
+                    span.is_some_and(|span| {
+                        origin
+                            .data_ranges
+                            .iter()
+                            .any(|range| span.start_byte < range.end && range.start < span.end_byte)
+                    })
+                }) {
                     continue;
                 }
-                let Some(ProvenanceEdgeSemantics::Consume {
-                    slot_name,
-                    consume_kind,
-                    ..
-                }) = &edge.semantics
-                else {
-                    continue;
-                };
-                let stream = matches!(
-                    consume_kind,
-                    ProvenanceConsumeKind::StdinExplicit
-                        | ProvenanceConsumeKind::StdinImplicit
-                        | ProvenanceConsumeKind::PipelineInput
-                );
-                let Some(node) = graph.get_node(&edge.to) else {
-                    continue;
-                };
-                let NodeKind::ProvenanceArtifact { artifact } = &node.kind else {
-                    continue;
-                };
-                let runtime_stdin = matches!(
-                    artifact,
-                    ProvenanceArtifact::RuntimeInput {
-                        source: RuntimeInputSource::StdinData | RuntimeInputSource::StdinPayload,
-                        ..
+                // Copy only actual replacement inputs. Returned child stdout is
+                // not the source of jobs that were already generated from a list.
+                for edge in graph.outgoing_edges(&origin.producer_node_id) {
+                    if edge.kind != EdgeKind::Consumes {
+                        continue;
                     }
-                );
-                if !(slot_name
-                    .as_ref()
-                    .is_some_and(|slot| origin.input_slots.contains(slot))
-                    || (origin.stdin && (stream || runtime_stdin)))
-                {
-                    continue;
-                }
-                mutations.push(PendingMutation::AddProvenanceArtifact {
-                    source_node_id: record.source_node_id.clone(),
-                    node_id: edge.to.clone(),
-                    artifact: artifact.clone(),
-                    relation: EdgeKind::Consumes,
-                    semantics: ProvenanceEdgeSemantics::Consume {
-                        consume_kind: if bound.is_auxiliary_input_slot(parameter.name.as_str()) {
-                            ProvenanceConsumeKind::AuxiliaryInput
-                        } else {
-                            ProvenanceConsumeKind::RuntimeInput
+                    let Some(ProvenanceEdgeSemantics::Consume {
+                        slot_name,
+                        consume_kind,
+                        ..
+                    }) = &edge.semantics
+                    else {
+                        continue;
+                    };
+                    let stream = matches!(
+                        consume_kind,
+                        ProvenanceConsumeKind::StdinExplicit
+                            | ProvenanceConsumeKind::StdinImplicit
+                            | ProvenanceConsumeKind::PipelineInput
+                    );
+                    let Some(node) = graph.get_node(&edge.to) else {
+                        continue;
+                    };
+                    let NodeKind::ProvenanceArtifact { artifact } = &node.kind else {
+                        continue;
+                    };
+                    let runtime_stdin = matches!(
+                        artifact,
+                        ProvenanceArtifact::RuntimeInput {
+                            source: RuntimeInputSource::StdinData
+                                | RuntimeInputSource::StdinPayload,
+                            ..
+                        }
+                    );
+                    if !(slot_name
+                        .as_ref()
+                        .is_some_and(|slot| origin.input_slots.contains(slot))
+                        || (origin.stdin && (stream || runtime_stdin)))
+                    {
+                        continue;
+                    }
+                    mutations.push(PendingMutation::AddProvenanceArtifact {
+                        source_node_id: record.source_node_id.clone(),
+                        node_id: edge.to.clone(),
+                        artifact: artifact.clone(),
+                        relation: EdgeKind::Consumes,
+                        semantics: ProvenanceEdgeSemantics::Consume {
+                            consume_kind: if bound.is_auxiliary_input_slot(parameter.name.as_str())
+                            {
+                                ProvenanceConsumeKind::AuxiliaryInput
+                            } else {
+                                ProvenanceConsumeKind::RuntimeInput
+                            },
+                            slot_name: Some(parameter.name.as_str().into()),
+                            normalized_command_name: None,
+                            domain_label: None,
                         },
-                        slot_name: Some(parameter.name.as_str().into()),
-                        normalized_command_name: None,
-                        domain_label: None,
-                    },
-                });
+                    });
+                }
             }
         }
     }

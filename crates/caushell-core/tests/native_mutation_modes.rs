@@ -104,7 +104,6 @@ fn split_filter_shell_effects_reach_existing_guards() {
         "split --filter='cat > /opt/shared/output' input",
         "split --filter='touch /opt/shared/output' input",
         "split --filter='/bin/sh -i 0<&2 1>&2' input",
-        "split --filter='cat > \"$FILE\"' input",
         "export FILE=cache/safe; split --filter='cat > \"$FILE\"' input /opt/shared/chunk",
     ] {
         expect(command, Decision::NeedApproval);
@@ -131,6 +130,7 @@ fn split_filter_does_not_write_the_named_prefix_itself() {
     for command in [
         "split --filter='cat' input /opt/shared/chunk",
         "split --filter='cat > cache/output' input",
+        "split --filter='cat > \"$FILE\"' input",
         "split -n 1/3 input /opt/shared/chunk",
         "split -d -b 1000 - cache/chunk",
         "split --help",

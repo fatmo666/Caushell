@@ -22,14 +22,15 @@ mod recursive;
 mod registry;
 mod rename_payload;
 mod resolve;
-mod stream_growth;
 mod runtime_matcher;
 mod runtime_variables;
 mod sed_payload;
+mod stream_growth;
 mod structured_projection;
 mod types;
 pub use raw::RawDispatchOverride;
 pub use types::DispatchOverride;
+pub use types::{GeneratedEnvironment, GeneratedEnvironmentValue};
 mod value_projection;
 mod value_shape;
 
@@ -59,7 +60,7 @@ pub use materialize::{
     ShellAllPositionalsKind, ShellParameterExpansionOperator, ShellParameterName,
     ShellParameterReference, ValueMaterialization, VariablePresence,
     exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
-    exact_shell_parameter_reference, materialize_command_name,
+    exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,
     materialize_projected_invocation, materialize_recursive_payload_candidate,
     materialize_shell_assignment_value, parse_shell_parameter_reference_after_dollar,
@@ -150,17 +151,19 @@ pub use types::{
     ProjectedSemanticValue, ProjectionAbsentPolicy, ProjectionUnknownReason, Residual,
     ResidualKind, ResidualSurface, RuntimeFeature, SelectorExpr, SelectorPredicate, SemanticType,
     SemanticValueRef, SemanticValueResolution, ShellFamily, ShellVariableValueSource, SlotName,
-    StreamContract, StreamInputMode, StreamOutputMode, StreamGrowthContract, StreamCountUnit,
-    StreamCountSlot, StructuredValueContext,
-    StructuredValueSemantic, SubcommandNode, SubcommandTree, ToolConventionPathTarget,
-    ValueConstraint, ValueMatcher, ValueProjection,
+    StreamContract, StreamCountSlot, StreamCountUnit, StreamGrowthContract, StreamInputMode,
+    StreamOutputMode, StructuredValueContext, StructuredValueSemantic, SubcommandNode,
+    SubcommandTree, ToolConventionPathTarget, ValueConstraint, ValueMatcher, ValueProjection,
+};
+pub use types::{
+    BoundPathList, PathListContract, PathListSeparator, StdoutRecordContract,
+    StdoutRecordProjection, StreamRecordSeparator,
 };
 pub use types::{ModuleEntrypoint, PayloadFormat, PayloadInputSource, PayloadProjection};
 pub use types::{
     NativeOperandSyntax, StructuredProjection, StructuredProjectionBranch,
     StructuredProjectionMatcher, StructuredProjectionTarget,
 };
-pub use types::{StdoutRecordContract, StdoutRecordProjection, StreamRecordSeparator};
 pub use value_projection::{
     project_semantic_value, project_value, refresh_parameter_semantic_values,
 };

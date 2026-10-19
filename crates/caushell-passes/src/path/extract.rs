@@ -133,6 +133,7 @@ fn runtime_input_path_depends_on_cwd(
 ) -> bool {
     use caushell_types::RuntimeArgumentDomain;
     match domain {
+        Some(RuntimeArgumentDomain::GeneratedFileName { prefix, .. }) => !prefix.starts_with('/'),
         Some(RuntimeArgumentDomain::PathSet { roots, .. }) => {
             roots.is_empty() || roots.iter().any(|root| !root.starts_with('/'))
         }
@@ -394,6 +395,37 @@ fn effect_path_scope(
     }
 }
 
+fn path_list_resolutions(
+    invocation: &BoundInvocation,
+    effect_index: usize,
+    cwd: &str,
+) -> Option<Vec<(PathResolution, bool)>> {
+    invocation.effects.get(effect_index)?.path_list.as_ref()?;
+    Some(match invocation.bound_path_lists.get(&effect_index) {
+        Some(caushell_profile::BoundPathList::Paths(paths)) => paths
+            .iter()
+            .map(|path| {
+                (
+                    PathResolution::Concrete {
+                        path: lexical_path_from_argv(path, cwd),
+                    },
+                    !path.starts_with('/'),
+                )
+            })
+            .collect(),
+        Some(caushell_profile::BoundPathList::Domain(domain)) => vec![(
+            runtime_input_path_resolution(&"stdin filename list", Some(domain), cwd),
+            runtime_input_path_depends_on_cwd(Some(domain)),
+        )],
+        None => vec![(
+            PathResolution::UnsupportedDynamicText {
+                text: "stdin filename list is unresolved".into(),
+            },
+            true,
+        )],
+    })
+}
+
 pub(crate) fn collect_effect_mutation_targets(
     record: ExecutionResolveRecordRef<'_>,
     cwd: &str,
@@ -459,6 +491,19 @@ pub(crate) fn collect_effect_mutation_targets(
             None
         };
         let start = targets.len();
+        if let Some(paths) = path_list_resolutions(bound, effect_index, cwd) {
+            targets.extend(paths.into_iter().map(|(resolution, cwd_dependent)| {
+                MutationTargetCandidate {
+                    operation: effect.kind,
+                    slot_name: format!("stdin_paths_{effect_index}"),
+                    resolution: effect_path_scope(effect, bound, resolution),
+                    cwd_dependent,
+                    implicit_incidental_cache: false,
+                    metadata_mutation: metadata_mutation.clone(),
+                }
+            }));
+            continue;
+        }
         match &effect.target {
             EffectTarget::ConfiguredPath(target) => {
                 if let Some(path) = resolve_configured_path(bound, target, cwd, home, Some(record))
@@ -690,12 +735,19 @@ pub(crate) fn collect_redirection_path_facts(
     parsed_command: &ParsedCommandArtifact,
     cwd: &str,
     home: Option<&str>,
+    bindings: Option<&caushell_profile::SessionBindings>,
 ) -> Vec<RedirectionPathFactCandidate> {
     let mut paths = Vec::new();
 
     for (redirection_index, redirection) in parsed_command.redirections.iter().enumerate() {
-        if let Some(path) = collect_redirection_path_fact(redirection, redirection_index, cwd, home)
-        {
+        if let Some(path) = collect_redirection_path_fact(
+            redirection,
+            redirection_index,
+            cwd,
+            home,
+            bindings,
+            parsed_command.shell_kind,
+        ) {
             paths.push(path);
         }
     }
@@ -707,17 +759,76 @@ pub(crate) fn collect_redirection_path_fact(
     redirection_index: usize,
     cwd: &str,
     home: Option<&str>,
+    bindings: Option<&caushell_profile::SessionBindings>,
+    shell_kind: caushell_types::ShellKind,
 ) -> Option<RedirectionPathFactCandidate> {
-    let (role, slot_name, resolution) =
-        redirection_path_fact(redirection, redirection_index, cwd, home)?;
+    let mut fact = redirection.clone();
+    let mut domain = None;
+    if let (Some(bindings), Some(target)) = (bindings, fact.target.as_mut()) {
+        let argument = caushell_profile::ProjectedArg {
+            text: target.text.clone(),
+            implicit_input_source: None,
+            runtime_argument_domain: None,
+            runtime_data: false,
+            substitution_shape: None,
+            lexical_field_prefix: None,
+            kind: caushell_profile::ProjectedArgKind::Positional,
+            quoted: target.quoted,
+            node_kind: target.node_kind.clone(),
+            span: target.span.clone(),
+        };
+        domain = caushell_profile::materialize_argument_domain(&argument, bindings);
+        if domain.is_none() {
+            let projection = caushell_profile::ProjectedInvocation {
+                shell_kind,
+                option_prefixes: Default::default(),
+                command_name: None,
+                args: vec![argument],
+                stdin_payload_available: false,
+                interactive_session: false,
+            };
+            let materialized =
+                caushell_profile::materialize_projected_invocation(&projection, bindings);
+            if let (
+                [arg],
+                [
+                    caushell_profile::ValueMaterialization::ResolvedExactScalar { .. }
+                    | caushell_profile::ValueMaterialization::ResolvedRuntimeProduced { .. }
+                    | caushell_profile::ValueMaterialization::ResolvedShellWord { .. },
+                ],
+            ) = (
+                &materialized.invocation.args[..],
+                &materialized.arg_resolutions[..],
+            ) {
+                target.text = arg.text.clone();
+                target.quoted = true;
+                target.node_kind = "raw_string".into();
+            }
+        }
+    }
+    let (role, slot_name, mut resolution) =
+        redirection_path_fact(&fact, redirection_index, cwd, home)?;
+    if let Some(domain) = &domain {
+        resolution = runtime_input_path_resolution(&"bounded environment value", Some(domain), cwd);
+    }
     Some(RedirectionPathFactCandidate {
-        fact: redirection.clone(),
+        fact: fact.clone(),
         redirection_index,
         slot_name,
         resolution,
-        cwd_dependent: redirection.target.as_ref().is_none_or(|target| {
-            path_operand_depends_on_cwd(&target.text, target.quoted, &target.node_kind, None)
-        }),
+        cwd_dependent: domain.as_ref().map_or_else(
+            || {
+                fact.target.as_ref().is_none_or(|target| {
+                    path_operand_depends_on_cwd(
+                        &target.text,
+                        target.quoted,
+                        &target.node_kind,
+                        None,
+                    )
+                })
+            },
+            |domain| runtime_input_path_depends_on_cwd(Some(domain)),
+        ),
         role,
     })
 }
@@ -932,6 +1043,7 @@ fn collect_effect_target_path_facts(
                     | EffectKind::ChangeGroup
                     | EffectKind::MetadataMutation
             ) && (effect.path_scope.is_some()
+                || effect.path_list.is_some()
                 || matches!(effect.target, EffectTarget::ConfiguredPath(_))))
             .then_some(PathRole::Target)
         }) else {
@@ -939,6 +1051,31 @@ fn collect_effect_target_path_facts(
         };
 
         if path_target_is_inapplicable(invocation, &effect.target) {
+            continue;
+        }
+
+        if let Some(paths) = path_list_resolutions(invocation, effect_index, cwd) {
+            out.extend(
+                paths
+                    .into_iter()
+                    .map(|(resolution, cwd_dependent)| PathFactCandidate {
+                        source_node_id: record.source_node_id().clone(),
+                        command_index: record.command_index(),
+                        slot_name: format!("stdin_paths_{effect_index}"),
+                        semantic_slot: None,
+                        normalized_command_name: normalized_command_name.to_string(),
+                        resolution: effect_path_scope(effect, invocation, resolution),
+                        content_selector: None,
+                        cwd_dependent,
+                        role: if metadata_mutation_for_effect(invocation, effect).is_some() {
+                            PathRole::MetadataMutation
+                        } else {
+                            role
+                        },
+                        purpose: None,
+                        metadata_mutation: metadata_mutation_for_effect(invocation, effect),
+                    }),
+            );
             continue;
         }
 

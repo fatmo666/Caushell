@@ -1,4 +1,4 @@
-use caushell_query::{NetworkEndpointQuery, endpoint_has_loopback_scope};
+use caushell_query::NetworkEndpointQuery;
 use caushell_runner::{PendingMutation, RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{
     Evidence, EvidenceKind, NetworkUploadEvidence, ProvenanceArtifact, ProvenanceEndpointUsage,
@@ -54,12 +54,12 @@ impl SessionAnalysisPass for NetworkUploadGuardPass {
             endpoint.usage == ProvenanceEndpointUsage::UploadTarget
                 || endpoint.input_scope.is_some()
         })
-        .filter(|endpoint| !endpoint_has_loopback_scope(endpoint.endpoint, endpoint.kind)
+        .filter(|endpoint| !endpoint.has_loopback_scope()
             || NetworkEndpointQuery::has_nonlocal_transport_target(staged.graph(), endpoint.execution_node_id))
         .filter_map(|endpoint| {
             let key = (
                 endpoint.execution_node_id.clone(),
-                endpoint.endpoint.to_string(),
+                endpoint.endpoint.map(str::to_owned),
             );
             if flagged.contains(&key) {
                 return None;
@@ -90,12 +90,12 @@ impl SessionAnalysisPass for NetworkUploadGuardPass {
             Some((
                 format!(
                     "{} {} to {}; the destination or its declared transport route is not statically confined to loopback",
-                    endpoint.command, operation, endpoint.endpoint
+                    endpoint.command, operation, endpoint.description()
                 ),
                 NetworkUploadEvidence {
                     node_id: endpoint.execution_node_id.0.clone(),
                     command: endpoint.command.into(),
-                    endpoint: endpoint.endpoint.into(),
+                    endpoint: endpoint.description().into(),
                     endpoint_kind: endpoint.kind,
                     local_source,
                     lineage_unresolved: unresolved.is_some(),

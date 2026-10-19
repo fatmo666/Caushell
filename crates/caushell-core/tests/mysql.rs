@@ -363,8 +363,8 @@ fn staged_graph_retains_paths_endpoints_and_database_semantics_without_sql_paths
             ] {
                 assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact { resolution, role: actual, .. } if actual == &role && resolution.concrete_path() == Some(path))), "{path}: {:?}", g.nodes().filter(|n| matches!(&n.kind, NodeKind::PathFact { .. })).collect::<Vec<_>>());
             }
-            assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, endpoint_kind: ProvenanceEndpointKind::HostPort, .. } } if endpoint == "127.0.0.1")));
-            assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, endpoint_kind: ProvenanceEndpointKind::SocketPath, .. } } if endpoint == "db.sock")));
+            assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, endpoint_kind: ProvenanceEndpointKind::HostPort, .. } } if endpoint.as_deref() == Some("127.0.0.1"))));
+            assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, endpoint_kind: ProvenanceEndpointKind::SocketPath, .. } } if endpoint.as_deref() == Some("db.sock"))));
             assert!(g.nodes().any(|n| matches!(&n.kind, NodeKind::ExecutionSemantics { semantics } if semantics.database_operations == [DatabaseOperationKind::Opaque])));
             assert!(!g.nodes().any(|n| matches!(&n.kind, NodeKind::PathFact { resolution, .. } if [Some("/etc/database-name"), Some("/etc/sql-only")].contains(&resolution.concrete_path()))));
         },

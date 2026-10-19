@@ -56,16 +56,20 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
             let exact_cwd = ctx
                 .effective_cwd_for_node(record.source_node_id())
                 .is_none_or(|cwd| cwd.as_known().is_some());
-            let path_by_redirection_index: BTreeMap<_, _> =
-                collect_redirection_path_facts(parsed_scope, shell_cwd, home)
-                    .into_iter()
-                    .filter(|path| exact_cwd || !path.cwd_dependent)
-                    .filter_map(|path| {
-                        path.resolution
-                            .concrete_path()
-                            .map(|p| (path.redirection_index, p.to_string()))
-                    })
-                    .collect();
+            let path_by_redirection_index: BTreeMap<_, _> = collect_redirection_path_facts(
+                parsed_scope,
+                shell_cwd,
+                home,
+                Some(record.bindings()),
+            )
+            .into_iter()
+            .filter(|path| exact_cwd || !path.cwd_dependent)
+            .filter_map(|path| {
+                path.resolution
+                    .concrete_path()
+                    .map(|p| (path.redirection_index, p.to_string()))
+            })
+            .collect();
 
             // A descriptor alias retains the original source; an overwritten
             // redirect is not input consumed by this command.
@@ -252,7 +256,7 @@ fn redirection_paths_by_index(
     cwd: &str,
     home: Option<&str>,
 ) -> BTreeMap<usize, String> {
-    collect_redirection_path_facts(parsed_command, cwd, home)
+    collect_redirection_path_facts(parsed_command, cwd, home, None)
         .into_iter()
         .filter_map(|record| {
             let concrete_path = record.resolution.concrete_path()?.to_string();

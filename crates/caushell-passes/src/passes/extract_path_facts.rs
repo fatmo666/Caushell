@@ -373,9 +373,12 @@ fn collect_redirection_path_mutations(
         let entry = ctx.effective_cwd_for_node(record.source_node_id());
         let options = effective_cwd_cases(entry, cwd);
         for option in options {
-            for mut path in
-                collect_redirection_path_facts(parsed_scope, option.resolution_base(cwd), home)
-            {
+            for mut path in collect_redirection_path_facts(
+                parsed_scope,
+                option.resolution_base(cwd),
+                home,
+                Some(record.bindings()),
+            ) {
                 if redirection_parent_command_index(parsed_scope, &path.fact)
                     != Some(record.command_index())
                 {
@@ -503,7 +506,7 @@ fn collect_redirection_path_mutations(
         .any(|s| s.is_request_scope)
         && let Some(parsed_command) = ctx.parsed_command()
     {
-        for path in collect_redirection_path_facts(parsed_command, cwd, home) {
+        for path in collect_redirection_path_facts(parsed_command, cwd, home, None) {
             if redirection_parent_command_index(parsed_command, &path.fact).is_some() {
                 continue;
             }

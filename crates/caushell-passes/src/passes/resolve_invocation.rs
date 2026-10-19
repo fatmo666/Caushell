@@ -1436,6 +1436,7 @@ fn find_dispatch_candidates(
             unknown_environment: false,
             unknown_environment_from: Vec::new(),
             unknown_environment_names: Vec::new(),
+            generated_environment: Vec::new(),
             unset_environment: Vec::new(),
             working_directory: if execdir {
                 DispatchWorkingDirectory::ContainingDirectories {
@@ -1588,6 +1589,9 @@ fn dispatch_child_session_bindings(
             name,
             caushell_profile::SessionValue::opaque_dynamic("tool-generated environment value"),
         );
+    }
+    for (name, domain) in &candidate.generated_environment {
+        bindings.set_child_environment_domain(name, domain.clone());
     }
     let bindings = dispatch_child_bindings(&bindings, &candidate.environment);
     let Some(positional_args) = shell_dispatch_positional_arguments(command) else {
@@ -2298,6 +2302,13 @@ fn collect_execution_unit_resolve_records(
             &mut entry,
             max_nested_parse_depth,
         );
+        refresh_path_list_targets(
+            registry,
+            session,
+            request,
+            &mut entry,
+            max_nested_parse_depth,
+        );
 
         // Native list input is not proof of the launched program's FD 0.
         // Until that routing is declared, keep an inherited stdin consumer
@@ -2367,7 +2378,7 @@ fn collect_execution_unit_resolve_records(
                         .flat_map(|command| command.prefix_assignments.iter()),
                 )
                 .any(|assignment| {
-                    origin.data_ranges.iter().any(|range| {
+                    origin.origin.data_ranges.iter().any(|range| {
                         assignment.value.span.start_byte < range.end
                             && range.start < assignment.value.span.end_byte
                     })
@@ -2383,11 +2394,30 @@ fn collect_execution_unit_resolve_records(
             // descendants can be matched to replacement ranges.
             && (entry.parsed_scope.raw_command == origin.source_text
                 || (entry.origin_kind == ExecutionUnitOriginKind::Dispatch
-                    && entry.parent_execution_node_id != origin.producer_node_id))
+                    && entry.parent_execution_node_id != origin.origin.producer_node_id))
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result
-            && native_template_frame_input_unresolved(resolved, &entry.bindings, origin)
+            && native_template_frame_input_unresolved(resolved, &entry.bindings, &origin.origin)
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
         {
+            resolved.bound.operation_semantics_unresolved = true;
+        }
+
+        if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
+            && entry
+                .inherited_scope
+                .native_argument_inputs
+                .iter()
+                .any(|input| {
+                    input.consumer_node_id == entry.source_node_id
+                        && native_template_frame_input_unresolved(
+                            resolved,
+                            &entry.bindings,
+                            &input.origin,
+                        )
+                })
+        {
+            // A new interpreter frame needs its own argument/variable lineage;
+            // source offsets from the native argv are not payload offsets.
             resolved.bound.operation_semantics_unresolved = true;
         }
 
@@ -2415,7 +2445,7 @@ fn collect_execution_unit_resolve_records(
                             .iter()
                             .any(|definition| {
                                 definition.name == *name
-                                    && origin.data_ranges.iter().any(|range| {
+                                    && origin.origin.data_ranges.iter().any(|range| {
                                         definition.span.start_byte < range.end
                                             && range.start < definition.span.end_byte
                                     })
@@ -2426,7 +2456,7 @@ fn collect_execution_unit_resolve_records(
                                 .get(entry.command_ref.command_index)
                                 .is_some_and(|command| {
                                     command.tokens.iter().any(|token| {
-                                        origin.data_ranges.iter().any(|range| {
+                                        origin.origin.data_ranges.iter().any(|range| {
                                             token.span.start_byte < range.end
                                                 && range.start < token.span.end_byte
                                         })
@@ -2710,7 +2740,7 @@ fn register_shell_redirection_scope(
 fn native_template_frame_input_unresolved(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     bindings: &SessionBindings,
-    origin: &caushell_runner::NativeTemplateInput,
+    origin: &caushell_runner::NativeInputOrigin,
 ) -> bool {
     let overlaps = |span: &caushell_parse::SourceSpan| {
         origin
@@ -2719,12 +2749,13 @@ fn native_template_frame_input_unresolved(
             .any(|range| span.start_byte < range.end && range.start < span.end_byte)
     };
     let parameter_uses_input = |parameter: &BoundParameter| {
-        parameter.values.iter().any(|value| {
-            match value {
-                BoundValue::Argument { span, .. } => overlaps(span),
-                BoundValue::ImplicitInput { origin: Some(input), .. } => overlaps(&input.span),
-                _ => false,
-            }
+        parameter.values.iter().any(|value| match value {
+            BoundValue::Argument { span, .. } => overlaps(span),
+            BoundValue::ImplicitInput {
+                origin: Some(input),
+                ..
+            } => overlaps(&input.span),
+            _ => false,
         })
     };
     resolved
@@ -3457,6 +3488,13 @@ fn expanded_dispatch_children(
         } else {
             expanded_virtual_node_id("dispatch", &entry.source_node_id, child.dispatch_index)
         };
+        child_inherited_scope.native_argument_inputs =
+            crate::support::forwarded_native_argument_inputs(
+                &entry.inherited_scope,
+                &entry.source_node_id,
+                &source_node_id,
+                &command,
+            );
         let mut static_payload_scope = entry.static_payload_scope.clone();
         static_payload_scope.bindings = child_bindings.clone();
         static_payload_scope.stdin_is_parent_output |= child.stdin_from_parent;
@@ -3525,12 +3563,22 @@ fn expanded_shell_payload_children(
         entry.depth.saturating_add(1) > max_nested_parse_depth,
         "shell command-string payload",
     );
-    if let Some(origin) = entry.inherited_scope.native_template_input.as_ref()
+    if let Some(origin) = entry
+        .inherited_scope
+        .native_template_input
+        .as_ref()
         .filter(|origin| origin.symbolic_parameters && origin.source_text == shell_payload)
-        && !crate::support::bind_symbolic_template_inputs(&mut parsed_payload, &positional_args, origin)
+        && !crate::support::bind_symbolic_template_inputs(
+            &mut parsed_payload,
+            &positional_args,
+            origin,
+        )
     {
         (parsed_payload, unknown_index) = execution_body_scope(
-            &shell_payload, shell_kind, true, "native template parameter frame",
+            &shell_payload,
+            shell_kind,
+            true,
+            "native template parameter frame",
         );
     }
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
@@ -4667,7 +4715,15 @@ fn native_shell_job_children(
     max_depth: u8,
 ) -> Vec<ExpandedFrontierEntry> {
     native_shell_job_children_with_inputs(
-        registry, request, entry, prefix, job_index, source, opaque, max_depth, &[],
+        registry,
+        request,
+        entry,
+        prefix,
+        job_index,
+        source,
+        opaque,
+        max_depth,
+        &[],
     )
 }
 
@@ -4725,7 +4781,12 @@ fn native_shell_job_children_with_inputs(
             token.implicit_input_source = Some(caushell_types::ImplicitInputSource::StdinData);
             token.runtime_argument_domain = Some(input.domain.clone());
             token.runtime_data = false;
-            token.node_kind = if input.batch { "runtime_argument_list" } else { "runtime_scalar" }.into();
+            token.node_kind = if input.batch {
+                "runtime_argument_list"
+            } else {
+                "runtime_scalar"
+            }
+            .into();
             token.command_substitutions.clear();
         }
     }
@@ -4886,13 +4947,24 @@ fn expanded_native_parallel_children(
     };
     let quoted = has_applied_modifier(&resolved.bound, "quote_template");
     let grouped = has_applied_modifier(&resolved.bound, "context_grouping");
-    let annotate = |jobs: &mut Vec<ExpandedFrontierEntry>, rendered: crate::support::parallel_jobs::RenderedJob, symbolic_parameters: bool| {
+    let annotate = |jobs: &mut Vec<ExpandedFrontierEntry>,
+                    rendered: crate::support::parallel_jobs::RenderedJob,
+                    symbolic_parameters: bool| {
         let origin = std::sync::Arc::new(caushell_runner::NativeTemplateInput {
-            producer_node_id: entry.source_node_id.clone(),
             source_text: rendered.source,
-            data_ranges: rendered.data_ranges,
-            input_slots: vec![if has_applied_modifier(&resolved.bound, "arg_file") { "arg_file" } else { slot }.into()],
-            stdin: separator.is_none() && !has_applied_modifier(&resolved.bound, "arg_file"),
+            origin: std::sync::Arc::new(caushell_runner::NativeInputOrigin {
+                producer_node_id: entry.source_node_id.clone(),
+                data_ranges: rendered.data_ranges,
+                input_slots: vec![
+                    if has_applied_modifier(&resolved.bound, "arg_file") {
+                        "arg_file"
+                    } else {
+                        slot
+                    }
+                    .into(),
+                ],
+                stdin: separator.is_none() && !has_applied_modifier(&resolved.bound, "arg_file"),
+            }),
             symbolic_parameters,
         });
         for job in jobs {
@@ -4904,17 +4976,28 @@ fn expanded_native_parallel_children(
     // proven to remain argv data, keeping their arity/domain and input origin.
     if !evidence.complete {
         let domain = (delimiter == '\0' && !has_applied_modifier(&resolved.bound, "arg_file"))
-            .then(|| xargs_stdin_path_domain(registry, session, request, entry, max_depth))
+            .then(|| stdin_path_domain_for_scope(registry, session, request, entry, max_depth))
             .flatten()
             .unwrap_or(caushell_types::RuntimeArgumentDomain::Unbounded);
         let Some(symbolic) = crate::support::parallel_jobs::symbolic_job(
-            &words, quoted, grouped, entry.shell_kind, &domain,
+            &words,
+            quoted,
+            grouped,
+            entry.shell_kind,
+            &domain,
         ) else {
             return opaque("native job input or replacement structure is unresolved");
         };
         let mut jobs = native_shell_job_children_with_inputs(
-            registry, request, entry, "parallel", 0, &symbolic.rendered.source,
-            false, max_depth, &symbolic.inputs,
+            registry,
+            request,
+            entry,
+            "parallel",
+            0,
+            &symbolic.rendered.source,
+            false,
+            max_depth,
+            &symbolic.inputs,
         );
         annotate(&mut jobs, symbolic.rendered, true);
         return jobs;
@@ -5060,7 +5143,7 @@ fn expanded_static_xargs_children(
     let input_domain = (!evidence.complete
         && !has_applied_modifier(&resolved.bound, "arg_file")
         && matches!(config.item_mode, XargsItemMode::NullSeparated))
-    .then(|| xargs_stdin_path_domain(registry, session, request, entry, max_nested_parse_depth))
+    .then(|| stdin_path_domain_for_scope(registry, session, request, entry, max_nested_parse_depth))
     .flatten();
     // Partial fragments have no guaranteed offset: unknown bytes may precede
     // them, join their quoting, or shift every positional argument. Keep them
@@ -5137,6 +5220,7 @@ fn expanded_static_xargs_children(
     let mut children = Vec::new();
     for (command_index, group) in groups.into_iter().enumerate() {
         let mut child_candidate = candidate.clone();
+        let mut data_ranges = Vec::new();
         let mut next_byte = child_candidate
             .argv
             .iter()
@@ -5222,6 +5306,7 @@ fn expanded_static_xargs_children(
                     argument.text = argument.text.replace(replace_token, item);
                     argument.runtime_data = !tilde_unresolved;
                 }
+                data_ranges.push(argument.span.start_byte..argument.span.end_byte);
             }
             // -I replaces occurrences in initial arguments; unlike append
             // mode, it does not append the input when there is no placeholder.
@@ -5254,6 +5339,11 @@ fn expanded_static_xargs_children(
                         next_byte,
                     ),
                 }
+                let argument = child_candidate
+                    .argv
+                    .last()
+                    .expect("appended native argument");
+                data_ranges.push(argument.span.start_byte..argument.span.end_byte);
                 next_byte = next_byte.saturating_add(1);
             }
             if let Some(suffix) = suffix {
@@ -5282,8 +5372,35 @@ fn expanded_static_xargs_children(
             &child_bindings,
             &forwarded_substitution_shapes(resolved, &command),
         );
+        let source_node_id =
+            expanded_virtual_node_id("xargs", &entry.source_node_id, command_index);
+        let mut inherited_scope = entry.inherited_scope.clone();
+        inherited_scope.native_argument_inputs = crate::support::forwarded_native_argument_inputs(
+            &entry.inherited_scope,
+            &entry.source_node_id,
+            &source_node_id,
+            &command,
+        );
+        if !data_ranges.is_empty() {
+            let arg_file = has_applied_modifier(&resolved.bound, "arg_file");
+            inherited_scope
+                .native_argument_inputs
+                .push(caushell_runner::NativeArgumentInput {
+                    consumer_node_id: source_node_id.clone(),
+                    origin: std::sync::Arc::new(caushell_runner::NativeInputOrigin {
+                        producer_node_id: entry.source_node_id.clone(),
+                        data_ranges,
+                        input_slots: if arg_file {
+                            vec!["arg_file".into()]
+                        } else {
+                            Vec::new()
+                        },
+                        stdin: !arg_file,
+                    }),
+                });
+        }
         children.push(ExpandedFrontierEntry {
-            source_node_id: expanded_virtual_node_id("xargs", &entry.source_node_id, command_index),
+            source_node_id,
             command_ref: ParsedCommandRef::new(0, command.span.clone()),
             parsed_scope: parsed_child.clone(),
             rendered_command_text: command.text.clone(),
@@ -5304,7 +5421,7 @@ fn expanded_static_xargs_children(
             origin_kind: ExecutionUnitOriginKind::StaticXargs,
             origin_index: command_index,
             origin_locator: ExecutionUnitOriginLocator::None,
-            inherited_scope: entry.inherited_scope.clone(),
+            inherited_scope,
         });
     }
     children
@@ -5316,7 +5433,68 @@ enum XargsItem {
     UnknownTail,
 }
 
-fn xargs_stdin_path_domain(
+fn refresh_path_list_targets(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &mut ExpandedFrontierEntry,
+    max_depth: u8,
+) {
+    let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
+        return;
+    };
+    if !resolved
+        .bound
+        .effects
+        .iter()
+        .any(|effect| effect.path_list.is_some())
+    {
+        return;
+    }
+    let scope = &entry.static_payload_scope;
+    if resolved.proven_stream_contract().is_none()
+        || scope.stdin_is_parent_output
+        || entry.inherited_scope.static_input_cwd_unproven
+        || entry.inherited_scope.native_template_input.is_some()
+    {
+        return;
+    }
+    let evidence = static_stdin_evidence_for_scoped_command(
+        caushell_query::QuerySession::from_session(&session),
+        &scope.parsed_scope,
+        scope.command_index,
+        request.sequence_no,
+        &runtime_binding_replay(registry, request, &scope.bindings),
+        &runtime_binding_replay(registry, request, &scope.scope_base_bindings),
+        request.shell_state_before.cwd(),
+        true,
+        request.home.as_deref(),
+        max_depth.saturating_sub(entry.depth),
+    );
+    let wants_nul = resolved
+        .bound
+        .effects
+        .iter()
+        .filter_map(|effect| effect.path_list.as_ref())
+        .any(|contract| {
+            contract.separator == caushell_profile::PathListSeparator::Nul
+                || contract.nul_modifier.as_ref().is_some_and(|name| {
+                    resolved
+                        .bound
+                        .applied_modifiers
+                        .iter()
+                        .any(|id| id.as_str() == name)
+                })
+        });
+    let domain = (!evidence.complete && wants_nul)
+        .then(|| stdin_path_domain_for_scope(registry, session, request, entry, max_depth))
+        .flatten();
+    if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result {
+        crate::support::bind_path_list_targets(&mut resolved.bound, evidence, domain);
+    }
+}
+
+fn stdin_path_domain_for_scope(
     registry: &ProfileRegistry,
     session: SessionView<'_>,
     request: &CheckRequest,
@@ -8585,6 +8763,7 @@ mod tests {
             unknown_environment: false,
             unknown_environment_from: Vec::new(),
             unknown_environment_names: Vec::new(),
+            generated_environment: Vec::new(),
             working_directory: caushell_profile::DispatchWorkingDirectory::Inherit,
             stdin_from_parent: false,
             stdin_from_tool: false,
@@ -9628,12 +9807,19 @@ modifiers:
             ..PolicyConfig::default()
         };
         let ctx = run_pass_with_policy(
-            &SessionSummary::new(), ShellKind::Bash,
-            "cat unknown | parallel echo {}", policy,
+            &SessionSummary::new(),
+            ShellKind::Bash,
+            "cat unknown | parallel echo {}",
+            policy,
         );
-        assert!(ctx.execution_unit_resolve_records().iter().all(|record| record.depth <= 1));
+        assert!(
+            ctx.execution_unit_resolve_records()
+                .iter()
+                .all(|record| record.depth <= 1)
+        );
         assert!(ctx.evidence.iter().any(|evidence| matches!(
-            evidence.kind, caushell_types::EvidenceKind::ExecutionExpansionTruncated(_)
+            evidence.kind,
+            caushell_types::EvidenceKind::ExecutionExpansionTruncated(_)
         )));
     }
 
@@ -10516,6 +10702,40 @@ modifiers:
             record.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs
                 && execution_record_matches_fixture(record, "rm '-rf' '/'")
         }));
+    }
+
+    #[test]
+    fn native_argument_environment_gap_retains_dynamic_kind() {
+        let ctx = run_pass(
+            &SessionSummary::new(),
+            ShellKind::Bash,
+            "cat .env | xargs -I{} env QUERY={} sh -c 'dig -q \"$QUERY\"'",
+        );
+        let record = ctx.execution_unit_resolve_records().iter().find(|record| {
+            !record.inherited_scope.native_argument_inputs.is_empty()
+                && matches!(&record.result, ResolveInvocationArtifactResult::SelectionError { normalized_command_name, .. } if normalized_command_name == "env")
+        }).unwrap();
+        assert!(
+            matches!(
+                &record.result,
+                ResolveInvocationArtifactResult::SelectionError {
+                    gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                    error: caushell_profile::BindError::IndeterminateDispatch { .. },
+                    ..
+                }
+            ),
+            "{:?}",
+            record.result
+        );
+        assert!(
+            record
+                .inherited_scope
+                .native_argument_inputs
+                .iter()
+                .any(|input| input.consumer_node_id == record.source_node_id
+                    && input.origin.producer_node_id == record.parent_execution_node_id
+                    && !input.origin.data_ranges.is_empty())
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 mod alias;
 mod execution_records;
-mod function_overlay;
 mod file_execution;
+mod function_overlay;
 pub(crate) use file_execution::{file_execution_checks, file_reference_is_exempt};
 mod hard_deny;
 mod implicit_startup;
@@ -14,10 +14,15 @@ pub(crate) use io_target::{
     bound_invocation, content_io_target, execution_content_io_target, slot_uses_content_open,
 };
 pub(crate) use listener::{environment_default, network_listeners, shell_variable_default};
-mod node_ids;
 mod native_template;
-pub(crate) use native_template::{bind_symbolic_template_inputs, collect_native_template_input_mutations};
+mod node_ids;
+pub(crate) use native_template::{
+    bind_symbolic_template_inputs, collect_native_template_input_mutations,
+    forwarded_native_argument_inputs,
+};
 mod outside_workspace;
+mod path_list;
+pub(crate) use path_list::bind_path_list_targets;
 pub(crate) mod parallel_jobs;
 mod payload_hard_deny;
 mod pipeline;
@@ -76,8 +81,7 @@ pub(crate) use node_ids::{
     transform_output_artifact_node_id, variable_binding_intent_node_id,
 };
 pub(crate) use outside_workspace::{
-    collect_outside_workspace_path_consumes, decision_for_rule_action,
-    push_unique_reason,
+    collect_outside_workspace_path_consumes, decision_for_rule_action, push_unique_reason,
 };
 pub(crate) use payload_hard_deny::{
     collect_block_device_destructive_reasons, collect_block_device_session_reasons,

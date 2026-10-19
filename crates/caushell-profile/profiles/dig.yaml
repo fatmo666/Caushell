@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: dig
@@ -18,34 +20,106 @@ platform:
   requires_features: []
 
 forms:
-  - id: dns_query
-    selector:
-      kind: all
-      items: []
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
     parameters:
-      - name: query_targets
-        semantic:
-          kind: endpoint
-          endpoint_kind: host_port
-          usage: generic_endpoint
-        binding:
-          kind: remaining_positionals
+      - {name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
+
+  - id: dns_query
+    selector: {kind: not, item: {kind: has_modifier, modifier: information}}
+    parameters:
+      - name: request_words
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
         cardinality: optional_many
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '^@(.+)$', group: 1}
+              target: {name: resolver_servers, semantic: {kind: endpoint, endpoint_kind: host_port, usage: transport_target}}
+            - matcher: {kind: regex_capture, pattern: '^\+tls-(?:ca|certfile|keyfile)=(.+)$', group: 1}
+              target: {name: tls_files, semantic: {kind: path, role: read, purpose: auxiliary_input}}
+            - matcher: {kind: regex_capture, pattern: '^\+.*$', group: 0}
+              target: {name: query_options, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, unresolved: true}
+          # A query name is request data, not the resolver's connection address.
+          # A local recursive resolver can forward it to an external authority.
+          fallback: {name: query_names, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, unresolved: true}
     stream_contract:
-      stdin_mode: ignored
+      stdin_mode: declared_effects
       stdout_mode: data
       stderr_mode: opaque
     effects:
-      - kind: network_endpoint
-        target:
-          kind: slot
-          name: query_targets
-      - kind: transform_data
-        target:
-          kind: none
+      - {kind: network_endpoint, target: {kind: slot, name: query_names}, input_scope: &query_inputs {slots: [request_words, query_names, query_options, explicit_query, reverse_query, batch_files, batch_stdin], stdin: true}}
+      - {kind: network_endpoint, target: {kind: slot, name: query_options}, input_scope: *query_inputs}
+      - {kind: network_endpoint, target: {kind: slot, name: resolver_servers}, input_scope: {slots: [resolver_servers], stdin: false}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: tls_files}}
+      - {kind: transform_data, target: {kind: none}}
 
-modifiers: []
+modifiers:
+  - {id: information, matcher: {kind: any_flag, flags: [-h, -v]}}
+  - {id: query_flags, matcher: {kind: any_flag, flags: ['-4', '-6', -d, -F, -i, -m, -n, -r, -u]}}
+  - id: batch
+    matcher: {kind: any_flag, flags: [-f]}
+    parameters:
+      - name: batch_source
+        semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}
+        value_projection: {kind: unknown}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches:
+            - {matcher: {kind: literal, value: '-'}, target: {name: batch_stdin, semantic: {kind: plain_value}}}
+          fallback: {name: batch_files, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects_when: {unless_modifiers: [information]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: batch_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: batch_stdin}}
+      - {kind: network_endpoint, target: {kind: slot, name: batch_source}, input_scope: *query_inputs}
+  - id: query_name
+    matcher: {kind: any_flag, flags: [-q]}
+    parameters:
+      - name: explicit_query
+        semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}
+        value_projection: {kind: unknown}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects_when: {unless_modifiers: [information]}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: explicit_query}, input_scope: *query_inputs}]
+  - id: reverse
+    matcher: {kind: any_flag, flags: [-x]}
+    parameters:
+      - name: reverse_query
+        semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}
+        value_projection: {kind: unknown}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects_when: {unless_modifiers: [information]}
+    effects: [{kind: network_endpoint, target: {kind: slot, name: reverse_query}, input_scope: *query_inputs}]
+  - id: query_settings
+    matcher: {kind: any_flag, flags: [-b, -c, -p, -t, -y]}
+    parameters:
+      - {name: settings, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: consume_auxiliary_value, target: {kind: slot, name: settings}}]
+  - id: signing_key
+    matcher: {kind: any_flag, flags: [-k]}
+    parameters:
+      - name: signing_key_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          last_value_only: true
+          branches: []
+          fallback: {name: signing_key_file, semantic: {kind: path, role: read, purpose: auxiliary_input}}
+    effects_when: {unless_modifiers: [information]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: signing_key_file}}
+      - {kind: consume_auxiliary_value, target: {kind: slot, name: signing_key_operand}}
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/sources:
+    - https://bind9.readthedocs.io/en/v9.20.15/manpages.html#dig-dns-lookup-utility
+    - https://github.com/isc-projects/bind9/blob/v9.20.15/bin/dig/dig.c

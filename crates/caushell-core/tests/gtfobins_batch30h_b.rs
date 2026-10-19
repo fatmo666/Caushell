@@ -110,7 +110,7 @@ fn has_endpoint(command: &str, expected: &str) -> bool {
     graph(command).iter().any(|node| matches!(
         &node.kind,
         NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, .. } }
-            if endpoint == expected
+            if endpoint.as_deref() == Some(expected)
     ))
 }
 

@@ -44,6 +44,7 @@ const PROFILE_KIND: &str = "command_profile";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalizeError {
+    InvalidPathList(String),
     EmptyIdentifier { field: &'static str },
     InvalidDslVersion(String),
     InvalidProfileKind(String),
@@ -211,7 +212,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 .collect(),
         });
     }
-    validate_endpoint_input_scopes(&forms, &modifiers)?;
+    validate_effect_input_contracts(&forms, &modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
     validate_stdout_scalars(&forms)?;
     let option_matching = normalize_option_matching(raw.option_matching);
@@ -442,7 +443,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
             &override_forms,
             &[],
         )?;
-        validate_endpoint_input_scopes(&override_forms, &inherited_modifiers)?;
+        validate_effect_input_contracts(&override_forms, &inherited_modifiers)?;
         validate_stdout_records(&override_forms, &inherited_modifiers)?;
         validate_stdout_scalars(&override_forms)?;
         validate_configured_path_references(
@@ -1650,8 +1651,10 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
         .structured_projection
         .map(normalize_structured_projection)
         .transpose()?;
+    let unknown_endpoint = value_projection == Some(crate::ValueProjection::Unknown)
+        && matches!(semantic, SemanticType::Endpoint(_));
     if structured_projection.is_some()
-        && (value_projection.is_some()
+        && ((value_projection.is_some() && !unknown_endpoint)
             || !matches!(
                 semantic,
                 SemanticType::PlainValue
@@ -1677,9 +1680,10 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
         )
         && !(value_projection == Some(crate::ValueProjection::DescriptorPath)
             && semantic == SemanticType::PlainValue)
+        && !unknown_endpoint
     {
         return Err(NormalizeError::InvalidValueProjection(format!(
-            "parameter {}: value_projection requires a filesystem path semantic (not cwd_anchor)",
+            "parameter {}: value_projection requires a filesystem path (not cwd_anchor), descriptor plain value, or unknown endpoint semantic",
             raw.name
         )));
     }
@@ -2292,6 +2296,7 @@ fn normalize_value_projection(
     };
     match raw {
         RawValueProjection::Identity => Ok(ValueProjection::Identity),
+        RawValueProjection::Unknown => Ok(ValueProjection::Unknown),
         RawValueProjection::DescriptorPath => Ok(ValueProjection::DescriptorPath),
         RawValueProjection::TomlString { key } => {
             ensure_non_empty(&key, "parameters.value_projection.key")?;
@@ -2703,6 +2708,35 @@ fn normalize_in_process_code_load_kind(
 fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     let kind = normalize_effect_kind(raw.kind);
     let target = normalize_effect_target(raw.target)?;
+    if let Some(contract) = &raw.path_list {
+        if !matches!(
+            target,
+            EffectTarget::ImplicitInput(ImplicitInputSource::StdinData)
+        ) || !matches!(
+            kind,
+            EffectKind::ReadPath
+                | EffectKind::WritePath
+                | EffectKind::DeletePath
+                | EffectKind::MovePath
+                | EffectKind::ChangeMode
+                | EffectKind::ChangeOwner
+                | EffectKind::ChangeGroup
+                | EffectKind::MetadataMutation
+        ) {
+            return Err(NormalizeError::InvalidPathList(
+                "path_list requires a filesystem effect on stdin_data".into(),
+            ));
+        }
+        if contract
+            .nul_modifier
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty())
+        {
+            return Err(NormalizeError::InvalidPathList(
+                "nul_modifier must be nonempty".into(),
+            ));
+        }
+    }
     if raw.host_risk.as_ref().is_some_and(|risk| {
         risk.semantic_class == Some(RawHostRiskSemanticClass::FileContentErasureTarget)
     }) && (kind != EffectKind::WritePath
@@ -2854,6 +2888,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
 
     Ok(Effect {
         input_scope: raw.input_scope,
+        path_list: raw.path_list,
         kind,
         target,
         path_access: raw.path_access,
@@ -2881,10 +2916,8 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     })
 }
 
-/// A mistyped input slot must not silently narrow the data reaching a sink.
-/// Optional modifier slots are legal, but each name must be declared in this
-/// invocation grammar (including tool-owned structured projections).
-fn validate_endpoint_input_scopes(
+/// Input contracts reference declarations in the current invocation grammar.
+fn validate_effect_input_contracts(
     forms: &[Form],
     modifiers: &[Modifier],
 ) -> Result<(), NormalizeError> {
@@ -2908,6 +2941,36 @@ fn validate_endpoint_input_scopes(
     let modifier_slots = slots(modifiers.iter().flat_map(|m| &m.parameters));
     let validate = |effects: &[Effect], available: &BTreeSet<String>| {
         for effect in effects {
+            if let EffectTarget::Dispatch(target) = &effect.target {
+                for entry in &target.generated_environment {
+                    let crate::GeneratedEnvironmentValue::AlphanumericFileName {
+                        prefix_slot,
+                        suffix_slot,
+                        ..
+                    } = &entry.value;
+                    for name in std::iter::once(prefix_slot).chain(suffix_slot.iter()) {
+                        if !available.contains(name) {
+                            return Err(NormalizeError::InvalidConfiguredPath(format!(
+                                "undeclared generated environment slot {name:?}"
+                            )));
+                        }
+                    }
+                }
+            }
+            if let Some(name) = effect
+                .path_list
+                .as_ref()
+                .and_then(|list| list.nul_modifier.as_ref())
+            {
+                if !modifiers
+                    .iter()
+                    .any(|modifier| modifier.id.as_str() == name)
+                {
+                    return Err(NormalizeError::InvalidPathList(format!(
+                        "undeclared nul_modifier {name:?}"
+                    )));
+                }
+            }
             if let Some(scope) = &effect.input_scope {
                 for name in &scope.slots {
                     if !available.contains(name) {
@@ -3426,6 +3489,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             argv,
             argv_suffix,
             environment,
+            clear_environment,
             clear_environment_when,
             unset_environment,
             unset_environment_when,
@@ -3433,6 +3497,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             unknown_environment,
             unknown_environment_from,
             unknown_environment_names,
+            generated_environment,
             stdin_from_parent,
             stdin_from_tool,
             stdout_to_parent,
@@ -3520,6 +3585,31 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     Ok(source.name)
                 })
                 .collect::<Result<Vec<_>, NormalizeError>>()?;
+            for entry in &generated_environment {
+                normalize_environment_source(crate::raw::RawEnvironmentValueSource {
+                    name: entry.name.clone(),
+                    empty_is_unset: false,
+                })?;
+                if !seen_environment_names.insert(entry.name.clone()) {
+                    return Err(NormalizeError::InvalidConfiguredPath(
+                        "duplicate tool-generated environment variable".into(),
+                    ));
+                }
+                let crate::GeneratedEnvironmentValue::AlphanumericFileName {
+                    prefix_slot,
+                    default_prefix,
+                    suffix_slot,
+                } = &entry.value;
+                ensure_non_empty(prefix_slot, "generated_environment.prefix_slot")?;
+                if let Some(slot) = suffix_slot {
+                    ensure_non_empty(slot, "generated_environment.suffix_slot")?;
+                }
+                if default_prefix.len() > 4096 || default_prefix.contains('\0') {
+                    return Err(NormalizeError::InvalidConfiguredPath(
+                        "invalid generated filename default prefix".into(),
+                    ));
+                }
+            }
             Ok(EffectTarget::Dispatch(DispatchTarget {
                 module_runtime: module_runtime
                     .map(|runtime| {
@@ -3532,6 +3622,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 argv: normalize_slot_names(argv, "effects.target.argv")?,
                 argv_suffix,
                 environment: normalize_slot_names(environment, "effects.target.environment")?,
+                clear_environment,
                 clear_environment_when: clear_environment_when
                     .into_iter()
                     .map(|name| {
@@ -3593,6 +3684,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                     .map(normalize_environment_source)
                     .collect::<Result<Vec<_>, _>>()?,
                 unknown_environment_names,
+                generated_environment,
                 stdin_from_parent,
                 stdin_from_tool,
                 stdout_to_parent,
@@ -3721,7 +3813,7 @@ fn normalize_subcommand_node(
     ensure_non_empty(&raw.name, "subcommands.name")?;
     let forms = normalize_forms(raw.forms)?;
     let modifiers = normalize_modifiers(raw.modifiers)?;
-    validate_endpoint_input_scopes(&forms, &modifiers)?;
+    validate_effect_input_contracts(&forms, &modifiers)?;
     validate_stdout_records(&forms, &modifiers)?;
     validate_stdout_scalars(&forms)?;
     let option_scope = normalize_option_scope(raw.option_scope);
@@ -3926,6 +4018,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
                     input_scope: None,
+                    path_list: None,
                     kind: RawEffectKind::ExecutePayload,
                     target: RawEffectTarget::Slot {
                         name: "payload".to_string(),
@@ -3972,6 +4065,7 @@ mod tests {
                 }],
                 effects: vec![RawEffect {
                     input_scope: None,
+                    path_list: None,
                     kind: RawEffectKind::LoadConfig,
                     target: RawEffectTarget::Slot {
                         name: "startup_config".to_string(),
@@ -4109,6 +4203,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
                     input_scope: None,
+                    path_list: None,
                     kind: RawEffectKind::WritePath,
                     target: RawEffectTarget::Slot {
                         name: "destination".to_string(),
@@ -4220,6 +4315,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
                     input_scope: None,
+                    path_list: None,
                     kind: RawEffectKind::WritePath,
                     target: RawEffectTarget::Slot {
                         name: "target".to_string(),
@@ -4400,6 +4496,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
                     input_scope: None,
+                    path_list: None,
                     kind: RawEffectKind::ChangeMode,
                     target: RawEffectTarget::Slot {
                         name: "path_targets".to_string(),
@@ -4552,6 +4649,7 @@ mod tests {
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
                     input_scope: None,
+                    path_list: None,
                     kind: RawEffectKind::LoadInProcessCode,
                     target: RawEffectTarget::Slot {
                         name: "require_target".to_string(),

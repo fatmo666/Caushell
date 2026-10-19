@@ -361,7 +361,7 @@ fn source_provenance_mutations(
                 source_node_id: source_node_id.clone(),
                 node_id: network_endpoint_artifact_node_id(text),
                 artifact: ProvenanceArtifact::NetworkEndpoint {
-                    endpoint: text.to_string(),
+                    endpoint: Some(text.to_string()),
                     endpoint_kind: ProvenanceEndpointKind::Url,
                     usage: ProvenanceEndpointUsage::FetchSource,
                 },
@@ -873,7 +873,7 @@ mod tests {
                     "artifact:network-endpoint:url:fetch_source:git+https://example.test/pkg.git"
                 ),
                 artifact: ProvenanceArtifact::NetworkEndpoint {
-                    endpoint: "git+https://example.test/pkg.git".to_string(),
+                    endpoint: Some("git+https://example.test/pkg.git".to_string()),
                     endpoint_kind: ProvenanceEndpointKind::Url,
                     usage: ProvenanceEndpointUsage::FetchSource,
                 },

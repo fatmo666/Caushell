@@ -637,14 +637,23 @@ extensions: {}
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
 
         assert_eq!(profile.primary_name(), "env");
-        assert_eq!(form_ids, vec!["dispatch_with_env", "print_environment"]);
-        assert_eq!(profile.modifiers.len(), 9);
         assert_eq!(
-            profile.forms[0].effects[0].kind,
-            EffectKind::DispatchCommand
+            form_ids,
+            vec![
+                "dispatch_with_empty_environment",
+                "dispatch_with_env",
+                "print_environment"
+            ]
         );
+        assert_eq!(profile.modifiers.len(), 9);
+        let dispatch = profile
+            .forms
+            .iter()
+            .find(|form| form.id.as_str() == "dispatch_with_env")
+            .unwrap();
+        assert_eq!(dispatch.effects[0].kind, EffectKind::DispatchCommand);
         assert_eq!(
-            profile.forms[0].parameters[0].binding,
+            dispatch.parameters[0].binding,
             BindingSpec::LeadingPositionalsWhile(crate::ValueMatcher::StructuredValueContext(
                 crate::StructuredValueContext::EnvAssignment,
             ))
@@ -671,6 +680,8 @@ extensions: {}
         assert_eq!(
             form_ids,
             vec![
+                "explicit_pattern_filename_records",
+                "positional_pattern_filename_records",
                 "show_help",
                 "explicit_pattern_search",
                 "explicit_pattern_search_stdin",
@@ -685,16 +696,26 @@ extensions: {}
         assert!(modifier_ids.contains(&"inline_pattern"));
         assert!(modifier_ids.contains(&"pattern_file"));
         assert!(modifier_ids.contains(&"recursive"));
+        let positional_search = profile
+            .forms
+            .iter()
+            .find(|form| form.id.as_str() == "positional_pattern_search")
+            .unwrap();
+        let explicit_search = profile
+            .forms
+            .iter()
+            .find(|form| form.id.as_str() == "explicit_pattern_search")
+            .unwrap();
         assert_eq!(
-            profile.forms[5].parameters[0].binding,
+            positional_search.parameters[0].binding,
             BindingSpec::NextPositional
         );
         assert_eq!(
-            profile.forms[5].parameters[1].binding,
+            positional_search.parameters[1].binding,
             BindingSpec::RemainingPositionals
         );
         assert_eq!(
-            profile.forms[1].stream_contract,
+            explicit_search.stream_contract,
             Some(crate::StreamContract {
                 stdin_mode: crate::StreamInputMode::DeclaredEffects,
                 stdout_mode: crate::StreamOutputMode::Data,
@@ -731,7 +752,7 @@ extensions: {}
         }
 
         assert_eq!(
-            profile.forms[1].parameters[0].value_constraints,
+            explicit_search.parameters[0].value_constraints,
             vec![crate::ValueConstraint::ExcludeLiteral("-".to_string())]
         );
     }
@@ -1078,10 +1099,25 @@ extensions: {}
             .as_ref()
             .expect("expected pip subcommands to be present");
         assert_eq!(subcommands.roots.len(), 2);
-        assert_eq!(subcommands.roots[0].name, "install");
-        assert_eq!(subcommands.roots[0].forms.len(), 1);
+        let install = subcommands
+            .roots
+            .iter()
+            .find(|node| node.name == "install")
+            .unwrap();
+        assert_eq!(
+            install
+                .forms
+                .iter()
+                .map(|form| form.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["show_help", "preview_install", "install_packages"]
+        );
 
-        let form = &subcommands.roots[0].forms[0];
+        let form = install
+            .forms
+            .iter()
+            .find(|form| form.id.as_str() == "install_packages")
+            .unwrap();
         assert_eq!(form.id.as_str(), "install_packages");
         assert_eq!(form.parameters.len(), 1);
         assert_eq!(
@@ -1114,21 +1150,51 @@ extensions: {}
         assert_eq!(
             effect_kinds,
             vec![
+                EffectKind::WritePath,
                 EffectKind::ImportPackage,
                 EffectKind::ExecuteImportedPackageLogic,
             ]
         );
-        assert_eq!(
-            form.effects[0].target,
-            EffectTarget::Slot(crate::SlotName::new("package_specs"))
-        );
-        assert_eq!(
-            form.effects[1].target,
-            EffectTarget::Slot(crate::SlotName::new("package_specs"))
-        );
+        let write = form
+            .effects
+            .iter()
+            .find(|effect| effect.kind == EffectKind::WritePath)
+            .unwrap();
+        match &write.target {
+            EffectTarget::ConfiguredPath(target) => {
+                assert_eq!(
+                    target
+                        .sources
+                        .iter()
+                        .map(|source| source.slot.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["target_directory", "root_directory", "prefix_directory"]
+                );
+                assert_eq!(target.environment.as_ref().unwrap().name, "PIP_TARGET");
+                assert!(target.environment.as_ref().unwrap().empty_is_unset);
+                assert_eq!(target.missing, crate::ConfiguredPathMissing::Unknown);
+            }
+            other => panic!("unexpected pip installation target: {other:?}"),
+        }
+        for kind in [
+            EffectKind::ImportPackage,
+            EffectKind::ExecuteImportedPackageLogic,
+        ] {
+            assert_eq!(
+                form.effects
+                    .iter()
+                    .find(|effect| effect.kind == kind)
+                    .unwrap()
+                    .target,
+                EffectTarget::Slot(crate::SlotName::new("package_specs"))
+            );
+        }
 
-        assert_eq!(subcommands.roots[0].modifiers.len(), 3);
-        let requirement_modifier = &subcommands.roots[0].modifiers[0];
+        let requirement_modifier = install
+            .modifiers
+            .iter()
+            .find(|modifier| modifier.id.as_str() == "requirement_file")
+            .unwrap();
         assert_eq!(requirement_modifier.id.as_str(), "requirement_file");
         assert_eq!(requirement_modifier.parameters.len(), 1);
         assert_eq!(
@@ -1153,7 +1219,11 @@ extensions: {}
             other => panic!("unexpected pip requirement semantic: {other:?}"),
         }
 
-        let editable_modifier = &subcommands.roots[0].modifiers[1];
+        let editable_modifier = install
+            .modifiers
+            .iter()
+            .find(|modifier| modifier.id.as_str() == "editable_package")
+            .unwrap();
         assert_eq!(editable_modifier.id.as_str(), "editable_package");
         assert_eq!(editable_modifier.parameters.len(), 1);
         match &editable_modifier.parameters[0].semantic {
@@ -1172,7 +1242,11 @@ extensions: {}
             other => panic!("unexpected pip editable semantic: {other:?}"),
         }
 
-        let target_modifier = &subcommands.roots[0].modifiers[2];
+        let target_modifier = install
+            .modifiers
+            .iter()
+            .find(|modifier| modifier.id.as_str() == "target_directory")
+            .unwrap();
         assert_eq!(target_modifier.id.as_str(), "target_directory");
         assert_eq!(target_modifier.parameters.len(), 1);
         assert_eq!(
@@ -1181,10 +1255,10 @@ extensions: {}
                 operand_mode: crate::FlagOperandMode::NextArg,
             }
         );
-        assert!(matches!(
+        assert_eq!(
             target_modifier.parameters[0].semantic,
-            SemanticType::Path(_)
-        ));
+            SemanticType::PlainValue
+        );
     }
 
     #[test]

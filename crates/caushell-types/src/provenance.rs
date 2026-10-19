@@ -98,6 +98,12 @@ pub enum ImplicitInputSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeArgumentDomain {
     Unbounded,
+    /// Prefix + a nonempty ASCII-alphanumeric run + suffix. No particular
+    /// generated filename or filesystem object is asserted.
+    GeneratedFileName {
+        prefix: String,
+        suffix: String,
+    },
     /// Unknown native argv data surrounded by already-decoded literal bytes.
     /// This is a spelling bound only, not a path containment or content proof.
     TextTemplate {
@@ -122,6 +128,11 @@ pub enum RuntimeArgumentDomain {
 }
 
 impl RuntimeArgumentDomain {
+    pub fn unquoted_generated_field(&self) -> bool {
+        matches!(self, Self::GeneratedFileName { prefix, suffix }
+            if !prefix.chars().chain(suffix.chars()).any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '[' | '\0')))
+    }
+
     /// Preserve a single replacement relation without evaluating filenames.
     /// Repeated placeholders remain unbounded. Unknown input retains literal
     /// affixes without acquiring path bounds. Nested affixes flatten, so the
@@ -140,6 +151,18 @@ impl RuntimeArgumentDomain {
             return self.clone();
         }
         let (roots, may_escape, prefix, suffix) = match self {
+            Self::GeneratedFileName {
+                prefix: inner_prefix,
+                suffix: inner_suffix,
+            } => {
+                if prefix.len() + suffix.len() + inner_prefix.len() + inner_suffix.len() > 4096 {
+                    return Self::Unbounded;
+                }
+                return Self::GeneratedFileName {
+                    prefix: format!("{prefix}{inner_prefix}"),
+                    suffix: format!("{inner_suffix}{suffix}"),
+                };
+            }
             Self::PathSet { roots, may_escape } => {
                 (roots, *may_escape, prefix.to_string(), suffix.to_string())
             }
@@ -321,7 +344,8 @@ pub enum ProvenanceArtifact {
         version: u64,
     },
     NetworkEndpoint {
-        endpoint: String,
+        /// None retains a possible network origin without inventing an address.
+        endpoint: Option<String>,
         endpoint_kind: ProvenanceEndpointKind,
         usage: ProvenanceEndpointUsage,
     },
@@ -1002,7 +1026,7 @@ mod tests {
     #[test]
     fn network_endpoint_artifact_roundtrips() {
         let artifact = ProvenanceArtifact::NetworkEndpoint {
-            endpoint: "https://example.test/payload.sh".to_string(),
+            endpoint: Some("https://example.test/payload.sh".to_string()),
             endpoint_kind: ProvenanceEndpointKind::Url,
             usage: ProvenanceEndpointUsage::FetchSource,
         };
@@ -1018,7 +1042,7 @@ mod tests {
     #[test]
     fn email_address_endpoint_artifact_roundtrips_with_distinct_wire_kind() {
         let artifact = ProvenanceArtifact::NetworkEndpoint {
-            endpoint: "Recipient <recipient@example.test>".to_string(),
+            endpoint: Some("Recipient <recipient@example.test>".to_string()),
             endpoint_kind: ProvenanceEndpointKind::EmailAddress,
             usage: ProvenanceEndpointUsage::UploadTarget,
         };
@@ -1027,6 +1051,26 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ProvenanceArtifact>(value).unwrap(),
             artifact
+        );
+    }
+
+    #[test]
+    fn unknown_network_endpoint_roundtrips_without_a_placeholder_address() {
+        let artifact = ProvenanceArtifact::NetworkEndpoint {
+            endpoint: None,
+            endpoint_kind: ProvenanceEndpointKind::Url,
+            usage: ProvenanceEndpointUsage::FetchSource,
+        };
+        let value = serde_json::to_value(&artifact).unwrap();
+        assert!(value["endpoint"].is_null());
+        assert_eq!(
+            serde_json::from_value::<ProvenanceArtifact>(value).unwrap(),
+            artifact
+        );
+        let legacy = json!({"kind": "network_endpoint", "endpoint": "https://example.test/", "endpoint_kind": "url", "usage": "fetch_source"});
+        assert!(
+            matches!(serde_json::from_value::<ProvenanceArtifact>(legacy).unwrap(),
+            ProvenanceArtifact::NetworkEndpoint {endpoint: Some(address), ..} if address == "https://example.test/")
         );
     }
 }
