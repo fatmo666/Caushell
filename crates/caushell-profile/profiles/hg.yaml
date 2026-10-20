@@ -1,141 +1,140 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-identity:
-  canonical_name: hg
-  aliases: []
-trust:
-  tier: tier_a
-  source: built_in
-platform:
-  os_families:
-  - posix
-  - linux
-  shell_families: []
-  requires_features: []
+identity: {canonical_name: hg, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
 opaque_on_unresolved: true
+
+# --config is applied before extension loading and command dispatch. Hooks and
+# aliases are scoped to the bounded native query vocabulary.
 forms:
-- id: native_status_alias
-  selector:
-    kind: all
-    items:
-    - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(status|st)$'}}
-    - {kind: not, item: {kind: has_modifier, modifier: information}}
-  parameters:
-  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
-  - {name: status_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
-  effects:
-  - {kind: read_path, target: {kind: none}}
-  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
-- id: information
-  selector:
-    kind: has_modifier
-    modifier: information
-  parameters:
-  - name: ignored_help_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_args
-    cardinality: optional_many
-- id: executable_alias
-  selector:
-    kind: all
-    items:
-    - &1
-      kind: has_modifier_parameter_matching
-      modifier: config_alias
-      parameter: configuration_override
-      matcher:
-        kind: regex_pattern
-        pattern: ^alias\.[^=]+=["']?!
-    - kind: not
-      item: &2
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: alias_invocation_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_args
-    cardinality: optional_many
-  effects:
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: shell_alias_definition
-- id: non_executable_configuration_query
-  selector:
-    kind: all
-    items:
-    - kind: has_modifier
-      modifier: config_alias
-    - kind: not
-      item: *1
-    - kind: not
-      item: *2
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: regex_pattern
-        pattern: "^(status|log|summary|id)$"
-  parameters:
-  - name: native_query_arguments
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_args
-    cardinality: optional_many
-  effects: []
+  - id: information
+    selector: &information {kind: has_modifier, modifier: information}
+    parameters:
+      - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+      - {name: ignored_help_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: &output {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: native_status_alias
+    selector:
+      kind: all
+      items:
+        - &running {kind: not, item: *information}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(status|st)$'}}
+    parameters: &query_parameters
+      - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: query_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: read_path, target: {kind: none}}]
+    stream_contract: *output
+  - id: native_query
+    selector:
+      kind: all
+      items:
+        - *running
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(log|summary|sum|identify|id)$'}}
+    parameters: *query_parameters
+    effects: [{kind: read_path, target: {kind: none}}]
+    stream_contract: *output
+  - id: executable_alias
+    selector:
+      kind: all
+      items:
+        - *running
+        - kind: not
+          item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(status|st|log|summary|sum|identify|id)$'}}
+        - {kind: has_modifier_parameter_matching, modifier: configuration, parameter: configuration_override, matcher: {kind: regex_pattern, pattern: '^\s*alias\.[^=]+\s*=\s*["'']?!'}}
+    parameters: *query_parameters
+    stream_contract: *output
+
 modifiers:
-- id: repository
-  matcher: {kind: any_flag, flags: [-R, --repository]}
-  parameters:
-  - {name: repository, semantic: {kind: path, role: cwd_anchor, purpose: working_directory}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
-  effects: [{kind: target_path, target: {kind: slot, name: repository}}]
-- id: information
-  matcher:
-    kind: any_flag
-    flags:
-    - "--help"
-    - "-h"
-- id: config_alias
-  matcher:
-    kind: any_flag
-    flags:
-    - "--config"
-  parameters:
-  - name: configuration_override
-    semantic:
-      kind: plain_value
-    binding:
-      kind: following_matched_flag
-      operand_mode: next_arg
-    cardinality: required_many
-    structured_projection:
-      branches:
-      - matcher:
-          kind: prefix
-          value: alias.
-        target:
-          name: shell_alias_definition
-          semantic:
-            kind: payload
-            language: opaque
-            source: dynamic_reference
-            recursive: true
-      fallback:
-        name: ordinary_configuration
-        semantic:
-          kind: plain_value
-subcommands:
+  - id: information
+    matcher: {kind: any_flag, flags: [-h, --help]}
+  - id: repository
+    matcher: {kind: any_flag, flags: [-R, --repository, --repo]}
+    parameters:
+      - {name: repository, semantic: {kind: path, role: cwd_anchor, purpose: working_directory}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects: [{kind: target_path, target: {kind: slot, name: repository}}]
+  - id: configuration
+    matcher: {kind: any_flag, flags: [--config]}
+    parameters:
+      - name: configuration_override
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            # Disabled extensions and :required settings do not import code.
+            # An empty value enables module search, not a cwd-relative file.
+            - {matcher: {kind: regex_capture, pattern: '(?s)^\s*extensions\.[^=]+\s*=\s*!.*$', group: 0}}
+            - {matcher: {kind: regex_capture, pattern: '(?s)^\s*extensions\.[^=]+:required\s*=.*$', group: 0}}
+            - matcher: {kind: regex_capture, pattern: '^\s*extensions\.([^=\s]+)\s*=\s*$', group: 1}
+              target: {name: extension_module, semantic: {kind: payload, language: python, source: dynamic_reference, recursive: true}}
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*extensions\.[^=]+\s*=\s*(.*\$.*?)\s*$', group: 1}
+              target: {name: extension_path, semantic: {kind: in_process_code_load, load_kind: path}, unresolved: true}
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*extensions\.[^=]+\s*=\s*(\S.*?)\s*$', group: 1}
+              target: {name: extension_path, semantic: {kind: in_process_code_load, load_kind: path}}
+            # Canonical command hook names include optional named-hook suffixes.
+            # Help suppresses command hooks, but never extension loading.
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*hooks\.(pre|post|fail)-status(?:\.[^=\s]+)?\s*=\s*(\S.*?)\s*$', group: 2}
+              unless_modifiers: [information]
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(log|summary|sum|identify|id)$'}}
+              target: &hook {name: hook_definition, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*hooks\.(pre|post|fail)-log(?:\.[^=\s]+)?\s*=\s*(\S.*?)\s*$', group: 2}
+              unless_modifiers: [information]
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|summary|sum|identify|id)$'}}
+              target: *hook
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*hooks\.(pre|post|fail)-summary(?:\.[^=\s]+)?\s*=\s*(\S.*?)\s*$', group: 2}
+              unless_modifiers: [information]
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|identify|id)$'}}
+              target: *hook
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*hooks\.(pre|post|fail)-identify(?:\.[^=\s]+)?\s*=\s*(\S.*?)\s*$', group: 2}
+              unless_modifiers: [information]
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|summary|sum)$'}}
+              target: *hook
+            # Both shell aliases and native aliases can replace a query. Alias
+            # substitution is Mercurial syntax, not an already-bound Bash child.
+            # Shell aliases dispatch before --help; native aliases do not.
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.[^=]+\s*=\s*[^!\s].*$', group: 0}
+              requires_modifiers: [information]
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*status(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(st|log|summary|sum|identify|id)$'}}
+              target: &alias {name: shell_alias_definition, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*st(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|log|summary|sum|identify|id)$'}}
+              target: *alias
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*log(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|summary|sum|identify|id)$'}}
+              target: *alias
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*summary(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|sum|identify|id)$'}}
+              target: *alias
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*sum(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|summary|identify|id)$'}}
+              target: *alias
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*identify(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|summary|sum|id)$'}}
+              target: *alias
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.\^?(?:[^=|]*\|)*id(?:\|[^=|]*)*\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|summary|sum|identify)$'}}
+              target: *alias
+            - matcher: {kind: regex_capture, pattern: '(?s)^\s*alias\.[^=]+\s*=\s*(\S.*?)\s*$', group: 1}
+              unless_parameter_matches: {name: operation, matcher: {kind: regex_pattern, pattern: '^(status|st|log|summary|sum|identify|id)$'}}
+              target: *alias
+          fallback: {name: ordinary_configuration, semantic: {kind: plain_value}}
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: shell_alias_definition}}
+      - {kind: execute_payload, target: {kind: slot, name: hook_definition}}
+      - {kind: execute_hook, target: {kind: slot, name: hook_definition}}
+      - {kind: load_in_process_code, target: {kind: slot, name: extension_path}}
+      - {kind: load_in_process_code, target: {kind: slot, name: extension_module}}
+      - {kind: execute_payload, target: {kind: slot, name: extension_module}}
+  - id: display
+    matcher: {kind: any_flag, flags: [-q, --quiet, -v, --verbose, --debug, --traceback, --time, --hidden, -y, --noninteractive]}
+
 extensions:
   caushell.profile/source_research:
-  - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/hg (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+    - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/hg (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
+    - https://www.mercurial-scm.org/help/topics/config
   caushell.profile/known_limitations:
-  - Source-specific bounded forms are modeled; unresolved CLI combinations remain
-    opaque.
-  - Inner configuration payloads and generated native child argv not explicitly represented
-    by a form remain partial.
-  - Known GTFOBins mechanism remains partially opaque until its native boundary has
-    a dedicated form.
+    - Native queries are bounded to status, log, summary and identify; unknown options and other operations remain unresolved.
+    - Configured aliases and hooks retain opaque native payloads; alias substitution and Python hook syntax are not parsed as Bash.
