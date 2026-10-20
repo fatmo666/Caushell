@@ -361,6 +361,15 @@ pub struct ExecutionUnitResolveRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum ExecutionUnitOriginLocator {
+    ShellEvaluation {
+        scope_key: Option<String>,
+        source_cwd_anchor: ShellSourceCwdAnchor,
+        source_start_byte: usize,
+        site_index: usize,
+        substitution_index: usize,
+        expression: String,
+        substitution_body: Option<String>,
+    },
     #[default]
     None,
     FunctionExpansion {

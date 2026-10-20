@@ -152,11 +152,13 @@ fn derived_origin_root_command_index(origin: &DerivedInvocationOrigin) -> Option
         | DerivedInvocationOrigin::RecursivePayload { .. }
         | DerivedInvocationOrigin::StaticXargs { .. }
         | DerivedInvocationOrigin::ShellRedirection { .. } => None,
+        DerivedInvocationOrigin::ShellEvaluation { .. } => None,
     }
 }
 
 fn derived_origin_rank(origin: &DerivedInvocationOrigin) -> u8 {
     match origin {
+        DerivedInvocationOrigin::ShellEvaluation { .. } => 15,
         DerivedInvocationOrigin::PipelineSegment { .. } => 1,
         DerivedInvocationOrigin::CommandSubstitutionMaterialization { .. } => 2,
         DerivedInvocationOrigin::CommandSubstitutionAssignmentValue { .. } => 3,

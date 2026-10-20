@@ -79,6 +79,12 @@ impl SessionTransformPass for ExtractCommandSubstitutionProvenancePass {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum CommandSubstitutionArtifactKey {
+    ShellEvaluation {
+        parent_node_id: NodeId,
+        scope_key: Option<String>,
+        site_index: usize,
+        substitution_index: usize,
+    },
     BodyLocator {
         parent_node_id: NodeId,
         token_index: usize,
@@ -158,6 +164,30 @@ fn command_substitution_descriptor_for_record(
     records_by_node_id: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
 ) -> Option<CommandSubstitutionProvenanceRecord> {
     match &record.origin_locator {
+        ExecutionUnitOriginLocator::ShellEvaluation {
+            scope_key,
+            site_index,
+            substitution_index,
+            expression,
+            substitution_body: Some(body),
+            ..
+        } => Some(CommandSubstitutionProvenanceRecord {
+            artifact_key: CommandSubstitutionArtifactKey::ShellEvaluation {
+                parent_node_id: record.parent_execution_node_id.clone(),
+                scope_key: scope_key.clone(),
+                site_index: *site_index,
+                substitution_index: *substitution_index,
+            },
+            expression_text: expression.clone(),
+            body_text: body.clone(),
+            parent_execution_node_id: record.parent_execution_node_id.clone(),
+            outer_relation: ProcessSubstitutionOuterRelation::Consume {
+                consume_kind: ProvenanceConsumeKind::AuxiliaryInput,
+                slot_name: None,
+                domain_label: None,
+            },
+            derived_command_node_ids: Vec::new(),
+        }),
         ExecutionUnitOriginLocator::CommandSubstitutionBody {
             token_index,
             substitution_index,
@@ -333,6 +363,18 @@ fn command_substitution_output_artifact_node_id(
     record_key: &CommandSubstitutionArtifactKey,
 ) -> NodeId {
     match record_key {
+        CommandSubstitutionArtifactKey::ShellEvaluation {
+            parent_node_id,
+            scope_key,
+            site_index,
+            substitution_index,
+        } => NodeId::new(format!(
+            "artifact:command-substitution-output:{}:{}:{}:eval:{}:{site_index}:{substitution_index}",
+            request.session_id.0,
+            request.sequence_no.0,
+            parent_node_id.0,
+            scope_key.as_deref().unwrap_or("root")
+        )),
         CommandSubstitutionArtifactKey::BodyLocator {
             parent_node_id,
             token_index,

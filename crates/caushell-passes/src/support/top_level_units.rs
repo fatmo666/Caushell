@@ -19,6 +19,7 @@ pub(crate) enum TopLevelUnitKind<'a> {
     Assignment(&'a AssignmentCommandFact),
     Unset(&'a UnsetCommandFact),
     FunctionDefinition(&'a FunctionDefinitionFact),
+    ShellEvaluation(&'a caushell_parse::ShellEvaluationSite),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,7 @@ impl<'a> TopLevelUnit<'a> {
             TopLevelUnitKind::Assignment(command) => &command.top_level_span,
             TopLevelUnitKind::Unset(command) => &command.top_level_span,
             TopLevelUnitKind::FunctionDefinition(command) => &command.top_level_span,
+            TopLevelUnitKind::ShellEvaluation(site) => &site.top_level_span,
         }
     }
 
@@ -64,6 +66,7 @@ impl<'a> TopLevelUnit<'a> {
             TopLevelUnitKind::Assignment(command) => command.text.as_str(),
             TopLevelUnitKind::Unset(command) => command.text.as_str(),
             TopLevelUnitKind::FunctionDefinition(command) => command.text.as_str(),
+            TopLevelUnitKind::ShellEvaluation(site) => &site.input.text,
         }
     }
 
@@ -172,6 +175,16 @@ pub(crate) fn collect_top_level_units(parsed: &ParsedCommandArtifact) -> Vec<Top
             span: &definition.top_level_span,
             order_hint: definition.span.start_byte,
         });
+    }
+
+    for site in &parsed.shell_evaluations {
+        if !pending.iter().any(|unit| unit.span == &site.top_level_span) {
+            pending.push(PendingTopLevelUnit {
+                kind: TopLevelUnitKind::ShellEvaluation(site),
+                span: &site.top_level_span,
+                order_hint: site.input.span.start_byte,
+            });
+        }
     }
 
     pending.sort_by(|left, right| {

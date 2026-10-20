@@ -244,6 +244,50 @@ pub struct ForLoopFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellEvaluationKind {
+    ArrayElementAssignment { name: String, index: String },
+    Arithmetic,
+    ArrayIndex { name: String },
+    UnsetOperand { functions_only: bool },
+    ArithmeticBuiltin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellEvaluationSite {
+    pub kind: ShellEvaluationKind,
+    pub input: AssignmentValueFact,
+    pub top_level_span: SourceSpan,
+    pub shell_scope_span: Option<SourceSpan>,
+    pub numeric_locals: Vec<String>,
+    pub numeric_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
+}
+
+/// Grammar facts only; no arithmetic, substitution or variable evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArithmeticReference {
+    Optional(Vec<ArithmeticReference>),
+    Variable(String),
+    ExpandedWord {
+        text: String,
+        quoted: bool,
+        node_kind: String,
+    },
+    Array {
+        name: String,
+        index: String,
+        read_value: bool,
+    },
+    CommandSubstitution(CommandSubstitutionFact),
+    Assignment {
+        name: String,
+        reads_previous: bool,
+        value: Vec<ArithmeticReference>,
+    },
+    Unsupported(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommandArtifact {
     pub raw_command: String,
     pub shell_kind: ShellKind,
@@ -253,6 +297,7 @@ pub struct ParsedCommandArtifact {
     pub assignment_commands: Vec<AssignmentCommandFact>,
     pub for_loops: Vec<ForLoopFact>,
     pub unset_commands: Vec<UnsetCommandFact>,
+    pub shell_evaluations: Vec<ShellEvaluationSite>,
     pub function_definitions: Vec<FunctionDefinitionFact>,
     pub redirections: Vec<RedirectionFact>,
     pub diagnostics: Vec<ParseDiagnostic>,

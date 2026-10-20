@@ -24,6 +24,13 @@ pub struct NestedPayloadInputFragmentSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DerivedInvocationOrigin {
+    ShellEvaluation {
+        parent_node_id: String,
+        scope_key: Option<String>,
+        source_start_byte: usize,
+        site_index: usize,
+        substitution_index: usize,
+    },
     NestedPayload {
         nested_record_id: usize,
     },

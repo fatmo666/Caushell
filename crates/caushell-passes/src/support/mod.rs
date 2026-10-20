@@ -31,6 +31,7 @@ mod pipeline;
 mod redirection;
 mod runtime_variable_overlay;
 pub(crate) use runtime_variable_overlay::{function_variable_escapes, runtime_write_visible};
+pub(crate) mod shell_evaluation;
 mod shell_sink_hard_deny;
 mod shell_state_options;
 pub(crate) use shell_state_options::{

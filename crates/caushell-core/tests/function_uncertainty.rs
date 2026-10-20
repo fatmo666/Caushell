@@ -177,7 +177,11 @@ fn unsupported_unset_targets_do_not_keep_stale_exact_functions() {
         );
         decision(
             &format!("f() {{ printf SAFE; }}; {unset}; printf DONE"),
-            Decision::Allow,
+            if unset.starts_with("unset -f ") {
+                Decision::Allow
+            } else {
+                Decision::NeedApproval
+            },
         );
     }
     decision("f() { printf SAFE; }; unset -vf f; f", Decision::Allow);

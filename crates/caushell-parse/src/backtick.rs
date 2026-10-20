@@ -176,6 +176,14 @@ pub(crate) fn restore(artifact: &mut ParsedCommandArtifact, facts: &[CommandSubs
             );
         }
     }
+    for site in &mut artifact.shell_evaluations {
+        restore_value(
+            &site.input.span,
+            &mut site.input.node_kind,
+            &mut site.input.quoted,
+            &mut site.input.command_substitutions,
+        );
+    }
     for assignment in artifact
         .commands
         .iter_mut()

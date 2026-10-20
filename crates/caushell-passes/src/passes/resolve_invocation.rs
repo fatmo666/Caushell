@@ -111,7 +111,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             &dispatch_derived_commands,
         );
 
-        let mut nested_payload_records = collect_nested_payload_records(
+        let (mut nested_payload_records, payload_source_contexts) = collect_nested_payload_records(
             &self.registry,
             staged_view,
             staged_view.summary(),
@@ -136,7 +136,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         let (
             execution_unit_resolve_records,
             expansion_limit_evidence,
-            derived_unresolved_payloads,
+            derived_payloads,
             shell_redirection_scopes,
             canonical_inline_payload_ids,
         ) = collect_execution_unit_resolve_records(
@@ -151,6 +151,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             &dispatch_derived_commands,
             &dispatch_derived_records,
             &nested_payload_records,
+            &payload_source_contexts,
             ctx.policy().semantic_expansion.max_nested_parse_depth,
         );
         // The legacy payload traversal and canonical execution frontier share
@@ -202,7 +203,7 @@ impl SessionTransformPass for ResolveInvocationPass {
                 }
             }
         }
-        nested_payload_records.extend(derived_unresolved_payloads);
+        nested_payload_records.extend(derived_payloads);
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
@@ -1873,6 +1874,7 @@ fn parsed_dispatch_scope(
         assignment_commands: Vec::new(),
         for_loops: Vec::new(),
         unset_commands: Vec::new(),
+        shell_evaluations: Vec::new(),
         function_definitions: Vec::new(),
         redirections: Vec::new(),
         diagnostics: Vec::new(),
@@ -2555,6 +2557,316 @@ struct ExpandedFrontierEntry {
     inherited_scope: ExecutionUnitInheritedScope,
 }
 
+#[derive(Clone)]
+struct ProgramSourceContext {
+    entry_cwd: caushell_runner::EffectiveCwd,
+    source_scopes: Vec<PayloadSourceScope>,
+}
+
+impl Default for ProgramSourceContext {
+    fn default() -> Self {
+        Self {
+            entry_cwd: caushell_runner::EffectiveCwd::Unknown,
+            source_scopes: Vec::new(),
+        }
+    }
+}
+
+fn program_scope_bindings(entry: &ExpandedFrontierEntry) -> &SessionBindings {
+    if entry.parsed_scope == entry.static_payload_scope.parsed_scope {
+        &entry.static_payload_scope.scope_base_bindings
+    } else {
+        &entry.bindings
+    }
+}
+
+fn program_command_index(entry: &ExpandedFrontierEntry) -> usize {
+    if entry.origin_kind == ExecutionUnitOriginKind::Dispatch {
+        0
+    } else {
+        entry.command_ref.command_index
+    }
+}
+
+/// New execution scopes inherit source visibility and cwd, not the native
+/// launcher's stdin or synthetic argv byte coordinates.
+fn inherit_program_source_contexts(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    parent: &ExpandedFrontierEntry,
+    context: &ProgramSourceContext,
+    children: &[ExpandedFrontierEntry],
+    contexts: &mut BTreeMap<caushell_graph::NodeId, ProgramSourceContext>,
+) {
+    if !children.iter().any(|child| {
+        !contexts.contains_key(&child.source_node_id)
+            && child.parent_execution_node_id == parent.source_node_id
+    }) {
+        return;
+    }
+    let observations = source_scope_observations(
+        registry,
+        request,
+        &parent.parsed_scope,
+        program_command_index(parent),
+        program_scope_bindings(parent),
+    );
+    let shell_cwd = super::compute_effective_cwd::source_scope_execution_cwds(
+        &parent.parsed_scope,
+        request,
+        &context.entry_cwd,
+        &observations,
+    )
+    .0
+    .get(program_command_index(parent))
+    .cloned()
+    .unwrap_or(caushell_runner::EffectiveCwd::Unknown);
+    let execution_cwd = match &parent.result {
+        ResolveInvocationArtifactResult::Resolved(resolved) => {
+            super::compute_effective_cwd::source_invocation_execution_cwd(
+                &resolved.bound,
+                &shell_cwd,
+                &parent.bindings,
+                request.home.as_deref(),
+            )
+        }
+        _ => shell_cwd,
+    };
+    for child in children {
+        if contexts.contains_key(&child.source_node_id) {
+            continue;
+        }
+        if child.parent_execution_node_id != parent.source_node_id {
+            // Assignment producers can return another scope's descendants.
+            // Their source anchor is not the containing invocation's entry.
+            continue;
+        }
+        let child_context = if child.parsed_scope == parent.parsed_scope
+            && child.origin_kind != ExecutionUnitOriginKind::Dispatch
+        {
+            context.clone()
+        } else {
+            let entry_cwd = if child.origin_kind == ExecutionUnitOriginKind::Dispatch {
+                super::compute_effective_cwd::source_dispatch_entry_cwd(
+                    child.inherited_scope.dispatch_working_directory.as_ref(),
+                    &execution_cwd,
+                    match &parent.result {
+                        ResolveInvocationArtifactResult::Resolved(r) => Some(&r.bound),
+                        _ => None,
+                    },
+                    parent
+                        .bindings
+                        .tilde_home_with_default(request.home.as_deref()),
+                )
+            } else {
+                execution_cwd.clone()
+            };
+            ProgramSourceContext {
+                entry_cwd,
+                source_scopes: extended_payload_source_scopes(
+                    &context.source_scopes,
+                    &parent.parsed_scope,
+                    program_command_index(parent),
+                    program_scope_bindings(parent),
+                    &context.entry_cwd,
+                ),
+            }
+        };
+        contexts.insert(child.source_node_id.clone(), child_context);
+    }
+}
+
+fn expanded_config_program_children(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    context: &ProgramSourceContext,
+    max_depth: u8,
+    first_payload_id: usize,
+    payloads: &mut Vec<NestedPayloadRecord>,
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
+    contexts: &mut BTreeMap<caushell_graph::NodeId, ProgramSourceContext>,
+) -> Vec<ExpandedFrontierEntry> {
+    let parent_ref = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
+        NestedPayloadParentRef::RootCommand {
+            command_index: entry.command_ref.command_index,
+        }
+    } else {
+        NestedPayloadParentRef::DerivedInvocation {
+            node_id: entry.source_node_id.clone(),
+        }
+    };
+    let candidates = config_defined_task_frontier_entries(
+        registry,
+        session,
+        request,
+        &entry.parsed_scope,
+        program_command_index(entry),
+        &resolved.bound,
+        &entry.bindings,
+        program_scope_bindings(entry),
+        &context.entry_cwd,
+        &context.source_scopes,
+        parent_ref,
+        entry.root_command_index,
+        entry.depth.saturating_add(1),
+    );
+    let mut children = Vec::new();
+    for payload in candidates.into_iter().rev() {
+        let materialized = materialize_frontier_entry(&payload);
+        let id = NestedPayloadRecordId(first_payload_id + payloads.len());
+        let bindings = payload
+            .positional_args
+            .as_deref()
+            .map(|args| shell_payload_session_bindings(&payload.bindings, args))
+            .unwrap_or_else(|| payload.bindings.clone());
+        let static_input = matches!(
+            materialized.resolution,
+            ValueMaterialization::Static
+                | ValueMaterialization::ResolvedExactScalar { .. }
+                | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                | ValueMaterialization::ResolvedShellWord { .. }
+        );
+        let mut record = if static_input && payload.depth <= max_depth {
+            let parsed = parse_recursive_payload_candidate(&materialized.candidate);
+            NestedPayloadRecord::from_parse_result(
+                id,
+                payload.parent_ref,
+                payload.root_command_index,
+                payload.depth,
+                bindings.clone(),
+                materialized,
+                parsed,
+            )
+        } else {
+            let resolution = if payload.depth > max_depth {
+                NestedPayloadResolution::TruncatedByDepthBudget {
+                    max_depth,
+                    next_candidate_count: 1,
+                }
+            } else {
+                NestedPayloadResolution::from_unresolved_materialization(
+                    materialized.resolution.clone(),
+                )
+            };
+            NestedPayloadRecord {
+                record_id: id,
+                parent_ref: payload.parent_ref,
+                root_command_index: payload.root_command_index,
+                depth: payload.depth,
+                bindings: bindings.clone(),
+                candidate: materialized,
+                resolution,
+                execution_cwd: None,
+            }
+        };
+        record.execution_cwd = Some(payload.scope_entry_cwd.clone());
+        if let NestedPayloadResolution::Parsed { shell_kind, parsed } = &mut record.resolution {
+            if let Some(args) = payload.positional_args.as_deref() {
+                bind_shell_positional_arguments(parsed, args);
+            }
+            let parent_node =
+                nested_payload_node_id(&request.session_id, request.sequence_no, id.0);
+            if parsed.commands.is_empty() {
+                register_shell_redirection_scope(
+                    registry,
+                    request,
+                    syntax_scopes,
+                    parsed,
+                    &bindings,
+                    parent_node.clone(),
+                    None,
+                    ExecutionUnitOriginKind::NestedPayload,
+                    ExecutionUnitOriginLocator::None,
+                    payload.depth,
+                    entry.root_command_index,
+                    false,
+                    max_depth,
+                );
+            }
+            for (index, command) in parsed.commands.iter().enumerate() {
+                let command_bindings = apply_runtime_variable_bindings_before_span(
+                    registry,
+                    request,
+                    bindings.clone(),
+                    parsed,
+                    command.span.start_byte,
+                    request.sequence_no,
+                );
+                let node = derived_invocation_node_id(
+                    &request.session_id,
+                    request.sequence_no,
+                    id.0,
+                    index,
+                );
+                contexts.insert(
+                    node.clone(),
+                    ProgramSourceContext {
+                        entry_cwd: payload.scope_entry_cwd.clone(),
+                        source_scopes: payload.source_scopes.clone(),
+                    },
+                );
+                children.push(ExpandedFrontierEntry {
+                    source_node_id: node,
+                    command_ref: ParsedCommandRef::new(index, command.span.clone()),
+                    parsed_scope: parsed.clone(),
+                    rendered_command_text: command.text.clone(),
+                    result: resolve_invocation_artifact_with_bindings(
+                        registry,
+                        command,
+                        runtime_context_for_parsed_command(parsed, index, command),
+                        &command_bindings,
+                    ),
+                    shell_kind: *shell_kind,
+                    root_command_index: entry.root_command_index,
+                    depth: payload.depth,
+                    parent_execution_node_id: parent_node.clone(),
+                    bindings: command_bindings.clone(),
+                    static_payload_scope: StaticPayloadLookupScope {
+                        parsed_scope: parsed.clone(),
+                        command_index: index,
+                        bindings: command_bindings,
+                        scope_base_bindings: bindings.clone(),
+                        stdin_is_parent_output: false,
+                    },
+                    history_anchor_node_id: entry.history_anchor_node_id.clone(),
+                    origin_kind: ExecutionUnitOriginKind::NestedPayload,
+                    origin_index: index,
+                    origin_locator: ExecutionUnitOriginLocator::None,
+                    inherited_scope: entry.inherited_scope.clone(),
+                });
+            }
+            children.extend(
+                expanded_assignment_command_substitution_body_children_for_scope(
+                    syntax_scopes,
+                    registry,
+                    request,
+                    parsed,
+                    *shell_kind,
+                    &parent_node,
+                    &entry.history_anchor_node_id,
+                    entry.root_command_index,
+                    payload.depth.saturating_add(1),
+                    &bindings,
+                    &entry.inherited_scope,
+                    None,
+                    Some("config-program"),
+                    children
+                        .iter()
+                        .find(|child| child.parent_execution_node_id == parent_node)
+                        .map(|child| AssignmentCwdSource::RecordScope(&child.source_node_id))
+                        .unwrap_or(AssignmentCwdSource::InvocationEntry),
+                    max_depth,
+                ),
+            );
+        }
+        payloads.push(record);
+    }
+    children
+}
+
 /// A single opt-in gate for top-level and expanded executions. Data formats do
 /// not become recursive shell payloads, and no command-name special case lives here.
 fn refresh_execution_payload_projections(
@@ -2627,6 +2939,7 @@ fn collect_execution_unit_resolve_records(
     dispatch_derived_commands: &[TopLevelDispatchDerivedCommand],
     dispatch_derived_records: &[ResolvedCommandSeed],
     nested_payload_records: &[NestedPayloadRecord],
+    payload_source_contexts: &BTreeMap<caushell_graph::NodeId, ProgramSourceContext>,
     max_nested_parse_depth: u8,
 ) -> (
     Vec<ExecutionUnitResolveRecord>,
@@ -2638,7 +2951,7 @@ fn collect_execution_unit_resolve_records(
     let mut records = Vec::new();
     let mut syntax_scopes = Vec::new();
     let mut expansion_limit_evidence = Vec::new();
-    let mut derived_unresolved_payloads = Vec::new();
+    let mut derived_payloads = Vec::new();
     let mut canonical_inline_payload_ids = std::collections::BTreeSet::new();
     let first_payload_id = nested_payload_records
         .iter()
@@ -2648,6 +2961,8 @@ fn collect_execution_unit_resolve_records(
     let mut frontier = Vec::new();
 
     let request_scope_base_bindings = request_bindings(session.summary(), request);
+    let request_cwd = caushell_runner::EffectiveCwd::known(request.shell_state_before.cwd());
+    let mut program_contexts = BTreeMap::new();
     register_shell_redirection_scope(
         registry,
         request,
@@ -2701,6 +3016,13 @@ fn collect_execution_unit_resolve_records(
             command.span.start_byte,
             request.sequence_no,
         );
+        program_contexts.insert(
+            record.source_node_id.clone(),
+            ProgramSourceContext {
+                entry_cwd: request_cwd.clone(),
+                source_scopes: Vec::new(),
+            },
+        );
         frontier.push(ExpandedFrontierEntry {
             source_node_id: record.source_node_id.clone(),
             command_ref: record.command_ref.clone(),
@@ -2736,6 +3058,26 @@ fn collect_execution_unit_resolve_records(
         .iter()
         .zip(function_derived_records.iter())
     {
+        program_contexts.insert(
+            record.source_node_id.clone(),
+            ProgramSourceContext {
+                entry_cwd: source_payload_cwd(
+                    registry,
+                    request,
+                    parsed_request,
+                    command.source_command_index,
+                    &request_scope_base_bindings,
+                    &request_cwd,
+                ),
+                source_scopes: extended_payload_source_scopes(
+                    &[],
+                    parsed_request,
+                    command.source_command_index,
+                    &request_scope_base_bindings,
+                    &request_cwd,
+                ),
+            },
+        );
         frontier.push(ExpandedFrontierEntry {
             source_node_id: record.source_node_id.clone(),
             command_ref: record.command_ref.clone(),
@@ -2944,7 +3286,7 @@ fn collect_execution_unit_resolve_records(
                 shell_kind: *shell_kind,
                 root_command_index: record.root_command_index,
                 depth: record.depth,
-                parent_execution_node_id,
+                parent_execution_node_id: parent_execution_node_id.clone(),
                 bindings: command_bindings.clone(),
                 static_payload_scope: StaticPayloadLookupScope {
                     parsed_scope: parsed.clone(),
@@ -2959,9 +3301,38 @@ fn collect_execution_unit_resolve_records(
                 origin_locator: ExecutionUnitOriginLocator::None,
                 inherited_scope: ExecutionUnitInheritedScope::default(),
             });
+            program_contexts.insert(
+                derived_invocation_node_id(
+                    &request.session_id,
+                    request.sequence_no,
+                    record.record_id.0,
+                    derived_command_index,
+                ),
+                payload_source_contexts
+                    .get(&parent_execution_node_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
         }
     }
 
+    let mut legacy_payload_sources: std::collections::BTreeSet<_> = frontier
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.origin_kind,
+                ExecutionUnitOriginKind::TopLevel
+                    | ExecutionUnitOriginKind::FunctionExpansion
+                    | ExecutionUnitOriginKind::NestedPayload
+            )
+        })
+        .map(|entry| entry.source_node_id.clone())
+        .collect();
+    legacy_payload_sources.extend(
+        dispatch_derived_records
+            .iter()
+            .map(|r| r.source_node_id.clone()),
+    );
     frontier.extend(expanded_assignment_command_substitution_body_roots(
         &mut syntax_scopes,
         registry,
@@ -2985,6 +3356,9 @@ fn collect_execution_unit_resolve_records(
 
     let mut visited = std::collections::BTreeSet::new();
     while let Some(mut entry) = frontier.pop() {
+        let program_context = program_contexts
+            .remove(&entry.source_node_id)
+            .unwrap_or_default();
         refresh_substitution_shape_proofs(
             registry,
             request,
@@ -3262,6 +3636,14 @@ fn collect_execution_unit_resolve_records(
 
         if let Some((_, children, _)) = function_children {
             if frontier_depth < max_nested_parse_depth {
+                inherit_program_source_contexts(
+                    registry,
+                    request,
+                    &entry,
+                    &program_context,
+                    &children,
+                    &mut program_contexts,
+                );
                 frontier.extend(children);
             } else if !children.is_empty() {
                 expansion_limit_evidence.push(Evidence::execution_expansion_truncated(
@@ -3299,6 +3681,19 @@ fn collect_execution_unit_resolve_records(
             max_nested_parse_depth,
         ));
         if let Some(resolved) = resolved {
+            children.extend(expanded_config_program_children(
+                registry,
+                session,
+                request,
+                &entry,
+                resolved,
+                &program_context,
+                max_nested_parse_depth,
+                first_payload_id,
+                &mut derived_payloads,
+                &mut syntax_scopes,
+                &mut program_contexts,
+            ));
             // This producer belongs to the canonical execution frontier so
             // native dispatches and ordinary calls share the same boundary.
             // A nested scope without a proven entry cwd keeps relative code
@@ -3336,7 +3731,7 @@ fn collect_execution_unit_resolve_records(
                 ) {
                     let materialized = materialize_frontier_entry(&payload);
                     let record_id =
-                        NestedPayloadRecordId(first_payload_id + derived_unresolved_payloads.len());
+                        NestedPayloadRecordId(first_payload_id + derived_payloads.len());
                     let mut record = NestedPayloadRecord::from_parse_result(
                         record_id,
                         payload.parent_ref,
@@ -3353,7 +3748,7 @@ fn collect_execution_unit_resolve_records(
                         };
                     }
                     record.execution_cwd = Some(payload.scope_entry_cwd);
-                    derived_unresolved_payloads.push(record);
+                    derived_payloads.push(record);
                 }
             }
             children.extend(expanded_dispatch_children(
@@ -3373,9 +3768,11 @@ fn collect_execution_unit_resolve_records(
                 request,
                 &entry,
                 resolved,
+                &program_context,
+                legacy_payload_sources.contains(&entry.source_node_id),
                 max_nested_parse_depth,
                 first_payload_id,
-                &mut derived_unresolved_payloads,
+                &mut derived_payloads,
                 &mut syntax_scopes,
             ));
             children.extend(expanded_command_substitution_materialization_children(
@@ -3405,6 +3802,14 @@ fn collect_execution_unit_resolve_records(
         }
 
         if frontier_depth < max_nested_parse_depth {
+            inherit_program_source_contexts(
+                registry,
+                request,
+                &entry,
+                &program_context,
+                &children,
+                &mut program_contexts,
+            );
             frontier.extend(children);
         } else {
             // All existing child producers share this admission gate. Do not
@@ -3435,7 +3840,7 @@ fn collect_execution_unit_resolve_records(
     (
         records,
         expansion_limit_evidence,
-        derived_unresolved_payloads,
+        derived_payloads,
         syntax_scopes,
         canonical_inline_payload_ids,
     )
@@ -3918,6 +4323,7 @@ fn execution_body_scope(
                 assignment_commands: Vec::new(),
                 for_loops: Vec::new(),
                 unset_commands: Vec::new(),
+                shell_evaluations: Vec::new(),
                 function_definitions: Vec::new(),
                 redirections: Vec::new(),
                 diagnostics: Vec::new(),
@@ -4035,6 +4441,38 @@ fn expanded_assignment_command_substitution_body_roots(
         );
     }
 
+    for (site_index, site) in parsed_request.shell_evaluations.iter().enumerate() {
+        let Some(parent_unit) = top_level_unit_for_span(parsed_request, &site.top_level_span)
+        else {
+            continue;
+        };
+        let parent = parent_unit.node_id(request);
+        let bindings = runtime_visible_variable_bindings_before_span(
+            registry,
+            session.summary(),
+            request,
+            parsed_request,
+            site.input.span.start_byte,
+            request.sequence_no,
+        );
+        children.extend(expanded_shell_evaluation_children(
+            syntax_scopes,
+            registry,
+            request,
+            parsed_request,
+            request.shell_kind,
+            &parent,
+            &parent,
+            parent_unit.unit_index,
+            1,
+            &bindings,
+            &ExecutionUnitInheritedScope::default(),
+            Some(site_index),
+            AssignmentCwdSource::Request,
+            None,
+            max_nested_parse_depth,
+        ));
+    }
     children
 }
 
@@ -4213,6 +4651,245 @@ fn expanded_assignment_command_substitution_body_children_for_scope(
         }
     }
 
+    if only_assignment_command_index.is_none() {
+        children.extend(expanded_shell_evaluation_children(
+            syntax_scopes,
+            registry,
+            request,
+            parsed_scope,
+            shell_kind,
+            parent_execution_node_id,
+            history_anchor_node_id,
+            root_command_index,
+            depth,
+            base_bindings,
+            inherited_scope,
+            None,
+            cwd_source,
+            source_suffix_prefix,
+            max_nested_parse_depth,
+        ));
+    }
+    children
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expanded_shell_evaluation_children(
+    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    shell_kind: caushell_types::ShellKind,
+    parent: &caushell_graph::NodeId,
+    history_anchor: &caushell_graph::NodeId,
+    root_index: usize,
+    depth: u8,
+    base_bindings: &SessionBindings,
+    inherited_scope: &ExecutionUnitInheritedScope,
+    only_site: Option<usize>,
+    cwd_source: AssignmentCwdSource<'_>,
+    namespace: Option<&str>,
+    max_depth: u8,
+) -> Vec<ExpandedFrontierEntry> {
+    let mut children = Vec::new();
+    for (site_index, site) in parsed.shell_evaluations.iter().enumerate() {
+        if only_site.is_some_and(|i| i != site_index) {
+            continue;
+        }
+        let bindings = if only_site.is_some() {
+            base_bindings.clone()
+        } else {
+            apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
+                base_bindings.clone(),
+                parsed,
+                site.input.span.start_byte,
+                request.sequence_no,
+            )
+        };
+        let mut checked_site = site.clone();
+        checked_site.numeric_locals.retain(|name| {
+            let span = site.numeric_scope_span.as_ref().unwrap_or(&site.top_level_span);
+            let within = |start: usize| start >= span.start_byte && start < span.end_byte;
+            !parsed.assignment_commands.iter().filter(|a| within(a.span.start_byte))
+                .flat_map(|a| &a.assignments).any(|a| a.name == *name && a.value.node_kind != "number")
+                && !parsed.unset_commands.iter().any(|u| within(u.span.start_byte))
+                && !parsed.declaration_commands.iter().any(|d| within(d.span.start_byte))
+                && parsed.commands.iter().enumerate().filter(|(_,c)| within(c.span.start_byte)).all(|(index,c)| {
+                    if c.command_name.as_deref().is_some_and(|n| bindings.function_binding(n).is_some()) { return false; }
+                    match resolve_invocation_artifact_with_bindings(registry, c,
+                        runtime_context_for_parsed_command(parsed, index, c), &bindings) {
+                        ResolveInvocationArtifactResult::Resolved(r) => {
+                            let writes = caushell_profile::runtime_variable_writes(&r.bound);
+                            !r.bound.operation_semantics_unresolved && !writes.unresolved && !writes.names.contains(name)
+                                && !r.bound.effects.iter().any(|e| matches!(e.kind,
+                                    caushell_profile::EffectKind::SourceScriptIntoCurrentShell | caushell_profile::EffectKind::ExecutePayload))
+                        }
+                        _ => false,
+                    }
+                })
+        });
+        let mut evaluation = crate::support::shell_evaluation::evaluate(
+            parsed,
+            &checked_site,
+            &bindings,
+            max_depth.saturating_sub(depth),
+        );
+        // Token/assignment substitutions already have their canonical producer.
+        // Unset operands are syntax-only facts, so their first expansion is ours.
+        if !matches!(
+            site.kind,
+            caushell_parse::ShellEvaluationKind::UnsetOperand { .. }
+        ) {
+            for direct in &site.input.command_substitutions {
+                let owned = parsed
+                    .commands
+                    .iter()
+                    .flat_map(|c| &c.tokens)
+                    .flat_map(|t| &t.command_substitutions)
+                    .any(|s| s.span == direct.span)
+                    || assignment_substitution_groups(parsed)
+                        .flat_map(|(_, _, assignments)| assignments)
+                        .flat_map(|a| &a.value.command_substitutions)
+                        .any(|s| s.span == direct.span);
+                if owned
+                    && let Some(index) = evaluation
+                        .programs
+                        .iter()
+                        .position(|body| body == &direct.body_text)
+                {
+                    evaluation.programs.remove(index);
+                }
+            }
+        }
+        let program_count = evaluation.programs.len();
+        if evaluation.unresolved {
+            evaluation.programs.push(site.input.text.clone());
+        }
+        let anchor = cwd_source.at(site.top_level_span.start_byte);
+        for (substitution_index, body) in evaluation.programs.iter().enumerate() {
+            let unresolved = substitution_index == program_count;
+            let (mut scope, unknown_index) = execution_body_scope(
+                body,
+                shell_kind,
+                unresolved || depth > max_depth,
+                "shell arithmetic/index evaluation",
+            );
+            if unresolved {
+                for diagnostic in &mut scope.diagnostics {
+                    diagnostic.text = "shell arithmetic/index expression is unresolved".into();
+                }
+            }
+            let locator = ExecutionUnitOriginLocator::ShellEvaluation {
+                scope_key: namespace.map(str::to_owned),
+                source_cwd_anchor: anchor.clone(),
+                source_start_byte: site.input.span.start_byte,
+                site_index,
+                substitution_index,
+                expression: site.input.text.clone(),
+                substitution_body: (!unresolved).then(|| body.clone()),
+            };
+            if scope.commands.is_empty() {
+                register_shell_redirection_scope(
+                    registry,
+                    request,
+                    syntax_scopes,
+                    &scope,
+                    &bindings,
+                    parent.clone(),
+                    None,
+                    ExecutionUnitOriginKind::CommandSubstitutionBody,
+                    locator.clone(),
+                    depth,
+                    root_index,
+                    false,
+                    max_depth,
+                );
+            }
+            let start = children.len();
+            for (command_index, command) in scope.commands.iter().enumerate() {
+                let command_bindings = apply_runtime_variable_bindings_before_span(
+                    registry,
+                    request,
+                    bindings.clone(),
+                    &scope,
+                    command.span.start_byte,
+                    request.sequence_no,
+                );
+                children.push(ExpandedFrontierEntry {
+                    source_node_id: expanded_virtual_node_id_with_suffix(
+                        "shell-eval",
+                        parent,
+                        &format!(
+                            "{}:{site_index}:{substitution_index}:{command_index}",
+                            namespace.unwrap_or("root")
+                        ),
+                    ),
+                    command_ref: ParsedCommandRef::new(command_index, command.span.clone()),
+                    parsed_scope: scope.clone(),
+                    rendered_command_text: command.text.clone(),
+                    result: if unknown_index == Some(command_index) {
+                        ResolveInvocationArtifactResult::MissingCommandName {
+                            gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+                        }
+                    } else {
+                        resolve_invocation_artifact_with_bindings(
+                            registry,
+                            command,
+                            runtime_context_for_parsed_command(&scope, command_index, command),
+                            &command_bindings,
+                        )
+                    },
+                    shell_kind,
+                    root_command_index: root_index,
+                    depth,
+                    parent_execution_node_id: parent.clone(),
+                    bindings: command_bindings.clone(),
+                    static_payload_scope: StaticPayloadLookupScope {
+                        parsed_scope: scope.clone(),
+                        command_index,
+                        bindings: command_bindings,
+                        scope_base_bindings: bindings.clone(),
+                        stdin_is_parent_output: false,
+                    },
+                    history_anchor_node_id: history_anchor.clone(),
+                    origin_kind: ExecutionUnitOriginKind::CommandSubstitutionBody,
+                    origin_index: command_index,
+                    origin_locator: locator.clone(),
+                    inherited_scope: inherited_scope.clone(),
+                });
+            }
+            if depth <= max_depth && !unresolved {
+                let representative = children.get(start).map(|e| e.source_node_id.clone());
+                children.extend(
+                    expanded_assignment_command_substitution_body_children_for_scope(
+                        syntax_scopes,
+                        registry,
+                        request,
+                        &scope,
+                        shell_kind,
+                        parent,
+                        history_anchor,
+                        root_index,
+                        depth.saturating_add(1),
+                        &bindings,
+                        inherited_scope,
+                        None,
+                        Some(&format!(
+                            "{}:eval:{site_index}:{substitution_index}",
+                            namespace.unwrap_or("root")
+                        )),
+                        representative
+                            .as_ref()
+                            .map(AssignmentCwdSource::RecordScope)
+                            .unwrap_or(AssignmentCwdSource::Fixed(&anchor)),
+                        max_depth,
+                    ),
+                );
+            }
+        }
+    }
     children
 }
 
@@ -4497,19 +5174,14 @@ fn expanded_recursive_payload_children(
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
+    source_context: &ProgramSourceContext,
+    legacy_payload_covered: bool,
     max_nested_parse_depth: u8,
     first_payload_id: usize,
     unresolved_payloads: &mut Vec<NestedPayloadRecord>,
     syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
 ) -> Vec<ExpandedFrontierEntry> {
-    if matches!(
-        entry.origin_kind,
-        ExecutionUnitOriginKind::TopLevel
-            | ExecutionUnitOriginKind::Dispatch
-            | ExecutionUnitOriginKind::NestedPayload
-    ) || (entry.origin_kind == ExecutionUnitOriginKind::FunctionExpansion
-        && entry.origin_locator == ExecutionUnitOriginLocator::None)
-    {
+    if legacy_payload_covered {
         return Vec::new();
     }
 
@@ -4518,16 +5190,13 @@ fn expanded_recursive_payload_children(
         session,
         request,
         resolved,
-        &runtime_binding_replay(registry, request, &entry.static_payload_scope.bindings),
-        &entry.static_payload_scope.parsed_scope,
-        entry.static_payload_scope.command_index,
-        &runtime_binding_replay(
-            registry,
-            request,
-            &entry.static_payload_scope.scope_base_bindings,
-        ),
+        &entry.bindings,
+        &entry.parsed_scope,
+        program_command_index(entry),
+        program_scope_bindings(entry),
         &entry.history_anchor_node_id,
         max_nested_parse_depth.saturating_sub(entry.depth),
+        Some(source_context),
     );
     let mut candidates = if matches!(resolved.normalized_command_name.as_str(), "bash" | "sh") {
         let mut candidates = recursive_payload_candidates_for_scoped_command(
@@ -6446,6 +7115,7 @@ fn empty_dispatch_scope(
         assignment_commands: Vec::new(),
         for_loops: Vec::new(),
         unset_commands: Vec::new(),
+        shell_evaluations: Vec::new(),
         function_definitions: Vec::new(),
         redirections: Vec::new(),
         diagnostics: Vec::new(),
@@ -7596,6 +8266,19 @@ fn project_execution_unit_derived_invocation_mutation(
                     assignment_index: *assignment_index,
                     substitution_index: *substitution_index,
                 },
+                ExecutionUnitOriginLocator::ShellEvaluation {
+                    scope_key,
+                    source_start_byte,
+                    site_index,
+                    substitution_index,
+                    ..
+                } => DerivedInvocationOrigin::ShellEvaluation {
+                    parent_node_id: record.parent_execution_node_id.0.clone(),
+                    scope_key: scope_key.clone(),
+                    source_start_byte: *source_start_byte,
+                    site_index: *site_index,
+                    substitution_index: *substitution_index,
+                },
                 _ => return None,
             };
             (origin, caushell_graph::EdgeKind::DependsOn)
@@ -8477,11 +9160,15 @@ fn collect_nested_payload_records(
     dispatch_derived_records: &[ResolvedCommandSeed],
     bindings: &SessionBindings,
     max_nested_parse_depth: u8,
-) -> Vec<NestedPayloadRecord> {
+) -> (
+    Vec<NestedPayloadRecord>,
+    BTreeMap<caushell_graph::NodeId, ProgramSourceContext>,
+) {
     if max_nested_parse_depth == 0 {
-        return Vec::new();
+        return (Vec::new(), BTreeMap::new());
     }
     let mut nested_records = Vec::new();
+    let mut source_contexts = BTreeMap::new();
     let mut next_record_id = 0usize;
     let mut frontier = Vec::new();
     let request_cwd = caushell_runner::EffectiveCwd::known(request.shell_state_before.cwd());
@@ -8596,28 +9283,6 @@ fn collect_nested_payload_records(
                 ),
             });
         }
-
-        let root_command_index =
-            top_level_unit_for_command(parsed_request, record.command_ref.command_index)
-                .map(|unit| unit.unit_index)
-                .unwrap_or(record.command_ref.command_index);
-        frontier.extend(config_defined_task_frontier_entries(
-            registry,
-            session,
-            request,
-            parsed_request,
-            record.command_ref.command_index,
-            &resolved.bound,
-            &top_level_bindings,
-            bindings,
-            &request_cwd,
-            &[],
-            NestedPayloadParentRef::RootCommand {
-                command_index: record.command_ref.command_index,
-            },
-            root_command_index,
-            1,
-        ));
     }
 
     for (command, record) in function_derived_commands
@@ -8686,27 +9351,6 @@ fn collect_nested_payload_records(
                 ),
             });
         }
-        let root_command_index =
-            top_level_unit_for_command(parsed_request, command.source_command_index)
-                .map(|unit| unit.unit_index)
-                .unwrap_or(command.source_command_index);
-        frontier.extend(config_defined_task_frontier_entries(
-            registry,
-            session,
-            request,
-            &command.parsed_body,
-            command.derived_command_index,
-            &resolved.bound,
-            &command.bindings,
-            &command.scope_base_bindings,
-            &call_cwd,
-            &call_scopes,
-            NestedPayloadParentRef::DerivedInvocation {
-                node_id: record.source_node_id.clone(),
-            },
-            root_command_index,
-            1,
-        ));
     }
 
     for (command, record) in dispatch_derived_commands
@@ -8739,6 +9383,7 @@ fn collect_nested_payload_records(
             bindings,
             &command.parent_node_id,
             max_nested_parse_depth,
+            None,
         ));
 
         for candidate in candidates {
@@ -8773,33 +9418,19 @@ fn collect_nested_payload_records(
                 ),
             });
         }
-        let root_command_index =
-            top_level_unit_for_command(parsed_request, command.source_command_index)
-                .map(|unit| unit.unit_index)
-                .unwrap_or(command.source_command_index);
-        frontier.extend(config_defined_task_frontier_entries(
-            registry,
-            session,
-            request,
-            parsed_request,
-            command.source_command_index,
-            &resolved.bound,
-            &command.bindings,
-            bindings,
-            &request_cwd,
-            &[],
-            NestedPayloadParentRef::DerivedInvocation {
-                node_id: record.source_node_id.clone(),
-            },
-            root_command_index,
-            1,
-        ));
     }
 
     while let Some(entry) = frontier.pop() {
         let materialized = materialize_frontier_entry(&entry);
         let record_id = NestedPayloadRecordId(next_record_id);
         next_record_id += 1;
+        source_contexts.insert(
+            nested_payload_node_id(&request.session_id, request.sequence_no, record_id.0),
+            ProgramSourceContext {
+                entry_cwd: entry.scope_entry_cwd.clone(),
+                source_scopes: entry.source_scopes.clone(),
+            },
+        );
 
         match &materialized.resolution {
             ValueMaterialization::Static
@@ -8916,7 +9547,7 @@ fn collect_nested_payload_records(
     }
 
     nested_records.sort_by_key(|record| record.record_id.0);
-    nested_records
+    (nested_records, source_contexts)
 }
 
 fn nested_payload_is_inline_shell_child(
@@ -9126,6 +9757,7 @@ fn script_file_payload_candidates_from_prior_literal_writes(
         scope_base_bindings,
         &record.source_node_id,
         max_nested_parse_depth,
+        None,
     )
 }
 
@@ -9141,6 +9773,7 @@ fn script_file_payload_candidates_from_literal_writes(
     scope_base_bindings: &SessionBindings,
     history_anchor_node_id: &caushell_graph::NodeId,
     _max_nested_parse_depth: u8,
+    source_context: Option<&ProgramSourceContext>,
 ) -> Vec<caushell_profile::RecursivePayloadCandidate> {
     let Some(language) = script_payload_language(
         resolved.normalized_command_name.as_str(),
@@ -9162,12 +9795,23 @@ fn script_file_payload_candidates_from_literal_writes(
             }
 
             let query_session = caushell_query::QuerySession::from_session(&session);
-            let path = resolved_parameter_path(
-                parameter,
-                bindings,
-                request.shell_state_before.cwd(),
-                request.home.as_deref(),
-            )?;
+            let lookup_cwd = source_context.map(|context| {
+                source_payload_cwd(
+                    registry,
+                    request,
+                    parsed_scope,
+                    command_index,
+                    scope_base_bindings,
+                    &context.entry_cwd,
+                )
+            });
+            let lookup_base = match lookup_cwd.as_ref() {
+                Some(caushell_runner::EffectiveCwd::Known(cwd)) => cwd.as_str(),
+                Some(_) => return None,
+                None => request.shell_state_before.cwd(),
+            };
+            let path =
+                resolved_parameter_path(parameter, bindings, lookup_base, request.home.as_deref())?;
             // Streams are handled in the shared recursive-payload entry,
             // including an unresolved candidate when their bytes are unknown.
             if path == "/dev/null"
@@ -9175,34 +9819,65 @@ fn script_file_payload_candidates_from_literal_writes(
             {
                 return None;
             }
-            let text = static_known_literal_path_content_before_scoped_command(
-                query_session,
-                parsed_scope,
-                command_index,
-                &path,
-                request.sequence_no,
-                &runtime_binding_replay(registry, request, scope_base_bindings),
-                request.shell_state_before.cwd(),
-                request.home.as_deref(),
-            )
-            .or_else(|| {
-                static_known_literal_path_content_before_execution_unit(
-                    query_session,
-                    &path,
-                    history_anchor_node_id,
-                    request.shell_state_before.cwd(),
-                    request.home.as_deref(),
+            let text = if let Some(context) = source_context {
+                let observations = source_scope_observations(
+                    registry,
+                    request,
+                    parsed_scope,
+                    command_index,
+                    scope_base_bindings,
+                );
+                let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
+                    parsed_scope,
+                    request,
+                    &context.entry_cwd,
+                    &observations,
                 )
-            })
-            .or_else(|| {
-                static_known_literal_path_content_before_sequence(
+                .1;
+                match source_visible_file_content(
+                    registry,
+                    session,
+                    request,
+                    parsed_scope,
+                    command_index,
+                    &path,
+                    &observations,
+                    &cwds,
+                    &context.source_scopes,
+                ) {
+                    crate::support::StaticFileContent::Known(text) => Some(text),
+                    _ => None,
+                }
+            } else {
+                static_known_literal_path_content_before_scoped_command(
                     query_session,
+                    parsed_scope,
+                    command_index,
                     &path,
                     request.sequence_no,
+                    &runtime_binding_replay(registry, request, scope_base_bindings),
                     request.shell_state_before.cwd(),
                     request.home.as_deref(),
                 )
-            })?;
+                .or_else(|| {
+                    static_known_literal_path_content_before_execution_unit(
+                        query_session,
+                        &path,
+                        history_anchor_node_id,
+                        request.shell_state_before.cwd(),
+                        request.home.as_deref(),
+                    )
+                })
+                .or_else(|| {
+                    static_known_literal_path_content_before_sequence(
+                        query_session,
+                        &path,
+                        request.sequence_no,
+                        request.shell_state_before.cwd(),
+                        request.home.as_deref(),
+                    )
+                })
+            }?;
 
             Some(caushell_profile::RecursivePayloadCandidate {
                 language,
@@ -9614,28 +10289,6 @@ fn collect_child_frontier_entries(
                 ),
             });
         }
-        entries.extend(config_defined_task_frontier_entries(
-            registry,
-            session,
-            request,
-            parsed,
-            derived_command_index,
-            &resolved.bound,
-            &command_bindings,
-            parent_bindings,
-            scope_entry_cwd,
-            source_scopes,
-            NestedPayloadParentRef::DerivedInvocation {
-                node_id: derived_invocation_node_id(
-                    &request.session_id,
-                    request.sequence_no,
-                    parent_record_id.0,
-                    derived_command_index,
-                ),
-            },
-            root_command_index,
-            depth,
-        ));
     }
 
     entries

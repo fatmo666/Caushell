@@ -952,6 +952,9 @@ fn base_cwd_for_record(
     // query over existing resolved records; it never parses or probes again.
     if let ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
         source_cwd_anchor, ..
+    }
+    | ExecutionUnitOriginLocator::ShellEvaluation {
+        source_cwd_anchor, ..
     } = &record.origin_locator
         && !matches!(source_cwd_anchor, ShellSourceCwdAnchor::InvocationEntry)
     {
@@ -1005,7 +1008,36 @@ fn base_cwd_for_record(
             cwd_anchor_override(parent, &parent_state, ctx.request().home.as_deref())
         })
         .unwrap_or(parent_state);
-    match &record.inherited_scope.dispatch_working_directory {
+    dispatch_entry_cwd(
+        record.inherited_scope.dispatch_working_directory.as_ref(),
+        parent_state,
+    )
+}
+
+pub(crate) fn source_dispatch_entry_cwd(
+    directory: Option<&DispatchWorkingDirectory>,
+    base: &EffectiveCwd,
+    bound: Option<&BoundInvocation>,
+    home: Option<&str>,
+) -> EffectiveCwd {
+    let state = CwdState::from(base);
+    let state = bound
+        .filter(|bound| {
+            !bound
+                .effects
+                .iter()
+                .any(|e| e.kind == EffectKind::SetExecutionWorkingDirectory)
+        })
+        .and_then(|bound| bound_cwd_anchor_override(bound, &state, home))
+        .unwrap_or(state);
+    dispatch_entry_cwd(directory, state).to_effective()
+}
+
+fn dispatch_entry_cwd(
+    directory: Option<&DispatchWorkingDirectory>,
+    parent_state: CwdState,
+) -> CwdState {
+    match directory {
         None | Some(DispatchWorkingDirectory::Inherit) => parent_state,
         Some(DispatchWorkingDirectory::Unknown) => {
             if parent_state.is_empty() {
@@ -1329,6 +1361,9 @@ fn compute_shell_redirection_cwds(
         } else if let ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
             source_cwd_anchor,
             ..
+        }
+        | ExecutionUnitOriginLocator::ShellEvaluation {
+            source_cwd_anchor, ..
         } = &scope.origin_locator
         {
             match source_cwd_anchor {
@@ -1900,8 +1935,15 @@ fn cwd_anchor_override(
         return None;
     };
 
-    let value = resolved
-        .bound
+    bound_cwd_anchor_override(&resolved.bound, base, home)
+}
+
+fn bound_cwd_anchor_override(
+    bound: &BoundInvocation,
+    base: &CwdState,
+    home: Option<&str>,
+) -> Option<CwdState> {
+    let value = bound
         .bound_parameters
         .iter()
         .filter(|parameter| is_working_directory_cwd_anchor(parameter.semantic.clone()))

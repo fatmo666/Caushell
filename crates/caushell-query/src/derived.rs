@@ -134,6 +134,7 @@ impl<'a> DerivedInvocationRef<'a> {
             DerivedInvocationOrigin::CommandSubstitutionBody { .. }
             | DerivedInvocationOrigin::CommandSubstitutionMaterialization { .. }
             | DerivedInvocationOrigin::CommandSubstitutionAssignmentValue { .. }
+            | DerivedInvocationOrigin::ShellEvaluation { .. }
             | DerivedInvocationOrigin::ProcessSubstitution { .. }
             | DerivedInvocationOrigin::ProcessSubstitutionBody { .. } => None,
             DerivedInvocationOrigin::Dispatch { .. }
@@ -154,6 +155,7 @@ impl<'a> DerivedInvocationRef<'a> {
             | DerivedInvocationOrigin::CommandSubstitutionBody { .. }
             | DerivedInvocationOrigin::CommandSubstitutionMaterialization { .. }
             | DerivedInvocationOrigin::CommandSubstitutionAssignmentValue { .. }
+            | DerivedInvocationOrigin::ShellEvaluation { .. }
             | DerivedInvocationOrigin::ProcessSubstitution { .. }
             | DerivedInvocationOrigin::ProcessSubstitutionBody { .. }
             | DerivedInvocationOrigin::Dispatch { .. }
@@ -234,6 +236,19 @@ impl<'a> DerivedInvocationRef<'a> {
             DerivedInvocationOrigin::ProcessSubstitution {
                 process_substitution_record_id,
             } => (5, *process_substitution_record_id, 0, 0, ""),
+            DerivedInvocationOrigin::ShellEvaluation {
+                parent_node_id,
+                source_start_byte,
+                site_index,
+                substitution_index,
+                ..
+            } => (
+                15,
+                *source_start_byte,
+                *site_index,
+                *substitution_index,
+                parent_node_id.as_str(),
+            ),
             DerivedInvocationOrigin::ProcessSubstitutionBody {
                 parent_node_id,
                 location_kind,

@@ -685,6 +685,7 @@ fn artifact_from_tree(
         assignment_commands: extract_assignment_commands(root, source),
         for_loops: extract_for_loops(root, source),
         unset_commands: extract_unset_commands(root, source),
+        shell_evaluations: extract_shell_evaluations(root, source, shell_kind),
         function_definitions: extract_function_definitions(root, source),
         redirections: extract_redirections(root, source),
         diagnostics,
@@ -821,6 +822,12 @@ fn restore_descriptor_ownership(
         command.text =
             String::from_utf8_lossy(&source[command.span.start_byte..command.span.end_byte])
                 .into_owned();
+    }
+    for site in &mut artifact.shell_evaluations {
+        restore_start(&mut site.top_level_span);
+        if let Some(span) = &mut site.shell_scope_span {
+            restore_start(span);
+        }
     }
 }
 
@@ -1555,6 +1562,424 @@ fn extract_unset_commands(root: Node<'_>, source: &[u8]) -> Vec<UnsetCommandFact
     });
 
     unsets
+}
+
+fn extract_shell_evaluations(
+    root: Node<'_>,
+    source: &[u8],
+    shell: ShellKind,
+) -> Vec<crate::ShellEvaluationSite> {
+    use crate::{ShellEvaluationKind as K, ShellEvaluationSite};
+    if !matches!(shell, ShellKind::Bash) {
+        return Vec::new();
+    }
+    let mut sites = Vec::new();
+    let declarations = extract_declaration_commands(root, source);
+    walk(root, &mut |node| {
+        if is_nested_shell_substructure(node) {
+            return;
+        }
+        let mut add = |kind, value: Node<'_>, arithmetic_text: Option<String>| {
+            let mut input = assignment_value_fact_from_node(value, source);
+            if let Some(text) = arithmetic_text {
+                input.text = text;
+                input.node_kind = "arithmetic_expression".into();
+            }
+            let mut numeric_locals = Vec::new();
+            let mut numeric_scope_span = None;
+            if let Some(loop_node) = (node.kind() == "c_style_for_statement")
+                .then_some(node)
+                .or_else(|| find_ancestor_kind(node, "c_style_for_statement"))
+                && let Some(init) = loop_node.child_by_field_name("initializer")
+                && let (Some(name), Some(value)) = (
+                    init.child_by_field_name("name"),
+                    init.child_by_field_name("value"),
+                )
+                && value.kind() == "number"
+            {
+                numeric_locals.push(source_text(name, source));
+                numeric_scope_span = Some(span_for(loop_node));
+            }
+            let mut owner = node;
+            while let Some(parent) = owner.parent() {
+                if matches!(
+                    parent.kind(),
+                    "program"
+                        | "list"
+                        | "do_group"
+                        | "subshell"
+                        | "if_statement"
+                        | "while_statement"
+                        | "for_statement"
+                        | "c_style_for_statement"
+                ) || (parent.kind() == "compound_statement"
+                    && !source_text(parent, source).starts_with("(("))
+                {
+                    break;
+                }
+                owner = parent;
+            }
+            sites.push(ShellEvaluationSite {
+                kind,
+                input,
+                top_level_span: top_level_command_span(owner),
+                shell_scope_span: enclosing_shell_scope(node),
+                numeric_locals,
+                numeric_scope_span,
+                conditional_execution: conditionally_executed_in_shell(node),
+            });
+        };
+        match node.kind() {
+            "arithmetic_expansion" => {
+                let text = source_text(node, source);
+                let body = text
+                    .strip_prefix("$((")
+                    .and_then(|s| s.strip_suffix("))"))
+                    .or_else(|| text.strip_prefix("$[").and_then(|s| s.strip_suffix(']')));
+                if let Some(body) = body {
+                    add(K::Arithmetic, node, Some(body.into()));
+                }
+            }
+            "compound_statement" if source_text(node, source).starts_with("((") => {
+                let text = source_text(node, source);
+                if let Some(body) = text.strip_prefix("((").and_then(|s| s.strip_suffix("))")) {
+                    add(K::Arithmetic, node, Some(body.into()));
+                }
+            }
+            "c_style_for_statement" => {
+                for field in ["initializer", "condition", "update"] {
+                    if let Some(value) = node.child_by_field_name(field) {
+                        add(K::Arithmetic, value, Some(source_text(value, source)));
+                    }
+                }
+            }
+            "subscript"
+                if find_ancestor_kind(node, "arithmetic_expansion").is_none()
+                    && !find_ancestor_kind(node, "compound_statement")
+                        .is_some_and(|n| source_text(n, source).starts_with("((")) =>
+            {
+                if let (Some(name), Some(index)) = (
+                    node.child_by_field_name("name"),
+                    node.child_by_field_name("index"),
+                ) {
+                    add(
+                        K::ArrayIndex {
+                            name: source_text(name, source),
+                        },
+                        index,
+                        Some(source_text(index, source)),
+                    );
+                }
+            }
+            "unset_command" => {
+                let mut functions_only = false;
+                let mut options = true;
+                for value in all_children(node).into_iter().filter(|n| n.is_named()) {
+                    let text = source_text(value, source);
+                    if options && text == "--" {
+                        options = false;
+                        continue;
+                    }
+                    if options && text.starts_with('-') {
+                        functions_only |= text[1..].contains('f') || text[1..].contains('n');
+                        continue;
+                    }
+                    options = false;
+                    add(K::UnsetOperand { functions_only }, value, None);
+                }
+            }
+            "command"
+                if node
+                    .child_by_field_name("name")
+                    .is_some_and(|n| source_text(n, source) == "let") =>
+            {
+                for value in all_children(node)
+                    .into_iter()
+                    .filter(|n| n.is_named() && n.kind() != "command_name")
+                {
+                    add(K::ArithmeticBuiltin, value, None);
+                }
+            }
+            "declaration_command" => {
+                let declaration = parse_declaration_command(node, source);
+                if declaration
+                    .options
+                    .iter()
+                    .any(|o| o.starts_with('-') && o[1..].contains('i'))
+                {
+                    for value in all_children(node)
+                        .into_iter()
+                        .filter(|n| n.kind() == "variable_assignment")
+                    {
+                        if let Some(rhs) = value.child_by_field_name("value") {
+                            add(K::ArithmeticBuiltin, rhs, None);
+                        }
+                    }
+                }
+            }
+            "variable_assignment"
+                if node
+                    .parent()
+                    .is_none_or(|p| p.kind() != "declaration_command") =>
+            {
+                if let (Some(name), Some(rhs)) = (
+                    node.child_by_field_name("name"),
+                    node.child_by_field_name("value"),
+                ) {
+                    if name.kind() == "subscript"
+                        && let (Some(array), Some(index)) = (
+                            name.child_by_field_name("name"),
+                            name.child_by_field_name("index"),
+                        )
+                    {
+                        add(
+                            K::ArrayElementAssignment {
+                                name: source_text(array, source),
+                                index: source_text(index, source),
+                            },
+                            rhs,
+                            None,
+                        );
+                    }
+                    let target = source_text(name, source);
+                    let target = target.split('[').next().unwrap_or(&target);
+                    let integer = declarations
+                        .iter()
+                        .rev()
+                        .find(|d| {
+                            d.span.start_byte < node.start_byte()
+                                && d.shell_scope_span.as_ref().is_none_or(|s| {
+                                    node.start_byte() >= s.start_byte
+                                        && node.start_byte() < s.end_byte
+                                })
+                                && (d.names.iter().any(|n| n == target)
+                                    || d.assignments.iter().any(|a| a.name == target))
+                                && d.options.iter().any(|o| {
+                                    (o.starts_with('-') || o.starts_with('+'))
+                                        && o[1..].contains('i')
+                                })
+                                && (!d.conditional_execution
+                                    || d.options
+                                        .iter()
+                                        .any(|o| o.starts_with('-') && o[1..].contains('i')))
+                        })
+                        .is_some_and(|d| {
+                            d.options
+                                .iter()
+                                .any(|o| o.starts_with('-') && o[1..].contains('i'))
+                        });
+                    if integer {
+                        add(K::ArithmeticBuiltin, rhs, None);
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+    sites.sort_by_key(|s| s.input.span.start_byte);
+    sites
+}
+
+/// Parse expression structure without evaluating its variables or commands.
+pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::ArithmeticReference>> {
+    use crate::ArithmeticReference as R;
+    if expression.len() > 8192 {
+        return None;
+    }
+    let source = format!("(( {expression} ))");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return None;
+    }
+    let expression_node = root.named_child(0)?;
+    if expression_node.kind() != "compound_statement" || expression_node.end_byte() != source.len()
+    {
+        return None;
+    }
+    fn collect(node: Node<'_>, source: &[u8], budget: &mut usize) -> Vec<R> {
+        if *budget == 0 {
+            return vec![R::Unsupported("arithmetic syntax budget exceeded".into())];
+        }
+        *budget -= 1;
+        match node.kind() {
+            "number" => Vec::new(),
+            "word" | "variable_name" => {
+                let text = source_text(node, source);
+                if text.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                    && text
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '#' | '@' | '_'))
+                {
+                    Vec::new()
+                } else if !text.is_empty()
+                    && text.chars().enumerate().all(|(i, c)| {
+                        c.is_ascii_alphabetic() || c == '_' || (i > 0 && c.is_ascii_digit())
+                    })
+                {
+                    vec![R::Variable(text)]
+                } else {
+                    vec![R::Unsupported(text)]
+                }
+            }
+            "subscript" => match (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("index"),
+            ) {
+                (Some(name), Some(index)) => vec![R::Array {
+                    name: source_text(name, source),
+                    index: source_text(index, source),
+                    read_value: true,
+                }],
+                _ => vec![R::Unsupported(source_text(node, source))],
+            },
+            "command_substitution" => {
+                let text = source_text(node, source);
+                match command_substitution_body_text(&text) {
+                    Some(body_text) => {
+                        vec![R::CommandSubstitution(crate::CommandSubstitutionFact {
+                            text,
+                            body_text,
+                            span: span_for(node),
+                        })]
+                    }
+                    _ => vec![R::Unsupported(text)],
+                }
+            }
+            "variable_assignment" => {
+                let Some(name) = node.child_by_field_name("name") else {
+                    return vec![R::Unsupported(source_text(node, source))];
+                };
+                let value = node
+                    .child_by_field_name("value")
+                    .map(|v| collect(v, source, budget))
+                    .unwrap_or_default();
+                let reads_previous = source_text(node, source)
+                    .get(name.end_byte() - node.start_byte()..)
+                    .is_some_and(|s| !s.starts_with('='));
+                if name.kind() == "subscript" {
+                    let mut target = collect(name, source, budget);
+                    if let Some(R::Array { read_value, .. }) = target.first_mut() {
+                        *read_value = reads_previous;
+                    }
+                    target.extend(value);
+                    target
+                } else {
+                    vec![R::Assignment {
+                        name: source_text(name, source),
+                        reads_previous,
+                        value,
+                    }]
+                }
+            }
+            "binary_expression"
+                if node.child_by_field_name("operator").is_some_and(|op| {
+                    matches!(
+                        source_text(op, source).as_str(),
+                        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "<<=" | ">>=" | "&=" | "^=" | "|="
+                    )
+                }) =>
+            {
+                let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) else {
+                    return vec![R::Unsupported(source_text(node, source))];
+                };
+                let reads_previous = node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| source_text(op, source) != "=");
+                let value = collect(right, source, budget);
+                if left.kind() == "subscript" {
+                    let mut target = collect(left, source, budget);
+                    if let Some(R::Array { read_value, .. }) = target.first_mut() {
+                        *read_value = reads_previous;
+                    }
+                    target.extend(value);
+                    target
+                } else {
+                    vec![R::Assignment {
+                        name: source_text(left, source),
+                        reads_previous,
+                        value,
+                    }]
+                }
+            }
+            "simple_expansion" | "expansion" | "string" | "raw_string" | "ansi_c_string"
+            | "concatenation" => {
+                let (text, quoted) = extract_token_text(node, source)
+                    .unwrap_or_else(|| (source_text(node, source), false));
+                vec![R::ExpandedWord {
+                    text,
+                    quoted,
+                    node_kind: node.kind().into(),
+                }]
+            }
+            "binary_expression"
+                if node
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| matches!(source_text(op, source).as_str(), "&&" | "||")) =>
+            {
+                let mut result = node
+                    .child_by_field_name("left")
+                    .map(|n| collect(n, source, budget))
+                    .unwrap_or_default();
+                if let Some(right) = node.child_by_field_name("right") {
+                    result.push(R::Optional(collect(right, source, budget)));
+                }
+                result
+            }
+            "ternary_expression" => {
+                let mut children = all_children(node).into_iter().filter(|c| c.is_named());
+                let mut result = children
+                    .next()
+                    .map(|c| collect(c, source, budget))
+                    .unwrap_or_default();
+                result.extend(children.map(|c| R::Optional(collect(c, source, budget))));
+                result
+            }
+            "compound_statement"
+            | "binary_expression"
+            | "unary_expression"
+            | "postfix_expression"
+            | "parenthesized_expression" => all_children(node)
+                .into_iter()
+                .filter(|c| c.is_named())
+                .flat_map(|c| collect(c, source, budget))
+                .collect(),
+            _ => vec![R::Unsupported(source_text(node, source))],
+        }
+    }
+    Some(collect(expression_node, source.as_bytes(), &mut 512))
+}
+
+pub fn static_array_values(text: &str) -> Option<Vec<String>> {
+    if text.len() > 8192 {
+        return None;
+    }
+    let source = format!("__array__={text}");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return None;
+    }
+    let array = root.named_child(0)?.child_by_field_name("value")?;
+    if array.kind() != "array" || array.end_byte() != source.len() {
+        return None;
+    }
+    all_children(array)
+        .into_iter()
+        .filter(|n| n.is_named())
+        .map(|value| decode_static_word_node(value, source.as_bytes()))
+        .collect()
 }
 
 fn extract_function_definitions(root: Node<'_>, source: &[u8]) -> Vec<FunctionDefinitionFact> {
