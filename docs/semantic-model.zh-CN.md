@@ -667,6 +667,8 @@ Profile 可选声明 `selection_failure_effects`，在 form 选择失败时保�
 
 可选的 `exact_option_words: [-stats, -pid]` 允许在仍支持短选项组合的根作用域中，声明完整的单前缀选项词。列表中的词必须同时是 modifier 声明的选项；精确 argv 词优先于组合拆分，参数仍按该选项自己的绑定规则归属。其余词沿用原语法，不推测列表词的缩写或附着值。此声明要求作用域化选项解析，不能与 argument regions 混用，也不会传给子命令或派生调用。扫描已确认的规范选项名不再被二次拆分。重复、格式错误或未声明的词在加载 Profile 时拒绝；省略字段保留原语法。
 
+可选的 `trailing_option_words: [-d, -x]` 扩展平坦的 `leading_options` 语法：首个普通参数之前照常识别声明的选项，之后只识别列表中的完整选项名及其已声明的附着参数；其余词（包括看起来像操作模式的选项）保留为普通参数。参数归属和选项终止符仍沿用原语法。列表必须由已声明且不重复的 modifier 选项组成，不能与子命令、dispatch overrides 或 argument regions 混用；省略字段不改变旧行为。UnZip 用它区分前置操作模式与尾部的解压目录、排除列表控制。
+
 top Profile 用此声明处理 Darwin 的 `-stats`、`-pid`、`-user` 和 `-ncols`，同时保留 Linux 的 `-bn1` 等组合。显式批处理或日志模式为非交互数据输出；仅限制刷新次数（如 `top -n1`）不是非交互证明。旧 Darwin 的 `-L` 与日志模式并存时保守保留交互审批。未知参数归属、缺失控制参数继续走已有审批；外层 Shell 副作用和嵌套 wrapper 独立分析。
 
 例如，Profile 声明 `option_matching: exact_names`，再以 `flags: ["-pl", "--power-limit"]` 绑定后面的普通值 `power_watts`。`-pl 200` 只绑定该选项，不激活 `-p` 或 `-l`；`-pl200` 不会被猜成附着参数。这个模式不是通用 CLI 合法性或覆盖检查：既有 `all_arguments` 绑定器不会为每个未知 flag 生成 residual。已知未支持形式、解析缺口动作与成功建模的调用仍须区分。

@@ -276,6 +276,34 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .into_iter()
         .map(FlagName::new)
         .collect::<Vec<_>>();
+    let trailing_option_words = raw
+        .trailing_option_words
+        .into_iter()
+        .map(FlagName::new)
+        .collect::<Vec<_>>();
+    if !trailing_option_words.is_empty() {
+        if option_scope != OptionScopePolicy::LeadingOptions
+            || !raw.argument_regions.is_empty()
+            || subcommands.is_some()
+            || !raw.dispatch_overrides.is_empty()
+        {
+            return Err(NormalizeError::InvalidOptionScope(
+                "trailing_option_words requires a flat leading_options grammar".into(),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for word in &trailing_option_words {
+            if !seen.insert(word)
+                || !modifiers
+                    .iter()
+                    .any(|m| m.matcher.flag_names().contains(word))
+            {
+                return Err(NormalizeError::InvalidOptionScope(
+                    "trailing_option_words must contain unique declared option names".into(),
+                ));
+            }
+        }
+    }
     if !exact_option_words.is_empty() && !raw.argument_regions.is_empty() {
         return Err(NormalizeError::InvalidOptionScope(
             "exact_option_words requires scoped option ownership, not argument_regions".into(),
@@ -486,6 +514,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         option_matching,
         option_prefixes,
         exact_option_words,
+        trailing_option_words,
         option_operand_matcher,
         subcommands,
         dispatch_overrides,
@@ -3972,6 +4001,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
+            trailing_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4165,6 +4195,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
+            trailing_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4277,6 +4308,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
+            trailing_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4389,6 +4421,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
+            trailing_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4612,6 +4645,7 @@ mod tests {
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
+            trailing_option_words: Vec::new(),
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),

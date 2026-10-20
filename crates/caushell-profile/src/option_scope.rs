@@ -172,6 +172,34 @@ pub(crate) fn validate_declarations(
     declarations(modifiers, forms, matching, exact_option_words).map(|_| ())
 }
 
+fn trailing_option_candidate(token: &str, words: &[FlagName], declarations: &Declarations) -> bool {
+    words.iter().any(|word| {
+        let name = word.as_str();
+        if token == name {
+            return true;
+        }
+        let Some(suffix) = token.strip_prefix(name).filter(|suffix| !suffix.is_empty()) else {
+            return false;
+        };
+        let Some(Some(mode)) = declarations.get(name) else {
+            return false;
+        };
+        if name.starts_with("--") {
+            return suffix.starts_with('=');
+        }
+        matches!(
+            mode,
+            FlagOperandMode::NextArg
+                | FlagOperandMode::WordAttached
+                | FlagOperandMode::OptionalWordAttached
+                | FlagOperandMode::WordAttachedOrNextArg
+                | FlagOperandMode::OptionalNextArg
+                | FlagOperandMode::InlineOrShortAttached
+                | FlagOperandMode::OptionalInlineOrShortAttached
+        )
+    })
+}
+
 pub(crate) fn scan_leading_options(
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
@@ -183,6 +211,7 @@ pub(crate) fn scan_leading_options(
     positional_prefix: Option<usize>,
     operand_matcher: Option<&crate::OptionOperandMatcher>,
     exact_option_words: &[FlagName],
+    trailing_option_words: &[FlagName],
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: false,
@@ -191,7 +220,7 @@ pub(crate) fn scan_leading_options(
         scope: ArgumentScope::new(scope.start_index, scope.start_index),
         flags: Vec::new(),
         terminator: None,
-        positionals: permuted.then(Vec::new),
+        positionals: (permuted || !trailing_option_words.is_empty()).then(Vec::new),
         additional_positionals: Vec::new(),
         retains_positional_default: false,
         error: None,
@@ -204,6 +233,7 @@ pub(crate) fn scan_leading_options(
         }
     };
     let mut index = scope.start_index;
+    let mut trailing = false;
     let ends_scope: BTreeSet<_> = modifiers
         .iter()
         .filter(|m| m.ends_option_scope)
@@ -245,6 +275,7 @@ pub(crate) fn scan_leading_options(
             return result;
         }
         if !prefixes.is_option(token)
+            || (trailing && !trailing_option_candidate(token, trailing_option_words, &declarations))
             || operand_matcher.is_some_and(|grammar| match &grammar.regex {
                 Some(regex) => regex
                     .regex()
@@ -258,6 +289,9 @@ pub(crate) fn scan_leading_options(
                     break;
                 }
                 positionals.push(index);
+                // Later words use only the declared trailing vocabulary.
+                // They never restart the leading operation-mode grammar.
+                trailing |= !trailing_option_words.is_empty();
                 index += 1;
                 result.scope.end_index = index;
                 continue;
@@ -379,6 +413,23 @@ pub(crate) fn scan_leading_options(
                 break;
             }
         };
+        // Exact-word precedence still applies. A longer declared word may
+        // resemble an allowed short option plus an attached value, but must
+        // not escape the trailing vocabulary after canonical decoding.
+        if trailing
+            && token_flags
+                .iter()
+                .any(|flag| !trailing_option_words.contains(flag))
+        {
+            result
+                .positionals
+                .as_mut()
+                .expect("trailing positional map")
+                .push(index);
+            index += 1;
+            result.scope.end_index = index;
+            continue;
+        }
         if inline
             && (mode.is_none()
                 || matches!(mode, Some(FlagOperandMode::SecondArg))

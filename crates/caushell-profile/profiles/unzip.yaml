@@ -1,142 +1,173 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+identity: {canonical_name: unzip, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+trailing_option_words: [-d, -x]
+opaque_on_unresolved: true
 
-identity:
-  canonical_name: unzip
-  aliases: []
-
-trust:
-  tier: tier_a
-  source: built_in
-
-platform:
-  os_families:
-    - posix
-    - linux
-    - macos
-  shell_families: []
-  requires_features: []
+# Native options precede the archive; only -d/-x are recognized in its tail.
+# Negative option syntax is not GNU -- termination and remains unresolved.
+environment_inputs:
+  - name: startup_options
+    environment: {name: UNZIP, empty_is_unset: true}
+    semantic: &native_options {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: alternate_startup_options
+    environment: {name: UNZIPOPT, empty_is_unset: true}
+    semantic: *native_options
 
 forms:
+  - id: information
+    selector: {kind: all, items: [&no_terminator {kind: no_dash_dash}, &help {kind: has_modifier, modifier: help}]}
+    parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: &independent {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: version
+    selector: {kind: all, items: [*no_terminator, {kind: no_positional_args}, {kind: has_modifier, modifier: verbose}]}
+    stream_contract: *independent
+  - id: zipinfo
+    selector:
+      kind: all
+      items:
+        - &archive {kind: has_positional_at, index: 0}
+        - *no_terminator
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^-Z'}}
+        - &zipinfo {kind: has_modifier, modifier: zipinfo}
+    parameters: &inputs
+      - {name: archive_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: member_filters, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [&read {kind: read_path, path_access: content_open, target: {kind: slot, name: archive_file}}]
+    stream_contract: &metadata {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: archive_timestamp
+    selector:
+      kind: all
+      items:
+        - &running
+          kind: all
+          items:
+            - *archive
+            - *no_terminator
+            - {kind: not, item: *help}
+            - {kind: not, item: *zipinfo}
+            - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+            - kind: not
+              item:
+                kind: any
+                items:
+                  - {kind: all, items: [&stdout {kind: has_modifier, modifier: stdout}, {kind: any, items: [&test {kind: has_modifier, modifier: test}, &update {kind: has_modifier, modifier: update}]}]}
+                  - {kind: all, items: [*test, *update]}
+                  - {kind: all, items: [{kind: has_modifier, modifier: freshen}, {kind: has_modifier, modifier: skip_existing}]}
+        - &timestamp {kind: has_modifier, modifier: timestamp}
+        # Comment-only returns before timestamp processing in process.c.
+        - {kind: not, item: &comment {kind: has_modifier, modifier: comment}}
+    parameters: *inputs
+    effects:
+      - *read
+      - {kind: metadata_mutation, target: {kind: slot, name: archive_file}}
+    stream_contract: *independent
+  - id: stdout_archive
+    selector:
+      kind: all
+      items:
+        - *running
+        - &not_timestamp {kind: not, item: *timestamp}
+        - *stdout
+        - {kind: not, item: *test}
+        - {kind: not, item: *comment}
+    parameters: *inputs
+    effects:
+      - *read
+      - {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decompress}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: test_archive
+    selector: {kind: all, items: [*running, *not_timestamp, *test, {kind: not, item: *comment}]}
+    parameters: *inputs
+    effects: [*read]
+    stream_contract: *independent
   - id: list_archive
     selector:
       kind: all
       items:
-        - kind: has_modifier
-          modifier: list_only
-        - kind: has_positional_at
-          index: 0
-    parameters:
-      - name: archive_file
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: member_filters
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
-    effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: archive_file
-
+        - *running
+        - {kind: any, items: [*not_timestamp, *comment]}
+        - kind: any
+          items:
+            - *comment
+            - {kind: all, items: [{kind: not, item: *stdout}, {kind: not, item: *test}, {kind: any, items: [{kind: has_modifier, modifier: list_only}, {kind: has_modifier, modifier: verbose}]}]}
+    parameters: *inputs
+    effects: [*read]
+    stream_contract: *metadata
   - id: extract_archive
     selector:
       kind: all
       items:
-        - kind: has_positional_at
-          index: 0
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: list_only
-    parameters:
-      - name: archive_file
-        semantic:
-          kind: path
-          role: read
-          purpose: generic_operand
-        binding:
-          kind: next_positional
-        cardinality: required_one
-      - name: member_filters
-        semantic:
-          kind: plain_value
-        binding:
-          kind: remaining_positionals
-        cardinality: optional_many
+        - *running
+        - *not_timestamp
+        - {kind: not, item: *stdout}
+        - {kind: not, item: *test}
+        - {kind: not, item: *comment}
+        - {kind: not, item: {kind: has_modifier, modifier: list_only}}
+        - {kind: not, item: {kind: has_modifier, modifier: verbose}}
+    parameters: *inputs
     effects:
-      - kind: read_path
-        target:
-          kind: slot
-          name: archive_file
+      - *read
       - kind: write_path
         target:
           kind: derived_path
-          source:
-            kind: slot
-            name: archive_file
-          rule:
-            kind: archive_members
+          source: {kind: slot, name: archive_file}
+          rule: {kind: archive_members}
           purpose: generic_operand
+    stream_contract: *independent
 
 modifiers:
   - id: output_directory
-    matcher:
-      kind: any_flag
-      flags:
-        - "-d"
+    matcher: {kind: any_flag, flags: [-d]}
     parameters:
+      # Ownership is retained in every mode; only extraction uses it as a path.
       - name: output_directory
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: following_matched_flag
-          operand_mode: next_arg
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
         cardinality: required_one
-    effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_directory
-
-  - id: list_only
-    matcher:
-      kind: any_flag
-      flags:
-        - "-l"
-        - "-v"
-        - "-Z"
-
-  - id: skip_existing
-    matcher:
-      kind: any_flag
-      flags:
-        - "-n"
-
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '(?s)^.*$', group: 0}
+              unless_modifiers: [stdout, test, timestamp, list_only, verbose, comment, zipinfo, help]
+              target:
+                name: extraction_directory
+                semantic: {kind: path, role: write, purpose: generic_operand}
+    effects: [{kind: write_path, target: {kind: slot, name: extraction_directory}}]
+    effects_when:
+      unless_forms: [information, version, zipinfo, archive_timestamp, stdout_archive, test_archive, list_archive]
+  - {id: stdout, matcher: {kind: any_flag, flags: [-p, -c]}}
+  - {id: test, matcher: {kind: any_flag, flags: [-t]}}
+  - {id: timestamp, matcher: {kind: any_flag, flags: [-T]}}
+  - {id: list_only, matcher: {kind: any_flag, flags: [-l]}}
+  - {id: verbose, matcher: {kind: any_flag, flags: [-v]}}
+  - {id: comment, matcher: {kind: any_flag, flags: [-z]}}
+  - {id: zipinfo, matcher: {kind: any_flag, flags: [-Z]}}
+  - {id: help, matcher: {kind: any_flag, flags: [-h]}}
+  - {id: skip_existing, matcher: {kind: any_flag, flags: [-n]}}
   - id: overwrite_existing
-    matcher:
-      kind: any_flag
-      flags:
-        - "-o"
+    matcher: {kind: any_flag, flags: [-o]}
     effects:
-      - kind: write_path
-        target:
-          kind: slot
-          name: output_directory
-        host_risk:
-          semantic_class: path_content_overwrite_target
-
+      - {kind: write_path, target: {kind: slot, name: extraction_directory}, host_risk: {semantic_class: path_content_overwrite_target}}
+    effects_when:
+      unless_forms: [information, version, zipinfo, archive_timestamp, stdout_archive, test_archive, list_archive]
+      unless_modifiers: [skip_existing]
+  - {id: update, matcher: {kind: any_flag, flags: [-u, -f]}}
+  - {id: freshen, matcher: {kind: any_flag, flags: [-f]}}
+  - {id: exclude_members, matcher: {kind: any_flag, flags: [-x]}}
+  - {id: extraction_behavior, matcher: {kind: any_flag, flags: [-a, -b, -B, -C, -D, -j, -K, -L, -q, -U, -V, -W, -X, '-:', '-^']}}
+  - id: password
+    matcher: {kind: any_flag, flags: [-P]}
+    parameters:
+      - {name: password, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
 subcommands: null
 extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/bookworm/unzip/unzip.1.en.html
+    - https://sources.debian.org/src/unzip/6.0-28/unzip.c/
+    - https://sources.debian.org/src/unzip/6.0-28/process.c/
   caushell.profile/known_limitations:
-    - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.
+    - Extracted members remain unresolved archive-member outputs without archive inspection.
+    - Negated options and unmodeled ZipInfo options retain unresolved handling.

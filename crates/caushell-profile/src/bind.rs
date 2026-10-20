@@ -301,6 +301,7 @@ fn scoped_options(
     vocabulary: Option<&crate::ArgumentControlVocabulary>,
     operand_matcher: Option<&crate::OptionOperandMatcher>,
     exact_option_words: &[FlagName],
+    trailing_option_words: &[FlagName],
 ) -> Option<crate::ScopedOptions> {
     if !regions.is_empty() {
         return Some(crate::argument_regions::scan(
@@ -323,6 +324,7 @@ fn scoped_options(
                 (policy == crate::OptionScopePolicy::LeadingOptionsWithOperand).then_some(1),
                 operand_matcher,
                 exact_option_words,
+                trailing_option_words,
             ))
         }
     }
@@ -415,6 +417,7 @@ pub fn select_invocation<'a>(
         profile.argument_control_vocabulary.as_ref(),
         profile.option_operand_matcher.as_ref(),
         &profile.exact_option_words,
+        &profile.trailing_option_words,
     );
     ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
     let modifiers = if let Some(options) = &option_scope {
@@ -907,6 +910,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 profile.argument_control_vocabulary.as_ref(),
                 profile.option_operand_matcher.as_ref(),
                 &profile.exact_option_words,
+                &profile.trailing_option_words,
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -1176,6 +1180,7 @@ fn scan_subcommand_path<'p, 'a>(
         profile.argument_control_vocabulary.as_ref(),
         profile.option_operand_matcher.as_ref(),
         &profile.exact_option_words,
+        &profile.trailing_option_words,
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -1228,6 +1233,7 @@ fn scan_subcommand_path<'p, 'a>(
                     profile.argument_control_vocabulary.as_ref(),
                     profile.option_operand_matcher.as_ref(),
                     &profile.exact_option_words,
+                    &profile.trailing_option_words,
                 );
                 if let Err(problem) = ensure_option_scope(profile.primary_name(), prefix.as_ref()) {
                     error = Some(problem);
@@ -1317,6 +1323,7 @@ fn scan_subcommand_path<'p, 'a>(
             None,
             None,
             &[],
+            &[],
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
         let node_modifiers = if let Some(options) = &node_options {
@@ -1359,6 +1366,7 @@ fn scan_subcommand_path<'p, 'a>(
             &[],
             None,
             None,
+            &[],
             &[],
         );
         if let Err(problem) = ensure_option_scope(profile.primary_name(), node_options.as_ref()) {
