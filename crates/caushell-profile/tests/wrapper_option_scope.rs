@@ -2,8 +2,8 @@ use caushell_parse::parse_command;
 use caushell_profile::{
     BindingSpec, BoundInvocation, BoundValue, CommandProfile, FlagName, FlagOperandMode, Form,
     InvocationRuntimeContext, Modifier, OptionScopePolicy, Parameter, SelectorExpr,
-    SelectorPredicate, SemanticType, bind_invocation, project_invocation, select_invocation,
-    load_command_profile_from_str,
+    SelectorPredicate, SemanticType, bind_invocation, load_command_profile_from_str,
+    project_invocation, select_invocation,
 };
 use caushell_types::ShellKind;
 
@@ -677,6 +677,51 @@ fn optional_long_signal_arguments_do_not_consume_the_child_command() {
             );
         }
     }
+}
+
+#[test]
+fn optional_signal_words_preserve_assignments_terminators_and_child_argv() {
+    let registry = caushell_profile::ProfileRegistry::built_in().unwrap();
+    let profile = registry.lookup("env").profile.unwrap();
+    for option in ["--block-signal", "--default-signal", "--ignore-signal"] {
+        for command in [
+            format!("env {option} -- printf --help -p PIPE"),
+            format!("env {option} NAME=value printf --help -p PIPE"),
+            format!("env {option} -i NAME=value printf --help -p PIPE"),
+            format!("env {option} -C ./cache printf --help -p PIPE"),
+        ] {
+            let result = bound(profile, &command);
+            let children = caushell_profile::collect_dispatch_command_candidates(&result);
+            assert_eq!(children.len(), 1, "{command}");
+            assert_eq!(children[0].command.text, "printf", "{command}");
+            assert_eq!(
+                children[0]
+                    .argv
+                    .iter()
+                    .map(|a| a.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["--help", "-p", "PIPE"],
+                "{command}"
+            );
+        }
+        // Optional long operands must use '='. A separate PIPE is the child,
+        // not a signal value and not permission to skip to /bin/printf.
+        let result = bound(profile, &format!("env {option} PIPE /bin/printf"));
+        assert_eq!(values(&result, "wrapped_command"), ["PIPE"]);
+        assert_eq!(values(&result, "wrapped_args"), ["/bin/printf"]);
+    }
+    let result = bound(
+        profile,
+        "env --block-signal --block-signal=PIPE --block-signal --default-signal=TERM --ignore-signal printf --block-signal --help",
+    );
+    assert_eq!(values(&result, "blocked_signals"), ["PIPE"]);
+    assert_eq!(values(&result, "defaulted_signals"), ["TERM"]);
+    assert!(values(&result, "ignored_signals").is_empty());
+    assert_eq!(values(&result, "wrapped_command"), ["printf"]);
+    assert_eq!(
+        values(&result, "wrapped_args"),
+        ["--block-signal", "--help"]
+    );
 }
 
 #[test]
