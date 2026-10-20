@@ -7,7 +7,8 @@ option_scope: permuted_options
 opaque_on_unresolved: true
 forms:
   - id: information
-    selector: &help {kind: any, items: [{kind: has_modifier, modifier: help}, {kind: has_modifier, modifier: version}]}
+    # Native -V/-L print information, then continue the requested operation.
+    selector: &help {kind: has_modifier, modifier: help}
     parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: &quiet {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: test_files
@@ -175,7 +176,7 @@ modifiers:
   - {id: legacy_tuning, matcher: {kind: any_flag, flags: [--repetitive-fast, --repetitive-best]}}
 subcommands: null
 extensions:
-  caushell.profile/source_research: [https://sourceware.org/bzip2/manual/manual.html]
+  caushell.profile/source_research: [https://sourceware.org/bzip2/manual/manual.html, https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz]
   caushell.profile/known_limitations:
     - Native 1.0.8 CLI semantics. BZIP/BZIP2 environment defaults are not interpreted; caller environment is not dynamically inspected.
     - Conflicting mode flags and mixed stdin/file mutation forms remain opaque. No last-option precedence or runtime filesystem/header probing is assumed.

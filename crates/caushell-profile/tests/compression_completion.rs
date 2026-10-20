@@ -182,13 +182,75 @@ fn unknown_options_and_conflicting_bzip_modes_keep_analysis_gap() {
 fn information_options_are_independent_and_do_not_read_supplied_files() {
     for command in [
         "gunzip --help /opt/input.gz",
-        "bzip2 -V /opt/input",
-        "bzip2 -L /opt/input",
+        "bzip2 --help /opt/input",
+        "bzip2 -h /opt/input",
         "compress -V /opt/input",
     ] {
         assert!(bound(command).effects.is_empty(), "{command}");
     }
 }
+#[test]
+fn bzip_version_and_license_preserve_every_operating_mode() {
+    for flag in ["-V", "--version", "-L", "--license"] {
+        for args in [
+            "report",
+            "-k report",
+            "-d report.bz2",
+            "-dk report.tbz2",
+            "-c report",
+            "-dc report.bz2",
+            "-t report.bz2",
+            "",
+            "-c",
+            "-dc",
+            "-t",
+        ] {
+            let ordinary = bound(&format!("bzip2 {args}"));
+            for command in [
+                format!("bzip2 {flag} {args}"),
+                format!("bzip2 {args} {flag}"),
+            ] {
+                let actual = bound(&command);
+                assert_eq!(actual.form_id, ordinary.form_id, "{command}");
+                assert_eq!(actual.effects, ordinary.effects, "{command}");
+                assert_eq!(
+                    actual.stream_contract, ordinary.stream_contract,
+                    "{command}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bzip_compact_information_flags_do_not_override_real_modes() {
+    for (command, equivalent) in [
+        ("bzip2 -Vk report", "bzip2 -k report"),
+        ("bzip2 -kL report", "bzip2 -k report"),
+        ("bzip2 -Vdc report.bz2", "bzip2 -dc report.bz2"),
+        ("bzip2 -tL report.bz2", "bzip2 -t report.bz2"),
+    ] {
+        let b = bound(command);
+        let expected = bound(equivalent);
+        assert_eq!(b.form_id, expected.form_id, "{command}");
+        assert_eq!(b.effects, expected.effects, "{command}");
+        assert_eq!(b.stream_contract, expected.stream_contract, "{command}");
+    }
+    for command in [
+        "bzip2 -Vh /opt/input",
+        "bzip2 -hL /opt/input",
+        "bzip2 --version --help /opt/input",
+        "bzip2 --help --license /opt/input",
+    ] {
+        let b = bound(command);
+        assert!(b.effects.is_empty(), "{command}");
+        assert_eq!(
+            b.stream_contract.unwrap().stdin_mode,
+            StreamInputMode::Ignored
+        );
+    }
+}
+
 #[test]
 fn declared_unknown_outputs_and_operand_ownership_remain_explicit() {
     for command in [
