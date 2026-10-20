@@ -1,7 +1,9 @@
 mod alias;
+pub(crate) mod config_tasks;
 mod execution_records;
 mod file_execution;
 mod function_overlay;
+pub(crate) mod git_hooks;
 pub(crate) use file_execution::{file_execution_checks, file_reference_is_exempt};
 mod hard_deny;
 mod implicit_startup;
@@ -76,9 +78,10 @@ pub(crate) use implicit_startup::{
     inherited_env_value_artifact,
 };
 pub(crate) use node_ids::{
-    execution_semantics_node_id, pipeline_segment_node_id, pipeline_stream_artifact_node_id,
-    redirection_parent_command_index, source_node_id_for_command, source_node_id_for_redirection,
-    transform_output_artifact_node_id, variable_binding_intent_node_id,
+    execution_semantics_node_id, nested_payload_node_id, pipeline_segment_node_id,
+    pipeline_stream_artifact_node_id, redirection_parent_command_index, source_node_id_for_command,
+    source_node_id_for_redirection, transform_output_artifact_node_id,
+    variable_binding_intent_node_id,
 };
 pub(crate) use outside_workspace::{
     collect_outside_workspace_path_consumes, decision_for_rule_action, push_unique_reason,
@@ -96,11 +99,11 @@ pub(crate) use shell_sink_hard_deny::{
     is_file_write_redirection_operator,
 };
 pub(crate) use static_payload::{
-    StaticStreamEvidence, known_literal_path_content_before_execution_unit,
+    StaticFileContent, StaticStreamEvidence, known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command, known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
-    process_substitution_evidence, static_io_target_evidence,
-    static_stdin_evidence_for_scoped_command,
+    process_substitution_evidence, static_file_content_before_scoped_command,
+    static_io_target_evidence, static_stdin_evidence_for_scoped_command,
 };
 pub(crate) use top_level_units::{
     collect_top_level_units, top_level_node_id_for_command, top_level_node_id_for_span,

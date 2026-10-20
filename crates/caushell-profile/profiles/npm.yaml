@@ -22,7 +22,7 @@ platform:
 forms: []
 modifiers:
   - id: working_directory
-    matcher: {kind: any_flag, flags: ["-C"]}
+    matcher: {kind: any_flag, flags: ["-C", "--prefix"]}
     parameters:
       - {name: working_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
     effects: [{kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: working_directory, projection: {kind: identity}}], missing: unknown}}]
@@ -371,7 +371,8 @@ subcommands:
       extensions: {}
 
     - name: run
-      aliases: []
+      aliases: [run-script]
+      option_scope: permuted_options
       forms:
         - id: run_script
           selector:
@@ -400,12 +401,21 @@ subcommands:
             - kind: execute_config_defined_task
               target:
                 kind: none
-      modifiers: []
+      modifiers: &run_modifiers
+        - id: ignore_task_lifecycle
+          matcher: {kind: any_flag, flags: [--ignore-scripts]}
+          parameters:
+            - {name: ignore_task_lifecycle_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}
+        - id: task_shell
+          matcher: {kind: any_flag, flags: [--script-shell]}
+          parameters:
+            - {name: task_shell, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
       children: []
       default_behavior: reject_unknown
       extensions: {}
     - name: test
-      aliases: []
+      aliases: [t, tst]
+      option_scope: permuted_options
       forms:
         - id: test_script
           selector:
@@ -428,7 +438,7 @@ subcommands:
             - kind: execute_config_defined_task
               target:
                 kind: none
-      modifiers: []
+      modifiers: *run_modifiers
       children: []
       default_behavior: reject_unknown
       extensions: {}

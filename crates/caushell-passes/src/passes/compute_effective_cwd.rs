@@ -1450,6 +1450,20 @@ fn execution_cwd_override_for_record(
         } => bound,
         _ => return None,
     };
+    execution_cwd_override(
+        bound,
+        base,
+        home,
+        Some(crate::support::ExecutionResolveRecordRef::new(record)),
+    )
+}
+
+fn execution_cwd_override(
+    bound: &BoundInvocation,
+    base: &CwdState,
+    home: Option<&str>,
+    record: Option<crate::support::ExecutionResolveRecordRef<'_>>,
+) -> Option<CwdState> {
     let effect = bound
         .effects
         .iter()
@@ -1469,7 +1483,7 @@ fn execution_cwd_override_for_record(
             target,
             case.resolution_base("/"),
             home,
-            Some(crate::support::ExecutionResolveRecordRef::new(record)),
+            record,
         ) else {
             continue;
         };
@@ -1483,12 +1497,116 @@ fn execution_cwd_override_for_record(
     applicable.then_some(result)
 }
 
+/// Source-time directory projection for consumers that run before Graph cwd annotation.
+pub(crate) fn source_scope_execution_cwds(
+    parsed: &ParsedCommandArtifact,
+    request: &caushell_types::CheckRequest,
+    initial: &EffectiveCwd,
+    observations: &[(
+        ResolveInvocationArtifactResult,
+        caushell_profile::SessionBindings,
+    )],
+) -> (Vec<EffectiveCwd>, Vec<EffectiveCwd>) {
+    let known_dirs = known_existing_request_dirs(request);
+    let mut flow = CwdFlow::new(CwdState::from(initial));
+    let mut cwds = Vec::new();
+    let mut shell_cwds = Vec::new();
+    for (index, (command, (result, bindings))) in
+        parsed.commands.iter().zip(observations).enumerate()
+    {
+        let states = flow.prepare_command(command);
+        let base = cwd_state_for_scoped_states(&states);
+        shell_cwds.push(base.to_effective());
+        let home = bindings.tilde_home_with_default(request.home.as_deref());
+        let bound = match result {
+            ResolveInvocationArtifactResult::Resolved(r) => Some(&r.bound),
+            ResolveInvocationArtifactResult::SelectionError { partial_bound, .. } => {
+                partial_bound.as_ref()
+            }
+            _ => None,
+        };
+        cwds.push(
+            bound
+                .and_then(|b| execution_cwd_override(b, &base, home, None))
+                .unwrap_or(base)
+                .to_effective(),
+        );
+        let mut outcome = ScopedCwdOutcome::default();
+        for state in states {
+            let changes_through_body = command_can_update_current_shell(command)
+                && (command
+                    .command_name
+                    .as_deref()
+                    .is_some_and(|name| bindings.function_binding(name).is_some())
+                    || bound.is_some_and(|b| {
+                        b.effects
+                            .iter()
+                            .any(|e| e.kind == EffectKind::SourceScriptIntoCurrentShell)
+                    }));
+            let cwd_outcome = if changes_through_body {
+                CwdOutcome {
+                    success: CwdState::unknown(),
+                    failure: state.cwd.clone(),
+                }
+            } else if let Some(update) =
+                current_shell_cwd_update_for_result(result, command, &state.cwd, home, &known_dirs)
+            {
+                CwdOutcome {
+                    success: update.success,
+                    failure: if update.success_guaranteed {
+                        CwdState::empty()
+                    } else {
+                        state.cwd.clone()
+                    },
+                }
+            } else {
+                unchanged_command_outcome(&state.cwd)
+            };
+            merge_scoped_outcome_into(&mut outcome, scoped_outcome_from_cwd(&state, cwd_outcome));
+        }
+        flow.record_outcome(outcome, connector_after_command(parsed, index, command));
+    }
+    (shell_cwds, cwds)
+}
+
+pub(crate) fn source_invocation_execution_cwd(
+    bound: &BoundInvocation,
+    base: &EffectiveCwd,
+    bindings: &caushell_profile::SessionBindings,
+    home: Option<&str>,
+) -> EffectiveCwd {
+    execution_cwd_override(
+        bound,
+        &CwdState::from(base),
+        bindings.tilde_home_with_default(home),
+        None,
+    )
+    .map(|s| s.to_effective())
+    .unwrap_or_else(|| base.clone())
+}
+
 fn parent_cwd_for_record(
     ctx: &RunnerContext,
     record: &ExecutionUnitResolveRecord,
     effective_cwds: &BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: &BTreeMap<NodeId, EffectiveCwd>,
 ) -> Option<CwdState> {
+    if record.origin_kind == ExecutionUnitOriginKind::NestedPayload {
+        if let Some(cwd) = ctx
+            .nested_payload_records()
+            .iter()
+            .find(|nested| {
+                crate::support::nested_payload_node_id(
+                    &ctx.request().session_id,
+                    ctx.request().sequence_no,
+                    nested.record_id.0,
+                ) == record.parent_execution_node_id
+            })
+            .and_then(|nested| nested.execution_cwd.as_ref())
+        {
+            return Some(CwdState::from(cwd));
+        }
+    }
     if let Some(cwd) = effective_cwds.get(&record.parent_execution_node_id) {
         return Some(CwdState::from(cwd));
     }
@@ -1659,12 +1777,22 @@ fn current_shell_cwd_update(
     known_existing_dirs: &BTreeSet<String>,
 ) -> Option<CwdUpdate> {
     let home = record.bindings.tilde_home_with_default(home);
+    current_shell_cwd_update_for_result(&record.result, command, current, home, known_existing_dirs)
+}
+
+fn current_shell_cwd_update_for_result(
+    result: &ResolveInvocationArtifactResult,
+    command: &CommandFact,
+    current: &CwdState,
+    home: Option<&str>,
+    known_existing_dirs: &BTreeSet<String>,
+) -> Option<CwdUpdate> {
     if !command_can_update_current_shell(command) {
         return None;
     }
 
-    let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
-        return unresolved_cwd_command_updates_unknown(record).map(|success| CwdUpdate {
+    let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
+        return unresolved_cwd_command_updates_unknown(result, command).map(|success| CwdUpdate {
             success,
             success_guaranteed: false,
         });
@@ -1699,13 +1827,14 @@ fn command_can_update_current_shell(command: &CommandFact) -> bool {
     !command.in_pipeline && command.terminator != Some(StatementTerminator::Background)
 }
 
-fn unresolved_cwd_command_updates_unknown(record: &ExecutionUnitResolveRecord) -> Option<CwdState> {
-    let command_name = match &record.result {
-        ResolveInvocationArtifactResult::MissingCommandName { .. } => record
-            .parsed_scope
-            .commands
-            .get(record.command_ref.command_index)
-            .and_then(|command| command.command_name.as_deref()),
+fn unresolved_cwd_command_updates_unknown(
+    result: &ResolveInvocationArtifactResult,
+    command: &CommandFact,
+) -> Option<CwdState> {
+    let command_name = match result {
+        ResolveInvocationArtifactResult::MissingCommandName { .. } => {
+            command.command_name.as_deref()
+        }
         ResolveInvocationArtifactResult::NoProfile {
             normalized_command_name,
             ..
@@ -1921,6 +2050,10 @@ fn cwd_success_guaranteed(state: &CwdState, known_existing_dirs: &BTreeSet<Strin
 }
 
 fn known_existing_dirs(ctx: &RunnerContext) -> BTreeSet<String> {
+    known_existing_request_dirs(ctx.request())
+}
+
+fn known_existing_request_dirs(request: &caushell_types::CheckRequest) -> BTreeSet<String> {
     let mut dirs = BTreeSet::new();
     for dir in [
         "/", "/bin", "/boot", "/dev", "/etc", "/home", "/tmp", "/usr", "/usr/bin", "/var",
@@ -1928,11 +2061,11 @@ fn known_existing_dirs(ctx: &RunnerContext) -> BTreeSet<String> {
         insert_dir_with_ancestors(&mut dirs, dir);
     }
 
-    insert_dir_with_ancestors(&mut dirs, ctx.request().shell_state_before.cwd());
-    if let Some(home) = ctx.request().home.as_deref() {
+    insert_dir_with_ancestors(&mut dirs, request.shell_state_before.cwd());
+    if let Some(home) = request.home.as_deref() {
         insert_dir_with_ancestors(&mut dirs, home);
     }
-    if let Some(workspace_root) = ctx.request().workspace_root.as_deref() {
+    if let Some(workspace_root) = request.workspace_root.as_deref() {
         insert_dir_with_ancestors(&mut dirs, workspace_root);
     }
 
@@ -2231,11 +2364,13 @@ forms:
             let record = ctx
                 .execution_unit_resolve_records()
                 .iter()
-                .find(|record| matches!(
-                    &record.result,
-                    caushell_profile::ResolveInvocationArtifactResult::Resolved(r)
-                        if r.normalized_command_name == "touch"
-                ))
+                .find(|record| {
+                    matches!(
+                        &record.result,
+                        caushell_profile::ResolveInvocationArtifactResult::Resolved(r)
+                            if r.normalized_command_name == "touch"
+                    )
+                })
                 .expect("expected modeled child invocation");
             assert_eq!(
                 ctx.effective_cwd_for_node(&record.source_node_id),

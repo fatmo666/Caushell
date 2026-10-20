@@ -1,9 +1,12 @@
 //! Join execution-file references to their own graph-backed path facts.
 //! No language/command allowlist and no interpretation of code as a path.
-use super::{bound_invocation, graph_backed_execution_resolve_records};
+use super::{
+    ExecutionResolveRecordRef, bound_invocation, execution_content_io_target,
+    graph_backed_execution_resolve_records, slot_uses_content_open,
+};
 use caushell_graph::NodeId;
 use caushell_profile::{EffectKind, EffectTarget, PathPurpose, PayloadSource, SemanticType};
-use caushell_query::{PathFactsQuery, QuerySession};
+use caushell_query::{IoTarget, PathFactsQuery, QuerySession};
 use caushell_runner::{PathExemption, PathOperation, RunnerContext};
 use caushell_types::{
     NestedPayloadContextEvidence, NestedPayloadOriginEvidence, NestedPayloadParentEvidence,
@@ -62,6 +65,9 @@ pub(crate) fn file_execution_checks(
                 matches!(&p.semantic, SemanticType::Path(s) if s.purpose == Some(PathPurpose::ScriptSource))
                 && (p.name == *slot || p.structured_source.as_ref() == Some(slot))
             }).map(|p| p.name.as_str().to_owned()).collect();
+            if opens_only_non_file_inputs(ctx, record, &slots) {
+                continue;
+            }
             candidates.push((
                 record.source_node_id().clone(),
                 slot.as_str().to_owned(),
@@ -137,6 +143,60 @@ pub(crate) fn file_execution_checks(
             }
         })
         .collect()
+}
+
+fn opens_only_non_file_inputs(
+    ctx: &RunnerContext,
+    record: ExecutionResolveRecordRef<'_>,
+    slots: &BTreeSet<String>,
+) -> bool {
+    let Some(bound) = bound_invocation(record.result()) else {
+        return false;
+    };
+    if slots.is_empty()
+        || slots
+            .iter()
+            .any(|slot| !slot_uses_content_open(bound, slot, EffectKind::ReadPath))
+    {
+        return false;
+    }
+    let cwd = ctx.request().shell_state_before.cwd();
+    let home = record
+        .bindings()
+        .tilde_home_with_default(ctx.request().home.as_deref());
+    let paths = crate::path::collect_path_facts(&[record], cwd, home);
+    slots.iter().all(|slot| {
+        let mut seen = false;
+        for path in paths.iter().filter(|p| {
+            p.slot_name == *slot
+                && p.purpose == Some(PathPurpose::ScriptSource)
+                && p.role == caushell_profile::PathRole::Read
+        }) {
+            seen = true;
+            for entry_cwd in crate::path::effective_cwd_cases(
+                ctx.effective_cwd_for_node(record.source_node_id()),
+                cwd,
+            ) {
+                if matches!(
+                    execution_content_io_target(
+                        ctx,
+                        record.source_node_id(),
+                        record.parsed_scope(),
+                        record.command_index(),
+                        None,
+                        &path.resolution,
+                        path.cwd_dependent,
+                        entry_cwd.resolution_base(cwd),
+                        home
+                    ),
+                    IoTarget::Path { .. }
+                ) {
+                    return false;
+                }
+            }
+        }
+        seen
+    })
 }
 pub(crate) fn file_reference_is_exempt(
     context: &NestedPayloadContextEvidence,

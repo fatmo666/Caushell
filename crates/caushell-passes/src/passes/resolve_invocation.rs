@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 use caushell_profile::{
     ArgumentBindingSource, BoundParameter, BoundValue, EffectKind, EffectTarget,
@@ -28,6 +28,8 @@ use caushell_types::{
 use serde_json::Value as JsonValue;
 
 use crate::path::resolve_path_operand;
+use crate::support::config_tasks::decoded_task_arguments;
+use crate::support::nested_payload_node_id;
 use crate::support::{
     AliasExpansionHop, RuntimeBindingReplay, StaticStreamEvidence, apply_alias_command,
     apply_runtime_variable_bindings_before_span, block_device_path_for_arg_with_optional_cwd,
@@ -412,74 +414,838 @@ fn runtime_binding_replay<'a>(
     }
 }
 
-fn collect_config_defined_task_recursive_payload_candidates(
+/// A path-valued execution effect without a language decoder is an opaque
+/// program input. Resolving its location does not interpret its bytes as Bash.
+fn configured_payload_frontier_entries(
+    registry: &ProfileRegistry,
     request: &CheckRequest,
-    record: &ResolvedCommandSeed,
-) -> Vec<RecursivePayloadCandidate> {
-    let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
-        return Vec::new();
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    command_index: usize,
+    bound: &caushell_profile::BoundInvocation,
+    record: crate::support::ExecutionResolveRecordRef<'_>,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    scope_entry_cwd: &caushell_runner::EffectiveCwd,
+    parent_ref: NestedPayloadParentRef,
+    root_command_index: usize,
+    depth: u8,
+) -> Vec<FrontierEntry> {
+    let declared = |effect: &caushell_profile::Effect| {
+        effect.kind == EffectKind::ExecutePayload
+            && matches!(
+                effect.target,
+                EffectTarget::ConfiguredPath(_) | EffectTarget::ToolConventionPath(_)
+            )
     };
-
-    match resolved.normalized_command_name.as_str() {
-        "npm" => collect_npm_config_task_payload_candidates(request, resolved),
-        _ => Vec::new(),
+    if !bound.effects.iter().any(declared) {
+        return Vec::new();
     }
+    let cwd = source_payload_cwd(
+        registry,
+        request,
+        parsed,
+        command_index,
+        scope_base_bindings,
+        scope_entry_cwd,
+    );
+    let home = bindings.tilde_home_with_default(request.home.as_deref());
+    let mut entries = Vec::new();
+    for (index, effect) in bound
+        .effects
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| declared(e))
+    {
+        for case in crate::path::effective_cwd_cases(Some(&cwd), request.shell_state_before.cwd()) {
+            let base = case.resolution_base(request.shell_state_before.cwd());
+            let (resolution, dependent) = match &effect.target {
+                EffectTarget::ConfiguredPath(target) => {
+                    let Some(path) = crate::path::resolve_configured_path(
+                        bound,
+                        target,
+                        base,
+                        home,
+                        Some(record),
+                    ) else {
+                        continue;
+                    };
+                    (path.resolution, path.cwd_dependent)
+                }
+                EffectTarget::ToolConventionPath(target) => (
+                    caushell_types::PathResolution::Concrete {
+                        path: if target.path.starts_with('/') {
+                            crate::path::normalize_shell_path(&target.path)
+                        } else {
+                            crate::path::join_shell_path(base, &target.path)
+                        },
+                    },
+                    !target.path.starts_with('/'),
+                ),
+                _ => unreachable!(),
+            };
+            let resolution = crate::path::project_path_at_cwd(resolution, dependent, case);
+            let path = resolution
+                .concrete_path()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("<unresolved configured program: {resolution:?}>"));
+            let task_name = format!("configured-payload:{index}");
+            if entries.iter().any(|entry: &FrontierEntry| {
+                matches!(&entry.candidate.origin,
+                RecursivePayloadOrigin::ConfigDefinedTask {config_path, task_name: name}
+                if config_path == &path && name == &task_name)
+            }) {
+                continue;
+            }
+            entries.push(FrontierEntry {
+                parent_ref: parent_ref.clone(), root_command_index, depth,
+                candidate: RecursivePayloadCandidate {
+                    language: PayloadLanguage::Opaque,
+                    source: PayloadSource::DynamicReference,
+                    origin: RecursivePayloadOrigin::ConfigDefinedTask {config_path: path.clone(), task_name},
+                    input: RecursivePayloadInput::ArgumentFragments {fragments: vec![
+                        caushell_profile::RecursivePayloadArgumentFragment {
+                            text: path, quoted: true, node_kind: "raw_string".into(),
+                            span: parsed.commands[command_index].span.clone(),
+                            materialization: caushell_profile::RecursivePayloadFragmentMaterialization::DecodedLiteral,
+                        }
+                    ]},
+                },
+                bindings: bindings.clone(), positional_args: None,
+                scope_entry_cwd: cwd.clone(), source_scopes: Vec::new(),
+            });
+        }
+    }
+    entries.reverse();
+    entries
 }
 
-fn collect_npm_config_task_payload_candidates(
+fn config_defined_task_frontier_entries(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
     request: &CheckRequest,
-    resolved: &caushell_profile::ResolvedInvocationArtifact,
-) -> Vec<RecursivePayloadCandidate> {
-    let task_name = match resolved.bound.form_id.as_str() {
-        "run_script" => bound_argument_text(&resolved.bound, "script_name"),
-        "test_script" => Some("test".to_string()),
-        _ => None,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    command_index: usize,
+    bound: &caushell_profile::BoundInvocation,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    scope_entry_cwd: &caushell_runner::EffectiveCwd,
+    source_scopes: &[PayloadSourceScope],
+    parent_ref: NestedPayloadParentRef,
+    root_command_index: usize,
+    depth: u8,
+) -> Vec<FrontierEntry> {
+    use crate::support::config_tasks::{
+        ManifestTaskDialect, TaskSelection, composer_tasks, quote_task_argument, yarn_task_name,
+        yarn_task_selection, yarn_tasks,
     };
-    let Some(task_name) = task_name else {
+    if let Some(kind) = crate::support::git_hooks::hook_kind(bound) {
+        return git_hook_frontier_entries(
+            registry,
+            session,
+            request,
+            parsed,
+            command_index,
+            bound,
+            bindings,
+            scope_base_bindings,
+            scope_entry_cwd,
+            source_scopes,
+            parent_ref,
+            root_command_index,
+            depth,
+            kind,
+        );
+    }
+    let Some((dialect, target_path)) = ManifestTaskDialect::for_invocation(bound) else {
         return Vec::new();
     };
-
-    let Some(config_path) =
-        load_config_path_for_convention(request, &resolved.bound, "npm.package_json")
+    let yarn_arguments =
+        (dialect == ManifestTaskDialect::Yarn).then(|| decoded_task_arguments(bound, "arguments"));
+    let ignore_install_scripts = bound
+        .applied_modifiers
+        .iter()
+        .any(|m| m.as_str() == "ignore_install_scripts");
+    let yarn_selection = yarn_arguments.as_ref().map(|args| {
+        args.as_ref().map_or(TaskSelection::Unresolved, |args| {
+            yarn_task_selection(args, ignore_install_scripts)
+        })
+    });
+    if yarn_selection == Some(TaskSelection::NoTask) {
+        return Vec::new();
+    }
+    let task_name = match (dialect, bound.form_id.as_str()) {
+        (ManifestTaskDialect::Yarn, _) => yarn_arguments
+            .as_ref()
+            .and_then(Option::as_ref)
+            .and_then(|args| yarn_task_name(args).map(str::to_owned)),
+        (_, "run_script") => decoded_task_arguments(bound, "script_name")
+            .and_then(|v| (v.len() == 1).then(|| v[0].clone())),
+        (_, "test_script") => Some("test".to_string()),
+        _ => None,
+    };
+    let observations = source_scope_observations(
+        registry,
+        request,
+        parsed,
+        command_index,
+        scope_base_bindings,
+    );
+    let (shell_cwds, execution_cwds) = super::compute_effective_cwd::source_scope_execution_cwds(
+        parsed,
+        request,
+        scope_entry_cwd,
+        &observations,
+    );
+    let base = shell_cwds
+        .get(command_index)
+        .cloned()
+        .unwrap_or(caushell_runner::EffectiveCwd::Unknown);
+    let cwd = super::compute_effective_cwd::source_invocation_execution_cwd(
+        bound,
+        &base,
+        bindings,
+        request.home.as_deref(),
+    );
+    let config_path = match &cwd {
+        caushell_runner::EffectiveCwd::Known(cwd) => {
+            crate::path::normalize_shell_path(&resolve_conventional_path(cwd, target_path))
+        }
+        _ => target_path.to_string(),
+    };
+    let mut child_bindings = crate::support::command_environment_bindings(
+        bindings,
+        parsed,
+        &ParsedCommandRef::new(command_index, parsed.commands[command_index].span.clone()),
+    );
+    child_bindings.enter_child_shell_environment();
+    let task_shells = decoded_task_arguments(bound, "task_shell");
+    let task_shell = task_shells
+        .as_ref()
+        .and_then(|shells| shells.last())
+        .map(String::as_str)
+        .or_else(
+            || match child_bindings.environment_value("npm_config_script_shell") {
+                caushell_profile::EnvironmentValueRef::Present(SessionValue::ExactScalar(
+                    shell,
+                )) if dialect == ManifestTaskDialect::Npm => Some(shell.as_str()),
+                _ => None,
+            },
+        );
+    let language = if matches!(task_shell, Some("bash" | "/bin/bash" | "/usr/bin/bash")) {
+        PayloadLanguage::Bash
+    } else {
+        PayloadLanguage::Sh
+    };
+    let child_source_scopes = extended_payload_source_scopes(
+        source_scopes,
+        parsed,
+        command_index,
+        scope_base_bindings,
+        scope_entry_cwd,
+    );
+    let make_entry = |task_name: String, body: Option<String>| {
+        let source = if body.is_some() {
+            PayloadSource::InlineString
+        } else {
+            PayloadSource::DynamicReference
+        };
+        let input = match body {
+            Some(text) => RecursivePayloadInput::LiteralText { text },
+            None => RecursivePayloadInput::ArgumentFragments {
+                fragments: vec![caushell_profile::RecursivePayloadArgumentFragment {
+                    text: config_path.clone(),
+                    quoted: true,
+                    node_kind: "raw_string".into(),
+                    span: parsed.commands[command_index].span.clone(),
+                    materialization:
+                        caushell_profile::RecursivePayloadFragmentMaterialization::DecodedLiteral,
+                }],
+            },
+        };
+        FrontierEntry {
+            parent_ref: parent_ref.clone(),
+            root_command_index,
+            depth,
+            candidate: RecursivePayloadCandidate {
+                language,
+                source,
+                origin: RecursivePayloadOrigin::ConfigDefinedTask {
+                    config_path: config_path.clone(),
+                    task_name,
+                },
+                input,
+            },
+            bindings: child_bindings.clone(),
+            positional_args: None,
+            scope_entry_cwd: cwd.clone(),
+            source_scopes: child_source_scopes.clone(),
+        }
+    };
+    let unknown = || {
+        vec![make_entry(
+            task_name
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "<unresolved-task>".into()),
+            None,
+        )]
+    };
+    if yarn_selection == Some(TaskSelection::Unresolved) {
+        return unknown();
+    }
+    if dialect == ManifestTaskDialect::Composer
+        && matches!(
+            child_bindings.environment_value("COMPOSER"),
+            caushell_profile::EnvironmentValueRef::Present(_)
+        )
+    {
+        return unknown();
+    }
+    let Some(task_name) = task_name.clone().filter(|name| !name.is_empty()) else {
+        return unknown();
+    };
+    if dialect == ManifestTaskDialect::Composer {
+        match child_bindings.environment_value("COMPOSER_SKIP_SCRIPTS") {
+            caushell_profile::EnvironmentValueRef::Present(SessionValue::ExactScalar(value)) => {
+                if value.split(',').any(|s| s.trim() == task_name) {
+                    return Vec::new();
+                }
+            }
+            caushell_profile::EnvironmentValueRef::Present(_) => return unknown(),
+            _ => {}
+        }
+    }
+    if task_shells.as_ref().is_none_or(|shells| {
+        shells.last().is_some_and(|shell| {
+            !matches!(
+                shell.as_str(),
+                "sh" | "/bin/sh" | "/usr/bin/sh" | "bash" | "/bin/bash" | "/usr/bin/bash"
+            )
+        })
+    }) {
+        return unknown();
+    }
+    let ignores = bound
+        .applied_modifiers
+        .iter()
+        .any(|m| m.as_str() == "ignore_task_lifecycle");
+    let Some(ignore_values) = decoded_task_arguments(bound, "ignore_task_lifecycle_value") else {
+        return unknown();
+    };
+    if ignore_values
+        .iter()
+        .any(|v| !matches!(v.as_str(), "true" | "false"))
+    {
+        return unknown();
+    }
+    let ignore_lifecycle = if dialect != ManifestTaskDialect::Npm {
+        false
+    } else if ignores {
+        if ignore_values.len() > 1 {
+            return unknown();
+        }
+        ignore_values.last().is_none_or(|v| v == "true")
+    } else {
+        matches!(child_bindings.environment_value("npm_config_ignore_scripts"), caushell_profile::EnvironmentValueRef::Present(SessionValue::ExactScalar(value)) if value == "true")
+    };
+    if dialect == ManifestTaskDialect::Npm
+        && !bound
+            .applied_modifiers
+            .iter()
+            .any(|m| m.as_str() == "task_shell")
+        && matches!(child_bindings.environment_value("npm_config_script_shell"), caushell_profile::EnvironmentValueRef::Present(value) if !matches!(value, SessionValue::ExactScalar(shell) if matches!(shell.as_str(), "sh" | "/bin/sh" | "/usr/bin/sh" | "bash" | "/bin/bash" | "/usr/bin/bash")))
+    {
+        return unknown();
+    }
+    if !matches!(cwd, caushell_runner::EffectiveCwd::Known(_)) {
+        return unknown();
+    }
+    let content = source_visible_file_content(
+        registry,
+        session,
+        request,
+        parsed,
+        command_index,
+        &config_path,
+        &observations,
+        &execution_cwds,
+        source_scopes,
+    );
+    let content = match content {
+        crate::support::StaticFileContent::Unobserved => return Vec::new(),
+        crate::support::StaticFileContent::Unknown => return unknown(),
+        crate::support::StaticFileContent::Known(content) => content,
+    };
+    let Ok(value) = serde_json::from_str::<JsonValue>(&content) else {
+        return Vec::new();
+    };
+    if dialect != ManifestTaskDialect::Npm {
+        let tasks = match dialect {
+            ManifestTaskDialect::Yarn => yarn_tasks(
+                &value,
+                yarn_arguments.as_ref().and_then(Option::as_ref).unwrap(),
+                ignore_install_scripts,
+            ),
+            ManifestTaskDialect::Composer => {
+                let Some(args) = decoded_task_arguments(bound, "script_args") else {
+                    return unknown();
+                };
+                composer_tasks(&value, &task_name, &args)
+            }
+            ManifestTaskDialect::Npm => unreachable!(),
+        };
+        return tasks
+            .into_iter()
+            .rev()
+            .map(|task| make_entry(task.name, task.body))
+            .collect();
+    }
+    let Some(scripts) = value.get("scripts").and_then(JsonValue::as_object) else {
+        return Vec::new();
+    };
+    let Some(body) = scripts
+        .get(&task_name)
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.is_empty())
     else {
         return Vec::new();
     };
-
-    let Some(script_body) = load_npm_package_script(&config_path, &task_name) else {
-        return Vec::new();
+    let args_slot = if bound.form_id.as_str() == "run_script" {
+        "script_args"
+    } else {
+        "test_args"
     };
-
-    vec![RecursivePayloadCandidate {
-        language: PayloadLanguage::Sh,
-        source: PayloadSource::InlineString,
-        origin: RecursivePayloadOrigin::ConfigDefinedTask {
-            config_path,
-            task_name,
-        },
-        input: RecursivePayloadInput::LiteralText { text: script_body },
-    }]
+    let Some(args) = decoded_task_arguments(bound, args_slot) else {
+        return unknown();
+    };
+    let mut body = body.to_string();
+    for arg in args {
+        body.push(' ');
+        body.push_str(&quote_task_argument(&arg));
+    }
+    let mut entries = Vec::new();
+    for event in [
+        format!("pre{task_name}"),
+        task_name.clone(),
+        format!("post{task_name}"),
+    ] {
+        let script = if event == task_name {
+            Some(body.clone())
+        } else if ignore_lifecycle {
+            None
+        } else {
+            scripts
+                .get(&event)
+                .and_then(JsonValue::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        if let Some(script) = script {
+            entries.push(make_entry(event, Some(script)));
+        }
+    }
+    entries.reverse();
+    entries
 }
 
-fn load_config_path_for_convention(
+fn source_visible_file_content(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
     request: &CheckRequest,
-    invocation: &caushell_profile::BoundInvocation,
-    convention: &str,
-) -> Option<String> {
-    invocation
-        .effects
-        .iter()
-        .find_map(|effect| match &effect.target {
-            caushell_profile::EffectTarget::ToolConventionPath(target)
-                if effect.kind == caushell_profile::EffectKind::LoadConfig
-                    && target.convention == convention =>
-            {
-                Some(resolve_conventional_path(
-                    &request.shell_state_before.cwd,
-                    &target.path,
-                ))
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    command_index: usize,
+    path: &str,
+    observations: &[(ResolveInvocationArtifactResult, SessionBindings)],
+    execution_cwds: &[caushell_runner::EffectiveCwd],
+    source_scopes: &[PayloadSourceScope],
+) -> crate::support::StaticFileContent {
+    let mut content = None;
+    for scope in source_scopes {
+        let observations = source_scope_observations(
+            registry,
+            request,
+            &scope.parsed,
+            scope.before_command_index,
+            &scope.bindings,
+        );
+        let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
+            &scope.parsed,
+            request,
+            &scope.entry_cwd,
+            &observations,
+        )
+        .1;
+        content = Some(crate::support::static_file_content_before_scoped_command(
+            caushell_query::QuerySession::from_session(&session),
+            registry,
+            request,
+            &scope.parsed,
+            scope.before_command_index,
+            path,
+            &observations,
+            &cwds,
+            content,
+        ));
+    }
+    let content = crate::support::static_file_content_before_scoped_command(
+        caushell_query::QuerySession::from_session(&session),
+        registry,
+        request,
+        parsed,
+        command_index,
+        path,
+        &observations,
+        &execution_cwds,
+        content,
+    );
+    content
+}
+
+fn git_hook_frontier_entries(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    command_index: usize,
+    bound: &caushell_profile::BoundInvocation,
+    bindings: &SessionBindings,
+    scope_base_bindings: &SessionBindings,
+    scope_entry_cwd: &caushell_runner::EffectiveCwd,
+    source_scopes: &[PayloadSourceScope],
+    parent_ref: NestedPayloadParentRef,
+    root_command_index: usize,
+    depth: u8,
+    kind: crate::support::git_hooks::GitHookKind,
+) -> Vec<FrontierEntry> {
+    use crate::support::{StaticFileContent, git_hooks};
+    let observations = source_scope_observations(
+        registry,
+        request,
+        parsed,
+        command_index,
+        scope_base_bindings,
+    );
+    let (shell_cwds, execution_cwds) = super::compute_effective_cwd::source_scope_execution_cwds(
+        parsed,
+        request,
+        scope_entry_cwd,
+        &observations,
+    );
+    let base = shell_cwds.get(command_index);
+    let work_dirs = decoded_task_arguments(bound, "working_directory");
+    let absolute_override = work_dirs
+        .as_ref()
+        .and_then(|v| (v.len() == 1 && v[0].starts_with('/')).then(|| v[0].clone()));
+    let mut roots = if let Some(path) = &absolute_override {
+        vec![crate::path::normalize_shell_path(path)]
+    } else {
+        base.into_iter()
+            .flat_map(|cwd| cwd.known_cwds())
+            .map(|cwd| git_hooks::git_effective_cwd(cwd, bound))
+            .collect::<Vec<_>>()
+    };
+    let mut scope_observations = Vec::new();
+    for scope in source_scopes {
+        let obs = source_scope_observations(
+            registry,
+            request,
+            &scope.parsed,
+            scope.before_command_index,
+            &scope.bindings,
+        );
+        let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
+            &scope.parsed,
+            request,
+            &scope.entry_cwd,
+            &obs,
+        )
+        .1;
+        scope_observations.push((obs, cwds));
+    }
+    for cwd in &mut roots {
+        let mut candidates = Vec::new();
+        if let Some(root) = git_hooks::observed_repository_root(cwd, &observations, &execution_cwds)
+        {
+            candidates.push(root);
+        }
+        for (obs, cwds) in &scope_observations {
+            if let Some(root) = git_hooks::observed_repository_root(cwd, obs, cwds) {
+                candidates.push(root);
             }
-            _ => None,
+        }
+        if let Some(root) = candidates.into_iter().max_by_key(String::len) {
+            *cwd = root;
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    let cwd_known = work_dirs.is_some()
+        && roots.len() == 1
+        && (absolute_override.is_some()
+            || base.is_some_and(|cwd| !cwd.has_unknown() && cwd.bounded_roots().is_empty()));
+    let cwd = roots
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| request.shell_state_before.cwd().to_owned());
+    let config = crate::path::join_shell_path(&cwd, ".git/config");
+    let mut child_bindings = crate::support::command_environment_bindings(
+        bindings,
+        parsed,
+        &ParsedCommandRef::new(command_index, parsed.commands[command_index].span.clone()),
+    );
+    child_bindings.enter_child_shell_environment();
+    let child_scopes = extended_payload_source_scopes(
+        source_scopes,
+        parsed,
+        command_index,
+        scope_base_bindings,
+        scope_entry_cwd,
+    );
+    let mut entries = Vec::new();
+    let hooks =
+        git_hooks::resolve_git_hook_paths_with(request, &config, &cwd, bound, kind, |path| {
+            match source_visible_file_content(
+                registry,
+                session,
+                request,
+                parsed,
+                command_index,
+                path,
+                &observations,
+                &execution_cwds,
+                source_scopes,
+            ) {
+                StaticFileContent::Known(content) => Some(content),
+                _ => None,
+            }
+        });
+    for hook in hooks {
+        let path = hook
+            .resolution
+            .concrete_path()
+            .unwrap_or("<unresolved-git-hook>")
+            .to_owned();
+        let content = if cwd_known && hook.resolution.concrete_path().is_some() {
+            source_visible_file_content(
+                registry,
+                session,
+                request,
+                parsed,
+                command_index,
+                &path,
+                &observations,
+                &execution_cwds,
+                source_scopes,
+            )
+        } else {
+            StaticFileContent::Unknown
+        };
+        if cwd_known
+            && hook.resolution.concrete_path().is_some()
+            && !matches!(content, StaticFileContent::Known(_))
+        {
+            continue;
+        }
+        if matches!(content, StaticFileContent::Known(_)) {
+            let mut nonexecutable = false;
+            let history = caushell_query::ExecutionUnitHistoryQuery::new()
+                .before_sequence(request.sequence_no)
+                .execute(caushell_query::QuerySession::from_session(&session));
+            for unit in history
+                .execution_units()
+                .iter()
+                .rev()
+                .take(256)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                let Ok(previous) =
+                    caushell_parse::parse_command(unit.raw_text(), unit.shell_kind())
+                else {
+                    nonexecutable = false;
+                    continue;
+                };
+                let base = unit
+                    .top_level()
+                    .map(|u| u.cwd_before())
+                    .unwrap_or(request.shell_state_before.cwd());
+                let entry = caushell_runner::EffectiveCwd::known(base);
+                let obs = source_scope_observations(
+                    registry,
+                    request,
+                    &previous,
+                    previous.commands.len().saturating_sub(1),
+                    &SessionBindings::new(),
+                );
+                let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
+                    &previous, request, &entry, &obs,
+                )
+                .1;
+                nonexecutable = git_hooks::hook_explicitly_nonexecutable(
+                    &path,
+                    &previous,
+                    previous.commands.len(),
+                    &obs,
+                    &cwds,
+                    request.home.as_deref(),
+                    nonexecutable,
+                );
+            }
+            for scope in source_scopes {
+                let obs = source_scope_observations(
+                    registry,
+                    request,
+                    &scope.parsed,
+                    scope.before_command_index,
+                    &scope.bindings,
+                );
+                let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
+                    &scope.parsed,
+                    request,
+                    &scope.entry_cwd,
+                    &obs,
+                )
+                .1;
+                nonexecutable = git_hooks::hook_explicitly_nonexecutable(
+                    &path,
+                    &scope.parsed,
+                    scope.before_command_index,
+                    &obs,
+                    &cwds,
+                    request.home.as_deref(),
+                    nonexecutable,
+                );
+            }
+            if git_hooks::hook_explicitly_nonexecutable(
+                &path,
+                parsed,
+                command_index,
+                &observations,
+                &execution_cwds,
+                request.home.as_deref(),
+                nonexecutable,
+            ) {
+                continue;
+            }
+        }
+        let (language, input, source) = match content {
+            StaticFileContent::Known(body) => (git_hooks::hook_language(&body), RecursivePayloadInput::LiteralText {text: body}, PayloadSource::InlineString),
+            _ => (PayloadLanguage::Sh, RecursivePayloadInput::ArgumentFragments {fragments: vec![caushell_profile::RecursivePayloadArgumentFragment {text:path.clone(), quoted:true, node_kind:"raw_string".into(), span:parsed.commands[command_index].span.clone(), materialization:caushell_profile::RecursivePayloadFragmentMaterialization::DecodedLiteral}]}, PayloadSource::DynamicReference),
+        };
+        entries.push(FrontierEntry {
+            parent_ref: parent_ref.clone(),
+            root_command_index,
+            depth,
+            candidate: RecursivePayloadCandidate {
+                language,
+                source,
+                origin: RecursivePayloadOrigin::ConfigDefinedTask {
+                    config_path: path,
+                    task_name: git_hooks::hook_task_name(hook.stage),
+                },
+                input,
+            },
+            bindings: child_bindings.clone(),
+            positional_args: matches!(
+                hook.stage,
+                "pre-commit" | "post-commit" | "pre-applypatch" | "post-applypatch"
+            )
+            .then(Vec::new),
+            scope_entry_cwd: caushell_runner::EffectiveCwd::known(&cwd),
+            source_scopes: child_scopes.clone(),
+        });
+    }
+    entries.reverse();
+    entries
+}
+
+fn source_scope_observations(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    index: usize,
+    base: &SessionBindings,
+) -> Vec<(ResolveInvocationArtifactResult, SessionBindings)> {
+    if index > 256 {
+        return Vec::new();
+    }
+    let mut aliases = alias_bindings(&caushell_types::SessionSummary::new(), request);
+    parsed
+        .commands
+        .iter()
+        .take(index + 1)
+        .map(|command| {
+            let bindings = apply_runtime_variable_bindings_before_span(
+                registry,
+                request,
+                base.clone(),
+                parsed,
+                command.span.start_byte,
+                request.sequence_no,
+            );
+            let result = resolve_invocation_artifact_with_bindings(
+                registry,
+                &expand_alias_chain(
+                    command,
+                    request.shell_kind,
+                    &aliases,
+                    MAX_ALIAS_EXPANSION_HOPS,
+                )
+                .0,
+                InvocationRuntimeContext::new(),
+                &bindings,
+            );
+            apply_alias_command(&mut aliases, command, request.sequence_no);
+            (result, bindings)
         })
+        .collect()
+}
+
+fn source_payload_cwd(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    index: usize,
+    base: &SessionBindings,
+    initial: &caushell_runner::EffectiveCwd,
+) -> caushell_runner::EffectiveCwd {
+    let observations = source_scope_observations(registry, request, parsed, index, base);
+    super::compute_effective_cwd::source_scope_execution_cwds(
+        parsed,
+        request,
+        initial,
+        &observations,
+    )
+    .1
+    .get(index)
+    .cloned()
+    .unwrap_or(caushell_runner::EffectiveCwd::Unknown)
+}
+
+fn materialize_frontier_entry(
+    entry: &FrontierEntry,
+) -> caushell_profile::MaterializedRecursivePayloadCandidate {
+    let mut candidate = materialize_recursive_payload_candidate(&entry.candidate, &entry.bindings);
+    if entry.candidate.source == PayloadSource::DynamicReference
+        && !entry
+            .candidate
+            .language
+            .requires_opaque_execution_boundary()
+        && matches!(
+            entry.candidate.origin,
+            RecursivePayloadOrigin::ConfigDefinedTask { .. }
+        )
+    {
+        if let RecursivePayloadOrigin::ConfigDefinedTask { config_path, .. } =
+            &entry.candidate.origin
+        {
+            candidate.resolution = ValueMaterialization::UnsupportedDynamicText {
+                text: config_path.clone(),
+            };
+        }
+    }
+    candidate
 }
 
 fn resolve_conventional_path(cwd: &str, target_path: &str) -> String {
@@ -489,31 +1255,6 @@ fn resolve_conventional_path(cwd: &str, target_path: &str) -> String {
     }
 
     Path::new(cwd).join(path).to_string_lossy().into_owned()
-}
-
-fn load_npm_package_script(config_path: &str, task_name: &str) -> Option<String> {
-    let content = fs::read_to_string(config_path).ok()?;
-    let value: JsonValue = serde_json::from_str(&content).ok()?;
-    value
-        .get("scripts")?
-        .get(task_name)?
-        .as_str()
-        .map(str::to_string)
-}
-
-fn bound_argument_text(
-    invocation: &caushell_profile::BoundInvocation,
-    slot_name: &str,
-) -> Option<String> {
-    let parameter = invocation
-        .bound_parameters
-        .iter()
-        .find(|parameter| parameter.name.as_str() == slot_name)?;
-
-    match parameter.values.first()? {
-        caushell_profile::BoundValue::Argument { text, .. } => Some(text.clone()),
-        caushell_profile::BoundValue::ImplicitInput { .. } => None,
-    }
 }
 
 fn alias_bindings(
@@ -1905,6 +2646,7 @@ fn collect_execution_unit_resolve_records(
         .max()
         .map_or(0, |id| id + 1);
     let mut frontier = Vec::new();
+
     let request_scope_base_bindings = request_bindings(session.summary(), request);
     register_shell_redirection_scope(
         registry,
@@ -2557,6 +3299,63 @@ fn collect_execution_unit_resolve_records(
             max_nested_parse_depth,
         ));
         if let Some(resolved) = resolved {
+            // This producer belongs to the canonical execution frontier so
+            // native dispatches and ordinary calls share the same boundary.
+            // A nested scope without a proven entry cwd keeps relative code
+            // locations unknown; absolute declarations remain exact.
+            if resolved.bound.effects.iter().any(|effect| {
+                effect.kind == EffectKind::ExecutePayload
+                    && matches!(
+                        effect.target,
+                        EffectTarget::ConfiguredPath(_) | EffectTarget::ToolConventionPath(_)
+                    )
+            }) {
+                let source_entry_cwd = if entry.static_payload_scope.parsed_scope == *parsed_request
+                {
+                    caushell_runner::EffectiveCwd::known(request.shell_state_before.cwd())
+                } else {
+                    caushell_runner::EffectiveCwd::Unknown
+                };
+                for payload in configured_payload_frontier_entries(
+                    registry,
+                    request,
+                    &entry.static_payload_scope.parsed_scope,
+                    entry.static_payload_scope.command_index,
+                    &resolved.bound,
+                    crate::support::ExecutionResolveRecordRef::new(
+                        records.last().expect("current execution record"),
+                    ),
+                    &entry.bindings,
+                    &entry.static_payload_scope.scope_base_bindings,
+                    &source_entry_cwd,
+                    NestedPayloadParentRef::DerivedInvocation {
+                        node_id: entry.source_node_id.clone(),
+                    },
+                    entry.root_command_index,
+                    entry.depth.saturating_add(1),
+                ) {
+                    let materialized = materialize_frontier_entry(&payload);
+                    let record_id =
+                        NestedPayloadRecordId(first_payload_id + derived_unresolved_payloads.len());
+                    let mut record = NestedPayloadRecord::from_parse_result(
+                        record_id,
+                        payload.parent_ref,
+                        payload.root_command_index,
+                        payload.depth,
+                        payload.bindings,
+                        materialized.clone(),
+                        parse_recursive_payload_candidate(&materialized.candidate),
+                    );
+                    if payload.depth > max_nested_parse_depth {
+                        record.resolution = NestedPayloadResolution::TruncatedByDepthBudget {
+                            max_depth: max_nested_parse_depth,
+                            next_candidate_count: 1,
+                        };
+                    }
+                    record.execution_cwd = Some(payload.scope_entry_cwd);
+                    derived_unresolved_payloads.push(record);
+                }
+            }
             children.extend(expanded_dispatch_children(
                 registry, request, &entry, resolved,
             ));
@@ -3800,6 +4599,7 @@ fn expanded_recursive_payload_children(
                     materialized.resolution.clone(),
                 ),
                 candidate: materialized,
+                execution_cwd: None,
             });
             continue;
         }
@@ -3816,6 +4616,7 @@ fn expanded_recursive_payload_children(
                     next_candidate_count: 1,
                 },
                 candidate: materialized,
+                execution_cwd: None,
             });
             continue;
         }
@@ -7220,19 +8021,6 @@ fn pipeline_upstream_exists(
     pipeline_has_upstream(parsed, command_index)
 }
 
-fn nested_payload_node_id(
-    session_id: &caushell_types::SessionId,
-    sequence_no: caushell_types::CommandSequenceNo,
-    record_id: usize,
-) -> caushell_graph::NodeId {
-    caushell_graph::NodeId::new(format!(
-        "nested:{}:{}:{}",
-        session_id.0.as_str(),
-        sequence_no.0,
-        record_id,
-    ))
-}
-
 fn derived_invocation_node_id(
     session_id: &caushell_types::SessionId,
     sequence_no: caushell_types::CommandSequenceNo,
@@ -7587,6 +8375,12 @@ fn unresolved_execution_payload_subtype(
     {
         return Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell);
     }
+    if matches!(
+        record.candidate.candidate.origin,
+        RecursivePayloadOrigin::ConfigDefinedTask { .. }
+    ) {
+        return Some(UnresolvedExecutionPayloadSubtype::UnknownPayloadShape);
+    }
     Some(match &record.candidate.candidate.input {
         caushell_profile::RecursivePayloadInput::ArgumentFragments { .. } => {
             if !matches!(
@@ -7690,6 +8484,7 @@ fn collect_nested_payload_records(
     let mut nested_records = Vec::new();
     let mut next_record_id = 0usize;
     let mut frontier = Vec::new();
+    let request_cwd = caushell_runner::EffectiveCwd::known(request.shell_state_before.cwd());
 
     for record in records {
         let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
@@ -7733,6 +8528,21 @@ fn collect_nested_payload_records(
                 candidate,
                 bindings: top_level_bindings.clone(),
                 positional_args: positional_args.clone(),
+                source_scopes: extended_payload_source_scopes(
+                    &[],
+                    parsed_request,
+                    record.command_ref.command_index,
+                    bindings,
+                    &request_cwd,
+                ),
+                scope_entry_cwd: source_payload_cwd(
+                    registry,
+                    request,
+                    parsed_request,
+                    record.command_ref.command_index,
+                    bindings,
+                    &request_cwd,
+                ),
             });
         }
 
@@ -7769,26 +8579,45 @@ fn collect_nested_payload_records(
                 candidate,
                 bindings: top_level_bindings.clone(),
                 positional_args: positional_args.clone(),
+                source_scopes: extended_payload_source_scopes(
+                    &[],
+                    parsed_request,
+                    record.command_ref.command_index,
+                    bindings,
+                    &request_cwd,
+                ),
+                scope_entry_cwd: source_payload_cwd(
+                    registry,
+                    request,
+                    parsed_request,
+                    record.command_ref.command_index,
+                    bindings,
+                    &request_cwd,
+                ),
             });
         }
 
-        for candidate in collect_config_defined_task_recursive_payload_candidates(request, record) {
-            let root_command_index =
-                top_level_unit_for_command(parsed_request, record.command_ref.command_index)
-                    .map(|unit| unit.unit_index)
-                    .unwrap_or(record.command_ref.command_index);
-
-            frontier.push(FrontierEntry {
-                parent_ref: NestedPayloadParentRef::RootCommand {
-                    command_index: record.command_ref.command_index,
-                },
-                root_command_index,
-                depth: 1,
-                candidate,
-                bindings: bindings.clone(),
-                positional_args: None,
-            });
-        }
+        let root_command_index =
+            top_level_unit_for_command(parsed_request, record.command_ref.command_index)
+                .map(|unit| unit.unit_index)
+                .unwrap_or(record.command_ref.command_index);
+        frontier.extend(config_defined_task_frontier_entries(
+            registry,
+            session,
+            request,
+            parsed_request,
+            record.command_ref.command_index,
+            &resolved.bound,
+            &top_level_bindings,
+            bindings,
+            &request_cwd,
+            &[],
+            NestedPayloadParentRef::RootCommand {
+                command_index: record.command_ref.command_index,
+            },
+            root_command_index,
+            1,
+        ));
     }
 
     for (command, record) in function_derived_commands
@@ -7798,6 +8627,22 @@ fn collect_nested_payload_records(
         let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
             continue;
         };
+
+        let call_cwd = source_payload_cwd(
+            registry,
+            request,
+            parsed_request,
+            command.source_command_index,
+            bindings,
+            &request_cwd,
+        );
+        let call_scopes = extended_payload_source_scopes(
+            &[],
+            parsed_request,
+            command.source_command_index,
+            bindings,
+            &request_cwd,
+        );
 
         for candidate in recursive_payload_candidates_for_scoped_command(
             registry,
@@ -7824,8 +8669,44 @@ fn collect_nested_payload_records(
                 candidate,
                 bindings: command.bindings.clone(),
                 positional_args: shell_dispatch_positional_arguments(&command.command),
+                scope_entry_cwd: source_payload_cwd(
+                    registry,
+                    request,
+                    &command.parsed_body,
+                    command.derived_command_index,
+                    &command.scope_base_bindings,
+                    &call_cwd,
+                ),
+                source_scopes: extended_payload_source_scopes(
+                    &call_scopes,
+                    &command.parsed_body,
+                    command.derived_command_index,
+                    &command.scope_base_bindings,
+                    &call_cwd,
+                ),
             });
         }
+        let root_command_index =
+            top_level_unit_for_command(parsed_request, command.source_command_index)
+                .map(|unit| unit.unit_index)
+                .unwrap_or(command.source_command_index);
+        frontier.extend(config_defined_task_frontier_entries(
+            registry,
+            session,
+            request,
+            &command.parsed_body,
+            command.derived_command_index,
+            &resolved.bound,
+            &command.bindings,
+            &command.scope_base_bindings,
+            &call_cwd,
+            &call_scopes,
+            NestedPayloadParentRef::DerivedInvocation {
+                node_id: record.source_node_id.clone(),
+            },
+            root_command_index,
+            1,
+        ));
     }
 
     for (command, record) in dispatch_derived_commands
@@ -7875,13 +8756,48 @@ fn collect_nested_payload_records(
                 candidate,
                 bindings: command.bindings.clone(),
                 positional_args: shell_dispatch_positional_arguments(&command.command),
+                source_scopes: extended_payload_source_scopes(
+                    &[],
+                    parsed_request,
+                    command.source_command_index,
+                    bindings,
+                    &request_cwd,
+                ),
+                scope_entry_cwd: source_payload_cwd(
+                    registry,
+                    request,
+                    parsed_request,
+                    command.source_command_index,
+                    bindings,
+                    &request_cwd,
+                ),
             });
         }
+        let root_command_index =
+            top_level_unit_for_command(parsed_request, command.source_command_index)
+                .map(|unit| unit.unit_index)
+                .unwrap_or(command.source_command_index);
+        frontier.extend(config_defined_task_frontier_entries(
+            registry,
+            session,
+            request,
+            parsed_request,
+            command.source_command_index,
+            &resolved.bound,
+            &command.bindings,
+            bindings,
+            &request_cwd,
+            &[],
+            NestedPayloadParentRef::DerivedInvocation {
+                node_id: record.source_node_id.clone(),
+            },
+            root_command_index,
+            1,
+        ));
     }
 
     while let Some(entry) = frontier.pop() {
-        let materialized =
-            materialize_recursive_payload_candidate(&entry.candidate, &entry.bindings);
+        let materialized = materialize_frontier_entry(&entry);
         let record_id = NestedPayloadRecordId(next_record_id);
         next_record_id += 1;
 
@@ -7905,6 +8821,12 @@ fn collect_nested_payload_records(
                     materialized.clone(),
                     parse_result,
                 );
+                if matches!(
+                    materialized.candidate.origin,
+                    RecursivePayloadOrigin::ConfigDefinedTask { .. }
+                ) {
+                    record.execution_cwd = Some(entry.scope_entry_cwd.clone());
+                }
 
                 if let NestedPayloadResolution::Parsed { parsed, .. } = &mut record.resolution {
                     if let Some(positional_args) = entry.positional_args.as_deref() {
@@ -7916,6 +8838,8 @@ fn collect_nested_payload_records(
                         request,
                         parsed,
                         &record.bindings,
+                        &entry.scope_entry_cwd,
+                        &entry.source_scopes,
                         record_id,
                         entry.root_command_index,
                         entry.depth.saturating_add(1),
@@ -7929,11 +8853,7 @@ fn collect_nested_payload_records(
                             .iter()
                             .filter(|child| {
                                 matches!(
-                                    materialize_recursive_payload_candidate(
-                                        &child.candidate,
-                                        &child.bindings,
-                                    )
-                                    .resolution,
+                                    materialize_frontier_entry(child).resolution,
                                     ValueMaterialization::Static
                                         | ValueMaterialization::ResolvedExactScalar { .. }
                                         | ValueMaterialization::ResolvedRuntimeProduced { .. }
@@ -7943,10 +8863,7 @@ fn collect_nested_payload_records(
                             .count();
 
                         for child_entry in child_entries {
-                            let child_materialized = materialize_recursive_payload_candidate(
-                                &child_entry.candidate,
-                                &child_entry.bindings,
-                            );
+                            let child_materialized = materialize_frontier_entry(&child_entry);
                             let child_record_id = NestedPayloadRecordId(next_record_id);
                             next_record_id += 1;
 
@@ -7973,6 +8890,7 @@ fn collect_nested_payload_records(
                                 bindings: child_entry.bindings,
                                 candidate: child_materialized,
                                 resolution,
+                                execution_cwd: None,
                             });
                         }
                     }
@@ -7988,6 +8906,7 @@ fn collect_nested_payload_records(
                     depth: entry.depth,
                     bindings: entry.bindings,
                     candidate: materialized.clone(),
+                    execution_cwd: None,
                     resolution: NestedPayloadResolution::from_unresolved_materialization(
                         materialized.resolution,
                     ),
@@ -8589,6 +9508,33 @@ struct FrontierEntry {
     candidate: caushell_profile::RecursivePayloadCandidate,
     bindings: SessionBindings,
     positional_args: Option<Vec<caushell_profile::ProjectedArg>>,
+    scope_entry_cwd: caushell_runner::EffectiveCwd,
+    source_scopes: Vec<PayloadSourceScope>,
+}
+
+#[derive(Clone)]
+struct PayloadSourceScope {
+    parsed: std::sync::Arc<caushell_parse::ParsedCommandArtifact>,
+    before_command_index: usize,
+    bindings: SessionBindings,
+    entry_cwd: caushell_runner::EffectiveCwd,
+}
+
+fn extended_payload_source_scopes(
+    ancestors: &[PayloadSourceScope],
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    before_command_index: usize,
+    bindings: &SessionBindings,
+    entry_cwd: &caushell_runner::EffectiveCwd,
+) -> Vec<PayloadSourceScope> {
+    let mut scopes = ancestors.to_vec();
+    scopes.push(PayloadSourceScope {
+        parsed: std::sync::Arc::new(parsed.clone()),
+        before_command_index,
+        bindings: bindings.clone(),
+        entry_cwd: entry_cwd.clone(),
+    });
+    scopes
 }
 
 fn collect_child_frontier_entries(
@@ -8597,6 +9543,8 @@ fn collect_child_frontier_entries(
     request: &CheckRequest,
     parsed: &caushell_parse::ParsedCommandArtifact,
     parent_bindings: &SessionBindings,
+    scope_entry_cwd: &caushell_runner::EffectiveCwd,
+    source_scopes: &[PayloadSourceScope],
     parent_record_id: NestedPayloadRecordId,
     root_command_index: usize,
     depth: u8,
@@ -8649,8 +9597,45 @@ fn collect_child_frontier_entries(
                 candidate: child_candidate,
                 bindings: command_bindings.clone(),
                 positional_args: shell_dispatch_positional_arguments(command),
+                scope_entry_cwd: source_payload_cwd(
+                    registry,
+                    request,
+                    parsed,
+                    derived_command_index,
+                    parent_bindings,
+                    scope_entry_cwd,
+                ),
+                source_scopes: extended_payload_source_scopes(
+                    source_scopes,
+                    parsed,
+                    derived_command_index,
+                    parent_bindings,
+                    scope_entry_cwd,
+                ),
             });
         }
+        entries.extend(config_defined_task_frontier_entries(
+            registry,
+            session,
+            request,
+            parsed,
+            derived_command_index,
+            &resolved.bound,
+            &command_bindings,
+            parent_bindings,
+            scope_entry_cwd,
+            source_scopes,
+            NestedPayloadParentRef::DerivedInvocation {
+                node_id: derived_invocation_node_id(
+                    &request.session_id,
+                    request.sequence_no,
+                    parent_record_id.0,
+                    derived_command_index,
+                ),
+            },
+            root_command_index,
+            depth,
+        ));
     }
 
     entries
@@ -8658,12 +9643,7 @@ fn collect_child_frontier_entries(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{collections::BTreeSet, path::PathBuf};
 
     use super::ResolveInvocationPass;
 
@@ -9117,17 +10097,6 @@ modifiers:
 
         runner.run(SessionView::new(&graph, summary), &mut ctx);
         ctx
-    }
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("expected monotonic system time")
-                .as_nanos()
-        ))
     }
 
     fn run_pass_with_request(
@@ -10152,22 +11121,15 @@ modifiers:
     #[test]
     fn resolve_invocation_pass_extracts_npm_config_defined_task_body_from_package_json() {
         let summary = SessionSummary::new();
-        let temp_dir = unique_temp_dir("caushell-npm-config-task");
-        fs::create_dir_all(&temp_dir).expect("expected temp dir to be created");
-        fs::write(
-            temp_dir.join("package.json"),
-            r#"{"scripts":{"build":"bash ./scripts/build.sh"}}"#,
-        )
-        .expect("expected package.json to be written");
-
-        let mut request = sample_request(ShellKind::Bash, "npm run build");
-        request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
-        request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
+        let request = sample_request(
+            ShellKind::Bash,
+            r#"printf '%s' '{"scripts":{"build":"bash ./scripts/build.sh"}}' >package.json; npm run build"#,
+        );
+        let config_path = format!("{}/package.json", request.shell_state_before.cwd());
 
         let ctx = run_pass_with_request(&summary, request, built_in_registry());
 
-        match &top_level_record(&ctx, 0).result {
+        match &top_level_record(&ctx, 1).result {
             ResolveInvocationArtifactResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "npm");
                 assert_eq!(resolved.bound.form_id.as_str(), "run_script");
@@ -10180,14 +11142,14 @@ modifiers:
         let record = &ctx.nested_payload_records()[0];
         assert_eq!(
             record.parent_ref,
-            NestedPayloadParentRef::RootCommand { command_index: 0 }
+            NestedPayloadParentRef::RootCommand { command_index: 1 }
         );
-        assert_eq!(record.root_command_index, 0);
+        assert_eq!(record.root_command_index, 1);
         assert_eq!(record.depth, 1);
         assert_eq!(
             record.candidate.candidate.origin,
             caushell_profile::RecursivePayloadOrigin::ConfigDefinedTask {
-                config_path: temp_dir.join("package.json").to_string_lossy().into_owned(),
+                config_path: config_path.clone(),
                 task_name: "build".to_string(),
             }
         );
@@ -10230,7 +11192,7 @@ modifiers:
                 assert_eq!(
                     parsed.context.origin,
                     NestedPayloadOriginEvidence::ConfigDefinedTask {
-                        config_path: temp_dir.join("package.json").to_string_lossy().into_owned(),
+                        config_path,
                         task_name: "build".to_string(),
                     }
                 );
@@ -10244,8 +11206,6 @@ modifiers:
             }
             other => panic!("expected config-defined-task nested evidence, got {other:?}"),
         }
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

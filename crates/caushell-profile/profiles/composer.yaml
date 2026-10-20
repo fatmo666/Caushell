@@ -16,6 +16,11 @@ platform:
   shell_families: []
   requires_features: []
 forms:
+- id: list_scripts
+  selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(run-script|run)$'}}, {kind: has_modifier, modifier: list_scripts}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+  parameters:
+  - {name: operation, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+  - {name: arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
 - id: validate_file
   selector:
     kind: all
@@ -43,11 +48,8 @@ forms:
   selector:
     kind: all
     items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: run-script
+    - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(run-script|run)$'}}
+    - {kind: not, item: {kind: has_modifier, modifier: list_scripts}}
     - kind: not
       item:
         kind: has_modifier
@@ -66,31 +68,46 @@ forms:
     binding:
       kind: next_positional
     cardinality: required_one
+  - name: script_args
+    semantic: {kind: plain_value}
+    binding: {kind: remaining_args}
+    cardinality: optional_many
   effects:
-  - kind: read_path
+  - kind: load_config
     target:
       kind: tool_convention_path
       path: composer.json
       convention: composer.script_definition
-      purpose: tool_config
+      purpose: task_config
   - kind: execute_config_defined_task
     target:
       kind: tool_convention_path
       path: composer.json
       convention: composer.script_definition
-      purpose: tool_config
+      purpose: task_config
 subcommands:
 extensions:
   caushell.profile/source_research:
   - https://getcomposer.org/doc/articles/scripts.md
   - https://gtfobins.org/gtfobins/composer/
   caushell.profile/known_limitations:
-  - The JSON script definition is read and may invoke commands. Script-name resolution,
-    shell selection and exact child argv depend on the file contents and remain unresolved.
+  - Script definitions are decoded from statically observed composer.json content. PHP callbacks retain an unresolved executable-language boundary.
 modifiers:
 - id: information
   matcher:
     kind: any_flag
     flags:
     - "--help"
+    - "-h"
+    - "--version"
+    - "-V"
   ends_option_scope: true
+- {id: list_scripts, matcher: {kind: any_flag, flags: [--list, -l]}}
+- {id: execution_flag, matcher: {kind: any_flag, flags: [--dev, --no-dev, --no-interaction, -n, --no-plugins, --no-scripts, --quiet, -q, --verbose, -v, --ansi, --no-ansi]}}
+- id: timeout
+  matcher: {kind: any_flag, flags: [--timeout]}
+  parameters: [{name: timeout, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+- id: working_directory
+  matcher: {kind: any_flag, flags: [--working-dir, -d]}
+  parameters: [{name: working_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  effects: [{kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: working_directory, projection: {kind: identity}}], missing: unknown}}]

@@ -1,15 +1,10 @@
-use std::fs;
-
 use caushell_graph::EdgeKind;
 use caushell_profile::{
     EffectKind, EffectTarget, PathPurpose, PathRole, ResolveInvocationArtifactResult,
 };
 use caushell_query::IoTarget;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
-use caushell_types::{
-    DerivedPathBasis, DerivedPathRule, PathResolution, ResolvedPathPurpose, ResolvedPathRole,
-    ShellValueSnapshot,
-};
+use caushell_types::{PathResolution, ResolvedPathPurpose, ResolvedPathRole};
 
 use crate::path::{
     collect_mutation_scope_facts, collect_path_facts, collect_redirection_path_facts,
@@ -20,6 +15,9 @@ use crate::path::{
 };
 use crate::path::{effective_cwd_cases, project_path_at_cwd};
 use crate::path::{join_shell_path, normalize_shell_path};
+use crate::support::git_hooks::{
+    git_effective_cwd, git_hook_slot_name, git_nonlocal_config_sources, resolve_git_hook_paths,
+};
 use crate::support::{
     ExecutionResolveRecordRef, StreamSemanticsIndex, annotate_stream_output, bound_invocation,
     content_io_target, execution_content_io_target, graph_backed_execution_resolve_records,
@@ -52,11 +50,7 @@ impl SessionTransformPass for ExtractPathFactsPass {
             home.as_deref(),
         ));
 
-        mutations.extend(collect_git_hook_path_mutations(
-            ctx.request(),
-            &records,
-            &cwd,
-        ));
+        mutations.extend(collect_git_hook_path_mutations(ctx, &records, &cwd));
 
         for mutation in mutations {
             ctx.stage_mutation(mutation);
@@ -163,9 +157,18 @@ fn collect_resolved_path_mutations(
                                     &path.slot_name,
                                     Some(&path.normalized_command_name),
                                 );
-                                if path.purpose
-                                    == Some(caushell_profile::PathPurpose::AuxiliaryInput)
-                                {
+                                if let Some((
+                                    _,
+                                    caushell_types::ProvenanceEdgeSemantics::Consume {
+                                        consume_kind: projected_kind,
+                                        ..
+                                    },
+                                )) = provenance_edge_for_path_fact(
+                                    path.role,
+                                    path.purpose,
+                                    &path.slot_name,
+                                    Some(&path.normalized_command_name),
+                                ) {
                                     for mutation in &mut inputs {
                                         if let PendingMutation::AddProvenanceArtifact {
                                             semantics:
@@ -176,7 +179,7 @@ fn collect_resolved_path_mutations(
                                             ..
                                         } = mutation
                                         {
-                                            *consume_kind = caushell_types::ProvenanceConsumeKind::AuxiliaryInput;
+                                            *consume_kind = projected_kind;
                                         }
                                     }
                                 }
@@ -619,10 +622,11 @@ fn project_redirection_path_mutations(
 }
 
 fn collect_git_hook_path_mutations(
-    request: &caushell_types::CheckRequest,
+    ctx: &RunnerContext,
     records: &[ExecutionResolveRecordRef<'_>],
     cwd: &str,
 ) -> Vec<PendingMutation> {
+    let request = ctx.request();
     let mut mutations = Vec::new();
 
     for record in records {
@@ -630,14 +634,8 @@ fn collect_git_hook_path_mutations(
             continue;
         };
 
-        if resolved.normalized_command_name != "git" {
+        let Some(hook_kind) = crate::support::git_hooks::hook_kind(&resolved.bound) else {
             continue;
-        }
-
-        let hook_kind = match resolved.bound.subcommand_path.as_slice() {
-            [subcommand] if subcommand == "commit" => GitHookKind::Commit,
-            [subcommand] if subcommand == "am" => GitHookKind::Am,
-            _ => continue,
         };
 
         let effective_cwd = git_effective_cwd(cwd, &resolved.bound);
@@ -677,12 +675,18 @@ fn collect_git_hook_path_mutations(
             );
         }
 
-        let hook_paths = resolve_git_hook_paths(
+        let mut hook_paths = resolve_git_hook_paths(
             request,
             &config_path,
             &effective_cwd,
             &resolved.bound,
             hook_kind,
+        );
+        crate::support::git_hooks::project_resolved_hook_inputs(
+            &mut hook_paths,
+            ctx,
+            record.source_node_id(),
+            record.command_index(),
         );
 
         for hook_path in hook_paths {
@@ -725,300 +729,6 @@ fn collect_git_hook_path_mutations(
     }
 
     mutations
-}
-
-#[derive(Debug, Clone)]
-struct GitHookPath {
-    stage: &'static str,
-    resolution: PathResolution,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitHookKind {
-    Commit,
-    Am,
-}
-
-#[derive(Debug, Clone)]
-struct GitHooksRoot {
-    path: String,
-    config_path: String,
-    convention: String,
-}
-
-fn resolve_git_hook_paths(
-    request: &caushell_types::CheckRequest,
-    local_config_path: &str,
-    cwd: &str,
-    invocation: &caushell_profile::BoundInvocation,
-    kind: GitHookKind,
-) -> Vec<GitHookPath> {
-    let hook_root =
-        effective_git_hooks_root(request, local_config_path, cwd).unwrap_or_else(|| {
-            let config_dir = parent_dir_or_cwd(local_config_path, cwd);
-            GitHooksRoot {
-                path: join_shell_path(&config_dir, "hooks"),
-                config_path: normalize_shell_path(local_config_path),
-                convention: "git.default_hooks".to_string(),
-            }
-        });
-
-    git_hook_stages(invocation, kind)
-        .into_iter()
-        .map(|stage| GitHookPath {
-            stage,
-            resolution: git_hook_stage_resolution(&hook_root, stage),
-        })
-        .collect()
-}
-
-fn git_hook_stages(
-    invocation: &caushell_profile::BoundInvocation,
-    kind: GitHookKind,
-) -> Vec<&'static str> {
-    match kind {
-        GitHookKind::Commit => {
-            let mut stages = vec!["prepare-commit-msg", "post-commit"];
-
-            if !invocation_has_modifier(invocation, "no_verify") {
-                stages.insert(0, "pre-commit");
-                stages.insert(2, "commit-msg");
-            }
-
-            if invocation_has_modifier(invocation, "amend")
-                && !invocation_has_modifier(invocation, "no_post_rewrite")
-            {
-                stages.push("post-rewrite");
-            }
-
-            stages
-        }
-        GitHookKind::Am => {
-            let mut stages = vec!["post-applypatch"];
-
-            if !invocation_has_modifier(invocation, "no_verify") {
-                stages.insert(0, "pre-applypatch");
-                stages.insert(0, "applypatch-msg");
-            }
-
-            stages
-        }
-    }
-}
-
-fn effective_git_hooks_root(
-    request: &caushell_types::CheckRequest,
-    local_config_path: &str,
-    cwd: &str,
-) -> Option<GitHooksRoot> {
-    let repo_root = git_repo_root_from_local_config(local_config_path, cwd);
-    let mut root = None;
-
-    for source in git_config_sources(request, local_config_path) {
-        if let Some(hooks_path) = load_git_hooks_path(&source.path) {
-            root = Some(GitHooksRoot {
-                path: resolve_git_hooks_root_path(&hooks_path, &repo_root),
-                config_path: source.path,
-                convention: source.convention.to_string(),
-            });
-        }
-    }
-
-    root
-}
-
-#[derive(Debug, Clone)]
-struct GitConfigSource {
-    path: String,
-    convention: &'static str,
-    slot_name: &'static str,
-}
-
-fn git_config_sources(
-    request: &caushell_types::CheckRequest,
-    local_config_path: &str,
-) -> Vec<GitConfigSource> {
-    let mut sources = git_nonlocal_config_sources(request);
-
-    sources.push(GitConfigSource {
-        path: normalize_shell_path(local_config_path),
-        convention: "git.local_config",
-        slot_name: "git_local_config",
-    });
-
-    sources
-}
-
-fn git_nonlocal_config_sources(request: &caushell_types::CheckRequest) -> Vec<GitConfigSource> {
-    let mut sources = Vec::new();
-
-    if let Some(path) = git_system_config_path(request) {
-        sources.push(GitConfigSource {
-            path,
-            convention: "git.system_config",
-            slot_name: "git_system_config",
-        });
-    }
-
-    sources.extend(git_global_config_sources(request));
-    sources
-}
-
-fn git_system_config_path(request: &caushell_types::CheckRequest) -> Option<String> {
-    exported_exact_scalar(request, "GIT_CONFIG_SYSTEM")
-        .filter(|value| !value.is_empty())
-        .map(|value| normalize_shell_path(&value))
-        .or_else(|| {
-            Some("/etc/gitconfig".to_string()).filter(|path| std::path::Path::new(path).exists())
-        })
-}
-
-fn git_global_config_sources(request: &caushell_types::CheckRequest) -> Vec<GitConfigSource> {
-    if let Some(path) = exported_exact_scalar(request, "GIT_CONFIG_GLOBAL") {
-        return vec![GitConfigSource {
-            path: normalize_shell_path(&path),
-            convention: "git.global_config",
-            slot_name: "git_global_config_env",
-        }];
-    }
-
-    let mut paths = Vec::new();
-
-    if let Some(xdg_config_home) = exported_exact_scalar(request, "XDG_CONFIG_HOME") {
-        paths.push(GitConfigSource {
-            path: join_shell_path(&xdg_config_home, "git/config"),
-            convention: "git.global_config",
-            slot_name: "git_global_config_xdg",
-        });
-    } else if let Some(home) = request.home.as_deref() {
-        paths.push(GitConfigSource {
-            path: join_shell_path(home, ".config/git/config"),
-            convention: "git.global_config",
-            slot_name: "git_global_config_xdg",
-        });
-    }
-
-    if let Some(home) = request.home.as_deref() {
-        paths.push(GitConfigSource {
-            path: join_shell_path(home, ".gitconfig"),
-            convention: "git.global_config",
-            slot_name: "git_global_config_home",
-        });
-    }
-
-    paths
-}
-
-fn exported_exact_scalar(request: &caushell_types::CheckRequest, name: &str) -> Option<String> {
-    let binding = request.shell_state_before.exported_variable(name)?;
-    match &binding.value {
-        ShellValueSnapshot::ExactScalar { value }
-        | ShellValueSnapshot::RuntimeProduced { value, .. } => Some(value.clone()),
-        ShellValueSnapshot::OpaqueDynamic { .. } | ShellValueSnapshot::RuntimeInput { .. } => None,
-    }
-}
-
-fn load_git_hooks_path(config_path: &str) -> Option<String> {
-    let content = fs::read_to_string(config_path).ok()?;
-    parse_git_config_hooks_path(&content)
-}
-
-fn resolve_git_hooks_root_path(hooks_path: &str, repo_root: &str) -> String {
-    if hooks_path.starts_with('/') {
-        normalize_shell_path(hooks_path)
-    } else {
-        join_shell_path(repo_root, hooks_path)
-    }
-}
-
-fn git_repo_root_from_local_config(local_config_path: &str, cwd: &str) -> String {
-    let git_dir = parent_dir_or_cwd(local_config_path, cwd);
-    parent_dir_or_cwd(&git_dir, cwd)
-}
-
-fn parse_git_config_hooks_path(content: &str) -> Option<String> {
-    let mut in_core = false;
-
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-
-        if line.starts_with('[') && line.ends_with(']') {
-            let section = &line[1..line.len() - 1];
-            let normalized = section.split_whitespace().collect::<Vec<_>>().join(" ");
-            in_core = normalized.eq_ignore_ascii_case("core");
-            continue;
-        }
-
-        if !in_core {
-            continue;
-        }
-
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-
-        if !key.trim().eq_ignore_ascii_case("hooksPath") {
-            continue;
-        }
-
-        let value = value.trim();
-        if value.is_empty() {
-            return None;
-        }
-
-        return Some(strip_wrapping_quotes(value).to_string());
-    }
-
-    None
-}
-
-fn strip_wrapping_quotes(value: &str) -> &str {
-    if value.len() >= 2 {
-        let first = value.as_bytes()[0];
-        let last = value.as_bytes()[value.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return &value[1..value.len() - 1];
-        }
-    }
-
-    value
-}
-
-fn git_hook_stage_resolution(root: &GitHooksRoot, stage: &str) -> PathResolution {
-    PathResolution::DerivedConcrete {
-        path: join_shell_path(&root.path, stage),
-        basis: git_hook_path_basis(root),
-        rule: DerivedPathRule::ChildUnder {
-            relative_path: stage.to_string(),
-        },
-    }
-}
-
-fn git_hook_path_basis(root: &GitHooksRoot) -> DerivedPathBasis {
-    DerivedPathBasis::ConfigDerivedRoot {
-        config_path: normalize_shell_path(&root.config_path),
-        convention: root.convention.clone(),
-        key: "core.hooksPath".to_string(),
-        value: normalize_shell_path(&root.path),
-    }
-}
-
-fn git_hook_slot_name(stage: &str) -> String {
-    format!("git_hook_{}", stage.replace('-', "_"))
-}
-
-fn invocation_has_modifier(
-    invocation: &caushell_profile::BoundInvocation,
-    modifier_id: &str,
-) -> bool {
-    invocation
-        .applied_modifiers
-        .iter()
-        .any(|modifier| modifier.as_str() == modifier_id)
 }
 
 #[derive(Debug, Clone)]
@@ -1087,43 +797,6 @@ fn git_nonlocal_config_path_facts(
     }
 
     facts
-}
-
-fn git_effective_cwd(cwd: &str, invocation: &caushell_profile::BoundInvocation) -> String {
-    if !invocation_has_modifier(invocation, "work_tree") {
-        return normalize_shell_path(cwd);
-    }
-
-    invocation
-        .bound_parameters
-        .iter()
-        .find(|parameter| parameter.name.as_str() == "working_directory")
-        .and_then(|parameter| {
-            parameter.values.iter().find_map(|value| match value {
-                caushell_profile::BoundValue::Argument { text, .. } => {
-                    Some(if text.starts_with('/') {
-                        normalize_shell_path(text)
-                    } else {
-                        join_shell_path(cwd, text)
-                    })
-                }
-                caushell_profile::BoundValue::ImplicitInput { .. } => None,
-            })
-        })
-        .unwrap_or_else(|| normalize_shell_path(cwd))
-}
-
-fn parent_dir_or_cwd(path: &str, fallback: &str) -> String {
-    let normalized = normalize_shell_path(path);
-    let Some(index) = normalized.rfind('/') else {
-        return normalize_shell_path(fallback);
-    };
-
-    if index == 0 {
-        "/".to_string()
-    } else {
-        normalized[..index].to_string()
-    }
 }
 
 #[cfg(test)]

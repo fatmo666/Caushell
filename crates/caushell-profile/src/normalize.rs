@@ -419,9 +419,9 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     if let Some(tree) = &subcommands {
         validate_subcommand_option_prefixes(option_prefixes, &tree.roots)?;
     }
-    validate_configured_path_references(&forms, &modifiers, &BTreeSet::new(), &BTreeSet::new())?;
+    validate_configured_path_references(&forms, &modifiers, &environment_names, &BTreeSet::new())?;
     if let Some(tree) = &subcommands {
-        let names = declared_parameter_names(&forms, &modifiers, &BTreeSet::new());
+        let names = declared_parameter_names(&forms, &modifiers, &environment_names);
         let modifier_names = modifiers
             .iter()
             .map(|modifier| modifier.id.as_str().to_string())
@@ -477,7 +477,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         validate_configured_path_references(
             &override_forms,
             &inherited_modifiers,
-            &BTreeSet::new(),
+            &environment_names,
             &BTreeSet::new(),
         )?;
         if declared_parameter_names(&override_forms, &override_modifiers, &BTreeSet::new())
@@ -2867,10 +2867,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
                 | EffectKind::DeletePath
                 | EffectKind::TargetPath
                 | EffectKind::LoadConfig
+                | EffectKind::ExecutePayload
                 | EffectKind::SetExecutionWorkingDirectory
         ) {
             return Err(NormalizeError::InvalidConfiguredPath(
-                "configured_path requires a filesystem effect".into(),
+                "configured_path requires a filesystem effect or executable program input".into(),
             ));
         }
         if path.missing == crate::ConfiguredPathMissing::IncidentalCache

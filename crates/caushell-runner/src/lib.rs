@@ -258,6 +258,7 @@ mod tests {
                 root_command_index: 0,
                 depth: 1,
                 bindings: caushell_profile::SessionBindings::new(),
+                execution_cwd: None,
                 candidate: MaterializedRecursivePayloadCandidate {
                     candidate: RecursivePayloadCandidate {
                         language: PayloadLanguage::Bash,

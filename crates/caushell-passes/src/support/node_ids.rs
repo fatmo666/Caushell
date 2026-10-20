@@ -3,6 +3,19 @@ use caushell_parse::{CommandFact, ParsedCommandArtifact, RedirectionFact};
 use caushell_runner::{request_anchor_node_id, top_level_command_node_id};
 use caushell_types::{CheckRequest, CommandSequenceNo, SessionId};
 
+pub(crate) fn nested_payload_node_id(
+    session_id: &SessionId,
+    sequence_no: CommandSequenceNo,
+    record_id: usize,
+) -> NodeId {
+    NodeId::new(format!(
+        "nested:{}:{}:{}",
+        session_id.0.as_str(),
+        sequence_no.0,
+        record_id
+    ))
+}
+
 use crate::support::{
     command_has_pipeline_execution_unit, top_level_unit_for_bare_redirection,
     top_level_unit_for_command,

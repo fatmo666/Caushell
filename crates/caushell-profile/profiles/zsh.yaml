@@ -66,6 +66,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: script_path

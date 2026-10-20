@@ -20,6 +20,277 @@ use crate::{
 };
 
 const MAX_LITERAL_CONTENT_TRACE_HOPS: usize = 8;
+const MAX_STATIC_FILE_EVENTS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StaticFileContent {
+    Unobserved,
+    Known(String),
+    Unknown,
+}
+
+/// Latest source-visible content, including writes whose bytes are unknown.
+pub(crate) fn static_file_content_before_scoped_command(
+    session: QuerySession<'_>,
+    registry: &caushell_profile::ProfileRegistry,
+    request: &caushell_types::CheckRequest,
+    parsed: &ParsedCommandArtifact,
+    before_command_index: usize,
+    path: &str,
+    observations: &[(
+        caushell_profile::ResolveInvocationArtifactResult,
+        SessionBindings,
+    )],
+    cwds: &[caushell_runner::EffectiveCwd],
+    initial: Option<StaticFileContent>,
+) -> StaticFileContent {
+    if before_command_index > MAX_STATIC_FILE_EVENTS {
+        return StaticFileContent::Unknown;
+    }
+    let mut state =
+        initial.unwrap_or_else(|| historical_static_file_content(session, registry, request, path));
+    for index in 0..before_command_index {
+        let Some((result, bindings)) = observations.get(index) else {
+            return StaticFileContent::Unknown;
+        };
+        let cwd = cwds.get(index).and_then(|c| match c {
+            caushell_runner::EffectiveCwd::Known(path) => Some(path.as_str()),
+            _ => None,
+        });
+        update_static_file_content(
+            session,
+            parsed,
+            index,
+            request.sequence_no,
+            path,
+            result,
+            bindings,
+            cwd,
+            request.home.as_deref(),
+            &mut state,
+        );
+    }
+    state
+}
+
+fn historical_static_file_content(
+    session: QuerySession<'_>,
+    registry: &caushell_profile::ProfileRegistry,
+    request: &caushell_types::CheckRequest,
+    path: &str,
+) -> StaticFileContent {
+    let history = ExecutionUnitHistoryQuery::new()
+        .before_sequence(request.sequence_no)
+        .execute(session);
+    let units = history.execution_units();
+    let start = units.len().saturating_sub(MAX_STATIC_FILE_EVENTS);
+    let mut state = if start == 0 {
+        StaticFileContent::Unobserved
+    } else {
+        StaticFileContent::Unknown
+    };
+    for unit in &units[start..] {
+        let Ok(previous) = caushell_parse::parse_command(unit.raw_text(), unit.shell_kind()) else {
+            state = StaticFileContent::Unknown;
+            continue;
+        };
+        let bindings = SessionBindings::new();
+        let cwd = unit.top_level().map(|c| c.cwd_before());
+        for (index, command) in previous.commands.iter().enumerate() {
+            let result = caushell_profile::resolve_invocation_artifact_with_bindings(
+                registry,
+                command,
+                caushell_profile::InvocationRuntimeContext::new(),
+                &bindings,
+            );
+            update_static_file_content(
+                session,
+                &previous,
+                index,
+                unit.root_command_sequence_no(),
+                path,
+                &result,
+                &bindings,
+                cwd,
+                request.home.as_deref(),
+                &mut state,
+            );
+        }
+    }
+    state
+}
+
+fn update_static_file_content(
+    session: QuerySession<'_>,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    sequence: CommandSequenceNo,
+    path: &str,
+    result: &caushell_profile::ResolveInvocationArtifactResult,
+    bindings: &SessionBindings,
+    cwd: Option<&str>,
+    home: Option<&str>,
+    state: &mut StaticFileContent,
+) {
+    use caushell_profile::{EffectKind, ResolveInvocationArtifactResult};
+    let command = &parsed.commands[command_index];
+    let home = bindings.tilde_home_with_default(home);
+    let base = cwd.unwrap_or("/");
+    let bound = match result {
+        ResolveInvocationArtifactResult::Resolved(r) => Some(&r.bound),
+        ResolveInvocationArtifactResult::SelectionError { partial_bound, .. } => {
+            partial_bound.as_ref()
+        }
+        _ => None,
+    };
+    let opaque = bound.is_none_or(|b| {
+        b.operation_semantics_unresolved
+            || b.effects.iter().any(|e| {
+                matches!(
+                    e.kind,
+                    EffectKind::ExecutePayload
+                        | EffectKind::ExecuteConfigDefinedTask
+                        | EffectKind::ExecuteHook
+                        | EffectKind::SourceScriptIntoCurrentShell
+                        | EffectKind::ExecuteImportedPackageLogic
+                        | EffectKind::LoadInProcessCode
+                        | EffectKind::DispatchCommand
+                )
+            })
+    }) || command
+        .command_name
+        .as_deref()
+        .is_some_and(|name| bindings.function_binding(name).is_some());
+    if opaque {
+        *state = StaticFileContent::Unknown;
+    }
+    let targets = crate::path::collect_invocation_mutation_targets(result, None, base, home);
+    if targets
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.operation,
+                EffectKind::WritePath | EffectKind::MovePath | EffectKind::DeletePath
+            )
+        })
+        .any(|t| {
+            (t.cwd_dependent && cwd.is_none())
+                || t.resolution.concrete_path().is_none_or(|target| {
+                    target == path
+                        || path
+                            .strip_prefix(target)
+                            .is_some_and(|suffix| suffix.starts_with('/'))
+                })
+        })
+    {
+        *state = StaticFileContent::Unknown;
+    }
+    let redirects = parsed
+        .redirections
+        .iter()
+        .filter(|r| redirection_parent_command_index(parsed, r) == Some(command_index))
+        .collect::<Vec<_>>();
+    let writes = redirects
+        .iter()
+        .copied()
+        .filter(|r| {
+            r.operator
+                .as_deref()
+                .is_some_and(is_file_write_redirection_operator)
+        })
+        .collect::<Vec<_>>();
+    let mut matching = Vec::new();
+    for redirection in &writes {
+        let target = redirection.target.as_ref().and_then(|t| {
+            resolve_materialized_path_operand(&t.text, t.quoted, &t.node_kind, base, home, bindings)
+        });
+        if target.is_none()
+            || (cwd.is_none()
+                && redirection
+                    .target
+                    .as_ref()
+                    .is_some_and(|t| !std::path::Path::new(&t.text).is_absolute()))
+        {
+            *state = StaticFileContent::Unknown;
+            return;
+        }
+        if target.as_deref() == Some(path) {
+            matching.push(*redirection);
+        }
+    }
+    if matching.is_empty() {
+        return;
+    }
+    // Certify ordinary stdout routing; descriptor duplication stays unresolved.
+    let simple = writes.iter().all(|r| {
+        matches!(r.operator.as_deref(), Some(">" | ">|" | ">>"))
+            && r.file_descriptor.as_deref().is_none_or(|fd| fd == "1")
+    }) && redirects
+        .iter()
+        .all(|r| r.operator.as_deref().is_none_or(|op| !op.contains('&')))
+        && !opaque
+        && !command.in_pipeline
+        && !command.guarded
+        && !command.conditional_execution
+        && command.control_flow_span.is_none()
+        && command.terminator != Some(caushell_parse::StatementTerminator::Background);
+    if !simple {
+        *state = StaticFileContent::Unknown;
+        return;
+    }
+    let last = *matching.last().unwrap();
+    let receives_stdout = writes.last().is_some_and(|r| r.span == last.span);
+    let output = if receives_stdout {
+        let mut stream_scope = parsed.clone();
+        stream_scope.redirections.retain(|r| {
+            redirection_parent_command_index(parsed, r) != Some(command_index)
+                || !r
+                    .operator
+                    .as_deref()
+                    .is_some_and(is_file_write_redirection_operator)
+        });
+        let self_contained_output =
+            matches!(command.command_name.as_deref(), Some("printf" | "echo"))
+                || (command.command_name.as_deref() == Some("cat")
+                    && command.tokens.is_empty()
+                    && effective_stdin_redirection(parsed, command_index).is_some_and(|r| {
+                        matches!(
+                            r.kind,
+                            RedirectionKind::HereDoc | RedirectionKind::HereString
+                        ) && r.content.as_ref().is_some_and(|c| {
+                            c.quoted || (!c.text.contains('$') && !c.text.contains('`'))
+                        })
+                    }));
+        if !self_contained_output {
+            *state = StaticFileContent::Unknown;
+            return;
+        }
+        scoped_stdout_evidence(
+            session,
+            &stream_scope,
+            command_index,
+            sequence,
+            bindings,
+            bindings,
+            base,
+            cwd.is_some(),
+            home,
+            MAX_LITERAL_CONTENT_TRACE_HOPS as u8,
+        )
+        .complete_text()
+    } else {
+        Some(String::new())
+    };
+    let append_only = matching.iter().all(|r| r.operator.as_deref() == Some(">>"));
+    match (output, append_only) {
+        (Some(text), false) => *state = StaticFileContent::Known(text),
+        (Some(text), true) => match state {
+            StaticFileContent::Known(previous) => previous.push_str(&text),
+            _ => *state = StaticFileContent::Unknown,
+        },
+        _ => *state = StaticFileContent::Unknown,
+    }
+}
 
 /// Static evidence about bytes carried by a shell input or output stream.
 ///

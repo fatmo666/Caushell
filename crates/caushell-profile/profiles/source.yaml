@@ -44,6 +44,7 @@ forms:
         cardinality: optional_many
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: script_path

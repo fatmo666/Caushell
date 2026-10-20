@@ -56,6 +56,12 @@ forms:
 
 modifiers:
   - {id: information, matcher: {kind: any_flag, flags: [-h, --help, -v, --version]}}
+  - {id: ignore_install_scripts, matcher: {kind: any_flag, flags: [--ignore-scripts]}}
+  - {id: install_flag, matcher: {kind: any_flag, flags: [--frozen-lockfile, --immutable, --non-interactive, --offline, --ignore-engines, --ignore-optional, --production]}}
+  - id: task_shell
+    matcher: {kind: any_flag, flags: [--script-shell]}
+    parameters:
+      - {name: task_shell, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
   - id: cwd
     matcher:
       kind: any_flag

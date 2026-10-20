@@ -432,7 +432,16 @@ pub(crate) fn collect_effect_mutation_targets(
     home: Option<&str>,
 ) -> Vec<MutationTargetCandidate> {
     let home = record.bindings().tilde_home_with_default(home);
-    let (bound, resolved, command_name) = match record.result() {
+    collect_invocation_mutation_targets(record.result(), Some(record), cwd, home)
+}
+
+pub(crate) fn collect_invocation_mutation_targets(
+    result: &ResolveInvocationArtifactResult,
+    record: Option<ExecutionResolveRecordRef<'_>>,
+    cwd: &str,
+    home: Option<&str>,
+) -> Vec<MutationTargetCandidate> {
+    let (bound, resolved, command_name) = match result {
         ResolveInvocationArtifactResult::Resolved(resolved) => (
             &resolved.bound,
             Some(resolved),
@@ -506,8 +515,7 @@ pub(crate) fn collect_effect_mutation_targets(
         }
         match &effect.target {
             EffectTarget::ConfiguredPath(target) => {
-                if let Some(path) = resolve_configured_path(bound, target, cwd, home, Some(record))
-                {
+                if let Some(path) = resolve_configured_path(bound, target, cwd, home, record) {
                     targets.push(MutationTargetCandidate {
                         metadata_mutation: metadata_mutation.clone(),
                         operation: effect.kind,
@@ -564,18 +572,20 @@ pub(crate) fn collect_effect_mutation_targets(
             }
             EffectTarget::DerivedPath(target) => {
                 let mut derived = Vec::new();
-                collect_derived_target_path_facts(
-                    record,
-                    command_name,
-                    bound,
-                    resolved,
-                    effect_index,
-                    target,
-                    PathRole::Target,
-                    cwd,
-                    home,
-                    &mut derived,
-                );
+                if let Some(record) = record {
+                    collect_derived_target_path_facts(
+                        record,
+                        command_name,
+                        bound,
+                        resolved,
+                        effect_index,
+                        target,
+                        PathRole::Target,
+                        cwd,
+                        home,
+                        &mut derived,
+                    );
+                }
                 let cwd_dependent = resolved
                     .map(|resolved| {
                         projected_derived_target_depends_on_cwd(target, resolved, cwd, home)

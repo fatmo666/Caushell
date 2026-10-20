@@ -8,7 +8,7 @@ forms:
   - id: ksh_script_file
     selector: {kind: all, items: [{kind: not, item: {kind: has_flag, flag: -c}}, {kind: not, item: {kind: has_flag, flag: -s}}, {kind: has_positional_at, index: 0}]}
     parameters: [{name: script_file, semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}, binding: {kind: positional_at, index: 0}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_file_path, semantic: {kind: path, role: read, purpose: script_source}}}}]
-    effects: [{kind: read_path, target: {kind: slot, name: script_file_path}}, {kind: execute_payload, target: {kind: slot, name: script_file}}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: script_file_path}}, {kind: execute_payload, target: {kind: slot, name: script_file}}]
     stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: ksh_command_string
     selector: {kind: has_flag, flag: -c}

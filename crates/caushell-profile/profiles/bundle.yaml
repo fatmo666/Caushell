@@ -2,206 +2,123 @@ dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: leading_options
 opaque_on_unresolved: true
-identity:
-  canonical_name: bundle
-  aliases: []
-trust:
-  tier: tier_a
-  source: built_in
-platform:
-  os_families:
-  - posix
-  - linux
-  - macos
-  shell_families: []
-  requires_features: []
+identity: {canonical_name: bundle, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+environment_inputs:
+  - name: gemfile_environment
+    environment: {name: BUNDLE_GEMFILE, empty_is_unset: true}
+    unless_modifiers: [information]
+    semantic: {kind: plain_value}
 forms:
-- id: show_help
-  selector:
-    kind: has_modifier
-    modifier: information
-  parameters:
-  - name: ignored_tail
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_args
-    cardinality: optional_many
-- id: exec_child
-  selector:
-    kind: all
-    items:
-    - kind: all
-      items:
-      - kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: literal
-          value: exec
-      - kind: has_positional_at
-        index: 1
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-  - name: child_command
-    semantic:
-      kind: command_ref
-      dispatch: wrapper_command
-    binding:
-      kind: next_positional
-    cardinality: required_one
-  - name: child_argv
-    semantic:
-      kind: plain_value
-    binding:
-      kind: remaining_args
-    cardinality: optional_many
-  effects:
-  - kind: dispatch_command
-    target:
-      kind: dispatch
-      command: child_command
-      argv:
-      - child_argv
-      stdin_from_parent: true
-      stdout_to_parent: true
-- id: interactive_console
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: console
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  implicit_inputs:
-  - source: interactive_session
-    semantic:
-      kind: payload
-      language: opaque
-      source: interactive
-      recursive: true
-  effects:
-  - kind: execute_payload
-    target:
-      kind: implicit_input
-      source: interactive_session
-  - kind: open_interactive_escape_surface
-    target:
-      kind: none
-    surface:
-      kind: terminal_ui
-      requires_tty: true
-      capabilities:
-      - spawn_shell
-      - run_command
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-- id: help_pager
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: help
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  implicit_inputs:
-  - source: interactive_session
-    semantic:
-      kind: payload
-      language: opaque
-      source: interactive
-      recursive: true
-  effects:
-  - kind: open_interactive_escape_surface
-    target:
-      kind: none
-    surface:
-      kind: terminal_ui
-      requires_tty: true
-      capabilities:
-      - run_command
-      - spawn_shell
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-- id: install_gemfile
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: install
-    - kind: not
-      item:
-        kind: has_modifier
-        modifier: information
-  effects:
-  - kind: read_path
-    target:
-      kind: tool_convention_path
-      path: Gemfile
-      convention: bundler.project_definition
-      purpose: tool_config
-  - kind: execute_imported_package_logic
-    target:
-      kind: tool_convention_path
-      path: Gemfile
-      convention: bundler.project_definition
-      purpose: tool_config
-  parameters:
-  - name: operation
-    semantic:
-      kind: plain_value
-    binding:
-      kind: positional_at
-      index: 0
-    cardinality: required_one
-subcommands:
-extensions:
-  caushell.profile/source_research:
-  - https://bundler.io/man/bundle-exec.1.html
-  - https://bundler.io/man/bundle-console.1.html
-  - https://gtfobins.org/gtfobins/bundle/
-  caushell.profile/known_limitations:
-  - The exec form passes explicit child argv; console input is an interactive Ruby
-    session. Gemfile evaluation and install hooks are configuration-driven and not
-    expanded.
+  - &information_form
+    id: show_help
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+  - id: default_install
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
+    effects: &gemfile_install
+      - &gemfile_read
+        kind: load_config
+        target: &gemfile_source
+          kind: configured_path
+          sources:
+            - {slot: gemfile_argument, projection: {kind: identity}}
+            - {slot: gemfile_environment, projection: {kind: identity}}
+          missing: unknown
+          purpose: script_source
+      - &gemfile_evaluate {kind: execute_payload, target: *gemfile_source}
+      - kind: execute_imported_package_logic
+        target: {kind: tool_convention_path, path: Gemfile, convention: bundler.project_definition, purpose: tool_config}
 modifiers:
-- id: information
-  matcher:
-    kind: any_flag
-    flags:
-    - "--help"
-  ends_option_scope: true
+  - &information {id: information, matcher: {kind: any_flag, flags: [-h, --help, -v, --version]}, ends_option_scope: true}
+  - &gemfile
+    id: gemfile
+    matcher: {kind: any_flag, flags: [-g, --gemfile]}
+    parameters: [{name: gemfile_argument, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+subcommands:
+  roots:
+    - name: install
+      option_scope: permuted_options
+      forms:
+        - *information_form
+        - id: install_gemfile
+          selector: &running {kind: not, item: {kind: has_modifier, modifier: information}}
+          effects: *gemfile_install
+      modifiers:
+        - &command_information {id: information, matcher: {kind: any_flag, flags: [-h, --help]}, ends_option_scope: true}
+        - *gemfile
+        - id: install_flags
+          matcher: {kind: any_flag, flags: [--local, --prefer-local, --redownload, --force, --quiet, --verbose, --deployment, --frozen, --standalone, --clean, --no-prune, --no-cache, --full-index]}
+        - id: install_values
+          matcher: {kind: any_flag, flags: [-j, --jobs, --retry, --without, --with]}
+          parameters: [{name: install_option, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: install_path
+          matcher: {kind: any_flag, flags: [--path]}
+          parameters: [{name: install_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects_when: {unless_forms: [show_help]}
+          effects: [{kind: write_path, target: {kind: slot, name: install_path}}]
+      children: []
+      default_behavior: reject_unknown
+    - name: exec
+      option_scope: leading_options
+      forms:
+        - *information_form
+        - id: exec_child
+          selector: {kind: all, items: [*running, {kind: has_positional_at, index: 0}]}
+          parameters:
+            - {name: child_command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: child_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+          effects:
+            - *gemfile_read
+            - *gemfile_evaluate
+            - {kind: dispatch_command, target: {kind: dispatch, command: child_command, argv: [child_argv], stdin_from_parent: true, stdout_to_parent: true}}
+      modifiers:
+        - *command_information
+        - *gemfile
+        - {id: keep_descriptors, matcher: {kind: any_flag, flags: [--keep-file-descriptors]}}
+      children: []
+      default_behavior: reject_unknown
+    - name: console
+      option_scope: leading_options
+      forms:
+        - *information_form
+        - id: interactive_console
+          selector: *running
+          parameters: [{name: groups, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          implicit_inputs:
+            - {source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}
+          effects:
+            - *gemfile_read
+            - *gemfile_evaluate
+            - {kind: execute_payload, target: {kind: implicit_input, source: interactive_session}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [spawn_shell, run_command]}}
+      modifiers: [*command_information, *gemfile]
+      children: []
+      default_behavior: reject_unknown
+    - name: version
+      forms:
+        - {id: version_information, parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]}
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+    - name: help
+      forms:
+        - id: help_pager
+          parameters: [{name: topics, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+          implicit_inputs:
+            - {source: interactive_session, semantic: {kind: payload, language: opaque, source: interactive, recursive: true}}
+          effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: terminal_ui, requires_tty: true, capabilities: [run_command, spawn_shell]}}]
+      modifiers: []
+      children: []
+      default_behavior: reject_unknown
+extensions:
+  caushell.profile/sources:
+    - https://bundler.io/v2.0/gemfile.html
+    - https://bundler.io/man/bundle-install.1.html
+    - https://bundler.io/man/bundle-exec.1.html
+    - https://bundler.io/man/bundle-config.1.html
+  caushell.profile/known_limitations:
+    - Gemfile evaluation is opaque Ruby execution, distinct from dependency installation. No Ruby program is interpreted as Bash.
+    - Explicit --gemfile and supplied BUNDLE_GEMFILE select the code input. Upward discovery, gems.rb fallback and persistent Bundler settings remain unresolved without filesystem probing.

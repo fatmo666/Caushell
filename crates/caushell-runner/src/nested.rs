@@ -16,6 +16,8 @@ pub struct NestedPayloadRecord {
     pub root_command_index: usize,
     pub depth: u8,
     pub bindings: SessionBindings,
+    /// Modeled entry directory of this program, independent of its launcher.
+    pub execution_cwd: Option<crate::EffectiveCwd>,
     pub candidate: MaterializedRecursivePayloadCandidate,
     pub resolution: NestedPayloadResolution,
 }
@@ -108,6 +110,7 @@ impl NestedPayloadRecord {
             root_command_index,
             depth,
             bindings,
+            execution_cwd: None,
             candidate,
             resolution,
         }

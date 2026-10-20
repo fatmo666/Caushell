@@ -342,6 +342,7 @@ fn unresolved_execution_payload_evidence(
                     parsed.context.origin,
                     caushell_types::NestedPayloadOriginEvidence::Parameter { .. }
                         | caushell_types::NestedPayloadOriginEvidence::FormImplicitInput
+                        | caushell_types::NestedPayloadOriginEvidence::ConfigDefinedTask { .. }
                 ) =>
             {
                 Some((
@@ -363,6 +364,7 @@ fn unresolved_execution_payload_evidence(
                         unresolved.context.origin,
                         caushell_types::NestedPayloadOriginEvidence::Parameter { .. }
                             | caushell_types::NestedPayloadOriginEvidence::FormImplicitInput
+                            | caushell_types::NestedPayloadOriginEvidence::ConfigDefinedTask { .. }
                     ) =>
             {
                 // A parsed shell record sharing an origin cannot resolve a
@@ -797,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_policy_pass_ignores_unresolved_non_execution_nested_payload() {
+    fn resolve_policy_pass_escalates_unresolved_config_defined_task() {
         let ctx = run_pass(
             PolicyConfig::default(),
             Vec::new(),
@@ -818,7 +820,8 @@ mod tests {
             "npm run build",
         );
 
-        assert!(ctx.decision_proposals.is_empty());
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
     }
 
     #[test]
