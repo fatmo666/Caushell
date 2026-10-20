@@ -50,6 +50,11 @@ pub(crate) fn function_call_bindings(
             }
         },
     ));
+    for (index, argument) in projection.invocation.args.iter().enumerate() {
+        if let Some(domain) = &argument.runtime_argument_domain {
+            bindings.set_positional_argument_domain(index + 1, domain.clone());
+        }
+    }
     bindings
 }
 

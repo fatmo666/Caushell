@@ -2073,6 +2073,35 @@ request field, runtime inspection or policy relaxation is added.
 Syntax references: [GNU Bash parameter expansion](https://www.gnu.org/s/bash/manual/html_node/Shell-Parameter-Expansion.html),
 [GNU Bash looping constructs](https://www.gnu.org/software/bash/manual/html_node/Looping-Constructs.html).
 
+## Shell parameter presence and value
+
+The shared parameter query keeps setness separate from scalar bytes. Missing
+observations mean unknown; only explicit absence or a complete frame proves
+unset. `-`, `:-`, `+`, `:+`, literal replacement and prefix/suffix removal use
+that query. Colon operators also test nullness; non-colon `+` needs only known
+setness. Namespace presence alone (`export V` without a value) is not a setness
+proof. An empty alternate word is branch-independent. Unknown operands are
+not replaced by fallback bytes before argv, path or nested-code analysis.
+
+## Shell parameter prefix/suffix removal
+
+The shared value materializer evaluates `${x#p}`, `${x##p}`, `${x%p}` and
+`${x%%p}` for known scalars, including positional parameters and composite
+words. A single bounded pattern matcher implements shortest/longest matching,
+literal quoting, `*`, `?` and explicit bracket sets. Pattern variables and
+nested parameter references use the same binding frame. Expanded bytes remain
+data, and producer origins are retained. Locale-dependent ranges/classes,
+extended patterns and unknown pattern values remain unresolved.
+
+Quoted abstract values retain a path domain only when the transformation is
+proved to preserve it. Literal prefix removal checks every raw root spelling;
+suffix removal retains the transformed root case separately from descendants
+and requires a fixed appended basename suffix that cannot become `.` or `..`.
+Fixed generated-name affixes use the same transfer. Native shell and function
+argument frames carry these domains without inventing concrete filenames;
+replacement or invalidation clears them. The existing path queries and guards
+consume the result without command-specific exemptions or a new risk pass.
+
 ## Traversal domains and configured destructive targets
 
 Path effects can opt into `path_scope: {kind: subtree, escape_modifiers: [...]}`.

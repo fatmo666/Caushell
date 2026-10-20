@@ -1,3 +1,4 @@
+use crate::parameter_pattern::{ParameterPattern, PatternUnit, ShellPatternRemovalKind};
 use std::collections::BTreeMap;
 
 use caushell_types::{
@@ -106,6 +107,7 @@ pub struct SessionBindings {
     // Local abstract values, not observed bytes and never persisted as a
     // concrete session variable. Scalar writes invalidate this metadata.
     argument_domains: BTreeMap<String, caushell_types::RuntimeArgumentDomain>,
+    positional_argument_domains: BTreeMap<usize, caushell_types::RuntimeArgumentDomain>,
     inherited_environment: BTreeMap<String, SessionValue>,
     // $0 belongs to the shell frame, not to the list changed by set/shift.
     shell_program_name: Option<SessionValue>,
@@ -474,6 +476,8 @@ impl SessionBindings {
     {
         self.positional_parameters = values.into_iter().collect();
         self.positional_parameters_complete = true;
+        self.positional_argument_domains
+            .retain(|position, _| *position == 0);
     }
 
     pub fn replace_positional_parameters_with_exact_scalars<I, S>(&mut self, values: I)
@@ -494,6 +498,24 @@ impl SessionBindings {
 
     pub fn set_shell_program_name(&mut self, value: Option<SessionValue>) {
         self.shell_program_name = value;
+        self.positional_argument_domains.remove(&0);
+    }
+
+    pub fn set_positional_argument_domain(
+        &mut self,
+        position: usize,
+        domain: caushell_types::RuntimeArgumentDomain,
+    ) {
+        if self.positional_parameter(position).is_some() {
+            self.positional_argument_domains.insert(position, domain);
+        }
+    }
+
+    pub fn positional_argument_domain(
+        &self,
+        position: usize,
+    ) -> Option<&caushell_types::RuntimeArgumentDomain> {
+        self.positional_argument_domains.get(&position)
     }
 
     pub fn positional_parameters(&self) -> &[SessionValue] {
@@ -507,6 +529,8 @@ impl SessionBindings {
     pub fn forget_positional_parameters(&mut self) {
         self.positional_parameters.clear();
         self.positional_parameters_complete = false;
+        self.positional_argument_domains
+            .retain(|position, _| *position == 0);
     }
 
     pub fn remove(&mut self, name: &str) {
@@ -599,6 +623,7 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        self.positional_argument_domains.clear();
         let exported: std::collections::BTreeSet<_> = self
             .argument_domains
             .keys()
@@ -670,6 +695,11 @@ pub enum ShellParameterReference {
         pattern: String,
         replacement: String,
     },
+    PatternRemoval {
+        parameter: ShellParameterName,
+        kind: ShellPatternRemovalKind,
+        pattern: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,31 +730,25 @@ where
 {
     if chars.peek() == Some(&'{') {
         chars.next();
-        let mut body = String::new();
-        while let Some(ch) = chars.next() {
-            if ch == '}' {
-                if body == "@" {
-                    return Some(ShellParameterReference::AllPositionals(
-                        ShellAllPositionalsKind::At,
-                    ));
-                }
-                if body == "*" {
-                    return Some(ShellParameterReference::AllPositionals(
-                        ShellAllPositionalsKind::Star,
-                    ));
-                }
-                if let Some(position) = parse_positional_parameter_index(&body) {
-                    return Some(ShellParameterReference::Positional(position));
-                }
-                if is_valid_variable_name(&body) {
-                    return Some(ShellParameterReference::Variable(body));
-                }
-                return parse_braced_shell_parameter_expansion(&body)
-                    .or_else(|| parse_braced_shell_parameter_substitution(&body));
-            }
-            body.push(ch);
+        let body = braced_parameter_body(chars)?;
+        if body == "@" {
+            return Some(ShellParameterReference::AllPositionals(
+                ShellAllPositionalsKind::At,
+            ));
         }
-        return None;
+        if body == "*" {
+            return Some(ShellParameterReference::AllPositionals(
+                ShellAllPositionalsKind::Star,
+            ));
+        }
+        if let Some(position) = parse_positional_parameter_index(&body) {
+            return Some(ShellParameterReference::Positional(position));
+        }
+        if is_valid_variable_name(&body) {
+            return Some(ShellParameterReference::Variable(body));
+        }
+        return parse_braced_shell_parameter_expansion(&body)
+            .or_else(|| parse_braced_shell_parameter_substitution(&body));
     }
 
     if chars.peek().is_some_and(|ch| ch.is_ascii_digit()) {
@@ -753,6 +777,57 @@ where
     is_valid_variable_name(&name).then_some(ShellParameterReference::Variable(name))
 }
 
+fn braced_parameter_body<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+) -> Option<String> {
+    let mut body = String::new();
+    let mut quote = ShellWordQuote::None;
+    let mut frames = Vec::new();
+    while let Some(ch) = chars.next() {
+        if body.len() > 4096 || frames.len() >= 16 {
+            return None;
+        }
+        match ch {
+            '\\' if quote != ShellWordQuote::Single => {
+                body.push(ch);
+                body.push(chars.next()?);
+                continue;
+            }
+            '\'' if quote != ShellWordQuote::Double => {
+                quote = if quote == ShellWordQuote::Single {
+                    ShellWordQuote::None
+                } else {
+                    ShellWordQuote::Single
+                };
+            }
+            '"' if quote != ShellWordQuote::Single => {
+                quote = if quote == ShellWordQuote::Double {
+                    ShellWordQuote::None
+                } else {
+                    ShellWordQuote::Double
+                };
+            }
+            '$' if quote != ShellWordQuote::Single && chars.peek() == Some(&'{') => {
+                frames.push(quote);
+                quote = ShellWordQuote::None;
+                body.push('$');
+                body.push(chars.next()?);
+                continue;
+            }
+            '}' if quote == ShellWordQuote::None => {
+                if let Some(parent) = frames.pop() {
+                    quote = parent;
+                } else {
+                    return Some(body);
+                }
+            }
+            _ => (),
+        }
+        body.push(ch);
+    }
+    None
+}
+
 pub fn exact_shell_parameter_reference(text: &str) -> Option<ShellParameterReference> {
     let mut chars = text.chars().peekable();
     if chars.next()? != '$' {
@@ -775,6 +850,17 @@ pub fn exact_scalar_shell_parameter_value(
     bindings: &SessionBindings,
     reference: &ShellParameterReference,
 ) -> Option<String> {
+    exact_scalar_shell_parameter_value_at_depth(bindings, reference, 0)
+}
+
+fn exact_scalar_shell_parameter_value_at_depth(
+    bindings: &SessionBindings,
+    reference: &ShellParameterReference,
+    depth: usize,
+) -> Option<String> {
+    if depth >= 16 {
+        return None;
+    }
     match reference {
         ShellParameterReference::Variable(name) => {
             exact_scalar_session_value(bindings.get(name)?.value)
@@ -808,6 +894,14 @@ pub fn exact_scalar_shell_parameter_value(
             pattern,
             replacement,
         ),
+        ShellParameterReference::PatternRemoval {
+            parameter,
+            kind,
+            pattern,
+        } => {
+            let value = known_parameter_scalar(bindings, parameter)?;
+            removal_pattern(pattern, bindings, depth + 1)?.remove(&value, *kind)
+        }
     }
 }
 
@@ -916,6 +1010,24 @@ fn materialize_shell_word_with_references(
     initial_quote: ShellWordQuote,
     allow_tilde_expansion: bool,
 ) -> Option<(String, Vec<ShellParameterReference>)> {
+    materialize_shell_word_with_resolver(
+        text,
+        bindings,
+        mode,
+        initial_quote,
+        allow_tilde_expansion,
+        |reference| exact_scalar_shell_parameter_value(bindings, reference),
+    )
+}
+
+fn materialize_shell_word_with_resolver(
+    text: &str,
+    bindings: &SessionBindings,
+    mode: ShellWordMode,
+    initial_quote: ShellWordQuote,
+    allow_tilde_expansion: bool,
+    mut resolve: impl FnMut(&ShellParameterReference) -> Option<String>,
+) -> Option<(String, Vec<ShellParameterReference>)> {
     let mut out = String::with_capacity(text.len());
     let mut references = Vec::new();
     let mut chars = text.chars().peekable();
@@ -954,11 +1066,12 @@ fn materialize_shell_word_with_references(
                             reference,
                             ShellParameterReference::Variable(_)
                                 | ShellParameterReference::Positional(_)
+                                | ShellParameterReference::PatternRemoval { .. }
                         )
                     {
                         return None;
                     }
-                    let value = exact_scalar_shell_parameter_value(bindings, &reference)?;
+                    let value = resolve(&reference)?;
                     if value.contains('\0') {
                         return None;
                     }
@@ -982,11 +1095,12 @@ fn materialize_shell_word_with_references(
                             reference,
                             ShellParameterReference::Variable(_)
                                 | ShellParameterReference::Positional(_)
+                                | ShellParameterReference::PatternRemoval { .. }
                         )
                     {
                         return None;
                     }
-                    let value = exact_scalar_shell_parameter_value(bindings, &reference)?;
+                    let value = resolve(&reference)?;
                     if value.contains('\0')
                         || (mode != ShellWordMode::Assignment
                             && !value.is_empty()
@@ -1056,6 +1170,20 @@ fn exact_scalar_session_value(value: &SessionValue) -> Option<String> {
 
 fn parse_braced_shell_parameter_expansion(body: &str) -> Option<ShellParameterReference> {
     let (parameter, rest) = parse_shell_parameter_name_prefix(body)?;
+    for (word, kind) in [
+        ("##", ShellPatternRemovalKind::LongestPrefix),
+        ("#", ShellPatternRemovalKind::ShortestPrefix),
+        ("%%", ShellPatternRemovalKind::LongestSuffix),
+        ("%", ShellPatternRemovalKind::ShortestSuffix),
+    ] {
+        if let Some(pattern) = rest.strip_prefix(word) {
+            return Some(ShellParameterReference::PatternRemoval {
+                parameter,
+                kind,
+                pattern: pattern.into(),
+            });
+        }
+    }
     let (operator, word) = if let Some(word) = rest.strip_prefix(":-") {
         (
             ShellParameterExpansionOperator::UseDefaultIfUnsetOrNull,
@@ -1132,9 +1260,17 @@ fn parse_shell_parameter_name_prefix(body: &str) -> Option<(ShellParameterName, 
     Some((ShellParameterName::Variable(name.to_string()), &body[end..]))
 }
 
-enum ShellParameterBindingRef<'a> {
-    Bound { value: &'a SessionValue },
-    Unset,
+struct ShellParameterBindingRef<'a> {
+    presence: VariablePresence,
+    value: Option<&'a SessionValue>,
+}
+
+impl ShellParameterBindingRef<'_> {
+    fn exact_scalar(&self) -> Option<String> {
+        (self.presence == VariablePresence::Present)
+            .then(|| self.value.and_then(exact_scalar_session_value))
+            .flatten()
+    }
 }
 
 fn shell_parameter_binding<'a>(
@@ -1142,16 +1278,43 @@ fn shell_parameter_binding<'a>(
     parameter: &ShellParameterName,
 ) -> ShellParameterBindingRef<'a> {
     match parameter {
-        ShellParameterName::Variable(name) => bindings
-            .get(name)
-            .map(|binding| ShellParameterBindingRef::Bound {
-                value: binding.value,
-            })
-            .unwrap_or(ShellParameterBindingRef::Unset),
-        ShellParameterName::Positional(position) => bindings
-            .positional_parameter(*position)
-            .map(|value| ShellParameterBindingRef::Bound { value })
-            .unwrap_or(ShellParameterBindingRef::Unset),
+        ShellParameterName::Variable(name) => {
+            let value = bindings.get(name).map(|binding| binding.value);
+            ShellParameterBindingRef {
+                // Namespace presence also covers `export V` without a value.
+                // It is not by itself proof that ${V+word} selects `word`.
+                presence: match bindings.variable_presence(name) {
+                    VariablePresence::Absent => VariablePresence::Absent,
+                    VariablePresence::Present
+                        if value.is_some_and(|value| {
+                            matches!(
+                                value,
+                                SessionValue::ExactScalar(_) | SessionValue::RuntimeProduced { .. }
+                            )
+                        }) =>
+                    {
+                        VariablePresence::Present
+                    }
+                    _ => VariablePresence::Unknown,
+                },
+                value,
+            }
+        }
+        ShellParameterName::Positional(position) => {
+            let value = bindings.positional_parameter(*position);
+            ShellParameterBindingRef {
+                presence: if value.is_some() {
+                    // A supplied fixed-width argv item exists even when its
+                    // bytes are unknown. Missing snapshot data proves nothing.
+                    VariablePresence::Present
+                } else if *position > 0 && bindings.positional_parameters_are_complete() {
+                    VariablePresence::Absent
+                } else {
+                    VariablePresence::Unknown
+                },
+                value,
+            }
+        }
     }
 }
 
@@ -1161,38 +1324,37 @@ fn exact_scalar_shell_parameter_expansion_value(
     operator: ShellParameterExpansionOperator,
     word: &str,
 ) -> Option<String> {
+    use ShellParameterExpansionOperator::*;
+    use VariablePresence::*;
     let binding = shell_parameter_binding(bindings, parameter);
-    match operator {
-        ShellParameterExpansionOperator::UseDefaultIfUnset => match binding {
-            ShellParameterBindingRef::Unset => literal_parameter_expansion_word(word),
-            ShellParameterBindingRef::Bound { value } => exact_scalar_session_value(value),
-        },
-        ShellParameterExpansionOperator::UseDefaultIfUnsetOrNull => match binding {
-            ShellParameterBindingRef::Unset => literal_parameter_expansion_word(word),
-            ShellParameterBindingRef::Bound { value } => {
-                let value = exact_scalar_session_value(value)?;
-                if value.is_empty() {
-                    literal_parameter_expansion_word(word)
-                } else {
-                    Some(value)
-                }
+    match (operator, binding.presence) {
+        (UseDefaultIfUnset | UseDefaultIfUnsetOrNull, Absent) => {
+            literal_parameter_expansion_word(word)
+        }
+        (UseDefaultIfUnset, Present) => binding.exact_scalar(),
+        (UseDefaultIfUnsetOrNull, Present) => {
+            let value = binding.exact_scalar()?;
+            if value.is_empty() {
+                literal_parameter_expansion_word(word)
+            } else {
+                Some(value)
             }
-        },
-        ShellParameterExpansionOperator::UseAlternateIfSet => match binding {
-            ShellParameterBindingRef::Unset => Some(String::new()),
-            ShellParameterBindingRef::Bound { .. } => literal_parameter_expansion_word(word),
-        },
-        ShellParameterExpansionOperator::UseAlternateIfSetAndNotNull => match binding {
-            ShellParameterBindingRef::Unset => Some(String::new()),
-            ShellParameterBindingRef::Bound { value } => {
-                let value = exact_scalar_session_value(value)?;
-                if value.is_empty() {
-                    Some(String::new())
-                } else {
-                    literal_parameter_expansion_word(word)
-                }
+        }
+        (UseAlternateIfSet | UseAlternateIfSetAndNotNull, Absent) => Some(String::new()),
+        (UseAlternateIfSet, Present) => literal_parameter_expansion_word(word),
+        // Both outcomes are empty. No existence/nullness guess is required.
+        (UseAlternateIfSet | UseAlternateIfSetAndNotNull, _) if word.is_empty() => {
+            Some(String::new())
+        }
+        (UseAlternateIfSetAndNotNull, Present) => {
+            let value = binding.exact_scalar()?;
+            if value.is_empty() {
+                Some(String::new())
+            } else {
+                literal_parameter_expansion_word(word)
             }
-        },
+        }
+        (_, Unknown) => None,
     }
 }
 
@@ -1203,15 +1365,192 @@ fn exact_scalar_shell_parameter_substitution_value(
     pattern: &str,
     replacement: &str,
 ) -> Option<String> {
-    let value = match shell_parameter_binding(bindings, parameter) {
-        ShellParameterBindingRef::Unset => String::new(),
-        ShellParameterBindingRef::Bound { value } => exact_scalar_session_value(value)?,
-    };
+    let value = known_parameter_scalar(bindings, parameter)?;
 
     if replace_all {
         Some(value.replace(pattern, replacement))
     } else {
         Some(value.replacen(pattern, replacement, 1))
+    }
+}
+
+fn known_parameter_scalar(
+    bindings: &SessionBindings,
+    parameter: &ShellParameterName,
+) -> Option<String> {
+    let binding = shell_parameter_binding(bindings, parameter);
+    match binding.presence {
+        VariablePresence::Present => binding.exact_scalar(),
+        VariablePresence::Absent => Some(String::new()),
+        VariablePresence::Unknown => None,
+    }
+}
+
+fn removal_pattern(
+    raw: &str,
+    bindings: &SessionBindings,
+    depth: usize,
+) -> Option<ParameterPattern> {
+    if raw.len() > 4096 || depth >= 16 {
+        return None;
+    }
+    let mut units = Vec::new();
+    let mut chars = raw.chars().peekable();
+    let mut quote = ShellWordQuote::None;
+    let mut first = true;
+    while let Some(ch) = chars.next() {
+        let initial = first;
+        first = false;
+        if units.len() > 4096 {
+            return None;
+        }
+        match ch {
+            '\'' if quote != ShellWordQuote::Double => {
+                quote = if quote == ShellWordQuote::Single {
+                    ShellWordQuote::None
+                } else {
+                    ShellWordQuote::Single
+                };
+            }
+            '"' if quote != ShellWordQuote::Single => {
+                quote = if quote == ShellWordQuote::Double {
+                    ShellWordQuote::None
+                } else {
+                    ShellWordQuote::Double
+                };
+            }
+            '\\' if quote != ShellWordQuote::Single => {
+                let next = chars.next()?;
+                if quote == ShellWordQuote::Double && !matches!(next, '$' | '`' | '"' | '\\' | '\n')
+                {
+                    units.push(PatternUnit {
+                        ch: '\\',
+                        literal: true,
+                    });
+                }
+                if next != '\n' {
+                    units.push(PatternUnit {
+                        ch: next,
+                        literal: true,
+                    });
+                }
+            }
+            '$' if quote != ShellWordQuote::Single => {
+                let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
+                let value = match &reference {
+                    ShellParameterReference::Variable(name) => known_parameter_scalar(
+                        bindings,
+                        &ShellParameterName::Variable(name.clone()),
+                    )?,
+                    ShellParameterReference::Positional(position) => known_parameter_scalar(
+                        bindings,
+                        &ShellParameterName::Positional(*position),
+                    )?,
+                    _ => exact_scalar_shell_parameter_value_at_depth(
+                        bindings,
+                        &reference,
+                        depth + 1,
+                    )?,
+                };
+                if value.len() > 4096 || value.contains('\0') {
+                    return None;
+                }
+                units.extend(value.chars().map(|ch| PatternUnit {
+                    ch,
+                    literal: quote != ShellWordQuote::None,
+                }));
+            }
+            '`' if quote != ShellWordQuote::Single => return None,
+            '~' if quote == ShellWordQuote::None && initial => {
+                if !matches!(chars.peek(), None | Some('/')) {
+                    return None;
+                }
+                let home = bindings.tilde_home()?;
+                if home.len() > 4096 {
+                    return None;
+                }
+                units.extend(home.chars().map(|ch| PatternUnit { ch, literal: true }));
+            }
+            '\0' => return None,
+            _ => units.push(PatternUnit {
+                ch,
+                literal: quote != ShellWordQuote::None,
+            }),
+        }
+    }
+    if quote != ShellWordQuote::None {
+        return None;
+    }
+    ParameterPattern::compile(&units)
+}
+
+fn removal_source_binding<'a>(
+    bindings: &'a SessionBindings,
+    reference: &ShellParameterReference,
+) -> Option<BindingValueRef<'a>> {
+    let ShellParameterReference::PatternRemoval { parameter, .. } = reference else {
+        return None;
+    };
+    match parameter {
+        ShellParameterName::Variable(name) => bindings.get(name),
+        ShellParameterName::Positional(position) => {
+            bindings
+                .positional_parameter(*position)
+                .map(|value| BindingValueRef {
+                    value,
+                    origin: BindingOrigin::SessionBinding,
+                })
+        }
+    }
+}
+
+fn removal_has_proven_unset_source(
+    bindings: &SessionBindings,
+    reference: &ShellParameterReference,
+) -> bool {
+    match reference {
+        ShellParameterReference::PatternRemoval {
+            parameter: ShellParameterName::Variable(name),
+            ..
+        } => {
+            bindings.get(name).is_none()
+                && bindings.variable_presence(name) == VariablePresence::Absent
+        }
+        ShellParameterReference::PatternRemoval {
+            parameter: ShellParameterName::Positional(position),
+            ..
+        } => {
+            *position > 0
+                && bindings.positional_parameters_are_complete()
+                && bindings.positional_parameter(*position).is_none()
+        }
+        _ => false,
+    }
+}
+
+fn resolved_removal(
+    bindings: &SessionBindings,
+    reference: &ShellParameterReference,
+    value: String,
+) -> ValueMaterialization {
+    let variable_name = shell_parameter_reference_name(reference);
+    match removal_source_binding(bindings, reference) {
+        Some(BindingValueRef {
+            value: SessionValue::RuntimeProduced { kind, .. },
+            origin,
+        }) => ValueMaterialization::ResolvedRuntimeProduced {
+            variable_name,
+            value,
+            kind: *kind,
+            origin,
+        },
+        source => ValueMaterialization::ResolvedExactScalar {
+            variable_name,
+            value,
+            origin: source
+                .map(|s| s.origin)
+                .unwrap_or(BindingOrigin::SessionBinding),
+        },
     }
 }
 
@@ -1473,7 +1812,7 @@ pub fn materialize_argument_domain(
     let ordinary_field_separators = bindings.get("IFS").is_none_or(|binding| {
         matches!(binding.value, SessionValue::ExactScalar(value) if value.chars().all(char::is_whitespace))
     });
-    if bindings.argument_domains.is_empty()
+    if bindings.argument_domains.is_empty() && bindings.positional_argument_domains.is_empty()
         || arg.text.len() > 4096
         || arg.runtime_data
         || !matches!(
@@ -1483,6 +1822,11 @@ pub fn materialize_argument_domain(
         || arg.implicit_input_source.is_some()
     {
         return None;
+    }
+    if whole_double_quoted || ordinary_field_separators {
+        if let Some(domain) = removal_argument_domain(arg, bindings, whole_double_quoted) {
+            return Some(domain);
+        }
     }
     if let Some(ShellParameterReference::Variable(name)) =
         exact_shell_parameter_reference(&arg.text)
@@ -1529,6 +1873,82 @@ pub fn materialize_argument_domain(
         }
     }
     None
+}
+
+fn parameter_argument_domain<'a>(
+    bindings: &'a SessionBindings,
+    parameter: &ShellParameterName,
+) -> Option<&'a caushell_types::RuntimeArgumentDomain> {
+    match parameter {
+        ShellParameterName::Variable(name) => bindings.argument_domain(name),
+        ShellParameterName::Positional(position) => bindings.positional_argument_domain(*position),
+    }
+}
+
+fn removal_argument_domain(
+    arg: &ProjectedArg,
+    bindings: &SessionBindings,
+    quoted: bool,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    if !arg.text.contains(['#', '%']) && bindings.positional_argument_domains.is_empty() {
+        return None;
+    }
+    const MARKER: &str = "__CAUSHELL_PARAMETER_DOMAIN__";
+    if arg.text.contains(MARKER) {
+        return None;
+    }
+    let mut selected = None;
+    let mut count = 0;
+    let (template, _) = materialize_shell_word_with_resolver(
+        &arg.text,
+        bindings,
+        ShellWordMode::PositionalArgument,
+        if quoted {
+            ShellWordQuote::Double
+        } else {
+            ShellWordQuote::None
+        },
+        false,
+        |reference| {
+            let parameter = match reference {
+                ShellParameterReference::Variable(name) => {
+                    Some(ShellParameterName::Variable(name.clone()))
+                }
+                ShellParameterReference::Positional(position) => {
+                    Some(ShellParameterName::Positional(*position))
+                }
+                ShellParameterReference::PatternRemoval { parameter, .. } => {
+                    Some(parameter.clone())
+                }
+                _ => None,
+            };
+            if let Some(domain) = parameter
+                .as_ref()
+                .and_then(|p| parameter_argument_domain(bindings, p))
+            {
+                count += 1;
+                if count > 1 || !quoted && !domain.unquoted_generated_field() {
+                    return None;
+                }
+                selected = Some((domain.clone(), reference.clone()));
+                Some(MARKER.into())
+            } else {
+                exact_scalar_shell_parameter_value(bindings, reference)
+            }
+        },
+    )?;
+    let (domain, reference) = selected?;
+    if template.matches(MARKER).count() != 1 {
+        return None;
+    }
+    let result = match reference {
+        ShellParameterReference::PatternRemoval { kind, pattern, .. } => {
+            removal_pattern(&pattern, bindings, 0)?
+                .transfer_domain(&domain, kind, &template, MARKER)?
+        }
+        _ => domain.substitute_into(&template, MARKER),
+    };
+    (quoted || result.unquoted_generated_field()).then_some(result)
 }
 
 pub fn materialize_recursive_payload_candidate(
@@ -1804,7 +2224,8 @@ fn materialize_shell_parameter_reference_fields(
             .map(|field| vec![field])
         }
         ShellParameterReference::Expansion { .. }
-        | ShellParameterReference::PatternSubstitution { .. } => {
+        | ShellParameterReference::PatternSubstitution { .. }
+        | ShellParameterReference::PatternRemoval { .. } => {
             let value = exact_scalar_shell_parameter_value(bindings, reference)?;
             if !quoted && !is_safe_unquoted_scalar(&value) {
                 return None;
@@ -1812,10 +2233,14 @@ fn materialize_shell_parameter_reference_fields(
 
             Some(vec![MaterializedShellField {
                 text: value.clone(),
-                resolution: ValueMaterialization::ResolvedExactScalar {
-                    variable_name: shell_parameter_reference_name(reference),
-                    value,
-                    origin: BindingOrigin::SessionBinding,
+                resolution: if matches!(reference, ShellParameterReference::PatternRemoval { .. }) {
+                    resolved_removal(bindings, reference, value)
+                } else {
+                    ValueMaterialization::ResolvedExactScalar {
+                        variable_name: shell_parameter_reference_name(reference),
+                        value,
+                        origin: BindingOrigin::SessionBinding,
+                    }
                 },
             }])
         }
@@ -2123,7 +2548,8 @@ pub(crate) fn materialize_argument_text_with_tilde(
 
     if let Some(
         reference @ (ShellParameterReference::Expansion { .. }
-        | ShellParameterReference::PatternSubstitution { .. }),
+        | ShellParameterReference::PatternSubstitution { .. }
+        | ShellParameterReference::PatternRemoval { .. }),
     ) = exact_shell_parameter_reference(text)
     {
         if let Some(value) = exact_scalar_shell_parameter_value(bindings, &reference) {
@@ -2140,10 +2566,14 @@ pub(crate) fn materialize_argument_text_with_tilde(
 
             return MaterializedText {
                 text: value.clone(),
-                resolution: ValueMaterialization::ResolvedExactScalar {
-                    variable_name: shell_parameter_reference_name(&reference),
-                    value,
-                    origin: BindingOrigin::SessionBinding,
+                resolution: if matches!(reference, ShellParameterReference::PatternRemoval { .. }) {
+                    resolved_removal(bindings, &reference, value)
+                } else {
+                    ValueMaterialization::ResolvedExactScalar {
+                        variable_name: shell_parameter_reference_name(&reference),
+                        value,
+                        origin: BindingOrigin::SessionBinding,
+                    }
                 },
             };
         }
@@ -2176,6 +2606,9 @@ pub(crate) fn materialize_argument_text_with_tilde(
                 ShellParameterReference::Positional(position) => bindings
                     .positional_parameter(*position)
                     .map(|value| (value, BindingOrigin::SessionBinding)),
+                ShellParameterReference::PatternRemoval { .. } => {
+                    removal_source_binding(bindings, reference).map(|b| (b.value, b.origin))
+                }
                 _ => None,
             };
             let resolution = if references.is_empty() && (tilde_word || tilde_literal_composite) {
@@ -2217,6 +2650,9 @@ pub(crate) fn materialize_argument_text_with_tilde(
                             origin,
                         })
                     }
+                    None if removal_has_proven_unset_source(bindings, &references[0]) => {
+                        Some(resolved_removal(bindings, &references[0], value.clone()))
+                    }
                     // Complete positional bindings prove absent positions
                     // expand to empty strings; the lexical prefix may remain.
                     None if matches!(references[0], ShellParameterReference::Positional(_))
@@ -2235,9 +2671,10 @@ pub(crate) fn materialize_argument_text_with_tilde(
                     matches!(
                         reference_value(reference),
                         Some((SessionValue::ExactScalar(_), _))
-                    ) || (matches!(reference, ShellParameterReference::Positional(_))
-                        && reference_value(reference).is_none()
-                        && bindings.positional_parameters_are_complete())
+                    ) || removal_has_proven_unset_source(bindings, reference)
+                        || (matches!(reference, ShellParameterReference::Positional(_))
+                            && reference_value(reference).is_none()
+                            && bindings.positional_parameters_are_complete())
                 })
             {
                 Some(ValueMaterialization::ResolvedExactScalar {
@@ -2279,6 +2716,9 @@ fn shell_parameter_reference_name(reference: &ShellParameterReference) -> String
         ShellParameterReference::AllPositionals(ShellAllPositionalsKind::Star) => "*".to_string(),
         ShellParameterReference::Expansion { parameter, .. } => shell_parameter_name(parameter),
         ShellParameterReference::PatternSubstitution { parameter, .. } => {
+            shell_parameter_name(parameter)
+        }
+        ShellParameterReference::PatternRemoval { parameter, .. } => {
             shell_parameter_name(parameter)
         }
     }

@@ -118,11 +118,8 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 assigned.insert(iteration.variable.clone());
-                let domain = super::loop_overlay::iteration_domain(
-                    iteration,
-                    &bindings,
-                    parsed.shell_kind,
-                );
+                let domain =
+                    super::loop_overlay::iteration_domain(iteration, &bindings, parsed.shell_kind);
                 if let Some(domain) = domain {
                     bindings.insert_argument_domain(&iteration.variable, domain);
                 } else {
@@ -661,6 +658,14 @@ pub(crate) fn apply_positional_parameter_mutation(
                 bindings.forget_positional_parameters();
                 return;
             }
+            let domains = (count..bindings.positional_parameters().len())
+                .filter_map(|index| {
+                    bindings
+                        .positional_argument_domain(index + 1)
+                        .cloned()
+                        .map(|domain| (index + 1 - count, domain))
+                })
+                .collect::<Vec<_>>();
             let values = bindings
                 .positional_parameters()
                 .iter()
@@ -668,6 +673,9 @@ pub(crate) fn apply_positional_parameter_mutation(
                 .cloned()
                 .collect::<Vec<_>>();
             bindings.replace_positional_parameters(values);
+            for (position, domain) in domains {
+                bindings.set_positional_argument_domain(position, domain);
+            }
         }
         PositionalParameterMutation::Forget => {
             bindings.forget_positional_parameters();

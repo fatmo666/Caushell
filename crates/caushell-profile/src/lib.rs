@@ -14,6 +14,7 @@ mod materialize;
 mod native_operand;
 mod normalize;
 mod option_scope;
+mod parameter_pattern;
 mod patch_payload;
 mod payload_projection;
 mod projection;
@@ -67,6 +68,7 @@ pub use materialize::{
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
+pub use parameter_pattern::ShellPatternRemovalKind;
 pub use payload_projection::refresh_payload_projections;
 pub use projection::{
     InvocationRuntimeContext, ProjectedArg, ProjectedArgKind, ProjectedInvocation,

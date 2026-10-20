@@ -6095,6 +6095,11 @@ fn shell_payload_session_bindings(
         })
         .collect::<Vec<_>>();
     bindings.replace_positional_parameters(values);
+    for (position, argument) in positional_args.iter().enumerate() {
+        if let Some(domain) = &argument.runtime_argument_domain {
+            bindings.set_positional_argument_domain(position, domain.clone());
+        }
+    }
     bindings
 }
 
