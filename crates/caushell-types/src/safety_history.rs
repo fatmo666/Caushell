@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_OBJECTS: usize = 512;
 const MAX_CANDIDATES: usize = 4;
 const MAX_VALUE_BYTES: usize = 4096;
+const MAX_NAME_BYTES: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,10 +77,27 @@ pub struct SafetyStateRecord {
 
 /// Limits retain uncertainty, not a sliding window of supposedly safe values.
 /// Overflow is per state class and is queried only at a related state read.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct SafetyHistory {
     records: BTreeMap<String, SafetyStateRecord>,
     overflow: BTreeSet<SafetyStateKind>,
+}
+
+impl<'de> Deserialize<'de> for SafetyHistory {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct WireHistory {
+            records: BTreeMap<String, SafetyStateRecord>,
+            overflow: BTreeSet<SafetyStateKind>,
+        }
+        let wire = WireHistory::deserialize(deserializer)?;
+        let mut bounded = Self::default();
+        bounded.merge(&Self {
+            records: wire.records,
+            overflow: wire.overflow,
+        });
+        Ok(bounded)
+    }
 }
 
 impl SafetyHistory {
@@ -90,6 +108,10 @@ impl SafetyHistory {
         value: SafetyStateValue,
         sequence: CommandSequenceNo,
     ) {
+        if name.len() > MAX_NAME_BYTES {
+            self.overflow.insert(kind);
+            return;
+        }
         let key = format!("{kind:?}:{name}");
         if !self.records.contains_key(&key) && self.records.len() >= MAX_OBJECTS {
             self.overflow.insert(kind);
@@ -152,14 +174,8 @@ impl SafetyHistory {
     pub fn merge(&mut self, other: &Self) {
         self.overflow.extend(other.overflow.iter().copied());
         for record in other.records.values() {
-            let key = format!("{:?}:{}", record.kind, record.name);
-            if !self.records.contains_key(&key) {
-                if self.records.len() < MAX_OBJECTS {
-                    self.records.insert(key, record.clone());
-                } else {
-                    self.overflow.insert(record.kind);
-                }
-                continue;
+            if record.candidates.is_empty() {
+                self.mark_dependent(record.kind, &record.name, record.first_observed_at);
             }
             for candidate in &record.candidates {
                 self.observe(
@@ -176,7 +192,8 @@ impl SafetyHistory {
                 merged.first_observed_at = merged.first_observed_at.min(record.first_observed_at);
                 merged.last_observed_at = merged.last_observed_at.max(record.last_observed_at);
                 merged.widened |= record.widened;
-                merged.replacement_unconfirmed |= record.replacement_unconfirmed;
+                merged.replacement_unconfirmed |=
+                    record.replacement_unconfirmed || record.candidates.len() > 1;
             }
         }
     }
@@ -252,6 +269,39 @@ mod tests {
         assert!(h.replacement_unconfirmed(SafetyStateKind::Variable, "OVERFLOW"));
         assert!(!h.replacement_unconfirmed(SafetyStateKind::Function, "f"));
     }
+    #[test]
+    fn decoding_reapplies_bounds_and_cannot_hide_conflicting_candidates() {
+        let mut h = SafetyHistory::default();
+        h.observe(
+            SafetyStateKind::Variable,
+            "X",
+            scalar("first"),
+            CommandSequenceNo(1),
+        );
+        let mut wire = serde_json::to_value(&h).unwrap();
+        let record = wire["records"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap();
+        record["candidates"] =
+            serde_json::to_value((0..12).map(|i| scalar(&i.to_string())).collect::<Vec<_>>())
+                .unwrap();
+        record["replacement_unconfirmed"] = false.into();
+        let decoded: SafetyHistory = serde_json::from_value(wire).unwrap();
+        let x = decoded.record(SafetyStateKind::Variable, "X").unwrap();
+        assert_eq!(x.candidates.len(), MAX_CANDIDATES);
+        assert!(x.widened && decoded.replacement_unconfirmed(SafetyStateKind::Variable, "X"));
+        h.observe(
+            SafetyStateKind::Alias,
+            &"a".repeat(MAX_NAME_BYTES + 1),
+            SafetyStateValue::Absent,
+            CommandSequenceNo(2),
+        );
+        assert!(h.replacement_unconfirmed(SafetyStateKind::Alias, "any_alias"));
+    }
+
     #[test]
     fn merging_is_monotone_and_preserves_dependent_uncertainty() {
         let mut a = SafetyHistory::default();
