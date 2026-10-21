@@ -212,9 +212,23 @@ impl RuntimeVariableContext<'_> {
         if !candidate {
             // Static state effects still need the same ordered result for
             // persistence and for propagation through a called function.
-            return apply_variable_overlay(bindings, parsed, end, observed_at, None);
+            return apply_variable_overlay(
+                bindings,
+                parsed,
+                end,
+                observed_at,
+                Some(self.registry),
+                None,
+            );
         }
-        apply_variable_overlay(bindings, parsed, end, observed_at, Some(self))
+        apply_variable_overlay(
+            bindings,
+            parsed,
+            end,
+            observed_at,
+            Some(self.registry),
+            Some(self),
+        )
     }
 
     pub(super) fn apply_command(
@@ -346,12 +360,17 @@ impl RuntimeVariableContext<'_> {
             result.touched.extend(result.assigned);
             for variable in result.touched.into_iter().filter(|_| visible) {
                 // Plain function locals do not escape to the calling shell.
-                if !function_variable_escapes(&body, &variable) {
+                if !function_variable_escapes_in_frame(&body, &variable, Some(bindings)) {
                     continue;
                 }
                 touched.insert(variable.clone());
                 if command.guarded || command.control_flow_span.is_some() {
                     bindings.insert_opaque_dynamic(&variable, "conditional function runtime write");
+                } else if result
+                    .bindings
+                    .runtime_variable_target_is_unresolved(&variable)
+                {
+                    bindings.insert_opaque_dynamic(&variable, "function structured variable write");
                 } else if let Some(value) = result.bindings.get(&variable) {
                     match value.value {
                         SessionValue::ExactScalar(value) => {
@@ -359,8 +378,22 @@ impl RuntimeVariableContext<'_> {
                         }
                         _ => bindings.insert_opaque_dynamic(&variable, "function runtime write"),
                     }
-                } else {
+                } else if result.bindings.variable_presence(&variable)
+                    == caushell_profile::VariablePresence::Absent
+                {
                     bindings.remove(&variable);
+                } else {
+                    bindings.insert_opaque_dynamic(&variable, "function variable state unknown");
+                }
+                if !command.guarded && command.control_flow_span.is_none() {
+                    if result
+                        .bindings
+                        .runtime_variable_target_is_unresolved(&variable)
+                    {
+                        bindings.mark_unresolved_runtime_variable_target(&variable);
+                    }
+                    bindings
+                        .set_variable_facts(&variable, result.bindings.variable_facts(&variable));
                 }
                 match result.bindings.environment_value(&variable) {
                     caushell_profile::EnvironmentValueRef::Present(_) => bindings.export(&variable),
@@ -372,7 +405,7 @@ impl RuntimeVariableContext<'_> {
             if visible && has_nameref_declaration(&body) {
                 let names: Vec<_> = bindings.variable_names().map(str::to_owned).collect();
                 for name in names {
-                    if function_variable_escapes(&body, &name) {
+                    if function_variable_escapes_in_frame(&body, &name, Some(bindings)) {
                         bindings.insert_opaque_dynamic(&name, "function nameref write target");
                         touched.insert(name);
                     }
@@ -430,11 +463,11 @@ impl RuntimeVariableContext<'_> {
                 .effects
                 .iter()
                 .any(|e| e.kind == caushell_profile::EffectKind::TerminateCurrentShell);
-        for variable in runtime_variable_writes(&resolved.bound)
-            .names
-            .into_iter()
-            .filter(|_| visible)
-        {
+        let writes = runtime_variable_writes(&resolved.bound);
+        if visible && writes.unresolved {
+            super::variable_facts::invalidate_all(bindings, touched);
+        }
+        for variable in writes.names.into_iter().filter(|_| visible) {
             touched.insert(variable.clone());
             bindings.insert_opaque_dynamic(&variable, "runtime variable write (possibly unset)");
         }
@@ -510,10 +543,31 @@ pub(crate) fn declaration_uses_nameref(d: &caushell_parse::DeclarationCommandFac
 }
 
 pub(crate) fn function_variable_escapes(body: &ParsedCommandArtifact, variable: &str) -> bool {
+    function_variable_escapes_in_frame(body, variable, None)
+}
+
+pub(crate) fn function_variable_escapes_in_frame(
+    body: &ParsedCommandArtifact,
+    variable: &str,
+    bindings: Option<&SessionBindings>,
+) -> bool {
     !body.declaration_commands.iter().any(|d| {
-        d.kind == caushell_parse::DeclarationCommandKind::Local
-            && d.unconditional_current_shell
-            && d.options.is_empty()
+        matches!(
+            d.kind,
+            caushell_parse::DeclarationCommandKind::Local
+                | caushell_parse::DeclarationCommandKind::Declare
+                | caushell_parse::DeclarationCommandKind::Typeset
+        ) && d.unconditional_current_shell
+            && !super::variable_facts::declaration_prints_only(d)
+            && bindings.is_none_or(|b| !super::variable_facts::declaration_has_shadow(d, b))
+            && !body.function_definitions.iter().any(|f| {
+                f.name == super::variable_facts::declaration_name(d)
+                    && f.span.start_byte < d.span.start_byte
+            })
+            && !d
+                .options
+                .iter()
+                .any(|o| o.starts_with('-') && o[1..].contains('g'))
             && (d.names.iter().any(|name| name == variable)
                 || d.assignments.iter().any(|a| a.name == variable))
     })

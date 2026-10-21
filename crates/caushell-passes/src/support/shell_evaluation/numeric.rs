@@ -96,6 +96,13 @@ impl<'a> NumericFacts<'a> {
         }) {
             return false;
         }
+        let frame_facts = bindings.variable_facts(name);
+        if frame_facts.scalar_shape == Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+            || frame_facts.element_shape
+                == Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+        {
+            return true;
+        }
         match bindings.get(name).map(|b| b.value) {
             Some(SessionValue::ExactScalar(v) | SessionValue::RuntimeProduced { value: v, .. })
                 if arithmetic_text(v) =>
@@ -126,10 +133,10 @@ impl<'a> NumericFacts<'a> {
             .flat_map(|c| {
                 c.assignments
                     .iter()
-                    .filter(move |a| a.name == name)
+                    .filter(move |a| a.name == name && a.span.end_byte <= before)
                     .map(move |a| {
                         (
-                            c.span.start_byte,
+                            a.span.start_byte,
                             c.conditional_execution,
                             a.operator.clone(),
                             &a.value,
@@ -141,16 +148,17 @@ impl<'a> NumericFacts<'a> {
                     .declaration_commands
                     .iter()
                     .filter(|c| {
-                        c.span.start_byte < before
+                        c.span.end_byte <= before
                             && super::super::state_visible(&c.shell_scope_span, before)
+                            && !super::super::variable_facts::declaration_has_shadow(c, &bindings)
                     })
                     .flat_map(|c| {
                         c.assignments
                             .iter()
-                            .filter(move |a| a.name == name)
+                            .filter(move |a| a.name == name && a.span.end_byte <= before)
                             .map(move |a| {
                                 (
-                                    c.span.start_byte,
+                                    a.span.start_byte,
                                     c.conditional_execution,
                                     a.operator.clone(),
                                     &a.value,
@@ -291,52 +299,24 @@ impl<'a> NumericFacts<'a> {
     }
 
     pub fn stdout(&self, body: &str, bindings: &SessionBindings) -> bool {
-        if !self.step(0) || body.len() > 8192 {
-            return false;
-        }
-        let Ok(parsed) = caushell_parse::parse_command(body, self.parsed.shell_kind) else {
-            return false;
-        };
-        if parsed.status != caushell_parse::ParseStatus::Complete
-            || parsed.commands.len() != 1
-            || !parsed.assignment_commands.is_empty()
-            || !parsed.declaration_commands.is_empty()
-            || !parsed.unset_commands.is_empty()
-            || !parsed.function_definitions.is_empty()
-        {
-            return false;
-        }
-        let command = &parsed.commands[0];
-        if command.in_pipeline
-            || command.guarded
-            || command.conditional_execution
-            || command.terminator.is_some()
-            || !command.prefix_assignments.is_empty()
-        {
-            return false;
-        }
-        // Input redirects do not change the declared output alphabet. Output
-        // duplication could mix stderr or another producer into captured stdout.
-        if parsed
-            .redirections
-            .iter()
-            .any(|r| !matches!(r.operator.as_deref(), Some("<" | "<<" | "<<-" | "<<<")))
-        {
-            return false;
-        }
-        if command.command_name.as_deref().is_some_and(|n| {
-            bindings.function_binding(n).is_some() || bindings.profile_has_alias_shadow(n)
-        }) {
-            return false;
-        }
-        matches!(caushell_profile::resolve_invocation_artifact_with_bindings(self.registry, command,
-            InvocationRuntimeContext::default().with_shell_kind(self.parsed.shell_kind), bindings),
-            ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout())
+        self.step(0)
+            && super::super::substitution_shape::arithmetic_stdout(
+                self.registry,
+                self.parsed.shell_kind,
+                body,
+                bindings,
+            )
     }
 
     fn array_numeric(&self, name: &str, before: usize, depth: usize) -> bool {
         if !self.step(depth) {
             return false;
+        }
+        let bindings = self.at(before);
+        if bindings.variable_facts(name).element_shape
+            == Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+        {
+            return true;
         }
         let definition = self
             .parsed
@@ -346,6 +326,8 @@ impl<'a> NumericFacts<'a> {
                 c.span.start_byte < before
                     && super::super::state_visible(&c.shell_scope_span, before)
                     && !c.conditional_execution
+                    && !super::super::variable_facts::declaration_has_shadow(c, &bindings)
+                    && !super::super::variable_facts::declaration_prints_only(c)
             })
             .flat_map(|c| {
                 c.assignments
@@ -433,6 +415,15 @@ impl<'a> NumericFacts<'a> {
         if !self.step(depth) {
             return false;
         }
+        if self.parsed.shell_evaluations.iter().any(|site| {
+            site.input.span.start_byte >= start
+                && site.input.span.start_byte < end
+                && super::super::state_visible(&site.shell_scope_span, end.saturating_sub(1))
+                && matches!(&site.kind, ShellEvaluationKind::ParameterAssignment {name: target,..}
+                    if target.as_deref().is_none_or(|target| target == name))
+        }) {
+            return false;
+        }
         !self.parsed.unset_commands.iter().any(|u| {
             u.span.start_byte >= start
                 && u.span.start_byte < end
@@ -479,13 +470,14 @@ impl<'a> NumericFacts<'a> {
             else {
                 return true;
             };
-            if !super::super::function_variable_escapes(&body, name) {
+            if !super::super::function_variable_escapes_in_frame(&body, name, Some(bindings)) {
                 return false;
             }
             return body.assignment_commands.iter().flat_map(|c| &c.assignments).any(|a| a.name == name)
                 || body.declaration_commands.iter().any(|d| d.names.iter().any(|n| n == name) || d.assignments.iter().any(|a| a.name == name))
                 || super::super::has_nameref_declaration(&body)
-                || body.shell_evaluations.iter().any(|s| matches!(&s.kind, ShellEvaluationKind::ArrayElementAssignment {name:n,..} if n == name))
+                || body.shell_evaluations.iter().any(|s| matches!(&s.kind, ShellEvaluationKind::ArrayElementAssignment {name:n,..} if n == name)
+                    || matches!(&s.kind, ShellEvaluationKind::ParameterAssignment { name: n, .. } if n.as_deref().is_none_or(|n| n == name)))
                 || !body.unset_commands.is_empty()
                 || body.commands.iter().any(|c| self.command_writes(c,bindings,name,depth+1));
         }

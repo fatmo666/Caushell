@@ -9,6 +9,56 @@ use caushell_profile::{
 };
 use caushell_types::{SessionAliasBinding, ShellKind};
 
+pub(crate) fn arithmetic_stdout(
+    registry: &ProfileRegistry,
+    shell_kind: ShellKind,
+    body: &str,
+    bindings: &SessionBindings,
+) -> bool {
+    if body.len() > 8192 {
+        return false;
+    }
+    let Ok(parsed) = parse_command(body, shell_kind) else {
+        return false;
+    };
+    if parsed.status != ParseStatus::Complete
+        || !parsed.diagnostics.is_empty()
+        || parsed.commands.len() != 1
+        || !parsed.assignment_commands.is_empty()
+        || !parsed.declaration_commands.is_empty()
+        || !parsed.unset_commands.is_empty()
+        || !parsed.function_definitions.is_empty()
+        || parsed
+            .redirections
+            .iter()
+            .any(|r| !matches!(r.operator.as_deref(), Some("<" | "<<" | "<<-" | "<<<")))
+    {
+        return false;
+    }
+    let command = &parsed.commands[0];
+    if command.in_pipeline
+        || command.guarded
+        || command.conditional_execution
+        || command.terminator.is_some()
+        || !command.prefix_assignments.is_empty()
+    {
+        return false;
+    }
+    let Some(name) = command
+        .command_name
+        .as_deref()
+        .and_then(|name| caushell_profile::materialize_command_name(name, bindings))
+    else {
+        return false;
+    };
+    if bindings.function_binding(&name).is_some() || bindings.profile_has_alias_shadow(&name) {
+        return false;
+    }
+    matches!(resolve_invocation_artifact_with_bindings(registry, command,
+        InvocationRuntimeContext::default().with_shell_kind(shell_kind), bindings),
+        ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout())
+}
+
 /// The entire captured stream must satisfy the declaration. A recognized
 /// producer among other commands/branches is not proof of the stream's shape.
 pub(crate) fn substitution_shapes(

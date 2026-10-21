@@ -58,8 +58,8 @@ pub use lookup::{ProfileLookupResult, lookup_command_profile, normalize_command_
 pub use materialize::{
     BindingOrigin, BindingValueRef, EnvironmentValueRef, MaterializedProjectedInvocation,
     MaterializedRecursivePayloadCandidate, MaterializedShellField, SessionBindings, SessionValue,
-    ShellAllPositionalsKind, ShellParameterExpansionOperator, ShellParameterName,
-    ShellParameterReference, ValueMaterialization, VariablePresence,
+    ShellAllPositionalsKind, ShellArrayKind, ShellParameterExpansionOperator, ShellParameterName,
+    ShellParameterReference, ShellVariableFacts, ValueMaterialization, VariablePresence,
     exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
     exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,

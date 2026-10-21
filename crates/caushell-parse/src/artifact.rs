@@ -245,11 +245,23 @@ pub struct ForLoopFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEvaluationKind {
-    ArrayElementAssignment { name: String, index: String },
+    ParameterAssignment {
+        name: Option<String>,
+        array_element: bool,
+        if_null: bool,
+    },
+    ArrayElementAssignment {
+        name: String,
+        index: String,
+    },
     Arithmetic,
     UnresolvedArithmetic,
-    ArrayIndex { name: String },
-    UnsetOperand { functions_only: bool },
+    ArrayIndex {
+        name: String,
+    },
+    UnsetOperand {
+        functions_only: bool,
+    },
     ArithmeticBuiltin,
 }
 

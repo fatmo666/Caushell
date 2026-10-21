@@ -42,6 +42,7 @@ pub(crate) fn evaluate(
         max_depth: usize::from(max_depth),
     };
     match &site.kind {
+        ShellEvaluationKind::ParameterAssignment { .. } => {}
         ShellEvaluationKind::ArrayElementAssignment { .. } => {}
         ShellEvaluationKind::Arithmetic => evaluator.expression(&site.input.text, true, 0),
         ShellEvaluationKind::UnresolvedArithmetic => evaluator.result.unresolved = true,
@@ -243,6 +244,13 @@ impl Evaluator<'_> {
         if self.numeric.contains(name) || self.site.numeric_locals.iter().any(|n| n == name) {
             return;
         }
+        let frame_facts = self.bindings.variable_facts(name);
+        if frame_facts.scalar_shape == Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+            || frame_facts.element_shape
+                == Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+        {
+            return;
+        }
         if self
             .facts
             .variable(name, self.site.top_level_span.start_byte, depth)
@@ -289,12 +297,18 @@ impl Evaluator<'_> {
     }
 
     fn associative(&self, name: &str) -> bool {
+        if self.bindings.variable_facts(name).array_kind
+            == Some(caushell_profile::ShellArrayKind::Associative)
+        {
+            return true;
+        }
         self.parsed
             .declaration_commands
             .iter()
             .rev()
             .find(|d| {
                 d.span.start_byte < self.site.input.span.start_byte
+                    && !super::variable_facts::declaration_has_shadow(d, self.bindings)
                     && super::state_visible(&d.shell_scope_span, self.site.input.span.start_byte)
                     && (d.names.iter().any(|n| n == name)
                         || d.assignments.iter().any(|a| a.name == name))
@@ -309,11 +323,11 @@ impl Evaluator<'_> {
                         .any(|o| o.starts_with('-') && o[1..].contains('A'))
                     && !self.parsed.unset_commands.iter().any(|u| {
                         u.span.start_byte > d.span.start_byte
-                            && u.span.start_byte < self.site.top_level_span.start_byte
+                            && u.span.start_byte < self.site.input.span.start_byte
                     })
                     && !self.parsed.commands.iter().any(|c| {
                         c.span.start_byte > d.span.start_byte
-                            && c.span.start_byte < self.site.top_level_span.start_byte
+                            && c.span.start_byte < self.site.input.span.start_byte
                     })
             })
     }

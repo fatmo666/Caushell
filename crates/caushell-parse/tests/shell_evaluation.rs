@@ -2,6 +2,35 @@ use caushell_parse::*;
 use caushell_types::ShellKind;
 
 #[test]
+fn parameter_assignment_records_mutation_not_literal_or_replacement_text() {
+    for (source, name, element, if_null) in [
+        ("v=${x:=$fallback}", Some("x"), false, true),
+        ("v=${x=$fallback}", Some("x"), false, false),
+        ("v=${a[key]:=$fallback}", Some("a"), true, true),
+        ("v=${!ref:=$fallback}", None, false, true),
+    ] {
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert!(parsed.shell_evaluations.iter().any(|site| matches!(&site.kind,
+            ShellEvaluationKind::ParameterAssignment {name: actual, array_element: actual_element, if_null: actual_null}
+                if actual.as_deref() == name && *actual_element == element && *actual_null == if_null)), "{source}: {parsed:#?}");
+    }
+    for source in [
+        "echo '${x:=data}'",
+        "echo ${x//=/replacement}",
+        "echo ${x:-data}",
+    ] {
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert!(
+            !parsed
+                .shell_evaluations
+                .iter()
+                .any(|site| matches!(site.kind, ShellEvaluationKind::ParameterAssignment { .. })),
+            "{source}: {parsed:#?}"
+        );
+    }
+}
+
+#[test]
 fn executable_positions_belong_to_the_enclosing_statement() {
     let parsed = parse_command("a=(1 2); echo $((a[0]+1)) ${a[x]}", ShellKind::Bash).unwrap();
     assert_eq!(parsed.shell_evaluations.len(), 2);
@@ -82,6 +111,27 @@ fn builtin_words_and_nested_arithmetic_keep_their_grammar() {
 #[test]
 fn assignment_dominance_is_local_to_the_statement_list() {
     for (source, expected) in [
+        ("if test x; then local n=1; echo $((n)); fi", true),
+        (
+            "if test x; then :; elif test y; then local n=1; echo $((n)); fi",
+            true,
+        ),
+        ("if test x; then :; else local n=1; echo $((n)); fi", true),
+        (
+            "if test x; then local n=1; if test y; then echo $((n)); fi; fi",
+            true,
+        ),
+        ("if test x; then local n=1; else echo $((n)); fi", false),
+        (
+            "if test x; then local n=1; elif test y; then echo $((n)); fi",
+            false,
+        ),
+        ("if test x; then local n=1; fi; echo $((n))", false),
+        ("if local n=1; then echo $((n)); fi", false),
+        (
+            "if test x; then test y && local n=1; echo $((n)); fi",
+            false,
+        ),
         ("for x in a; do local n=1; echo $((n)); done", true),
         (
             "for x in a; do if test x; then local n=1; fi; echo $((n)); done",

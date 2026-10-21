@@ -31,8 +31,8 @@ mod pipeline;
 mod redirection;
 mod runtime_variable_overlay;
 pub(crate) use runtime_variable_overlay::{
-    declaration_uses_nameref, function_variable_escapes, has_nameref_declaration,
-    runtime_write_visible,
+    declaration_uses_nameref, function_variable_escapes, function_variable_escapes_in_frame,
+    has_nameref_declaration, runtime_write_visible,
 };
 pub(crate) mod shell_evaluation;
 mod shell_sink_hard_deny;
@@ -53,6 +53,7 @@ pub(crate) use static_payload::scope_has_prior_directory_transition;
 pub(crate) use stream_records::stdin_path_records;
 pub(crate) use stream_semantics::{StreamSemanticsIndex, annotate_stream_output};
 mod top_level_units;
+mod variable_facts;
 mod variable_overlay;
 
 pub(crate) use runtime_variable_overlay::{

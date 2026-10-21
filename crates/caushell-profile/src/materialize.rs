@@ -88,8 +88,23 @@ pub struct BindingValueRef<'a> {
     pub value: &'a SessionValue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellArrayKind {
+    Indexed,
+    Associative,
+}
+
+/// Static frame facts, separate from observed or materialized variable bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShellVariableFacts {
+    pub scalar_shape: Option<crate::StdoutScalarShape>,
+    pub array_kind: Option<ShellArrayKind>,
+    pub element_shape: Option<crate::StdoutScalarShape>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionBindings {
+    variable_facts: BTreeMap<String, ShellVariableFacts>,
     // Account-home fact supplied by the request, not a shell variable or an
     // exported environment entry. Explicit HOME facts override this default.
     default_tilde_home: Option<String>,
@@ -137,6 +152,36 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn variable_facts(&self, name: &str) -> ShellVariableFacts {
+        self.variable_facts.get(name).copied().unwrap_or_default()
+    }
+
+    pub fn set_variable_facts(&mut self, name: &str, facts: ShellVariableFacts) {
+        if facts == ShellVariableFacts::default() {
+            self.variable_facts.remove(name);
+        } else {
+            self.variable_facts.insert(name.into(), facts);
+        }
+    }
+
+    pub fn forget_variable_facts(&mut self, name: &str) {
+        self.variable_facts.remove(name);
+    }
+
+    pub fn forget_all_variable_facts(&mut self) {
+        self.variable_facts.clear();
+    }
+
+    pub fn has_variable_facts(&self) -> bool {
+        !self.variable_facts.is_empty()
+    }
+
+    pub fn variable_fact_entries(&self) -> impl Iterator<Item = (&str, ShellVariableFacts)> {
+        self.variable_facts
+            .iter()
+            .map(|(name, facts)| (name.as_str(), *facts))
+    }
+
     pub fn set_default_tilde_home(&mut self, home: Option<&str>) {
         self.default_tilde_home = home.map(str::to_owned);
     }
@@ -211,6 +256,7 @@ impl SessionBindings {
     }
 
     pub fn mark_variable_presence_unknown(&mut self, name: &str) {
+        self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Unknown);
@@ -257,6 +303,7 @@ impl SessionBindings {
         self.functions = bindings.into_iter().map(|b| (b.name.clone(), b)).collect();
     }
     pub fn mark_unresolved_runtime_variable_target(&mut self, name: &str) {
+        self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.unresolved_runtime_variable_targets.insert(name.into());
     }
@@ -267,6 +314,7 @@ impl SessionBindings {
         self.session_variables
             .keys()
             .chain(self.inherited_environment.keys())
+            .chain(self.variable_facts.keys())
             .map(String::as_str)
     }
     pub fn new() -> Self {
@@ -416,6 +464,7 @@ impl SessionBindings {
     }
 
     pub fn insert_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
@@ -431,6 +480,7 @@ impl SessionBindings {
         value: impl Into<String>,
         kind: RuntimeProducedValueKind,
     ) {
+        self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
@@ -480,6 +530,7 @@ impl SessionBindings {
     }
 
     pub fn insert_inherited_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Present);
@@ -554,6 +605,7 @@ impl SessionBindings {
     }
 
     pub fn remove(&mut self, name: &str) {
+        self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
             .insert(name.into(), VariablePresence::Absent);

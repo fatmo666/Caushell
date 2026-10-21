@@ -1637,6 +1637,36 @@ fn extract_shell_evaluations(
             });
         };
         match node.kind() {
+            "expansion"
+                if all_children(node)
+                    .iter()
+                    .any(|c| matches!(c.kind(), ":=" | "=")) =>
+            {
+                let indirect = all_children(node).iter().any(|c| c.kind() == "!");
+                let target = node.named_child(0);
+                let array_element = target.is_some_and(|n| n.kind() == "subscript");
+                let name = (!indirect)
+                    .then(|| {
+                        target.and_then(|target| {
+                            let name = if array_element {
+                                target.child_by_field_name("name")?
+                            } else {
+                                target
+                            };
+                            (name.kind() == "variable_name").then(|| source_text(name, source))
+                        })
+                    })
+                    .flatten();
+                add(
+                    K::ParameterAssignment {
+                        name,
+                        array_element,
+                        if_null: all_children(node).iter().any(|c| c.kind() == ":="),
+                    },
+                    node,
+                    None,
+                );
+            }
             "arithmetic_expansion" => {
                 let text = source_text(node, source);
                 let body = text
@@ -2186,12 +2216,33 @@ pub fn assignment_dominates_use(source: &str, definition: usize, use_start: usiz
             "variable_assignment" | "declaration_command"
         ) && current.start_byte() == definition
             && let Some(parent) = current.parent()
-            && matches!(parent.kind(), "program" | "compound_statement" | "do_group")
             && use_start >= current.end_byte()
             && use_start < parent.end_byte()
             && !is_nested_shell_substructure(current)
         {
-            return true;
+            if matches!(parent.kind(), "program" | "compound_statement" | "do_group") {
+                return true;
+            }
+            if matches!(
+                parent.kind(),
+                "if_statement" | "elif_clause" | "else_clause"
+            ) {
+                let mut cursor = parent.walk();
+                let mut arm_started = false;
+                for child in parent.children(&mut cursor) {
+                    if matches!(child.kind(), "then" | "else")
+                        && child.end_byte() <= current.start_byte()
+                    {
+                        arm_started = true;
+                    }
+                    if matches!(child.kind(), "elif_clause" | "else_clause" | "fi")
+                        && child.start_byte() >= current.end_byte()
+                    {
+                        return arm_started && use_start < child.start_byte();
+                    }
+                }
+                return arm_started;
+            }
         }
         node = current.parent();
     }

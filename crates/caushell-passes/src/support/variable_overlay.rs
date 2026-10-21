@@ -34,7 +34,7 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
 ) -> SessionBindings {
-    apply_variable_overlay(bindings, parsed, span_start_byte, observed_at, None).bindings
+    apply_variable_overlay(bindings, parsed, span_start_byte, observed_at, None, None).bindings
 }
 
 pub(crate) fn static_variable_overlay(
@@ -42,7 +42,7 @@ pub(crate) fn static_variable_overlay(
     parsed: &ParsedCommandArtifact,
     observed_at: CommandSequenceNo,
 ) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
-    apply_variable_overlay(bindings, parsed, usize::MAX, observed_at, None)
+    apply_variable_overlay(bindings, parsed, usize::MAX, observed_at, None, None)
 }
 
 pub(super) fn apply_variable_overlay(
@@ -50,6 +50,7 @@ pub(super) fn apply_variable_overlay(
     parsed: &ParsedCommandArtifact,
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
+    registry: Option<&caushell_profile::ProfileRegistry>,
     mut runtime: Option<&mut super::runtime_variable_overlay::RuntimeVariableContext<'_>>,
 ) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
     let mut events = Vec::new();
@@ -92,13 +93,24 @@ pub(super) fn apply_variable_overlay(
         }
     }
 
+    for site in &parsed.shell_evaluations {
+        if site.input.span.end_byte <= span_start_byte {
+            events.push(VariableOverlayEvent::Evaluation(site));
+        }
+    }
+
     for command in &parsed.commands {
         if command.span.end_byte <= span_start_byte
             && matches!(command.command_name.as_deref(), Some("set" | "shift"))
         {
             events.push(VariableOverlayEvent::SetPositionalParameters(command));
         }
-        if runtime.is_some() && command.span.end_byte <= span_start_byte {
+        if (runtime.is_some()
+            || bindings.has_variable_facts()
+            || !parsed.declaration_commands.is_empty()
+            || !parsed.assignment_commands.is_empty())
+            && command.span.end_byte <= span_start_byte
+        {
             events.push(VariableOverlayEvent::RuntimeCommand(command));
         }
     }
@@ -157,6 +169,17 @@ pub(super) fn apply_variable_overlay(
                 if !state_visible(&declaration.shell_scope_span, span_start_byte) {
                     continue;
                 }
+                if super::variable_facts::declaration_has_shadow(declaration, &bindings) {
+                    invalidate_unknown_scalar_targets(&mut bindings, &mut assigned);
+                    continue;
+                }
+                if super::variable_facts::declaration_prints_only(declaration) {
+                    continue;
+                }
+                let array_facts = super::variable_facts::declaration_arrays(declaration, &bindings);
+                if super::declaration_uses_nameref(declaration) {
+                    super::variable_facts::invalidate_all(&mut bindings, &mut touched);
+                }
                 if declaration.kind == caushell_parse::DeclarationCommandKind::Local
                     && bindings.in_function_scope()
                     && declaration.options.is_empty()
@@ -173,9 +196,19 @@ pub(super) fn apply_variable_overlay(
                     let values = declaration
                         .assignments
                         .iter()
-                        .map(|a| classify_assignment_value(&a.value, &bindings))
+                        .map(|a| {
+                            (
+                                classify_assignment_value(&a.value, &bindings),
+                                super::variable_facts::assignment(
+                                    &a.value,
+                                    &bindings,
+                                    registry,
+                                    parsed.shell_kind,
+                                ),
+                            )
+                        })
                         .collect::<Vec<_>>();
-                    for (assignment, value) in declaration.assignments.iter().zip(values) {
+                    for (assignment, (value, facts)) in declaration.assignments.iter().zip(values) {
                         assigned.insert(assignment.name.clone());
                         apply_binding(
                             &mut bindings,
@@ -191,6 +224,15 @@ pub(super) fn apply_variable_overlay(
                                 &assignment.name,
                                 "conditional local assignment",
                             );
+                        }
+                        if !declaration.conditional_execution
+                            || caushell_parse::assignment_dominates_use(
+                                &parsed.raw_command,
+                                declaration.span.start_byte,
+                                span_start_byte,
+                            )
+                        {
+                            bindings.set_variable_facts(&assignment.name, facts);
                         }
                         bindings.set_environment_value(
                             &assignment.name,
@@ -231,6 +273,7 @@ pub(super) fn apply_variable_overlay(
                         .map(String::as_str)
                         .chain(declaration.assignments.iter().map(|a| a.name.as_str()))
                     {
+                        assigned.insert(name.to_owned());
                         bindings.mark_variable_presence_unknown(name);
                     }
                     // Export-affecting declarations beyond plain `export` are
@@ -247,6 +290,10 @@ pub(super) fn apply_variable_overlay(
                             name,
                             SessionValue::opaque_dynamic("unresolved export declaration"),
                         );
+                    }
+                    for (name, facts) in array_facts {
+                        assigned.insert(name.clone());
+                        bindings.set_variable_facts(&name, facts);
                     }
                     continue;
                 }
@@ -273,9 +320,19 @@ pub(super) fn apply_variable_overlay(
                 let values = declaration
                     .assignments
                     .iter()
-                    .map(|assignment| classify_assignment_value(&assignment.value, &bindings))
+                    .map(|assignment| {
+                        (
+                            classify_assignment_value(&assignment.value, &bindings),
+                            super::variable_facts::assignment(
+                                &assignment.value,
+                                &bindings,
+                                registry,
+                                parsed.shell_kind,
+                            ),
+                        )
+                    })
                     .collect::<Vec<_>>();
-                for (assignment, value) in declaration.assignments.iter().zip(values) {
+                for (assignment, (value, facts)) in declaration.assignments.iter().zip(values) {
                     assigned.insert(assignment.name.clone());
                     if assignment.operator != caushell_parse::AssignmentOperator::Assign {
                         bindings.insert_opaque_dynamic(
@@ -292,6 +349,11 @@ pub(super) fn apply_variable_overlay(
                                 observed_at,
                             ),
                         );
+                        if !declaration.conditional_execution
+                            && !bindings.runtime_variable_target_is_unresolved(&assignment.name)
+                        {
+                            bindings.set_variable_facts(&assignment.name, facts);
+                        }
                     }
                     if declaration.conditional_execution {
                         bindings.insert_opaque_dynamic(
@@ -334,6 +396,7 @@ pub(super) fn apply_variable_overlay(
                 }
                 for assignment in &assignment_command.assignments {
                     if assignment.operator != caushell_parse::AssignmentOperator::Assign {
+                        bindings.forget_variable_facts(&assignment.name);
                         if !matches!(
                             bindings.environment_value(&assignment.name),
                             caushell_profile::EnvironmentValueRef::Absent
@@ -346,6 +409,17 @@ pub(super) fn apply_variable_overlay(
                         continue;
                     }
                     assigned.insert(assignment.name.clone());
+                    let facts = if bindings.runtime_variable_target_is_unresolved(&assignment.name)
+                    {
+                        Default::default()
+                    } else {
+                        super::variable_facts::assignment(
+                            &assignment.value,
+                            &bindings,
+                            registry,
+                            parsed.shell_kind,
+                        )
+                    };
                     let value = classify_assignment_value(&assignment.value, &bindings);
                     apply_binding(
                         &mut bindings,
@@ -363,6 +437,15 @@ pub(super) fn apply_variable_overlay(
                             &assignment.name,
                             "conditional assignment after runtime write",
                         );
+                    }
+                    if !assignment_command.conditional_execution
+                        || caushell_parse::assignment_dominates_use(
+                            &parsed.raw_command,
+                            assignment_command.span.start_byte,
+                            span_start_byte,
+                        )
+                    {
+                        bindings.set_variable_facts(&assignment.name, facts);
                     }
                     if assignment_command.conditional_execution
                         && !matches!(
@@ -382,6 +465,11 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 let mode = unset_mode(&unset.options);
+                if !matches!(mode, UnsetMode::Functions | UnsetMode::Invalid)
+                    && unset.names.iter().any(|n| !scalar_identifier(n))
+                {
+                    super::variable_facts::invalidate_all(&mut bindings, &mut touched);
+                }
                 if mode == UnsetMode::Unresolved
                     || (matches!(mode, UnsetMode::Default | UnsetMode::Functions)
                         && unset
@@ -476,7 +564,82 @@ pub(super) fn apply_variable_overlay(
                     });
                 }
             }
+            VariableOverlayEvent::Evaluation(site) => {
+                if state_visible(&site.shell_scope_span, span_start_byte) {
+                    if let caushell_parse::ShellEvaluationKind::ParameterAssignment {
+                        name,
+                        array_element,
+                        if_null,
+                    } = &site.kind
+                    {
+                        if let Some(name) = name.as_deref().filter(|name| scalar_identifier(name)) {
+                            if !array_element
+                                && bindings.variable_presence(name)
+                                    == caushell_profile::VariablePresence::Present
+                                && (!if_null
+                                    || bindings.get(name).is_some_and(|b| match b.value {
+                                        SessionValue::ExactScalar(v)
+                                        | SessionValue::RuntimeProduced { value: v, .. } => {
+                                            !v.is_empty()
+                                        }
+                                        _ => false,
+                                    }))
+                            {
+                                continue;
+                            }
+                            let mut facts = bindings.variable_facts(name);
+                            facts.scalar_shape = None;
+                            facts.element_shape = None;
+                            touched.insert(name.into());
+                            bindings
+                                .insert_opaque_dynamic(name, "conditional parameter assignment");
+                            if *array_element || facts.array_kind.is_some() {
+                                bindings.mark_unresolved_runtime_variable_target(name);
+                            }
+                            bindings.set_variable_facts(name, facts);
+                        } else {
+                            invalidate_unknown_scalar_targets(&mut bindings, &mut assigned);
+                        }
+                        continue;
+                    }
+                    if let caushell_parse::ShellEvaluationKind::ArrayElementAssignment {
+                        name,
+                        ..
+                    } = &site.kind
+                    {
+                        touched.insert(name.clone());
+                    }
+                    let old: Vec<_> = bindings
+                        .variable_fact_entries()
+                        .map(|(n, f)| (n.to_owned(), f))
+                        .collect();
+                    super::variable_facts::invalidate_evaluation(site, &mut bindings);
+                    touched.extend(
+                        old.into_iter()
+                            .filter(|(n, f)| bindings.variable_facts(n) != *f)
+                            .map(|(n, _)| n),
+                    );
+                }
+            }
             VariableOverlayEvent::RuntimeCommand(command) => {
+                if bindings.has_variable_facts() {
+                    let old: Vec<_> = bindings
+                        .variable_fact_entries()
+                        .map(|(n, f)| (n.to_owned(), f))
+                        .collect();
+                    super::variable_facts::invalidate_command(
+                        command,
+                        parsed,
+                        span_start_byte,
+                        registry,
+                        &mut bindings,
+                    );
+                    touched.extend(
+                        old.into_iter()
+                            .filter(|(n, f)| bindings.variable_facts(n) != *f)
+                            .map(|(n, _)| n),
+                    );
+                }
                 if let Some(runtime) = runtime.as_deref_mut() {
                     if let Some(fence) = runtime.apply_command(
                         command,
@@ -524,6 +687,7 @@ fn invalidate_unknown_scalar_targets(
 }
 
 enum VariableOverlayEvent<'a> {
+    Evaluation(&'a caushell_parse::ShellEvaluationSite),
     ForEnter(&'a caushell_parse::ForLoopFact),
     ForExit(&'a caushell_parse::ForLoopFact),
     FunctionDefinition(&'a caushell_parse::FunctionDefinitionFact),
@@ -537,6 +701,7 @@ enum VariableOverlayEvent<'a> {
 impl VariableOverlayEvent<'_> {
     fn start_byte(&self) -> usize {
         match self {
+            Self::Evaluation(site) => site.input.span.end_byte,
             Self::ForEnter(iteration) => iteration.body_span.start_byte,
             Self::ForExit(iteration) => iteration.span.end_byte,
             Self::FunctionDefinition(definition) => definition.span.start_byte,
