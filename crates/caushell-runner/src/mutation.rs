@@ -13,6 +13,10 @@ use caushell_types::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PendingMutation {
+    AddStateCandidate {
+        node_id: NodeId,
+        fact: caushell_types::StateCandidateFact,
+    },
     MarkAnalysisIncomplete {
         budget: caushell_types::AnalysisBudgetKind,
     },
@@ -201,6 +205,7 @@ impl PendingMutation {
         !matches!(
             self,
             Self::AddRequestAnchor { .. }
+                | Self::AddStateCandidate { .. }
                 | Self::MarkAnalysisIncomplete { .. }
                 | Self::AddTopLevelCommandInvocation { .. }
                 | Self::AddShellStateReconciliationAnchor { .. }
@@ -288,6 +293,24 @@ impl PendingMutation {
 
     pub(crate) fn graph_projection(&self, command_node_id: &NodeId) -> GraphMutationProjection {
         match self {
+            Self::AddStateCandidate { node_id, fact } => GraphMutationProjection {
+                nodes: vec![GraphNode::new(
+                    node_id.clone(),
+                    caushell_graph::NodeKind::StateCandidate { fact: fact.clone() },
+                )],
+                // This is a state-definition relation, never content flow.
+                edges: match &fact.value {
+                    caushell_types::SafetyStateValue::Reference { node_id: target } => {
+                        vec![Edge::new(
+                            node_id.clone(),
+                            NodeId::new(target),
+                            EdgeKind::Defines,
+                        )]
+                    }
+                    _ => Vec::new(),
+                },
+                ..Default::default()
+            },
             Self::MarkAnalysisIncomplete { budget } => GraphMutationProjection {
                 nodes: vec![GraphNode::new(
                     NodeId::new(format!("analysis-incomplete:{}", budget.key())),
@@ -689,6 +712,7 @@ impl PendingMutation {
 
     pub fn apply_summary(&self, summary: &mut SessionSummary) {
         match self {
+            Self::AddStateCandidate { .. } => {}
             Self::MarkAnalysisIncomplete { .. } => {}
             Self::AddRequestAnchor { .. }
             | Self::AddTopLevelCommandInvocation { .. }
@@ -804,6 +828,10 @@ impl PendingMutation {
 
     pub fn to_session_mutation(&self) -> SessionMutation {
         match self {
+            Self::AddStateCandidate { node_id, fact } => SessionMutation::AddStateCandidate {
+                node_id: node_id.0.clone(),
+                fact: fact.clone(),
+            },
             Self::MarkAnalysisIncomplete { budget } => {
                 SessionMutation::MarkAnalysisIncomplete { budget: *budget }
             }
@@ -1061,6 +1089,10 @@ impl PendingMutation {
 
     pub fn from_session_mutation(mutation: SessionMutation) -> Self {
         match mutation {
+            SessionMutation::AddStateCandidate { node_id, fact } => Self::AddStateCandidate {
+                node_id: NodeId::new(node_id),
+                fact,
+            },
             SessionMutation::MarkAnalysisIncomplete { budget } => {
                 Self::MarkAnalysisIncomplete { budget }
             }

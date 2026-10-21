@@ -2,6 +2,30 @@ use crate::{Edge, GraphNode, NodeId};
 use caushell_types::CommandSequenceNo;
 
 pub trait GraphRead {
+    fn state_object_count(&self) -> usize {
+        self.state_objects().len()
+    }
+    /// Compatibility implementation. Production graphs use a rebuildable index.
+    fn state_candidate_nodes<'a>(
+        &'a self,
+        object: &caushell_types::SafetyObject,
+    ) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        let object = object.clone();
+        Box::new(self.nodes().filter(move |node| {
+            matches!(&node.kind,
+            crate::NodeKind::StateCandidate { fact } if fact.object == object)
+        }))
+    }
+
+    fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
+        self.nodes()
+            .filter_map(|node| match &node.kind {
+                crate::NodeKind::StateCandidate { fact } => Some(fact.object.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Reserved, fixed-size facts survive approval, compaction and recovery.
     fn incomplete_budgets(&self) -> Vec<caushell_types::AnalysisBudgetKind> {
         caushell_types::AnalysisBudgetKind::ALL

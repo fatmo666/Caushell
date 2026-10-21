@@ -93,6 +93,10 @@ pub enum DerivedInvocationOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMutation {
+    AddStateCandidate {
+        node_id: String,
+        fact: crate::StateCandidateFact,
+    },
     MarkAnalysisIncomplete {
         budget: crate::AnalysisBudgetKind,
     },
@@ -346,6 +350,9 @@ pub struct SessionGraphNodeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionGraphNodeKindSnapshot {
+    StateCandidate {
+        fact: crate::StateCandidateFact,
+    },
     AnalysisIncomplete {
         budget: crate::AnalysisBudgetKind,
     },

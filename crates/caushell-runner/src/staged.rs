@@ -43,6 +43,7 @@ impl SessionRead for StagedSession<'_> {
 
 struct OverlayGraphRead<'a> {
     base: &'a dyn GraphRead,
+    overlay_state_candidate_index: BTreeMap<caushell_types::SafetyObject, Vec<NodeId>>,
     overlay_nodes: BTreeMap<NodeId, GraphNode>,
     overlay_edges: Vec<Edge>,
     overlay_outgoing_edge_index: BTreeMap<NodeId, Vec<usize>>,
@@ -92,6 +93,7 @@ impl<'a> OverlayGraphRead<'a> {
 
         let mut graph = Self {
             base,
+            overlay_state_candidate_index: BTreeMap::new(),
             overlay_nodes,
             overlay_edges,
             overlay_outgoing_edge_index,
@@ -186,6 +188,11 @@ impl<'a> OverlayGraphRead<'a> {
     fn rebuild_overlay_indexes(&mut self) {
         for node in self.overlay_nodes.values() {
             match &node.kind {
+                NodeKind::StateCandidate { fact } => self
+                    .overlay_state_candidate_index
+                    .entry(fact.object.clone())
+                    .or_default()
+                    .push(node.id.clone()),
                 NodeKind::CommandInvocation { sequence_no, .. } => self
                     .overlay_command_node_index
                     .entry(*sequence_no)
@@ -256,6 +263,37 @@ impl<'a> OverlayGraphRead<'a> {
 }
 
 impl GraphRead for OverlayGraphRead<'_> {
+    fn state_object_count(&self) -> usize {
+        self.base.state_object_count()
+            + self
+                .overlay_state_candidate_index
+                .keys()
+                .filter(|key| self.base.state_candidate_nodes(key).next().is_none())
+                .count()
+    }
+
+    fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
+        let mut objects = self.base.state_objects();
+        objects.extend(self.overlay_state_candidate_index.keys().cloned());
+        objects
+    }
+
+    fn state_candidate_nodes<'b>(
+        &'b self,
+        object: &caushell_types::SafetyObject,
+    ) -> Box<dyn Iterator<Item = &'b GraphNode> + 'b> {
+        let mut nodes: Vec<_> = self
+            .base
+            .state_candidate_nodes(object)
+            .filter(|node| !self.overlay_nodes.contains_key(&node.id))
+            .collect();
+        if let Some(ids) = self.overlay_state_candidate_index.get(object) {
+            nodes.extend(ids.iter().filter_map(|id| self.overlay_nodes.get(id)));
+        }
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        Box::new(nodes.into_iter())
+    }
+
     fn get_node(&self, id: &NodeId) -> Option<&GraphNode> {
         self.overlay_nodes
             .get(id)
@@ -487,6 +525,50 @@ impl<'a> Iterator for MergedNodeIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn candidate_index_includes_staged_facts_without_committing_or_leaking_other_objects() {
+        use caushell_graph::{GraphNode, GraphRead, NodeId, NodeKind, SessionGraph, SessionRead};
+        use caushell_types::{
+            CommandSequenceNo, SafetyObject, SafetyScope, SafetyStateKind, SafetyStateValue,
+            StateCandidateFact,
+        };
+        let object = SafetyObject {
+            scope: SafetyScope::Shell,
+            kind: SafetyStateKind::Variable,
+            name: "DEST".into(),
+        };
+        let old = StateCandidateFact {
+            object: object.clone(),
+            value: SafetyStateValue::Unknown,
+            sequence_no: CommandSequenceNo(1),
+            source_end: 10,
+        };
+        let mut graph = SessionGraph::new();
+        graph.add_node(GraphNode::new(
+            NodeId::new("a"),
+            NodeKind::StateCandidate { fact: old.clone() },
+        ));
+        let mut new = old.clone();
+        new.sequence_no = CommandSequenceNo(2);
+        let mutations = vec![crate::PendingMutation::AddStateCandidate {
+            node_id: NodeId::new("z"),
+            fact: new,
+        }];
+        let request = sample_request();
+        let summary = caushell_types::SessionSummary::new();
+        let staged = super::StagedSession::new(&graph, &request, &summary, &mutations);
+        assert_eq!(staged.graph().state_object_count(), 1);
+        assert_eq!(
+            staged
+                .graph()
+                .state_candidate_nodes(&object)
+                .map(|n| &n.id.0)
+                .collect::<Vec<_>>(),
+            vec!["a", "z"]
+        );
+        assert_eq!(graph.state_candidate_nodes(&object).count(), 1);
+        assert_eq!(graph.node_count(), 1);
+    }
     use super::StagedSession;
     use crate::{PendingMutation, request_anchor_node_id, top_level_command_node_id};
     use caushell_graph::SessionGraph;

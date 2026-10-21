@@ -16,11 +16,17 @@ pub enum SafetyStateKind {
     Function,
     Cwd,
     Positionals,
+    FileContent,
+    PathBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum SafetyStateValue {
+    /// Reuse a typed value/definition/source already present in the Graph.
+    Reference {
+        node_id: String,
+    },
     Absent,
     Variable {
         value: SessionVariableValue,
@@ -36,7 +42,7 @@ pub enum SafetyStateValue {
 }
 
 impl SafetyStateValue {
-    fn retained_bytes(&self) -> usize {
+    pub fn retained_bytes(&self) -> usize {
         fn variable_bytes(value: &SessionVariableValue) -> usize {
             match value {
                 SessionVariableValue::ExactScalar(v)
@@ -51,6 +57,7 @@ impl SafetyStateValue {
             .saturating_add(64)
         }
         match self {
+            Self::Reference { node_id } => node_id.len(),
             Self::Absent | Self::Unknown => 0,
             Self::Variable { value, .. } => variable_bytes(value),
             Self::Definition { body, uncertainty } => body

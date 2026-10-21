@@ -15,6 +15,8 @@ pub enum GraphError {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionGraph {
+    // Derived solely from StateCandidate graph facts; never persisted separately.
+    state_candidate_index: BTreeMap<caushell_types::SafetyObject, Vec<NodeId>>,
     nodes: BTreeMap<NodeId, GraphNode>,
     edges: Vec<Edge>,
     outgoing_edge_index: BTreeMap<NodeId, Vec<usize>>,
@@ -269,6 +271,15 @@ impl SessionGraph {
 
     fn index_node(&mut self, node: &GraphNode) {
         match &node.kind {
+            NodeKind::StateCandidate { fact } => {
+                let ids = self
+                    .state_candidate_index
+                    .entry(fact.object.clone())
+                    .or_default();
+                if let Err(position) = ids.binary_search(&node.id) {
+                    ids.insert(position, node.id.clone());
+                }
+            }
             NodeKind::CommandInvocation { sequence_no, .. } => self
                 .command_node_index
                 .entry(*sequence_no)
@@ -354,6 +365,9 @@ impl SessionGraph {
 
     fn remove_node_indexes(&mut self, node: &GraphNode) {
         match &node.kind {
+            NodeKind::StateCandidate { fact } => {
+                remove_index_entry(&mut self.state_candidate_index, &fact.object, &node.id)
+            }
             NodeKind::CommandInvocation { sequence_no, .. } => {
                 remove_index_entry(&mut self.command_node_index, sequence_no, &node.id)
             }
@@ -474,6 +488,23 @@ impl SessionGraph {
 }
 
 impl GraphRead for SessionGraph {
+    fn state_object_count(&self) -> usize {
+        self.state_candidate_index.len()
+    }
+    fn state_candidate_nodes<'a>(
+        &'a self,
+        object: &caushell_types::SafetyObject,
+    ) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        match self.state_candidate_index.get(object) {
+            Some(ids) => Box::new(self.indexed_nodes(ids)),
+            None => Box::new(std::iter::empty()),
+        }
+    }
+
+    fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
+        self.state_candidate_index.keys().cloned().collect()
+    }
+
     fn get_node(&self, id: &NodeId) -> Option<&GraphNode> {
         self.get_node(id)
     }

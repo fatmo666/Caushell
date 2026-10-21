@@ -43,6 +43,9 @@ impl AnalysisBudgetKind {
 pub struct AnalysisBudgetPolicy {
     pub max_history_nodes: usize,
     pub max_history_edges: usize,
+    pub max_state_objects: usize,
+    pub max_candidates_per_object: usize,
+    pub max_state_value_bytes: usize,
     pub max_request_bytes: usize,
 }
 
@@ -51,6 +54,9 @@ impl Default for AnalysisBudgetPolicy {
         Self {
             max_history_nodes: 100_000,
             max_history_edges: 300_000,
+            max_state_objects: 16_384,
+            max_candidates_per_object: 256,
+            max_state_value_bytes: 65_536,
             max_request_bytes: 1_048_576,
         }
     }

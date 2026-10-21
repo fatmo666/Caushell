@@ -17,6 +17,9 @@ impl NodeId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
+    StateCandidate {
+        fact: caushell_types::StateCandidateFact,
+    },
     /// Canonical sticky fact. It is not an executed command or content flow.
     AnalysisIncomplete {
         budget: caushell_types::AnalysisBudgetKind,
@@ -249,6 +252,9 @@ impl GraphNode {
 impl From<&GraphNode> for SessionGraphNodeSnapshot {
     fn from(node: &GraphNode) -> Self {
         let kind = match &node.kind {
+            NodeKind::StateCandidate { fact } => {
+                SessionGraphNodeKindSnapshot::StateCandidate { fact: fact.clone() }
+            }
             NodeKind::AnalysisIncomplete { budget } => {
                 SessionGraphNodeKindSnapshot::AnalysisIncomplete { budget: *budget }
             }
@@ -455,6 +461,9 @@ impl From<&GraphNode> for SessionGraphNodeSnapshot {
 impl From<SessionGraphNodeSnapshot> for GraphNode {
     fn from(node: SessionGraphNodeSnapshot) -> Self {
         let kind = match node.kind {
+            SessionGraphNodeKindSnapshot::StateCandidate { fact } => {
+                NodeKind::StateCandidate { fact }
+            }
             SessionGraphNodeKindSnapshot::AnalysisIncomplete { budget } => {
                 NodeKind::AnalysisIncomplete { budget }
             }

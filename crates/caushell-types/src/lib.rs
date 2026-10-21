@@ -18,6 +18,7 @@ mod safety_history;
 mod session;
 mod session_summary;
 mod shell_state;
+mod state_candidate;
 
 pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy};
 pub use approval::{
@@ -120,3 +121,4 @@ pub use shell_state::{
     ShellAliasSnapshot, ShellFunctionSnapshot, ShellStateDelta, ShellStateKnowledge,
     ShellStateObservability, ShellStateSnapshot, ShellValueSnapshot, ShellVariableSnapshot,
 };
+pub use state_candidate::{SafetyObject, SafetyScope, StateCandidateFact};

@@ -540,6 +540,27 @@ fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
     if graph.edge_count() >= limits.max_history_edges {
         budgets.push(B::HistoryEdges);
     }
+    if graph.state_object_count() >= limits.max_state_objects {
+        budgets.push(B::StateObjects);
+    }
+    let changed_objects: std::collections::BTreeSet<_> = ctx
+        .pending_mutations()
+        .iter()
+        .filter_map(|m| match m {
+            PendingMutation::AddStateCandidate { fact, .. } => Some(fact.object.clone()),
+            _ => None,
+        })
+        .collect();
+    for object in &changed_objects {
+        let result = caushell_query::StateCandidateQuery {
+            object,
+            before_sequence: ctx.request().sequence_no,
+            before_source_start: usize::MAX,
+            limits,
+        }
+        .execute(graph);
+        budgets.extend(result.incomplete_budgets);
+    }
     if ctx.request().command.len() > limits.max_request_bytes {
         budgets.push(B::RequestBytes);
     }
