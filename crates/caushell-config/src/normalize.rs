@@ -160,6 +160,7 @@ pub fn normalize_config(raw: RawConfigFile) -> Result<CaushellConfig, NormalizeC
             need_approval_mode: normalize_codex_need_approval_mode(raw.codex.need_approval_mode),
         },
         policy: PolicyConfig {
+            analysis_budget: raw.analysis.budgets,
             mutation_path_exemptions,
             rule_policy: RulePolicy {
                 families,

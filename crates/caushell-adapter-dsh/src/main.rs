@@ -194,6 +194,7 @@ fn build_runtime_request(request: DshCheckRequest) -> RuntimeCheckRequest {
     } = request;
 
     RuntimeCheckRequest {
+        intent: caushell_types::CheckIntent::ProposeForExecution,
         session_id: SessionId::new(session_id),
         command,
         shell_state_before: ShellStateSnapshot::new(cwd),

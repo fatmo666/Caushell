@@ -2,6 +2,53 @@ use crate::{Edge, GraphNode, NodeId};
 use caushell_types::CommandSequenceNo;
 
 pub trait GraphRead {
+    fn state_history_bytes(&self) -> usize {
+        self.nodes().fold(0usize, |bytes, node| {
+            bytes.saturating_add(match &node.kind {
+                crate::NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                _ => 0,
+            })
+        })
+    }
+
+    fn state_object_count(&self) -> usize {
+        self.state_objects().len()
+    }
+    /// Compatibility implementation. Production graphs use a rebuildable index.
+    fn state_candidate_nodes<'a>(
+        &'a self,
+        object: &caushell_types::SafetyObject,
+    ) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        let object = object.clone();
+        Box::new(self.nodes().filter(move |node| {
+            matches!(&node.kind,
+            crate::NodeKind::StateCandidate { fact } if fact.object == object)
+        }))
+    }
+
+    fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
+        self.nodes()
+            .filter_map(|node| match &node.kind {
+                crate::NodeKind::StateCandidate { fact } => Some(fact.object.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Reserved, fixed-size facts survive approval, compaction and recovery.
+    fn incomplete_budgets(&self) -> Vec<caushell_types::AnalysisBudgetKind> {
+        caushell_types::AnalysisBudgetKind::ALL
+            .into_iter()
+            .filter(|budget| {
+                self.get_node(&NodeId::new(format!(
+                    "analysis-incomplete:{}",
+                    budget.key()
+                )))
+                .is_some_and(|node| matches!(node.kind, crate::NodeKind::AnalysisIncomplete { .. }))
+            })
+            .collect()
+    }
+
     /// Compatibility fallback; production graph views use a directory index.
     fn path_family_artifact_nodes_for_path<'a>(
         &'a self,

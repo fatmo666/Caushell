@@ -14,6 +14,7 @@ pub use path_scope::{PathScopeProof, PathScopeQuery, normalize_shell_path, path_
 mod provenance;
 mod sequence;
 mod session;
+mod state_candidate;
 mod taint;
 mod variable;
 
@@ -50,6 +51,7 @@ pub use provenance::{
 };
 pub use sequence::SequenceWindow;
 pub use session::QuerySession;
+pub use state_candidate::{StateCandidate, StateCandidateQuery, StateCandidateResult};
 pub use taint::{
     TaintTraceEndpointRef, TaintTraceHopRef, TaintTraceMatchRef, TaintTraceQuery, TaintTraceRef,
     TaintTraceResult, TaintTraceStatsRef,

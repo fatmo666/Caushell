@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CheckRequest, CheckResponse, CommandSequenceNo, RuntimeMetadata, SessionId, ShellKind,
-    ShellStateDelta, ShellStateSnapshot,
+    ApprovalRequest, ApprovalResponse, CheckIntent, CheckReceipt, CheckRequest, CheckResponse,
+    CommandSequenceNo, RuntimeMetadata, SessionId, ShellKind, ShellStateDelta, ShellStateSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCheckRequest {
+    #[serde(default, skip_serializing_if = "CheckIntent::is_default")]
+    pub intent: CheckIntent,
     pub session_id: SessionId,
     pub command: String,
     pub shell_state_before: ShellStateSnapshot,
@@ -14,6 +16,21 @@ pub struct RuntimeCheckRequest {
     pub runtime: RuntimeMetadata,
     pub home: Option<String>,
     pub workspace_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCheckResponse {
+    #[serde(flatten)]
+    pub response: CheckResponse,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_receipt: Option<CheckReceipt>,
+}
+
+impl std::ops::Deref for RuntimeCheckResponse {
+    type Target = CheckResponse;
+    fn deref(&self) -> &Self::Target {
+        &self.response
+    }
 }
 
 impl RuntimeCheckRequest {
@@ -50,6 +67,10 @@ pub struct RuntimePingResponse {
     pub runtime_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
+    /// Includes single-check authorization and non-committing judge intent.
+    /// Missing means an older server; clients must not silently downgrade.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_protocol: Option<u32>,
 }
 
 impl RuntimePingResponse {
@@ -58,6 +79,7 @@ impl RuntimePingResponse {
             status: "ok".to_string(),
             runtime_version: runtime_version.into(),
             instance_id: None,
+            approval_protocol: Some(1),
         }
     }
 
@@ -71,6 +93,7 @@ impl RuntimePingResponse {
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum RuntimeTransportRequest {
     Check(RuntimeCheckRequest),
+    Authorize(ApprovalRequest),
     ShellStateDelta(RuntimeShellStateDeltaRequest),
     Ping,
 }
@@ -92,14 +115,18 @@ impl RuntimeTransportRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum RuntimeTransportResponse {
-    Check(CheckResponse),
+    Check(RuntimeCheckResponse),
+    Authorize(ApprovalResponse),
     ShellStateDelta(RuntimeShellStateDeltaResponse),
     Ping(RuntimePingResponse),
 }
 
 impl RuntimeTransportResponse {
     pub fn check(response: CheckResponse) -> Self {
-        Self::Check(response)
+        Self::Check(RuntimeCheckResponse {
+            response,
+            check_receipt: None,
+        })
     }
 
     pub fn shell_state_delta(committed_mutation_count: usize) -> Self {
@@ -129,6 +156,7 @@ mod tests {
     #[test]
     fn runtime_check_request_roundtrips_through_json_contract() {
         let request = RuntimeCheckRequest {
+            intent: crate::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-1"),
             command: "bash -c 'echo ok'".to_string(),
             shell_state_before: ShellStateSnapshot::new("/tmp/project")
@@ -213,6 +241,7 @@ mod tests {
     #[test]
     fn runtime_check_request_can_materialize_internal_check_request() {
         let request = RuntimeCheckRequest {
+            intent: crate::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-1"),
             command: "pwd".to_string(),
             shell_state_before: ShellStateSnapshot::new("/tmp/project")
@@ -344,6 +373,15 @@ mod tests {
     }
 
     #[test]
+    fn old_runtime_ping_does_not_claim_approval_or_judge_only_support() {
+        let response: RuntimePingResponse = serde_json::from_value(json!({
+            "status": "ok", "runtime_version": "0.1.0"
+        }))
+        .unwrap();
+        assert_eq!(response.approval_protocol, None);
+    }
+
+    #[test]
     fn runtime_ping_transport_request_roundtrips_through_json_contract() {
         let request = RuntimeTransportRequest::ping();
 
@@ -371,7 +409,8 @@ mod tests {
                 "kind": "ping",
                 "payload": {
                     "status": "ok",
-                    "runtime_version": "0.1.0"
+                    "runtime_version": "0.1.0",
+                    "approval_protocol": 1
                 }
             })
         );
@@ -385,6 +424,7 @@ mod tests {
     #[test]
     fn runtime_transport_request_roundtrips_check_variant() {
         let request = RuntimeTransportRequest::check(RuntimeCheckRequest {
+            intent: crate::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-1"),
             command: "pwd".to_string(),
             shell_state_before: ShellStateSnapshot::new("/tmp/project"),

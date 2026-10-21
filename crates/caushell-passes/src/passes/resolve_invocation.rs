@@ -40,9 +40,9 @@ use crate::support::{
     materialize_static_token_command_substitutions, materialize_static_token_text,
     pipeline_has_upstream, process_substitution_evidence, redirection_parent_command_index,
     redirection_targets_stdin_payload, request_variable_bindings, runtime_variable_overlay,
-    runtime_visible_variable_bindings_before_span, source_node_id_for_command,
-    static_io_target_evidence, static_stdin_evidence_for_scoped_command,
-    top_level_unit_for_command, top_level_unit_for_span,
+    runtime_variable_overlay_with_history, runtime_visible_variable_bindings_before_span,
+    source_node_id_for_command, static_io_target_evidence,
+    static_stdin_evidence_for_scoped_command, top_level_unit_for_command, top_level_unit_for_span,
 };
 
 const MAX_ALIAS_EXPANSION_HOPS: usize = 8;
@@ -316,15 +316,68 @@ impl SessionTransformPass for ResolveInvocationPass {
         }
 
         ctx.set_nested_payload_records(nested_payload_records);
-        let final_overlay = runtime_variable_overlay(
+        let final_overlay = runtime_variable_overlay_with_history(
             &self.registry,
             &binding_request,
             bindings,
             &parsed,
-            usize::MAX,
             ctx.request().sequence_no,
+            ctx.policy().analysis_budget.clone(),
         );
         ctx.set_shell_state_fences(final_overlay.state_fences);
+        if let Some(capture) = final_overlay.state_capture {
+            for budget in capture.incomplete {
+                ctx.mark_analysis_incomplete(
+                    budget,
+                    "ordered state capture exceeded its analysis budget",
+                );
+            }
+            let capabilities = ctx.request().runtime.shell_runtime_capabilities;
+            for (index, observation) in capture.observations.into_iter().enumerate() {
+                use caushell_types::{SafetyScope, SafetyStateKind as K, SafetyStateValue as V};
+                let persistent = match observation.kind {
+                    K::Variable => match &observation.value {
+                        V::Variable { exported, .. } => capabilities.persists_variable(*exported),
+                        _ => {
+                            capabilities.persists_variables
+                                || capabilities.persists_exported_environment
+                        }
+                    },
+                    K::Function => capabilities.persists_functions,
+                    K::Alias => capabilities.persists_aliases,
+                    K::Positionals => capabilities.persists_positionals,
+                    _ => false,
+                };
+                let scope = if persistent {
+                    SafetyScope::Shell
+                } else {
+                    SafetyScope::Invocation {
+                        sequence_no: ctx.request().sequence_no,
+                    }
+                };
+                ctx.stage_mutation(PendingMutation::AddStateCandidate {
+                    // Length-prefix the session ID; no lossy hash is used as
+                    // the identity of a security-relevant history fact.
+                    node_id: caushell_graph::NodeId::new(format!(
+                        "state-candidate:replay:{}:{}:{}:{}",
+                        ctx.request().session_id.0.len(),
+                        ctx.request().session_id.0,
+                        ctx.request().sequence_no.0,
+                        index
+                    )),
+                    fact: caushell_types::StateCandidateFact {
+                        object: caushell_types::SafetyObject {
+                            scope,
+                            kind: observation.kind,
+                            name: observation.name,
+                        },
+                        value: observation.value,
+                        sequence_no: ctx.request().sequence_no,
+                        source_end: observation.source_end,
+                    },
+                });
+            }
+        }
         ctx.set_runtime_function_mutations(final_overlay.function_mutations);
         let mut mutations: Vec<PendingMutation> = final_overlay
             .touched

@@ -42,6 +42,11 @@ pub enum RuleAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyConfig {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::AnalysisBudgetPolicy::is_default"
+    )]
+    pub analysis_budget: crate::AnalysisBudgetPolicy,
     #[serde(default)]
     pub rule_policy: RulePolicy,
     #[serde(default)]
@@ -59,6 +64,7 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
+            analysis_budget: crate::AnalysisBudgetPolicy::default(),
             rule_policy: RulePolicy::default(),
             semantic_expansion: SemanticExpansionPolicy::default(),
             runtime_taint: RuntimeTaintPolicy::default(),
@@ -345,6 +351,7 @@ impl RulePolicyEntry {
 
 fn default_rule_action(rule_id: RuleId) -> RuleAction {
     match rule_id {
+        RuleId::AnalysisIncomplete => RuleAction::NeedApproval,
         RuleId::UnboundedFileWrite => RuleAction::NeedApproval,
         RuleId::NetworkListenerExposure => RuleAction::NeedApproval,
         RuleId::NetworkUpload => RuleAction::NeedApproval,
@@ -752,6 +759,7 @@ mod tests {
     #[test]
     fn policy_config_roundtrips_through_json_contract() {
         let config = PolicyConfig {
+            analysis_budget: crate::AnalysisBudgetPolicy::default(),
             rule_policy: RulePolicy {
                 families: BTreeMap::from([(
                     RuleFamily::Path,

@@ -1,3 +1,5 @@
+mod analysis_budget;
+mod approval;
 mod decision;
 mod evidence;
 mod execution;
@@ -12,13 +14,19 @@ mod request;
 mod response;
 mod rule;
 mod runtime_request;
+mod safety_history;
 mod session;
 mod session_summary;
 mod shell_state;
+mod state_candidate;
 
+pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy};
+pub use approval::{
+    ApprovalAuthority, ApprovalRequest, ApprovalResolution, ApprovalResponse, CheckId, CheckIntent,
+    CheckReceipt, PendingApproval, SessionApprovalState,
+};
 pub use decision::Decision;
 pub use evidence::{
-    UnboundedFileWriteEvidence,
     CatastrophicShellExpansionModeEvidence, CatastrophicShellProcessExplosionEvidence, Evidence,
     EvidenceKind, ExecutionExpansionTruncatedEvidence, ExecutionRiskSubtype,
     ImportedPackageExecutionEvidence, ImportedPackageExecutionSinkEvidence,
@@ -30,7 +38,7 @@ pub use evidence::{
     OutsideWorkspacePathEvidence, PriorPathWriteEvidence, RepositoryOperationEvidence,
     TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence, TaintedExecutionSinkEvidence,
     TaintedExecutionSourceEvidence, TaintedExecutionUnresolvedOriginEvidence,
-    TaintedExecutionUnresolvedReasonEvidence,
+    TaintedExecutionUnresolvedReasonEvidence, UnboundedFileWriteEvidence,
 };
 pub use execution::{
     DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,
@@ -99,9 +107,10 @@ pub use request::{CheckRequest, RuntimeMetadata, ShellKind, ShellRuntimeCapabili
 pub use response::{CheckDecisionProposal, CheckResponse, DecisionTrace};
 pub use rule::{RuleFamily, RuleId};
 pub use runtime_request::{
-    RuntimeCheckRequest, RuntimePingResponse, RuntimeShellStateDeltaRequest,
+    RuntimeCheckRequest, RuntimeCheckResponse, RuntimePingResponse, RuntimeShellStateDeltaRequest,
     RuntimeShellStateDeltaResponse, RuntimeTransportRequest, RuntimeTransportResponse,
 };
+pub use safety_history::{SafetyHistory, SafetyStateKind, SafetyStateRecord, SafetyStateValue};
 pub use session::{CommandSequenceNo, SessionId};
 pub use session_summary::{
     RuntimeProducedValueKind, SessionAliasBinding, SessionCurrentWorkingDirectory,
@@ -112,3 +121,4 @@ pub use shell_state::{
     ShellAliasSnapshot, ShellFunctionSnapshot, ShellStateDelta, ShellStateKnowledge,
     ShellStateObservability, ShellStateSnapshot, ShellValueSnapshot, ShellVariableSnapshot,
 };
+pub use state_candidate::{SafetyObject, SafetyScope, StateCandidateFact};

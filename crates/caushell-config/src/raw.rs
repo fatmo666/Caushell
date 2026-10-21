@@ -126,6 +126,8 @@ impl Default for RawSensitivePathConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RawAnalysisConfig {
+    #[serde(skip_serializing_if = "caushell_types::AnalysisBudgetPolicy::is_default")]
+    pub budgets: caushell_types::AnalysisBudgetPolicy,
     pub max_nested_parse_depth: u8,
     pub max_taint_hops: u32,
     pub max_taint_nodes: usize,
@@ -134,6 +136,7 @@ pub struct RawAnalysisConfig {
 impl Default for RawAnalysisConfig {
     fn default() -> Self {
         Self {
+            budgets: Default::default(),
             max_nested_parse_depth: caushell_types::SemanticExpansionPolicy::default()
                 .max_nested_parse_depth,
             max_taint_hops: 12,

@@ -13,6 +13,7 @@ use caushell_types::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionCommitError {
+    InvalidApproval { reason: String },
     DuplicateCommandNode { node_id: caushell_graph::NodeId },
     MissingGraphAnchor { node_id: caushell_graph::NodeId },
     MutationGraph(MutationGraphError),
@@ -21,6 +22,7 @@ pub enum SessionCommitError {
 impl std::fmt::Display for SessionCommitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidApproval { reason } => write!(f, "invalid approval: {reason}"),
             Self::DuplicateCommandNode { node_id } => {
                 write!(
                     f,
@@ -52,6 +54,7 @@ impl From<MutationGraphError> for SessionCommitError {
 pub struct SessionState {
     graph: SessionGraph,
     summary: SessionSummary,
+    approval_state: caushell_types::SessionApprovalState,
 }
 
 impl SessionState {
@@ -63,11 +66,25 @@ impl SessionState {
         Ok(Self {
             graph: SessionGraph::from_snapshot(snapshot.graph)?,
             summary: snapshot.summary,
+            approval_state: snapshot.approval_state,
         })
     }
 
     pub fn graph(&self) -> &SessionGraph {
         &self.graph
+    }
+
+    /// Exhaustion is an observation about analysis completeness, not an
+    /// assumed command effect. It must survive rejected/unapproved checks.
+    pub fn mark_analysis_incomplete(&mut self, budget: caushell_types::AnalysisBudgetKind) {
+        let node_id = caushell_graph::NodeId::new(format!("analysis-incomplete:{}", budget.key()));
+        if self.graph.get_node(&node_id).is_none() {
+            self.graph.add_node(caushell_graph::GraphNode::new(
+                node_id,
+                caushell_graph::NodeKind::AnalysisIncomplete { budget },
+            ));
+            self.approval_state.revision += 1;
+        }
     }
 
     pub fn graph_mut(&mut self) -> &mut SessionGraph {
@@ -83,6 +100,16 @@ impl SessionState {
     }
 
     pub fn observe_request(&mut self, request: &CheckRequest) {
+        if self
+            .summary
+            .last_sequence_no()
+            .is_none_or(|n| n < request.sequence_no)
+        {
+            self.approval_state.revision += 1;
+            self.approval_state
+                .pending
+                .retain(|p| p.receipt.check_id.sequence_no >= request.sequence_no);
+        }
         self.seed_shell_state_before(request);
         self.summary.observe_sequence(request.sequence_no);
     }
@@ -92,6 +119,13 @@ impl SessionState {
         pending_mutations: &[PendingMutation],
         request: &CheckRequest,
     ) -> Result<(), SessionCommitError> {
+        if !self.graph.incomplete_budgets().is_empty() {
+            // Keep the last complete graph. The sticky whole-session unknown
+            // represents subsequent effects; approval must not grow/reset it.
+            self.summary.observe_sequence(request.sequence_no);
+            self.approval_state.revision += 1;
+            return Ok(());
+        }
         self.seed_shell_state_before(request);
         let anchor_node_id = request_anchor_node_id(request);
 
@@ -119,6 +153,7 @@ impl SessionState {
         }
 
         PendingMutation::apply_graph_batch(&mut self.graph, &anchor_node_id, pending_mutations)?;
+        self.approval_state.revision += 1;
 
         for mutation in pending_mutations {
             mutation.apply_live_summary(
@@ -138,6 +173,11 @@ impl SessionState {
         capabilities: ShellRuntimeCapabilities,
         pending_mutations: &[PendingMutation],
     ) -> Result<(), SessionCommitError> {
+        if !self.graph.incomplete_budgets().is_empty() {
+            self.summary.observe_sequence(sequence_no);
+            self.approval_state.revision += 1;
+            return Ok(());
+        }
         let primary_command_node_id = top_level_command_node_id_for(session_id, sequence_no, 0);
         let request_node_id = request_anchor_node_id_for(session_id, sequence_no);
         let command_node_id = if self.graph.get_node(&primary_command_node_id).is_some() {
@@ -181,10 +221,97 @@ impl SessionState {
             mutation.apply_live_summary(&mut self.summary, capabilities);
         }
 
+        if !pending_mutations.is_empty() {
+            self.approval_state.revision += 1;
+        }
+
         Ok(())
     }
 
+    pub fn approval_state(&self) -> &caushell_types::SessionApprovalState {
+        &self.approval_state
+    }
+
+    pub fn retain_pending_approval(&mut self, plan: caushell_types::PendingApproval) {
+        self.approval_state
+            .pending
+            .retain(|p| p.receipt.check_id != plan.receipt.check_id);
+        self.approval_state.pending.push(plan);
+    }
+
+    pub fn authorize(
+        &mut self,
+        request: &caushell_types::ApprovalRequest,
+        policy: Option<&caushell_types::PolicyConfig>,
+    ) -> Result<(caushell_types::ApprovalResponse, bool), SessionCommitError> {
+        use caushell_types::{ApprovalResolution, ApprovalResponse};
+        let invalid = |reason: &str| SessionCommitError::InvalidApproval {
+            reason: reason.into(),
+        };
+        if let Some(prior) = self
+            .approval_state
+            .resolutions
+            .iter()
+            .find(|r| r.request.check_id == request.check_id)
+        {
+            if &prior.request != request {
+                return Err(invalid(
+                    "conflicting authorization for an already resolved check",
+                ));
+            }
+            return Ok((prior.response.clone(), false));
+        }
+        let plan = self
+            .approval_state
+            .pending
+            .iter()
+            .find(|p| p.receipt.check_id == request.check_id)
+            .cloned()
+            .ok_or_else(|| invalid("unknown or expired check"))?;
+        if request.state_revision != plan.receipt.state_revision
+            || request.state_revision != self.approval_state.revision
+        {
+            return Err(invalid("stale session revision; check again"));
+        }
+        if policy.is_some_and(|policy| policy != &plan.policy) {
+            return Err(invalid("policy changed; check again"));
+        }
+        if request.approved {
+            let mutations = plan
+                .mutations
+                .iter()
+                .cloned()
+                .map(PendingMutation::from_session_mutation)
+                .collect::<Vec<_>>();
+            self.commit_allowed_request(&mutations, &plan.request)?;
+        } else {
+            self.approval_state.revision += 1;
+        }
+        self.approval_state
+            .pending
+            .retain(|p| p.receipt.check_id != request.check_id);
+        let response = ApprovalResponse {
+            check_id: request.check_id.clone(),
+            approved: request.approved,
+            state_revision: self.approval_state.revision,
+        };
+        self.approval_state.resolutions.push(ApprovalResolution {
+            request: request.clone(),
+            response: response.clone(),
+        });
+        // Keep retry receipts bounded. Older IDs become unknown/expired, never
+        // eligible to apply again (their pending plans have already gone).
+        const MAX_RETRY_RECEIPTS: usize = 256;
+        if self.approval_state.resolutions.len() > MAX_RETRY_RECEIPTS {
+            self.approval_state.resolutions.remove(0);
+        }
+        Ok((response, true))
+    }
+
     fn seed_shell_state_before(&mut self, request: &CheckRequest) {
+        if !self.graph.incomplete_budgets().is_empty() {
+            return;
+        }
         if self.summary.last_sequence_no().is_none() {
             seed_summary_from_shell_state_before(
                 &mut self.summary,

@@ -261,7 +261,10 @@ enum MaterializeCommand {
 }
 
 enum LogCommand {
-    Event(SessionEvent),
+    Event {
+        event: SessionEvent,
+        durable_ack: Sender<Result<(), String>>,
+    },
     Compact {
         session_id: SessionId,
         through_event_index: u64,
@@ -367,12 +370,13 @@ fn write_checkpoint_snapshot(
     session_id: &SessionId,
     checkpoint_state: &mut CheckpointSessionState,
 ) -> Result<(), SessionStoreError> {
-    let snapshot = SessionSnapshot::new(
+    let mut snapshot = SessionSnapshot::new(
         session_id.clone(),
         checkpoint_state.applied_event_index,
         checkpoint_state.state.summary().clone(),
         checkpoint_state.state.graph().to_snapshot(),
     );
+    snapshot.approval_state = checkpoint_state.state.approval_state().clone();
     writer.write_snapshot(&snapshot)?;
     checkpoint_state.last_checkpoint_event_index = checkpoint_state.applied_event_index;
     Ok(())
@@ -386,17 +390,24 @@ fn spawn_checkpoint_worker(
     let mut snapshot_writer = store.open_materializer()?;
     let handle = thread::spawn(move || {
         let mut states: BTreeMap<SessionId, CheckpointSessionState> = BTreeMap::new();
+        let mut failed_sessions = std::collections::BTreeSet::new();
 
         while let Ok(command) = rx.recv() {
             match command {
                 SnapshotCommand::Update(event) => {
                     let session_id = event.session_id.clone();
+                    if failed_sessions.contains(&session_id) {
+                        continue;
+                    }
                     if !states.contains_key(&session_id) {
                         match restore_checkpoint_session_state(&store, &session_id) {
                             Ok(state) => {
                                 states.insert(session_id.clone(), state);
                             }
-                            Err(_) => continue,
+                            Err(_) => {
+                                failed_sessions.insert(session_id);
+                                continue;
+                            }
                         }
                     }
 
@@ -406,6 +417,9 @@ fn spawn_checkpoint_worker(
                     if event.event_index > checkpoint_state.applied_event_index
                         && apply_state_effect(&mut checkpoint_state.state, &event).is_err()
                     {
+                        // Never checkpoint past an event we could not replay.
+                        failed_sessions.insert(session_id.clone());
+                        states.remove(&session_id);
                         continue;
                     }
                     checkpoint_state.applied_event_index =
@@ -414,11 +428,15 @@ fn spawn_checkpoint_worker(
                     if !checkpoint_due(checkpoint_state) {
                         continue;
                     }
-                    let _ = write_checkpoint_snapshot(
+                    if write_checkpoint_snapshot(
                         &mut snapshot_writer,
                         &session_id,
                         checkpoint_state,
-                    );
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
                     let _ = log_tx.send(LogCommand::Compact {
                         session_id: session_id.clone(),
                         through_event_index: checkpoint_state
@@ -431,11 +449,15 @@ fn spawn_checkpoint_worker(
                         if checkpoint_state.applied_event_index
                             > checkpoint_state.last_checkpoint_event_index
                         {
-                            let _ = write_checkpoint_snapshot(
+                            if write_checkpoint_snapshot(
                                 &mut snapshot_writer,
                                 session_id,
                                 checkpoint_state,
-                            );
+                            )
+                            .is_err()
+                            {
+                                continue;
+                            }
                             let _ = log_tx.send(LogCommand::Compact {
                                 session_id: session_id.clone(),
                                 through_event_index: checkpoint_state
@@ -463,13 +485,18 @@ fn spawn_event_writer(
     let handle = thread::spawn(move || {
         while let Ok(command) = rx.recv() {
             match command {
-                LogCommand::Event(event) => {
-                    if log_writer.append_event(&event).is_err() {
-                        let _ = log_writer.sync_all();
+                LogCommand::Event { event, durable_ack } => {
+                    let result = log_writer
+                        .append_event(&event)
+                        .and_then(|_| log_writer.sync_all())
+                        .map_err(|error| error.to_string());
+                    if let Err(error) = result {
+                        let _ = durable_ack.send(Err(error));
                         break;
                     }
                     let _ = materialize_tx.send(MaterializeCommand::Event(event.clone()));
                     let _ = snapshot_tx.send(SnapshotCommand::Update(event));
+                    let _ = durable_ack.send(Ok(()));
                 }
                 LogCommand::Compact {
                     session_id,
@@ -525,6 +552,9 @@ pub struct CliRuntime {
     materialize_worker: Option<JoinHandle<()>>,
     snapshot_tx: Option<Sender<SnapshotCommand>>,
     snapshot_worker: Option<JoinHandle<()>>,
+    // A failed WAL ACK leaves acceptance ambiguous. Refuse further requests;
+    // recovery must read the durable log rather than resend a command.
+    persistence_failure: Option<String>,
 }
 
 impl CliRuntime {
@@ -594,6 +624,7 @@ impl CliRuntime {
             materialize_worker,
             snapshot_tx,
             snapshot_worker,
+            persistence_failure: None,
         })
     }
 
@@ -601,6 +632,15 @@ impl CliRuntime {
         &mut self,
         request: RuntimeCheckRequest,
     ) -> Result<CheckResponse, CliError> {
+        Ok(self.handle_runtime_request_with_receipt(request)?.response)
+    }
+
+    pub fn handle_runtime_request_with_receipt(
+        &mut self,
+        request: RuntimeCheckRequest,
+    ) -> Result<caushell_types::RuntimeCheckResponse, CliError> {
+        self.require_healthy_persistence()?;
+        let intent = request.intent;
         let timing_enabled = timing_enabled();
         let total_start = Instant::now();
         let session_id = request.session_id.clone();
@@ -625,7 +665,10 @@ impl CliRuntime {
         let CheckOutcome {
             response,
             state_effect,
-        } = self.core.try_check_with_outcome(check_request.clone())?;
+            check_receipt,
+        } = self
+            .core
+            .try_check_with_intent(check_request.clone(), intent)?;
         let core_check_ms = elapsed_ms(core_check_start);
 
         let mut persist_shell_state_event_ms = 0.0;
@@ -672,13 +715,17 @@ impl CliRuntime {
             );
         }
 
-        Ok(response)
+        Ok(caushell_types::RuntimeCheckResponse {
+            response,
+            check_receipt,
+        })
     }
 
     pub fn handle_shell_state_delta_request(
         &mut self,
         request: RuntimeShellStateDeltaRequest,
     ) -> Result<RuntimeShellStateDeltaResponse, CliError> {
+        self.require_healthy_persistence()?;
         self.refresh_config();
         if self.store.is_some() {
             self.ensure_session_loaded(&request.session_id)?;
@@ -707,10 +754,31 @@ impl CliRuntime {
         &mut self,
         request: RuntimeTransportRequest,
     ) -> Result<RuntimeTransportResponse, CliError> {
+        self.require_healthy_persistence()?;
         match request {
             RuntimeTransportRequest::Check(request) => {
-                let response = self.handle_runtime_request(request)?;
-                Ok(RuntimeTransportResponse::check(response))
+                let response = self.handle_runtime_request_with_receipt(request)?;
+                Ok(RuntimeTransportResponse::Check(response))
+            }
+            RuntimeTransportRequest::Authorize(request) => {
+                self.require_healthy_persistence()?;
+                self.refresh_config();
+                if self.store.is_some() {
+                    self.ensure_session_loaded(&request.check_id.session_id)?;
+                }
+                let (response, changed) = self.core.authorize(&request)?;
+                if changed && self.store.is_some() {
+                    self.persist_session_event(SessionEvent {
+                        session_id: request.check_id.session_id.clone(),
+                        event_index: self.next_event_index(&request.check_id.session_id)?,
+                        observed_at_ms: current_time_ms()?,
+                        kind: SessionEventKind::Approval {
+                            request,
+                            response: response.clone(),
+                        },
+                    })?;
+                }
+                Ok(RuntimeTransportResponse::Authorize(response))
             }
             RuntimeTransportRequest::ShellStateDelta(request) => {
                 let response = self.handle_shell_state_delta_request(request)?;
@@ -766,18 +834,38 @@ impl CliRuntime {
         let session_id = event.session_id.clone();
         let event_index = event.event_index;
 
-        let log_tx = self
+        let (durable_ack, receipt) = mpsc::channel();
+        let result = self
             .log_tx
             .as_ref()
-            .ok_or(CliError::SnapshotWorkerDisconnected)?;
-        log_tx
-            .send(LogCommand::Event(event.clone()))
-            .map_err(|_| CliError::SnapshotWorkerDisconnected)?;
+            .ok_or_else(|| "event writer unavailable".to_string())
+            .and_then(|tx| {
+                tx.send(LogCommand::Event { event, durable_ack })
+                    .map_err(|_| "event writer disconnected".to_string())
+            })
+            .and_then(|_| {
+                receipt
+                    .recv()
+                    .map_err(|_| "event writer lost durable ACK".to_string())?
+            });
+        if let Err(error) = result {
+            self.persistence_failure = Some(error);
+            return self.require_healthy_persistence();
+        }
 
         self.next_event_index_by_session
             .insert(session_id.clone(), event_index + 1);
 
         Ok(())
+    }
+
+    fn require_healthy_persistence(&self) -> Result<(), CliError> {
+        match &self.persistence_failure {
+            Some(error) => Err(CliError::Io(io::Error::other(format!(
+                "runtime stopped after durability failure: {error}; recover from WAL, do not resend unknown work"
+            )))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -972,6 +1060,7 @@ fn corrupt_session_log(session_id: &SessionId, message: String) -> CliError {
 
 fn tail_sequence_key(event: &SessionEvent) -> Option<(TailSequenceScope, u64)> {
     match &event.kind {
+        SessionEventKind::Approval { .. } => None,
         SessionEventKind::Check { request, .. } => {
             Some((TailSequenceScope::Check, request.sequence_no.0))
         }
@@ -990,6 +1079,10 @@ fn tail_scope_name(scope: TailSequenceScope) -> &'static str {
 
 fn event_summary(event: &SessionEvent) -> String {
     match &event.kind {
+        SessionEventKind::Approval { request, .. } => format!(
+            "approval(event_index={}, sequence_no={})",
+            event.event_index, request.check_id.sequence_no.0
+        ),
         SessionEventKind::Check { request, .. } => format!(
             "check(event_index={}, sequence_no={}, command={:?})",
             event.event_index, request.sequence_no.0, request.command
@@ -1007,13 +1100,48 @@ fn runtime_instance_id(identity: &RuntimeIdentity) -> &str {
 
 fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<(), CliError> {
     match &event.kind {
+        SessionEventKind::Approval { request, response } => {
+            let (actual, _) = state.authorize(request, None)?;
+            if &actual != response {
+                return Err(CliError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "authorization replay response mismatch",
+                )));
+            }
+        }
         SessionEventKind::Check {
             request,
             state_effect,
             ..
         } => match state_effect {
+            SessionStateEffect::PendingApproval(plan) => {
+                if &plan.request != request
+                    || plan.receipt.check_id != caushell_types::CheckId::for_request(request)
+                {
+                    return Err(CliError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pending authorization does not match its check",
+                    )));
+                }
+                for mutation in &plan.mutations {
+                    if let caushell_types::SessionMutation::MarkAnalysisIncomplete { budget } =
+                        mutation
+                    {
+                        state.mark_analysis_incomplete(*budget);
+                    }
+                }
+                state.observe_request(request);
+                if state.approval_state().revision != plan.receipt.state_revision {
+                    return Err(CliError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pending authorization revision mismatch",
+                    )));
+                }
+                state.retain_pending_approval(plan.clone());
+            }
             SessionStateEffect::ObservedOnly {
                 observed_sequence_no,
+                incomplete_budgets,
             } => {
                 if request.sequence_no != *observed_sequence_no {
                     return Err(CliError::Io(io::Error::new(
@@ -1026,6 +1154,9 @@ fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<
                     )));
                 }
 
+                for budget in incomplete_budgets {
+                    state.mark_analysis_incomplete(*budget);
+                }
                 state.observe_request(request);
             }
             SessionStateEffect::Committed {
@@ -1048,6 +1179,12 @@ fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<
                     .cloned()
                     .map(PendingMutation::from_session_mutation)
                     .collect();
+
+                for mutation in &pending_mutations {
+                    if let PendingMutation::MarkAnalysisIncomplete { budget } = mutation {
+                        state.mark_analysis_incomplete(*budget);
+                    }
+                }
 
                 state.commit_allowed_request(&pending_mutations, request)?;
             }
@@ -1210,12 +1347,14 @@ fn build_session_snapshot(
         return Ok(None);
     }
 
-    Ok(Some(SessionSnapshot::new(
+    let mut snapshot = SessionSnapshot::new(
         session_id.clone(),
         last_event_index,
         state.summary().clone(),
         state.graph().to_snapshot(),
-    )))
+    );
+    snapshot.approval_state = state.approval_state().clone();
+    Ok(Some(snapshot))
 }
 
 fn repair_action_name(action: &SessionRepairAction) -> &'static str {
@@ -2193,6 +2332,31 @@ pub fn check_unix_socket(
     socket_path: &Path,
     request: &RuntimeCheckRequest,
 ) -> Result<CheckResponse, CliError> {
+    if request.intent == caushell_types::CheckIntent::JudgeOnly {
+        return Ok(check_with_receipt_unix_socket(socket_path, request)?.response);
+    }
+    Ok(check_transport_unix_socket(socket_path, request)?.response)
+}
+
+#[cfg(unix)]
+pub fn check_with_receipt_unix_socket(
+    socket_path: &Path,
+    request: &RuntimeCheckRequest,
+) -> Result<caushell_types::RuntimeCheckResponse, CliError> {
+    if ping_unix_socket(socket_path)?.approval_protocol != Some(1) {
+        return Err(CliError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "runtime does not support single-check authorization/judge-only; no check sent",
+        )));
+    }
+    check_transport_unix_socket(socket_path, request)
+}
+
+#[cfg(unix)]
+fn check_transport_unix_socket(
+    socket_path: &Path,
+    request: &RuntimeCheckRequest,
+) -> Result<caushell_types::RuntimeCheckResponse, CliError> {
     let response = send_runtime_transport_unix_socket(
         socket_path,
         &RuntimeTransportRequest::check(request.clone()),
@@ -2200,12 +2364,42 @@ pub fn check_unix_socket(
 
     match response {
         RuntimeTransportResponse::Check(response) => Ok(response),
+        RuntimeTransportResponse::Authorize(_) => Err(CliError::UnexpectedRuntimeResponse {
+            expected: "check",
+            actual: "authorize",
+        }),
         RuntimeTransportResponse::ShellStateDelta(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "check",
             actual: "shell_state_delta",
         }),
         RuntimeTransportResponse::Ping(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "check",
+            actual: "ping",
+        }),
+    }
+}
+
+/// Accept or reject exactly one pending check. This does not execute a command.
+#[cfg(unix)]
+pub fn authorize_unix_socket(
+    socket_path: &Path,
+    request: &caushell_types::ApprovalRequest,
+) -> Result<caushell_types::ApprovalResponse, CliError> {
+    match send_runtime_transport_unix_socket(
+        socket_path,
+        &RuntimeTransportRequest::Authorize(request.clone()),
+    )? {
+        RuntimeTransportResponse::Authorize(response) => Ok(response),
+        RuntimeTransportResponse::Check(_) => Err(CliError::UnexpectedRuntimeResponse {
+            expected: "authorize",
+            actual: "check",
+        }),
+        RuntimeTransportResponse::ShellStateDelta(_) => Err(CliError::UnexpectedRuntimeResponse {
+            expected: "authorize",
+            actual: "shell_state_delta",
+        }),
+        RuntimeTransportResponse::Ping(_) => Err(CliError::UnexpectedRuntimeResponse {
+            expected: "authorize",
             actual: "ping",
         }),
     }
@@ -2218,6 +2412,10 @@ pub fn ping_unix_socket(socket_path: &Path) -> Result<RuntimePingResponse, CliEr
 
     match response {
         RuntimeTransportResponse::Ping(response) => Ok(response),
+        RuntimeTransportResponse::Authorize(_) => Err(CliError::UnexpectedRuntimeResponse {
+            expected: "ping",
+            actual: "authorize",
+        }),
         RuntimeTransportResponse::Check(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "ping",
             actual: "check",
@@ -2246,6 +2444,10 @@ pub fn apply_shell_state_delta_unix_socket(
 
     match response {
         RuntimeTransportResponse::ShellStateDelta(response) => Ok(response),
+        RuntimeTransportResponse::Authorize(_) => Err(CliError::UnexpectedRuntimeResponse {
+            expected: "shell_state_delta",
+            actual: "authorize",
+        }),
         RuntimeTransportResponse::Check(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "shell_state_delta",
             actual: "check",
@@ -2379,6 +2581,7 @@ mod tests {
 
     fn sample_request(command: &str) -> RuntimeCheckRequest {
         RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-1"),
             command: command.to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -2433,7 +2636,7 @@ mod tests {
 
     fn parse_check_transport_response(line: &str) -> caushell_types::CheckResponse {
         match serde_json::from_str(line).expect("expected transport response to deserialize") {
-            RuntimeTransportResponse::Check(response) => response,
+            RuntimeTransportResponse::Check(response) => response.response,
             other => panic!("expected check transport response, got {other:?}"),
         }
     }
@@ -2456,6 +2659,25 @@ mod tests {
             assert_eq!(response.decision, *expected, "{command}: {response:?}");
         }
         responses
+    }
+
+    // This helper records an explicit simulated authorization; it never runs Bash.
+    fn approve_sample(runtime: &mut super::CliRuntime, command: &str) {
+        let result = runtime
+            .handle_runtime_request_with_receipt(sample_request(command))
+            .unwrap();
+        assert_eq!(result.decision, Decision::NeedApproval);
+        let receipt = result.check_receipt.unwrap();
+        runtime
+            .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(
+                caushell_types::ApprovalRequest {
+                    check_id: receipt.check_id,
+                    state_revision: receipt.state_revision,
+                    approved: true,
+                    authority: caushell_types::ApprovalAuthority::SimulatedUser,
+                },
+            ))
+            .unwrap();
     }
 
     fn temp_policy_path(name: &str) -> PathBuf {
@@ -2567,6 +2789,330 @@ mod tests {
             .as_nanos();
 
         std::env::temp_dir().join(format!("caushell-store-{name}-{unique}"))
+    }
+
+    #[test]
+    fn failed_checkpoint_write_or_replay_never_authorizes_log_compaction() {
+        use caushell_types::{
+            ApprovalAuthority, ApprovalRequest, ApprovalResponse, CheckId, CommandSequenceNo,
+        };
+        for failure in ["snapshot_write", "replay"] {
+            let root = temp_store_root(failure);
+            let store = initialized_store(&root);
+            if failure == "snapshot_write" {
+                store.open_connection().unwrap().execute_batch(
+                    "CREATE TRIGGER fail_snapshot BEFORE INSERT ON snapshots BEGIN SELECT RAISE(FAIL, 'injected'); END;"
+                ).unwrap();
+            }
+            let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+            let (log_tx, log_rx) = std::sync::mpsc::channel();
+            let worker =
+                super::spawn_checkpoint_worker(store.clone(), snapshot_rx, log_tx).unwrap();
+            let session = SessionId::new("sess-1");
+            let mut first = 1;
+            if failure == "replay" {
+                let check_id = CheckId {
+                    session_id: session.clone(),
+                    sequence_no: CommandSequenceNo(1),
+                };
+                snapshot_tx
+                    .send(super::SnapshotCommand::Update(SessionEvent {
+                        session_id: session.clone(),
+                        event_index: 1,
+                        observed_at_ms: 1,
+                        kind: SessionEventKind::Approval {
+                            request: ApprovalRequest {
+                                check_id: check_id.clone(),
+                                state_revision: 0,
+                                approved: true,
+                                authority: ApprovalAuthority::SimulatedUser,
+                            },
+                            response: ApprovalResponse {
+                                check_id,
+                                approved: true,
+                                state_revision: 1,
+                            },
+                        },
+                    }))
+                    .unwrap();
+                first = 2;
+            }
+            for index in first..=60 {
+                snapshot_tx
+                    .send(super::SnapshotCommand::Update(sample_check_event(
+                        &session, index, index, "pwd",
+                    )))
+                    .unwrap();
+            }
+            snapshot_tx.send(super::SnapshotCommand::Shutdown).unwrap();
+            worker.join().unwrap();
+            assert_eq!(
+                log_rx.try_iter().count(),
+                0,
+                "{failure}: no unsafe compact command"
+            );
+            assert!(store.read_snapshot(&session).unwrap().is_none());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn accepted_check_is_durable_before_ack_and_writer_failure_is_fail_stop() {
+        let root = temp_store_root("durable-ack");
+        let mut runtime = create_runtime(None, Some(&root)).unwrap();
+        runtime
+            .handle_runtime_request(sample_request("export A=first"))
+            .unwrap();
+        let events = initialized_store(&root)
+            .read_events(&SessionId::new("sess-1"))
+            .unwrap();
+        assert_eq!(events.len(), 1, "ACK must not merely mean queued");
+        runtime
+            .log_tx
+            .as_ref()
+            .unwrap()
+            .send(super::LogCommand::Shutdown)
+            .unwrap();
+        runtime.log_worker.take().unwrap().join().unwrap();
+        assert!(
+            runtime
+                .handle_runtime_request(sample_request("export A=second"))
+                .is_err()
+        );
+        let sequence = runtime
+            .core
+            .session_snapshot(&SessionId::new("sess-1"), 0)
+            .unwrap()
+            .summary
+            .last_sequence_no();
+        assert!(
+            runtime
+                .handle_runtime_request(sample_request("export A=third"))
+                .is_err()
+        );
+        assert_eq!(
+            sequence,
+            runtime
+                .core
+                .session_snapshot(&SessionId::new("sess-1"), 0)
+                .unwrap()
+                .summary
+                .last_sequence_no(),
+            "poisoned runtime must not process more work"
+        );
+        drop(runtime);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_approval_and_idempotent_resolution_survive_runtime_restart() {
+        use caushell_types::{ApprovalAuthority, ApprovalRequest};
+        let root = temp_store_root("approval-restart");
+        let receipt = {
+            let mut runtime = create_runtime(None, Some(&root)).unwrap();
+            let response = runtime
+                .handle_runtime_request_with_receipt(sample_request(
+                    "export TARGET=/outside/a; touch \"$TARGET\"",
+                ))
+                .unwrap();
+            assert_eq!(response.decision, Decision::NeedApproval);
+            response.check_receipt.unwrap()
+        };
+        let message = ApprovalRequest {
+            check_id: receipt.check_id,
+            state_revision: receipt.state_revision,
+            approved: true,
+            authority: ApprovalAuthority::SimulatedUser,
+        };
+        let first = {
+            let mut runtime = create_runtime(None, Some(&root)).unwrap();
+            runtime
+                .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(
+                    message.clone(),
+                ))
+                .unwrap()
+        };
+        {
+            let mut runtime = create_runtime(None, Some(&root)).unwrap();
+            let repeated = runtime
+                .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(message))
+                .unwrap();
+            assert_eq!(first, repeated);
+            let snapshot = runtime
+                .core
+                .session_snapshot(&SessionId::new("sess-1"), 0)
+                .unwrap();
+            assert_eq!(
+                snapshot.summary.variable_binding("TARGET").unwrap().value,
+                caushell_types::SessionVariableValue::exact_scalar("/outside/a")
+            );
+        }
+        let events = initialized_store(&root)
+            .read_events(&SessionId::new("sess-1"))
+            .unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "duplicate approvals must not append/apply twice"
+        );
+        assert!(matches!(events[1].kind, SessionEventKind::Approval { .. }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn state_candidate_facts_survive_allow_and_authorized_ask_event_log_replay() {
+        use caushell_types::{
+            ApprovalAuthority, ApprovalRequest, SafetyStateValue,
+            SessionGraphNodeKindSnapshot as N, SessionVariableValue,
+        };
+        for ask in [false, true] {
+            let root = temp_store_root("candidate-recovery");
+            let receipt = {
+                let mut runtime = create_runtime(None, Some(&root)).unwrap();
+                let command = if ask {
+                    "export TARGET=/earlier/a; export TARGET=/outside/a; touch \"$TARGET\""
+                } else {
+                    "TARGET=/earlier/a; TARGET=/outside/a"
+                };
+                let response = runtime
+                    .handle_runtime_request_with_receipt(sample_request(command))
+                    .unwrap();
+                assert_eq!(
+                    response.decision,
+                    if ask {
+                        Decision::NeedApproval
+                    } else {
+                        Decision::Allow
+                    }
+                );
+                response.check_receipt
+            };
+            if let Some(receipt) = receipt {
+                let mut runtime = create_runtime(None, Some(&root)).unwrap();
+                runtime
+                    .ensure_session_loaded(&SessionId::new("sess-1"))
+                    .unwrap();
+                assert!(
+                    !runtime
+                        .core
+                        .session_snapshot(&SessionId::new("sess-1"), 0)
+                        .unwrap()
+                        .graph
+                        .nodes
+                        .iter()
+                        .any(|n| matches!(n.kind, N::StateCandidate { .. }))
+                );
+                runtime
+                    .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(
+                        ApprovalRequest {
+                            check_id: receipt.check_id,
+                            state_revision: receipt.state_revision,
+                            approved: true,
+                            authority: ApprovalAuthority::SimulatedUser,
+                        },
+                    ))
+                    .unwrap();
+            }
+            {
+                let mut runtime = create_runtime(None, Some(&root)).unwrap();
+                runtime
+                    .ensure_session_loaded(&SessionId::new("sess-1"))
+                    .unwrap();
+                let snapshot = runtime
+                    .core
+                    .session_snapshot(&SessionId::new("sess-1"), 0)
+                    .unwrap();
+                for value in ["/earlier/a", "/outside/a"] {
+                    assert!(snapshot.graph.nodes.iter().any(|n| matches!(&n.kind,
+                        N::StateCandidate { fact } if fact.object.name == "TARGET"
+                            && fact.value == SafetyStateValue::Variable { value: SessionVariableValue::exact_scalar(value), exported: ask }
+                    )), "lost {value} during event replay");
+                }
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn exhausted_budget_survives_pending_approval_log_replay_and_checkpoint_compaction() {
+        use caushell_types::{ApprovalAuthority, ApprovalRequest, CheckIntent};
+        for judge in [false, true] {
+            let root = temp_store_root("budget-recovery");
+            let path = temp_policy_path("budget-recovery");
+            fs::write(
+                &path,
+                "version: 1\nanalysis:\n  budgets:\n    max_request_bytes: 4\n",
+            )
+            .unwrap();
+            let receipt = {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                let mut request = sample_request("export A=123456");
+                if judge {
+                    request.intent = CheckIntent::JudgeOnly;
+                }
+                let response = runtime
+                    .handle_runtime_request_with_receipt(request)
+                    .unwrap();
+                assert_eq!(response.decision, Decision::NeedApproval);
+                response.check_receipt
+            };
+            if let Some(receipt) = receipt {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                runtime
+                    .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(
+                        ApprovalRequest {
+                            check_id: receipt.check_id,
+                            state_revision: receipt.state_revision,
+                            approved: true,
+                            authority: ApprovalAuthority::SimulatedUser,
+                        },
+                    ))
+                    .unwrap();
+            }
+            // Raising the limit is not proof of completeness and cannot reset it.
+            fs::write(&path, "version: 1\n").unwrap();
+            {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                for _ in 0..60 {
+                    let mut request = sample_request("printf hello");
+                    request.intent = CheckIntent::JudgeOnly;
+                    let response = runtime.handle_runtime_request(request).unwrap();
+                    assert_eq!(response.decision, Decision::NeedApproval);
+                    assert!(
+                        response
+                            .decision_trace
+                            .findings
+                            .iter()
+                            .any(|f| f.rule_id == caushell_types::RuleId::AnalysisIncomplete)
+                    );
+                }
+            }
+            {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                assert_eq!(
+                    runtime
+                        .handle_runtime_request(sample_request("pwd"))
+                        .unwrap()
+                        .decision,
+                    Decision::NeedApproval
+                );
+            }
+            assert!(
+                initialized_store(&root)
+                    .read_snapshot(&SessionId::new("sess-1"))
+                    .unwrap()
+                    .unwrap()
+                    .graph
+                    .nodes
+                    .iter()
+                    .any(|n| matches!(
+                        n.kind,
+                        caushell_types::SessionGraphNodeKindSnapshot::AnalysisIncomplete { .. }
+                    ))
+            );
+            fs::remove_dir_all(root).unwrap();
+            fs::remove_file(path).unwrap();
+        }
     }
 
     fn create_runtime_observing_unresolved_payloads(store_root: &PathBuf) -> super::CliRuntime {
@@ -4368,7 +4914,7 @@ policy:
                 assert_eq!(response.decision, Decision::NeedApproval);
                 assert!(matches!(
                     state_effect,
-                    SessionStateEffect::ObservedOnly { .. }
+                    SessionStateEffect::PendingApproval(_)
                 ));
             }
             other => panic!("expected check audit event, got {other:?}"),
@@ -5207,14 +5753,7 @@ policy:
         {
             let mut runtime = create_runtime(None, Some(&store_root))
                 .expect("expected persisted runtime to initialize");
-            let request = serialize_check_request("pip install -r requirements.txt");
-
-            serve_stdio(
-                &mut runtime,
-                Cursor::new(format!("{request}\n")),
-                &mut Vec::new(),
-            )
-            .expect("expected pip requirement runtime request to persist execution semantics");
+            approve_sample(&mut runtime, "pip install -r requirements.txt");
         }
 
         let query = serde_json::json!({
@@ -5296,14 +5835,7 @@ policy:
         {
             let mut runtime = create_runtime(None, Some(&store_root))
                 .expect("expected persisted runtime to initialize");
-            let request = serialize_check_request("less README.md");
-
-            serve_stdio(
-                &mut runtime,
-                Cursor::new(format!("{request}\n")),
-                &mut Vec::new(),
-            )
-            .expect("expected runtime request to persist interactive escape execution semantics");
+            approve_sample(&mut runtime, "less README.md");
         }
 
         let query = serde_json::json!({
@@ -6143,6 +6675,31 @@ policy:
             vec!["command unknown-tool has no registered profile".to_string()]
         );
         assert_eq!(response.decision_trace.decision_proposals.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn judge_only_client_refuses_legacy_runtime_before_sending_check() {
+        let socket_path = temp_socket_path("no-silent-judge-downgrade");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        caushell_runtime_security::secure_unix_socket(&socket_path).unwrap();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut runtime = create_runtime(None, None).unwrap();
+            serve_unix_socket_connection(&mut runtime, stream, |_, request| {
+                assert!(matches!(request, RuntimeTransportRequest::Ping));
+                let mut old = caushell_types::RuntimePingResponse::ok("old");
+                old.approval_protocol = None;
+                Ok(RuntimeTransportResponse::Ping(old))
+            })
+            .unwrap();
+        });
+        let mut request = sample_request("export MUST_NOT_COMMIT=value");
+        request.intent = caushell_types::CheckIntent::JudgeOnly;
+        let error = check_unix_socket(&socket_path, &request).unwrap_err();
+        assert!(error.to_string().contains("no check sent"));
+        handle.join().unwrap();
+        remove_temp_socket_path(&socket_path);
     }
 
     #[cfg(unix)]

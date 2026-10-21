@@ -93,6 +93,13 @@ pub enum DerivedInvocationOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMutation {
+    AddStateCandidate {
+        node_id: String,
+        fact: crate::StateCandidateFact,
+    },
+    MarkAnalysisIncomplete {
+        budget: crate::AnalysisBudgetKind,
+    },
     AddRequestAnchor {
         node_id: String,
         session_id: SessionId,
@@ -237,8 +244,11 @@ pub enum SessionMutation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionStateEffect {
+    PendingApproval(crate::PendingApproval),
     ObservedOnly {
         observed_sequence_no: CommandSequenceNo,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        incomplete_budgets: Vec<crate::AnalysisBudgetKind>,
     },
     Committed {
         observed_sequence_no: CommandSequenceNo,
@@ -250,6 +260,7 @@ impl SessionStateEffect {
     pub fn observe_only(observed_sequence_no: CommandSequenceNo) -> Self {
         Self::ObservedOnly {
             observed_sequence_no,
+            incomplete_budgets: Vec::new(),
         }
     }
 
@@ -267,6 +278,10 @@ impl SessionStateEffect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionEventKind {
+    Approval {
+        request: crate::ApprovalRequest,
+        response: crate::ApprovalResponse,
+    },
     Check {
         request: CheckRequest,
         response: CheckResponse,
@@ -335,6 +350,12 @@ pub struct SessionGraphNodeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionGraphNodeKindSnapshot {
+    StateCandidate {
+        fact: crate::StateCandidateFact,
+    },
+    AnalysisIncomplete {
+        budget: crate::AnalysisBudgetKind,
+    },
     RequestAnchor {
         session_id: SessionId,
         sequence_no: crate::CommandSequenceNo,
@@ -484,6 +505,8 @@ pub struct SessionSnapshot {
     pub last_event_index: u64,
     pub summary: SessionSummary,
     pub graph: SessionGraphSnapshot,
+    #[serde(default, skip_serializing_if = "crate::SessionApprovalState::is_empty")]
+    pub approval_state: crate::SessionApprovalState,
 }
 
 impl SessionSnapshot {
@@ -498,6 +521,7 @@ impl SessionSnapshot {
             last_event_index,
             summary,
             graph,
+            approval_state: crate::SessionApprovalState::default(),
         }
     }
 }

@@ -15,6 +15,9 @@ pub enum GraphError {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionGraph {
+    // Derived solely from StateCandidate graph facts; never persisted separately.
+    state_candidate_index: BTreeMap<caushell_types::SafetyObject, Vec<NodeId>>,
+    state_history_bytes: usize,
     nodes: BTreeMap<NodeId, GraphNode>,
     edges: Vec<Edge>,
     outgoing_edge_index: BTreeMap<NodeId, Vec<usize>>,
@@ -35,7 +38,17 @@ impl SessionGraph {
         Self::default()
     }
 
-    pub fn add_node(&mut self, node: GraphNode) -> Option<GraphNode> {
+    pub fn add_node(&mut self, mut node: GraphNode) -> Option<GraphNode> {
+        if let NodeKind::AnalysisIncomplete { budget } = node.kind {
+            node.id = NodeId::new(format!("analysis-incomplete:{}", budget.key()));
+        } else if self
+            .nodes
+            .get(&node.id)
+            .is_some_and(|existing| matches!(existing.kind, NodeKind::AnalysisIncomplete { .. }))
+        {
+            // Generic node replacement may not erase a sticky exhaustion fact.
+            return self.nodes.get(&node.id).cloned();
+        }
         let node_id = node.id.clone();
         let replaced = self.nodes.insert(node_id.clone(), node);
 
@@ -259,6 +272,18 @@ impl SessionGraph {
 
     fn index_node(&mut self, node: &GraphNode) {
         match &node.kind {
+            NodeKind::StateCandidate { fact } => {
+                self.state_history_bytes = self
+                    .state_history_bytes
+                    .saturating_add(fact.retained_bytes());
+                let ids = self
+                    .state_candidate_index
+                    .entry(fact.object.clone())
+                    .or_default();
+                if let Err(position) = ids.binary_search(&node.id) {
+                    ids.insert(position, node.id.clone());
+                }
+            }
             NodeKind::CommandInvocation { sequence_no, .. } => self
                 .command_node_index
                 .entry(*sequence_no)
@@ -344,6 +369,12 @@ impl SessionGraph {
 
     fn remove_node_indexes(&mut self, node: &GraphNode) {
         match &node.kind {
+            NodeKind::StateCandidate { fact } => {
+                self.state_history_bytes = self
+                    .state_history_bytes
+                    .saturating_sub(fact.retained_bytes());
+                remove_index_entry(&mut self.state_candidate_index, &fact.object, &node.id)
+            }
             NodeKind::CommandInvocation { sequence_no, .. } => {
                 remove_index_entry(&mut self.command_node_index, sequence_no, &node.id)
             }
@@ -464,6 +495,27 @@ impl SessionGraph {
 }
 
 impl GraphRead for SessionGraph {
+    fn state_history_bytes(&self) -> usize {
+        self.state_history_bytes
+    }
+
+    fn state_object_count(&self) -> usize {
+        self.state_candidate_index.len()
+    }
+    fn state_candidate_nodes<'a>(
+        &'a self,
+        object: &caushell_types::SafetyObject,
+    ) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        match self.state_candidate_index.get(object) {
+            Some(ids) => Box::new(self.indexed_nodes(ids)),
+            None => Box::new(std::iter::empty()),
+        }
+    }
+
+    fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
+        self.state_candidate_index.keys().cloned().collect()
+    }
+
     fn get_node(&self, id: &NodeId) -> Option<&GraphNode> {
         self.get_node(id)
     }

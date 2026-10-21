@@ -233,8 +233,12 @@ impl EventProjection {
                     runtime_name: Some(request.runtime.runtime_name.clone()),
                 }
             }
-            SessionEventKind::ShellStateDelta { .. } => Self {
-                kind: "shell_state_delta",
+            SessionEventKind::ShellStateDelta { .. } | SessionEventKind::Approval { .. } => Self {
+                kind: if matches!(&event.kind, SessionEventKind::Approval { .. }) {
+                    "approval"
+                } else {
+                    "shell_state_delta"
+                },
                 sequence_no: None,
                 command: None,
                 decision: None,
@@ -548,7 +552,9 @@ impl SessionStore {
                 response,
                 state_effect,
             })),
-            SessionEventKind::ShellStateDelta { .. } => Ok(None),
+            SessionEventKind::ShellStateDelta { .. } | SessionEventKind::Approval { .. } => {
+                Ok(None)
+            }
         }
     }
 
@@ -820,6 +826,12 @@ impl SessionLogWriter {
             self.unsynced_event_counts.insert(session_id.clone(), 0);
         }
 
+        // File data alone does not make a newly created log name durable.
+        #[cfg(unix)]
+        {
+            File::open(self.store.session_logs_dir())?.sync_all()?;
+            File::open(&self.store.root_dir)?.sync_all()?;
+        }
         Ok(())
     }
 

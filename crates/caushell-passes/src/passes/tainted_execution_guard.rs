@@ -40,6 +40,15 @@ impl SessionAnalysisPass for TaintedExecutionGuardPass {
 
         for sink in sinks {
             let outcome = search_tainted_lineage(graph, &sink, budget);
+            if outcome.truncated_by_hops || outcome.truncated_by_visited_nodes {
+                ctx.mark_analysis_incomplete(
+                    caushell_types::AnalysisBudgetKind::Search,
+                    format!(
+                        "execution-source search incomplete for {}; approval required",
+                        sink.evidence.node_id
+                    ),
+                );
+            }
 
             if let Some(source) = outcome.source {
                 let evidence = Evidence::tainted_execution_source(
@@ -1189,9 +1198,15 @@ mod tests {
             EvidenceKind::TaintedExecutionBudgetExceeded(_)
         )));
         assert!(
-            ctx.findings[0]
-                .message
-                .contains("truncated by runtime budget")
+            ctx.findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::TaintedExecution
+                    && finding.message.contains("truncated by runtime budget"))
+        );
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::AnalysisIncomplete)
         );
     }
 

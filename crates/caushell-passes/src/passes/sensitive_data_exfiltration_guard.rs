@@ -33,7 +33,7 @@ impl SessionAnalysisPass for SensitiveDataExfiltrationGuardPass {
         let graph = staged_session.graph();
 
         for sink in collect_upload_sinks(graph, ctx.request().sequence_no) {
-            let Some(source) = find_sensitive_source(
+            let (source, incomplete) = find_sensitive_source(
                 graph,
                 &sink.node_id,
                 sink.input_scope.as_ref(),
@@ -42,7 +42,17 @@ impl SessionAnalysisPass for SensitiveDataExfiltrationGuardPass {
                 ctx.request().home.as_deref(),
                 ctx.policy().runtime_taint.max_hops,
                 ctx.policy().runtime_taint.max_visited_nodes,
-            ) else {
+            );
+            if incomplete {
+                ctx.mark_analysis_incomplete(
+                    caushell_types::AnalysisBudgetKind::Search,
+                    format!(
+                        "upload-source search incomplete for {}; approval required",
+                        sink.node_id.0
+                    ),
+                );
+            }
+            let Some(source) = source else {
                 continue;
             };
 
@@ -760,36 +770,46 @@ fn find_sensitive_source(
     home: Option<&str>,
     max_hops: u32,
     max_visited_nodes: usize,
-) -> Option<SensitiveSource> {
+) -> (Option<SensitiveSource>, bool) {
     let start = TraceNodeKey::ExecutionUnit(sink_node_id.clone());
     let mut queue = VecDeque::from([SearchState {
         current: start.clone(),
         hop_count: 0,
     }]);
     let mut visited = BTreeSet::from([start]);
+    let mut incomplete = false;
 
     while let Some(state) = queue.pop_front() {
         if visited.len() > max_visited_nodes {
-            break;
+            return (None, true);
         }
 
         if let TraceNodeKey::Artifact(node_id) = &state.current {
             if let Some(path) = path_content_artifact_path(graph, node_id) {
                 if sensitive_path_matches(policy, &path, workspace_root, home) {
-                    return Some(SensitiveSource {
-                        path,
-                        hop_count: state.hop_count,
-                    });
+                    return (
+                        Some(SensitiveSource {
+                            path,
+                            hop_count: state.hop_count,
+                        }),
+                        incomplete,
+                    );
                 }
             }
         }
 
+        let scope = (state.hop_count == 0).then_some(input_scope).flatten();
+        let neighbors = backward_neighbors(graph, &state.current, scope);
         if state.hop_count >= max_hops {
+            incomplete |= neighbors.iter().any(|next| !visited.contains(next));
             continue;
         }
 
-        let scope = (state.hop_count == 0).then_some(input_scope).flatten();
-        for next in backward_neighbors(graph, &state.current, scope) {
+        for next in neighbors {
+            if !visited.contains(&next) && visited.len() >= max_visited_nodes {
+                incomplete = true;
+                continue;
+            }
             if visited.insert(next.clone()) {
                 queue.push_back(SearchState {
                     current: next,
@@ -799,7 +819,7 @@ fn find_sensitive_source(
         }
     }
 
-    None
+    (None, incomplete)
 }
 
 fn backward_neighbors(

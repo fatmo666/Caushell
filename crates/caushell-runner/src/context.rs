@@ -763,6 +763,23 @@ impl RunnerContext {
     pub fn set_final_decision(&mut self, decision: Decision) {
         self.final_decision = Some(decision);
     }
+
+    /// Mandatory approval floor, not a configurable resolve-gap fallback.
+    pub fn mark_analysis_incomplete(
+        &mut self,
+        budget: caushell_types::AnalysisBudgetKind,
+        reason: impl Into<String>,
+    ) {
+        let reason = reason.into();
+        self.stage_mutation(PendingMutation::MarkAnalysisIncomplete { budget });
+        self.add_finding(RuleId::AnalysisIncomplete, reason.clone());
+        self.propose_decision(
+            "analysis_budget",
+            RuleId::AnalysisIncomplete,
+            Decision::NeedApproval,
+            reason,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -992,6 +1009,7 @@ mod tests {
         let ctx = RunnerContext::with_policy(
             sample_request(),
             PolicyConfig {
+                analysis_budget: Default::default(),
                 rule_policy: RulePolicy {
                     rules: std::collections::BTreeMap::from([(
                         RuleId::MissingCommandName,

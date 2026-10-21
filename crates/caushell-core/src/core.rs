@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use caushell_config::{LoadConfigError, load_config_from_path};
-use caushell_graph::SessionGraph;
+use caushell_graph::{GraphRead, SessionGraph};
 use caushell_passes::StateOperationGuardPass;
 use caushell_passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, CodeLoadPathGuardPass,
@@ -116,6 +116,7 @@ impl From<SessionCommitError> for ShellQueryCoreError {
 pub struct CheckOutcome {
     pub response: CheckResponse,
     pub state_effect: SessionStateEffect,
+    pub check_receipt: Option<caushell_types::CheckReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +191,14 @@ impl ShellQueryCore {
         &mut self,
         request: CheckRequest,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
+        self.try_check_with_intent(request, caushell_types::CheckIntent::ProposeForExecution)
+    }
+
+    pub fn try_check_with_intent(
+        &mut self,
+        request: CheckRequest,
+        intent: caushell_types::CheckIntent,
+    ) -> Result<CheckOutcome, ShellQueryCoreError> {
         let session_id = request.session_id.clone();
         let runner = &self.runner;
         let sessions = &mut self.sessions;
@@ -200,11 +209,30 @@ impl ShellQueryCore {
         let timing_enabled = core_timing_enabled();
         let total_start = Instant::now();
         let runner_start = Instant::now();
-        {
+        if ctx.request().command.len() <= self.policy.analysis_budget.max_request_bytes {
             let session_view = SessionView::from_session(session);
             runner.run(session_view, &mut ctx);
+        } else {
+            // Do not parse an attacker-sized payload after admitting exhaustion.
+            ctx.set_final_decision(caushell_types::Decision::NeedApproval);
         }
         let runner_run_ms = elapsed_ms(runner_start);
+
+        enforce_analysis_budgets(session, &mut ctx);
+        let incomplete_budgets: Vec<_> = ctx
+            .pending_mutations()
+            .iter()
+            .filter_map(|m| {
+                if let PendingMutation::MarkAnalysisIncomplete { budget } = m {
+                    Some(*budget)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for budget in &incomplete_budgets {
+            session.mark_analysis_incomplete(*budget);
+        }
 
         let decision = ctx
             .final_decision
@@ -224,7 +252,10 @@ impl ShellQueryCore {
 
         let observed_sequence_no = ctx.request().sequence_no;
         let state_effect_start = Instant::now();
-        let state_effect = if decision == caushell_types::Decision::Allow {
+        let mut check_receipt = None;
+        let state_effect = if decision == caushell_types::Decision::Allow
+            && intent != caushell_types::CheckIntent::JudgeOnly
+        {
             let mutations = ctx
                 .pending_mutations()
                 .iter()
@@ -234,7 +265,32 @@ impl ShellQueryCore {
             SessionStateEffect::commit(observed_sequence_no, mutations)
         } else {
             session.observe_request(ctx.request());
-            SessionStateEffect::observe_only(observed_sequence_no)
+            if decision == caushell_types::Decision::NeedApproval
+                && intent != caushell_types::CheckIntent::JudgeOnly
+            {
+                let receipt = caushell_types::CheckReceipt {
+                    check_id: caushell_types::CheckId::for_request(ctx.request()),
+                    state_revision: session.approval_state().revision,
+                };
+                let plan = caushell_types::PendingApproval {
+                    receipt: receipt.clone(),
+                    request: ctx.request().clone(),
+                    mutations: ctx
+                        .pending_mutations()
+                        .iter()
+                        .map(PendingMutation::to_session_mutation)
+                        .collect(),
+                    policy: self.policy.clone(),
+                };
+                session.retain_pending_approval(plan.clone());
+                check_receipt = Some(receipt);
+                SessionStateEffect::PendingApproval(plan)
+            } else {
+                SessionStateEffect::ObservedOnly {
+                    observed_sequence_no,
+                    incomplete_budgets,
+                }
+            }
         };
         let state_effect_ms = elapsed_ms(state_effect_start);
 
@@ -260,17 +316,34 @@ impl ShellQueryCore {
         Ok(CheckOutcome {
             response,
             state_effect,
+            check_receipt,
         })
     }
 
+    pub fn authorize(
+        &mut self,
+        request: &caushell_types::ApprovalRequest,
+    ) -> Result<(caushell_types::ApprovalResponse, bool), ShellQueryCoreError> {
+        let session = self
+            .sessions
+            .get_mut(&request.check_id.session_id)
+            .ok_or_else(|| SessionCommitError::InvalidApproval {
+                reason: "unknown session".into(),
+            })?;
+        Ok(session.authorize(request, Some(&self.policy))?)
+    }
+
     pub fn check_runtime(&mut self, request: RuntimeCheckRequest) -> CheckResponse {
+        let intent = request.intent;
         let request = self
             .prepare_runtime_check(request)
             .expect(
                 "caushell-core default runtime check preparation must preserve session invariants",
             )
             .request;
-        self.check(request)
+        self.try_check_with_intent(request, intent)
+            .expect("runtime check must preserve session invariants")
+            .response
     }
 
     pub fn prepare_runtime_check(
@@ -332,12 +405,14 @@ impl ShellQueryCore {
         last_event_index: u64,
     ) -> Option<SessionSnapshot> {
         self.sessions.get(session_id).map(|session| {
-            SessionSnapshot::new(
+            let mut snapshot = SessionSnapshot::new(
                 session_id.clone(),
                 last_event_index,
                 session.summary().clone(),
                 session.graph().to_snapshot(),
-            )
+            );
+            snapshot.approval_state = session.approval_state().clone();
+            snapshot
         })
     }
 
@@ -444,6 +519,74 @@ impl ShellQueryCore {
             request: delta_request,
             committed_mutations,
         }))
+    }
+}
+
+fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
+    use caushell_types::{AnalysisBudgetKind as B, Decision, EvidenceKind};
+    let mut budgets = session.graph().incomplete_budgets();
+    let staged = StagedSession::new(
+        session.graph(),
+        ctx.request(),
+        session.summary(),
+        ctx.pending_mutations(),
+    );
+    let graph = caushell_graph::SessionRead::graph(&staged);
+    budgets.extend(graph.incomplete_budgets());
+    let limits = &ctx.policy().analysis_budget;
+    if graph.node_count() >= limits.max_history_nodes {
+        budgets.push(B::HistoryNodes);
+    }
+    if graph.edge_count() >= limits.max_history_edges {
+        budgets.push(B::HistoryEdges);
+    }
+    if graph.state_object_count() >= limits.max_state_objects {
+        budgets.push(B::StateObjects);
+    }
+    if graph.state_history_bytes() >= limits.max_state_history_bytes {
+        budgets.push(B::StateHistoryBytes);
+    }
+    let changed_objects: std::collections::BTreeSet<_> = ctx
+        .pending_mutations()
+        .iter()
+        .filter_map(|m| match m {
+            PendingMutation::AddStateCandidate { fact, .. } => Some(fact.object.clone()),
+            _ => None,
+        })
+        .collect();
+    for object in &changed_objects {
+        let result = caushell_query::StateCandidateQuery {
+            object,
+            before_sequence: ctx.request().sequence_no,
+            before_source_start: usize::MAX,
+            limits,
+        }
+        .execute(graph);
+        budgets.extend(result.incomplete_budgets);
+    }
+    if ctx.request().command.len() > limits.max_request_bytes {
+        budgets.push(B::RequestBytes);
+    }
+    if ctx.evidence.iter().any(|e| match &e.kind {
+        EvidenceKind::TaintedExecutionBudgetExceeded(_) => true,
+        EvidenceKind::ExecutionExpansionTruncated(t) => t.next_candidate_count > 0,
+        EvidenceKind::NestedPayloadTruncated(t) => t.next_candidate_count > 0,
+        _ => false,
+    }) {
+        budgets.push(B::Search);
+    }
+    budgets.sort();
+    budgets.dedup();
+    for budget in budgets {
+        let reason = format!(
+            "analysis budget {} exhausted; retained history is incomplete and approval does not reset it",
+            budget.key()
+        );
+        // This floor is deliberately independent of configurable Observe fallbacks.
+        ctx.mark_analysis_incomplete(budget, reason);
+        if ctx.final_decision != Some(Decision::Deny) {
+            ctx.set_final_decision(Decision::NeedApproval);
+        }
     }
 }
 
@@ -801,6 +944,7 @@ mod tests {
 
     fn sample_runtime_request(session_id: &str, command: &str) -> RuntimeCheckRequest {
         RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new(session_id),
             command: command.to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -1534,6 +1678,7 @@ mod tests {
         let mut core = ShellQueryCore::new();
 
         let first = core.check_runtime(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-rt"),
             command: "pwd".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -1548,6 +1693,7 @@ mod tests {
             workspace_root: Some("/tmp/project".to_string()),
         });
         let second = core.check_runtime(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-rt"),
             command: "ls".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -2208,6 +2354,7 @@ PY""#,
     #[test]
     fn core_applies_custom_resolve_policy_to_unknown_command_without_profile() {
         let mut core = ShellQueryCore::with_policy(PolicyConfig {
+            analysis_budget: Default::default(),
             mutation_path_exemptions: caushell_types::default_mutation_path_exemptions(),
             rule_policy: RulePolicy {
                 no_profile: caushell_types::NoProfilePolicy {
@@ -6129,6 +6276,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         let mut core = ShellQueryCore::new();
 
         let first = core.check_runtime(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-materialize"),
             command: "pwd".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -6145,6 +6293,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         assert_eq!(first.decision, Decision::Allow);
 
         let materialized = core.materialize_runtime_request(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-materialize"),
             command: "ls".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -6180,7 +6329,15 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             snapshot.summary.last_sequence_no(),
             Some(CommandSequenceNo::new(1))
         );
-        assert_eq!(snapshot.graph.nodes.len(), 3);
+        assert_eq!(snapshot.graph.nodes.len(), 4);
+        assert!(snapshot.graph.nodes.iter().any(|node| matches!(&node.kind,
+            caushell_types::SessionGraphNodeKindSnapshot::StateCandidate { fact }
+                if fact.object.name == "SCRIPT"
+                    && fact.object.scope == caushell_types::SafetyScope::Shell
+                    && fact.value == caushell_types::SafetyStateValue::Variable {
+                        value: SessionVariableValue::exact_scalar("build.sh"), exported: true,
+                    }
+        )));
         assert_eq!(snapshot.graph.edges.len(), 1);
         assert!(
             snapshot
