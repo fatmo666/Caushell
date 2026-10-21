@@ -761,6 +761,7 @@ fn build_runtime_request(
         .ok_or(HookError::MissingCommandField)?;
 
     Ok(RuntimeCheckRequest {
+        intent: caushell_types::CheckIntent::ProposeForExecution,
         session_id: SessionId::new(hook_request.session_id.clone()),
         command,
         shell_state_before: caushell_types::ShellStateSnapshot::new(hook_request.cwd.clone()),

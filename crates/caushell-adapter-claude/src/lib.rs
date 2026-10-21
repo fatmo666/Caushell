@@ -209,6 +209,7 @@ fn build_runtime_request(
         .ok_or(AdapterError::MissingCommandField)?;
 
     Ok(RuntimeCheckRequest {
+        intent: caushell_types::CheckIntent::ProposeForExecution,
         session_id: SessionId::new(hook_request.session_id.clone()),
         command,
         shell_state_before: caushell_types::ShellStateSnapshot::new(hook_request.cwd.clone()),
@@ -529,7 +530,7 @@ mod tests {
 
             serde_json::to_writer(
                 &mut stream,
-                &RuntimeTransportResponse::Check(CheckResponse {
+                &RuntimeTransportResponse::check(CheckResponse {
                     decision: Decision::NeedApproval,
                     reasons: vec!["manual review required".to_string()],
                     decision_trace: Default::default(),

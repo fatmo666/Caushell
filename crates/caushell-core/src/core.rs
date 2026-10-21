@@ -116,6 +116,7 @@ impl From<SessionCommitError> for ShellQueryCoreError {
 pub struct CheckOutcome {
     pub response: CheckResponse,
     pub state_effect: SessionStateEffect,
+    pub check_receipt: Option<caushell_types::CheckReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +191,14 @@ impl ShellQueryCore {
         &mut self,
         request: CheckRequest,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
+        self.try_check_with_intent(request, caushell_types::CheckIntent::ProposeForExecution)
+    }
+
+    pub fn try_check_with_intent(
+        &mut self,
+        request: CheckRequest,
+        intent: caushell_types::CheckIntent,
+    ) -> Result<CheckOutcome, ShellQueryCoreError> {
         let session_id = request.session_id.clone();
         let runner = &self.runner;
         let sessions = &mut self.sessions;
@@ -224,7 +233,10 @@ impl ShellQueryCore {
 
         let observed_sequence_no = ctx.request().sequence_no;
         let state_effect_start = Instant::now();
-        let state_effect = if decision == caushell_types::Decision::Allow {
+        let mut check_receipt = None;
+        let state_effect = if decision == caushell_types::Decision::Allow
+            && intent != caushell_types::CheckIntent::JudgeOnly
+        {
             let mutations = ctx
                 .pending_mutations()
                 .iter()
@@ -234,7 +246,29 @@ impl ShellQueryCore {
             SessionStateEffect::commit(observed_sequence_no, mutations)
         } else {
             session.observe_request(ctx.request());
-            SessionStateEffect::observe_only(observed_sequence_no)
+            if decision == caushell_types::Decision::NeedApproval
+                && intent != caushell_types::CheckIntent::JudgeOnly
+            {
+                let receipt = caushell_types::CheckReceipt {
+                    check_id: caushell_types::CheckId::for_request(ctx.request()),
+                    state_revision: session.approval_state().revision,
+                };
+                let plan = caushell_types::PendingApproval {
+                    receipt: receipt.clone(),
+                    request: ctx.request().clone(),
+                    mutations: ctx
+                        .pending_mutations()
+                        .iter()
+                        .map(PendingMutation::to_session_mutation)
+                        .collect(),
+                    policy: self.policy.clone(),
+                };
+                session.retain_pending_approval(plan.clone());
+                check_receipt = Some(receipt);
+                SessionStateEffect::PendingApproval(plan)
+            } else {
+                SessionStateEffect::observe_only(observed_sequence_no)
+            }
         };
         let state_effect_ms = elapsed_ms(state_effect_start);
 
@@ -260,17 +294,34 @@ impl ShellQueryCore {
         Ok(CheckOutcome {
             response,
             state_effect,
+            check_receipt,
         })
     }
 
+    pub fn authorize(
+        &mut self,
+        request: &caushell_types::ApprovalRequest,
+    ) -> Result<(caushell_types::ApprovalResponse, bool), ShellQueryCoreError> {
+        let session = self
+            .sessions
+            .get_mut(&request.check_id.session_id)
+            .ok_or_else(|| SessionCommitError::InvalidApproval {
+                reason: "unknown session".into(),
+            })?;
+        Ok(session.authorize(request, Some(&self.policy))?)
+    }
+
     pub fn check_runtime(&mut self, request: RuntimeCheckRequest) -> CheckResponse {
+        let intent = request.intent;
         let request = self
             .prepare_runtime_check(request)
             .expect(
                 "caushell-core default runtime check preparation must preserve session invariants",
             )
             .request;
-        self.check(request)
+        self.try_check_with_intent(request, intent)
+            .expect("runtime check must preserve session invariants")
+            .response
     }
 
     pub fn prepare_runtime_check(
@@ -332,12 +383,14 @@ impl ShellQueryCore {
         last_event_index: u64,
     ) -> Option<SessionSnapshot> {
         self.sessions.get(session_id).map(|session| {
-            SessionSnapshot::new(
+            let mut snapshot = SessionSnapshot::new(
                 session_id.clone(),
                 last_event_index,
                 session.summary().clone(),
                 session.graph().to_snapshot(),
-            )
+            );
+            snapshot.approval_state = session.approval_state().clone();
+            snapshot
         })
     }
 
@@ -801,6 +854,7 @@ mod tests {
 
     fn sample_runtime_request(session_id: &str, command: &str) -> RuntimeCheckRequest {
         RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new(session_id),
             command: command.to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -1534,6 +1588,7 @@ mod tests {
         let mut core = ShellQueryCore::new();
 
         let first = core.check_runtime(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-rt"),
             command: "pwd".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -1548,6 +1603,7 @@ mod tests {
             workspace_root: Some("/tmp/project".to_string()),
         });
         let second = core.check_runtime(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-rt"),
             command: "ls".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -6129,6 +6185,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         let mut core = ShellQueryCore::new();
 
         let first = core.check_runtime(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-materialize"),
             command: "pwd".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
@@ -6145,6 +6202,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         assert_eq!(first.decision, Decision::Allow);
 
         let materialized = core.materialize_runtime_request(caushell_types::RuntimeCheckRequest {
+            intent: caushell_types::CheckIntent::ProposeForExecution,
             session_id: SessionId::new("sess-materialize"),
             command: "ls".to_string(),
             shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),

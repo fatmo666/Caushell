@@ -103,7 +103,7 @@ pub use request::{CheckRequest, RuntimeMetadata, ShellKind, ShellRuntimeCapabili
 pub use response::{CheckDecisionProposal, CheckResponse, DecisionTrace};
 pub use rule::{RuleFamily, RuleId};
 pub use runtime_request::{
-    RuntimeCheckRequest, RuntimePingResponse, RuntimeShellStateDeltaRequest,
+    RuntimeCheckRequest, RuntimeCheckResponse, RuntimePingResponse, RuntimeShellStateDeltaRequest,
     RuntimeShellStateDeltaResponse, RuntimeTransportRequest, RuntimeTransportResponse,
 };
 pub use session::{CommandSequenceNo, SessionId};
