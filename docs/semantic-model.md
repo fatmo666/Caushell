@@ -34,6 +34,11 @@ Before parsing a recursive inline payload, its outer-shell operands must become 
 
 ## Command Modeling
 
+Standalone Bash process substitutions use the `/dev/fd` backend model: each
+supplies one nonliteral `/dev/fd/<digits>` argument. The descriptor number and
+stream contents remain unknown; the body is analyzed separately. FIFO-backed
+Bash builds are outside this backend model.
+
 ### Shared path scope and purpose-scoped exemptions
 
 `PathScopeQuery` proves containment from existing path facts: a concrete path,

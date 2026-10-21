@@ -627,22 +627,24 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
         return exact_word(arg.text.clone());
     }
     if arg.node_kind == "process_substitution" {
-        // The shell supplies one generated FIFO/fd pathname. Its contents and
-        // producer effects are still modeled by the existing substitution path.
+        // Supported Bash process substitution uses the /dev/fd backend. Keep
+        // its pathname shape without inventing a descriptor or pipe contents.
+        let prefix = "/dev/fd/";
         return ArgumentStructure {
             fields: ArgumentFieldCount::ExactlyOne,
-            // FIFO locations are platform/environment dependent. Do not
-            // assume /dev/fd or a particular TMPDIR for path classification.
-            static_prefix: String::new(),
+            static_prefix: prefix.into(),
             static_suffix: String::new(),
             exact: false,
-            // A generated fd/FIFO pathname has a directory separator, even
-            // when a platform uses a relative TMPDIR. Do not infer its root.
-            spelling: Some(vec![
-                SpellingPart::Any,
-                SpellingPart::Literal('/'),
-                SpellingPart::Any,
-            ]),
+            spelling: Some(
+                prefix
+                    .chars()
+                    .map(SpellingPart::Literal)
+                    .chain([
+                        SpellingPart::Class("0123456789".into()),
+                        SpellingPart::CharacterRun("0123456789".into()),
+                    ])
+                    .collect(),
+            ),
             pathname_generation: false,
         };
     }

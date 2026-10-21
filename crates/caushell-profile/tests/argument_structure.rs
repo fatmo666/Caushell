@@ -110,7 +110,10 @@ fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
         roots: vec![".".into()],
         may_escape: false,
     });
-    assert_eq!(argument_structure(arg).fields, ArgumentFieldCount::ZeroOrMore);
+    assert_eq!(
+        argument_structure(arg).fields,
+        ArgumentFieldCount::ZeroOrMore
+    );
     assert_eq!(argument_structure(arg).static_prefix, ".");
 }
 
@@ -192,8 +195,48 @@ fn standalone_process_substitution_is_one_unknown_path_not_its_shell_body() {
         assert_eq!(facts.fields, ArgumentFieldCount::ExactlyOne);
         assert!(!facts.exact);
         assert!(!facts.may_equal(";") && !facts.may_equal("{}"));
+        assert_eq!(facts.exact_value(), None);
+        assert!(!facts.may_start_with("-") && !facts.may_start_with("+"));
+        assert!(facts.may_equal("/dev/fd/0") && facts.may_equal("/dev/fd/63"));
+        for invalid in ["/dev/fd/", "/dev/fd/x", "/dev/fd/63x", "/opt/out", "--"] {
+            assert!(!facts.may_equal(invalid), "{word}: {invalid}");
+        }
     }
     assert!(!find("find . -newer <(cat stamp) -print").operation_semantics_unresolved);
+}
+
+#[test]
+fn generated_descriptor_arguments_use_the_shared_option_ownership_query() {
+    let yaml = include_str!("../profiles/sort.yaml").replace(
+        "canonical_name: sort",
+        "canonical_name: descriptor_consumer",
+    );
+    for source in [
+        "descriptor_consumer <(cat one) <(cat two)",
+        "descriptor_consumer -m <(cat one) <(cat two)",
+        "descriptor_consumer -- <(cat one)",
+    ] {
+        let bound = bound_with(&yaml, source);
+        assert!(
+            !bound.operation_semantics_unresolved,
+            "{source}: {bound:#?}"
+        );
+        let input = bound
+            .bound_parameters
+            .iter()
+            .find(|p| p.name.as_str() == "input_paths")
+            .unwrap();
+        assert!(!input.values.is_empty());
+        assert!(input.values.iter().all(|v| matches!(v,
+            caushell_profile::BoundValue::Argument {text,node_kind,..}
+                if text.contains("<(") && node_kind == "process_substitution")));
+    }
+    for word in ["$unknown", "\"$unknown\"", "-<(cat one)", "\"<(cat one)\""] {
+        let facts = shape(word);
+        assert_ne!(facts.static_prefix, "/dev/fd/", "{word}");
+    }
+    assert!(shape("$unknown").may_start_with("-"));
+    assert!(shape("-<(cat one)").may_start_with("-"));
 }
 
 #[test]
