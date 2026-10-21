@@ -27,7 +27,7 @@
 
 `cargo check --offline --locked --workspace --quiet`、本轮修改源码的 rustfmt 检查和 `git diff --check` 均通过。这不是全工作区测试全绿：其他集成测试未全量重跑，`cargo test --workspace --no-run` 的一次尝试在链接阶段被中止，不计为通过。
 
-候选记录和预算保护不代表历史候选风险判断已贯通，剩余范围见 [接口说明](single-check-approval.zh-CN.md)。本轮没有部署程序、运行正式实验、合并或推送分支。
+候选记录和预算保护不代表历史候选风险判断已贯通，剩余范围见 [接口说明](single-check-approval.zh-CN.md)。该阶段验证没有部署程序或运行正式实验；用户随后授权合入 `profile-coverage-option-matching-20261002`，不包含远端推送或部署。
 
 ## 单次审批阶段针对性测试
 
@@ -69,4 +69,4 @@ cargo test --offline --locked -p caushell-store --lib --quiet
 
 已验证的内容是检查与单次授权、幂等、拒绝及过期处理、快照和事件流恢复、日志确认、故障时保全日志、旧服务拒绝降级、Graph 候选记录、派生索引和预算耗尽保护。历史候选风险消费者、完整安全视图、宿主审批关联以及新 RQ2 控制器仍未完成，具体边界见 [接口说明](single-check-approval.zh-CN.md)。
 
-原始工作分支仍在基点且工作区干净。本轮没有替换已安装程序、推送分支、启动付费实验或修改旧实验结果。
+上述验证完成时，原工作分支仍在基点且工作区干净。原有实验结果和已安装程序均未修改。

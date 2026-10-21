@@ -93,7 +93,7 @@ Rust 客户端新增 `check_with_receipt_unix_socket` 和 `authorize_unix_socket
 
 ## 提交和回滚
 
-工作分支为 `conservative-history-approval-20261021`，基点为 `5000ae43df0c9a6e7f21f03a03d42560ee91ac85`。阶段提交保持独立，可按相反顺序使用 git revert 回滚；不要重置或删除用户的未提交改动。本分支尚未合入原工作分支，也没有推送。
+工作分支为 `conservative-history-approval-20261021`，基点为 `5000ae43df0c9a6e7f21f03a03d42560ee91ac85`，合并目标为 `profile-coverage-option-matching-20261002`。阶段提交保持独立，可按相反顺序使用 git revert 回滚；不要重置或删除用户的未提交改动。远端推送和部署不在本次合并范围。
 
 针对性测试覆盖未批不提交、批准恰好一次、拒绝、过期和跨会话授权、政策变化、快照恢复、运行时重启、日志 ACK、写入失败停止、旧服务拒绝降级，以及候选合并与超限扩大。静态分析测试不执行示例中的 Shell 命令。
 
