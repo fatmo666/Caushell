@@ -15,6 +15,7 @@ mod rule;
 mod runtime_request;
 mod session;
 mod session_summary;
+mod safety_history;
 mod shell_state;
 
 pub use approval::{
@@ -112,6 +113,7 @@ pub use session_summary::{
     SessionCurrentWorkingDirectorySource, SessionFunctionBinding, SessionPositionalParameters,
     SessionSummary, SessionVariableBinding, SessionVariableValue,
 };
+pub use safety_history::{SafetyHistory, SafetyStateKind, SafetyStateRecord, SafetyStateValue};
 pub use shell_state::{
     ShellAliasSnapshot, ShellFunctionSnapshot, ShellStateDelta, ShellStateKnowledge,
     ShellStateObservability, ShellStateSnapshot, ShellValueSnapshot, ShellVariableSnapshot,
