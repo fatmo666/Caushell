@@ -35,7 +35,17 @@ impl SessionGraph {
         Self::default()
     }
 
-    pub fn add_node(&mut self, node: GraphNode) -> Option<GraphNode> {
+    pub fn add_node(&mut self, mut node: GraphNode) -> Option<GraphNode> {
+        if let NodeKind::AnalysisIncomplete { budget } = node.kind {
+            node.id = NodeId::new(format!("analysis-incomplete:{}", budget.key()));
+        } else if self
+            .nodes
+            .get(&node.id)
+            .is_some_and(|existing| matches!(existing.kind, NodeKind::AnalysisIncomplete { .. }))
+        {
+            // Generic node replacement may not erase a sticky exhaustion fact.
+            return self.nodes.get(&node.id).cloned();
+        }
         let node_id = node.id.clone();
         let replaced = self.nodes.insert(node_id.clone(), node);
 

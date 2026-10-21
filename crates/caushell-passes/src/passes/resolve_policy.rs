@@ -645,6 +645,7 @@ mod tests {
     fn resolve_policy_pass_escalates_selection_error_per_policy() {
         let ctx = run_pass(
             PolicyConfig {
+                analysis_budget: Default::default(),
                 mutation_path_exemptions: caushell_types::default_mutation_path_exemptions(),
                 rule_policy: RulePolicy {
                     resolve_gap: ResolveGapPolicy {

@@ -74,6 +74,19 @@ impl SessionState {
         &self.graph
     }
 
+    /// Exhaustion is an observation about analysis completeness, not an
+    /// assumed command effect. It must survive rejected/unapproved checks.
+    pub fn mark_analysis_incomplete(&mut self, budget: caushell_types::AnalysisBudgetKind) {
+        let node_id = caushell_graph::NodeId::new(format!("analysis-incomplete:{}", budget.key()));
+        if self.graph.get_node(&node_id).is_none() {
+            self.graph.add_node(caushell_graph::GraphNode::new(
+                node_id,
+                caushell_graph::NodeKind::AnalysisIncomplete { budget },
+            ));
+            self.approval_state.revision += 1;
+        }
+    }
+
     pub fn graph_mut(&mut self) -> &mut SessionGraph {
         &mut self.graph
     }
@@ -106,6 +119,13 @@ impl SessionState {
         pending_mutations: &[PendingMutation],
         request: &CheckRequest,
     ) -> Result<(), SessionCommitError> {
+        if !self.graph.incomplete_budgets().is_empty() {
+            // Keep the last complete graph. The sticky whole-session unknown
+            // represents subsequent effects; approval must not grow/reset it.
+            self.summary.observe_sequence(request.sequence_no);
+            self.approval_state.revision += 1;
+            return Ok(());
+        }
         self.seed_shell_state_before(request);
         let anchor_node_id = request_anchor_node_id(request);
 
@@ -153,6 +173,11 @@ impl SessionState {
         capabilities: ShellRuntimeCapabilities,
         pending_mutations: &[PendingMutation],
     ) -> Result<(), SessionCommitError> {
+        if !self.graph.incomplete_budgets().is_empty() {
+            self.summary.observe_sequence(sequence_no);
+            self.approval_state.revision += 1;
+            return Ok(());
+        }
         let primary_command_node_id = top_level_command_node_id_for(session_id, sequence_no, 0);
         let request_node_id = request_anchor_node_id_for(session_id, sequence_no);
         let command_node_id = if self.graph.get_node(&primary_command_node_id).is_some() {
@@ -284,6 +309,9 @@ impl SessionState {
     }
 
     fn seed_shell_state_before(&mut self, request: &CheckRequest) {
+        if !self.graph.incomplete_budgets().is_empty() {
+            return;
+        }
         if self.summary.last_sequence_no().is_none() {
             seed_summary_from_shell_state_before(
                 &mut self.summary,

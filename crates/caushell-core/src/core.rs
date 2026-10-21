@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use caushell_config::{LoadConfigError, load_config_from_path};
-use caushell_graph::SessionGraph;
+use caushell_graph::{GraphRead, SessionGraph};
 use caushell_passes::StateOperationGuardPass;
 use caushell_passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, CodeLoadPathGuardPass,
@@ -209,11 +209,30 @@ impl ShellQueryCore {
         let timing_enabled = core_timing_enabled();
         let total_start = Instant::now();
         let runner_start = Instant::now();
-        {
+        if ctx.request().command.len() <= self.policy.analysis_budget.max_request_bytes {
             let session_view = SessionView::from_session(session);
             runner.run(session_view, &mut ctx);
+        } else {
+            // Do not parse an attacker-sized payload after admitting exhaustion.
+            ctx.set_final_decision(caushell_types::Decision::NeedApproval);
         }
         let runner_run_ms = elapsed_ms(runner_start);
+
+        enforce_analysis_budgets(session, &mut ctx);
+        let incomplete_budgets: Vec<_> = ctx
+            .pending_mutations()
+            .iter()
+            .filter_map(|m| {
+                if let PendingMutation::MarkAnalysisIncomplete { budget } = m {
+                    Some(*budget)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for budget in &incomplete_budgets {
+            session.mark_analysis_incomplete(*budget);
+        }
 
         let decision = ctx
             .final_decision
@@ -267,7 +286,10 @@ impl ShellQueryCore {
                 check_receipt = Some(receipt);
                 SessionStateEffect::PendingApproval(plan)
             } else {
-                SessionStateEffect::observe_only(observed_sequence_no)
+                SessionStateEffect::ObservedOnly {
+                    observed_sequence_no,
+                    incomplete_budgets,
+                }
             }
         };
         let state_effect_ms = elapsed_ms(state_effect_start);
@@ -497,6 +519,50 @@ impl ShellQueryCore {
             request: delta_request,
             committed_mutations,
         }))
+    }
+}
+
+fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
+    use caushell_types::{AnalysisBudgetKind as B, Decision, EvidenceKind};
+    let mut budgets = session.graph().incomplete_budgets();
+    let staged = StagedSession::new(
+        session.graph(),
+        ctx.request(),
+        session.summary(),
+        ctx.pending_mutations(),
+    );
+    let graph = caushell_graph::SessionRead::graph(&staged);
+    budgets.extend(graph.incomplete_budgets());
+    let limits = &ctx.policy().analysis_budget;
+    if graph.node_count() >= limits.max_history_nodes {
+        budgets.push(B::HistoryNodes);
+    }
+    if graph.edge_count() >= limits.max_history_edges {
+        budgets.push(B::HistoryEdges);
+    }
+    if ctx.request().command.len() > limits.max_request_bytes {
+        budgets.push(B::RequestBytes);
+    }
+    if ctx.evidence.iter().any(|e| match &e.kind {
+        EvidenceKind::TaintedExecutionBudgetExceeded(_) => true,
+        EvidenceKind::ExecutionExpansionTruncated(t) => t.next_candidate_count > 0,
+        EvidenceKind::NestedPayloadTruncated(t) => t.next_candidate_count > 0,
+        _ => false,
+    }) {
+        budgets.push(B::Search);
+    }
+    budgets.sort();
+    budgets.dedup();
+    for budget in budgets {
+        let reason = format!(
+            "analysis budget {} exhausted; retained history is incomplete and approval does not reset it",
+            budget.key()
+        );
+        // This floor is deliberately independent of configurable Observe fallbacks.
+        ctx.mark_analysis_incomplete(budget, reason);
+        if ctx.final_decision != Some(Decision::Deny) {
+            ctx.set_final_decision(Decision::NeedApproval);
+        }
     }
 }
 
@@ -2264,6 +2330,7 @@ PY""#,
     #[test]
     fn core_applies_custom_resolve_policy_to_unknown_command_without_profile() {
         let mut core = ShellQueryCore::with_policy(PolicyConfig {
+            analysis_budget: Default::default(),
             mutation_path_exemptions: caushell_types::default_mutation_path_exemptions(),
             rule_policy: RulePolicy {
                 no_profile: caushell_types::NoProfilePolicy {

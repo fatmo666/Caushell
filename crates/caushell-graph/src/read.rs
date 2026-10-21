@@ -2,6 +2,20 @@ use crate::{Edge, GraphNode, NodeId};
 use caushell_types::CommandSequenceNo;
 
 pub trait GraphRead {
+    /// Reserved, fixed-size facts survive approval, compaction and recovery.
+    fn incomplete_budgets(&self) -> Vec<caushell_types::AnalysisBudgetKind> {
+        caushell_types::AnalysisBudgetKind::ALL
+            .into_iter()
+            .filter(|budget| {
+                self.get_node(&NodeId::new(format!(
+                    "analysis-incomplete:{}",
+                    budget.key()
+                )))
+                .is_some_and(|node| matches!(node.kind, crate::NodeKind::AnalysisIncomplete { .. }))
+            })
+            .collect()
+    }
+
     /// Compatibility fallback; production graph views use a directory index.
     fn path_family_artifact_nodes_for_path<'a>(
         &'a self,

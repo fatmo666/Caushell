@@ -40,6 +40,15 @@ impl SessionAnalysisPass for TaintedExecutionGuardPass {
 
         for sink in sinks {
             let outcome = search_tainted_lineage(graph, &sink, budget);
+            if outcome.truncated_by_hops || outcome.truncated_by_visited_nodes {
+                ctx.mark_analysis_incomplete(
+                    caushell_types::AnalysisBudgetKind::Search,
+                    format!(
+                        "execution-source search incomplete for {}; approval required",
+                        sink.evidence.node_id
+                    ),
+                );
+            }
 
             if let Some(source) = outcome.source {
                 let evidence = Evidence::tainted_execution_source(

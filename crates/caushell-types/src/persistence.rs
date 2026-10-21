@@ -93,6 +93,9 @@ pub enum DerivedInvocationOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMutation {
+    MarkAnalysisIncomplete {
+        budget: crate::AnalysisBudgetKind,
+    },
     AddRequestAnchor {
         node_id: String,
         session_id: SessionId,
@@ -240,6 +243,8 @@ pub enum SessionStateEffect {
     PendingApproval(crate::PendingApproval),
     ObservedOnly {
         observed_sequence_no: CommandSequenceNo,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        incomplete_budgets: Vec<crate::AnalysisBudgetKind>,
     },
     Committed {
         observed_sequence_no: CommandSequenceNo,
@@ -251,6 +256,7 @@ impl SessionStateEffect {
     pub fn observe_only(observed_sequence_no: CommandSequenceNo) -> Self {
         Self::ObservedOnly {
             observed_sequence_no,
+            incomplete_budgets: Vec::new(),
         }
     }
 
@@ -340,6 +346,9 @@ pub struct SessionGraphNodeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionGraphNodeKindSnapshot {
+    AnalysisIncomplete {
+        budget: crate::AnalysisBudgetKind,
+    },
     RequestAnchor {
         session_id: SessionId,
         sequence_no: crate::CommandSequenceNo,

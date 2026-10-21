@@ -1,3 +1,4 @@
+mod analysis_budget;
 mod approval;
 mod decision;
 mod evidence;
@@ -13,11 +14,12 @@ mod request;
 mod response;
 mod rule;
 mod runtime_request;
+mod safety_history;
 mod session;
 mod session_summary;
-mod safety_history;
 mod shell_state;
 
+pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy};
 pub use approval::{
     ApprovalAuthority, ApprovalRequest, ApprovalResolution, ApprovalResponse, CheckId, CheckIntent,
     CheckReceipt, PendingApproval, SessionApprovalState,
@@ -107,13 +109,13 @@ pub use runtime_request::{
     RuntimeCheckRequest, RuntimeCheckResponse, RuntimePingResponse, RuntimeShellStateDeltaRequest,
     RuntimeShellStateDeltaResponse, RuntimeTransportRequest, RuntimeTransportResponse,
 };
+pub use safety_history::{SafetyHistory, SafetyStateKind, SafetyStateRecord, SafetyStateValue};
 pub use session::{CommandSequenceNo, SessionId};
 pub use session_summary::{
     RuntimeProducedValueKind, SessionAliasBinding, SessionCurrentWorkingDirectory,
     SessionCurrentWorkingDirectorySource, SessionFunctionBinding, SessionPositionalParameters,
     SessionSummary, SessionVariableBinding, SessionVariableValue,
 };
-pub use safety_history::{SafetyHistory, SafetyStateKind, SafetyStateRecord, SafetyStateValue};
 pub use shell_state::{
     ShellAliasSnapshot, ShellFunctionSnapshot, ShellStateDelta, ShellStateKnowledge,
     ShellStateObservability, ShellStateSnapshot, ShellValueSnapshot, ShellVariableSnapshot,

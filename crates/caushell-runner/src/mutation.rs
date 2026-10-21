@@ -13,6 +13,9 @@ use caushell_types::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PendingMutation {
+    MarkAnalysisIncomplete {
+        budget: caushell_types::AnalysisBudgetKind,
+    },
     AddRequestAnchor {
         node_id: NodeId,
         session_id: caushell_types::SessionId,
@@ -198,6 +201,7 @@ impl PendingMutation {
         !matches!(
             self,
             Self::AddRequestAnchor { .. }
+                | Self::MarkAnalysisIncomplete { .. }
                 | Self::AddTopLevelCommandInvocation { .. }
                 | Self::AddShellStateReconciliationAnchor { .. }
                 | Self::ReplaceProvenanceArtifact { .. }
@@ -284,6 +288,13 @@ impl PendingMutation {
 
     pub(crate) fn graph_projection(&self, command_node_id: &NodeId) -> GraphMutationProjection {
         match self {
+            Self::MarkAnalysisIncomplete { budget } => GraphMutationProjection {
+                nodes: vec![GraphNode::new(
+                    NodeId::new(format!("analysis-incomplete:{}", budget.key())),
+                    caushell_graph::NodeKind::AnalysisIncomplete { budget: *budget },
+                )],
+                ..Default::default()
+            },
             Self::AddRequestAnchor {
                 node_id,
                 session_id,
@@ -678,6 +689,7 @@ impl PendingMutation {
 
     pub fn apply_summary(&self, summary: &mut SessionSummary) {
         match self {
+            Self::MarkAnalysisIncomplete { .. } => {}
             Self::AddRequestAnchor { .. }
             | Self::AddTopLevelCommandInvocation { .. }
             | Self::AddShellStateReconciliationAnchor { .. }
@@ -792,6 +804,9 @@ impl PendingMutation {
 
     pub fn to_session_mutation(&self) -> SessionMutation {
         match self {
+            Self::MarkAnalysisIncomplete { budget } => {
+                SessionMutation::MarkAnalysisIncomplete { budget: *budget }
+            }
             Self::AddRequestAnchor {
                 node_id,
                 session_id,
@@ -1046,6 +1061,9 @@ impl PendingMutation {
 
     pub fn from_session_mutation(mutation: SessionMutation) -> Self {
         match mutation {
+            SessionMutation::MarkAnalysisIncomplete { budget } => {
+                Self::MarkAnalysisIncomplete { budget }
+            }
             SessionMutation::AddRequestAnchor {
                 node_id,
                 session_id,

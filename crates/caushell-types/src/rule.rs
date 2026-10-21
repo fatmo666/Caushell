@@ -19,6 +19,7 @@ pub enum RuleFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleId {
+    AnalysisIncomplete,
     UnboundedFileWrite,
     NetworkListenerExposure,
     NetworkUpload,
@@ -69,6 +70,7 @@ pub enum RuleId {
 impl RuleId {
     pub const fn family(self) -> RuleFamily {
         match self {
+            Self::AnalysisIncomplete => RuleFamily::SessionIntegrity,
             Self::UnboundedFileWrite => RuleFamily::HostSafety,
             Self::NetworkListenerExposure | Self::NetworkUpload => RuleFamily::NetworkSafety,
             Self::CommandParseFailure => RuleFamily::ResolveGap,

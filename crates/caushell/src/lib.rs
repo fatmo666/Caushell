@@ -1123,6 +1123,13 @@ fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<
                         "pending authorization does not match its check",
                     )));
                 }
+                for mutation in &plan.mutations {
+                    if let caushell_types::SessionMutation::MarkAnalysisIncomplete { budget } =
+                        mutation
+                    {
+                        state.mark_analysis_incomplete(*budget);
+                    }
+                }
                 state.observe_request(request);
                 if state.approval_state().revision != plan.receipt.state_revision {
                     return Err(CliError::Io(io::Error::new(
@@ -1134,6 +1141,7 @@ fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<
             }
             SessionStateEffect::ObservedOnly {
                 observed_sequence_no,
+                incomplete_budgets,
             } => {
                 if request.sequence_no != *observed_sequence_no {
                     return Err(CliError::Io(io::Error::new(
@@ -1146,6 +1154,9 @@ fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<
                     )));
                 }
 
+                for budget in incomplete_budgets {
+                    state.mark_analysis_incomplete(*budget);
+                }
                 state.observe_request(request);
             }
             SessionStateEffect::Committed {
@@ -1168,6 +1179,12 @@ fn apply_state_effect(state: &mut SessionState, event: &SessionEvent) -> Result<
                     .cloned()
                     .map(PendingMutation::from_session_mutation)
                     .collect();
+
+                for mutation in &pending_mutations {
+                    if let PendingMutation::MarkAnalysisIncomplete { budget } = mutation {
+                        state.mark_analysis_incomplete(*budget);
+                    }
+                }
 
                 state.commit_allowed_request(&pending_mutations, request)?;
             }
@@ -2940,6 +2957,88 @@ mod tests {
         );
         assert!(matches!(events[1].kind, SessionEventKind::Approval { .. }));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exhausted_budget_survives_pending_approval_log_replay_and_checkpoint_compaction() {
+        use caushell_types::{ApprovalAuthority, ApprovalRequest, CheckIntent};
+        for judge in [false, true] {
+            let root = temp_store_root("budget-recovery");
+            let path = temp_policy_path("budget-recovery");
+            fs::write(
+                &path,
+                "version: 1\nanalysis:\n  budgets:\n    max_request_bytes: 4\n",
+            )
+            .unwrap();
+            let receipt = {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                let mut request = sample_request("export A=123456");
+                if judge {
+                    request.intent = CheckIntent::JudgeOnly;
+                }
+                let response = runtime
+                    .handle_runtime_request_with_receipt(request)
+                    .unwrap();
+                assert_eq!(response.decision, Decision::NeedApproval);
+                response.check_receipt
+            };
+            if let Some(receipt) = receipt {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                runtime
+                    .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(
+                        ApprovalRequest {
+                            check_id: receipt.check_id,
+                            state_revision: receipt.state_revision,
+                            approved: true,
+                            authority: ApprovalAuthority::SimulatedUser,
+                        },
+                    ))
+                    .unwrap();
+            }
+            // Raising the limit is not proof of completeness and cannot reset it.
+            fs::write(&path, "version: 1\n").unwrap();
+            {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                for _ in 0..60 {
+                    let mut request = sample_request("printf hello");
+                    request.intent = CheckIntent::JudgeOnly;
+                    let response = runtime.handle_runtime_request(request).unwrap();
+                    assert_eq!(response.decision, Decision::NeedApproval);
+                    assert!(
+                        response
+                            .decision_trace
+                            .findings
+                            .iter()
+                            .any(|f| f.rule_id == caushell_types::RuleId::AnalysisIncomplete)
+                    );
+                }
+            }
+            {
+                let mut runtime = create_runtime(Some(&path), Some(&root)).unwrap();
+                assert_eq!(
+                    runtime
+                        .handle_runtime_request(sample_request("pwd"))
+                        .unwrap()
+                        .decision,
+                    Decision::NeedApproval
+                );
+            }
+            assert!(
+                initialized_store(&root)
+                    .read_snapshot(&SessionId::new("sess-1"))
+                    .unwrap()
+                    .unwrap()
+                    .graph
+                    .nodes
+                    .iter()
+                    .any(|n| matches!(
+                        n.kind,
+                        caushell_types::SessionGraphNodeKindSnapshot::AnalysisIncomplete { .. }
+                    ))
+            );
+            fs::remove_dir_all(root).unwrap();
+            fs::remove_file(path).unwrap();
+        }
     }
 
     fn create_runtime_observing_unresolved_payloads(store_root: &PathBuf) -> super::CliRuntime {
