@@ -231,6 +231,11 @@ impl RuntimeVariableContext<'_> {
         let visible = runtime_write_visible(command, parsed, target_start);
         let (expanded, _) = expand_alias_chain(command, self.request.shell_kind, &self.aliases, 8);
         apply_alias_command(&mut self.aliases, command, self.request.sequence_no);
+        if visible {
+            for name in self.aliases.keys() {
+                bindings.mark_profile_shadowing_alias(name);
+            }
+        }
         let name = expanded
             .command_name
             .as_deref()
@@ -363,6 +368,17 @@ impl RuntimeVariableContext<'_> {
                     caushell_profile::EnvironmentValueRef::Unknown => {}
                 }
             }
+            // Nameref targets are not necessarily present in assignment facts.
+            if visible && has_nameref_declaration(&body) {
+                let names: Vec<_> = bindings.variable_names().map(str::to_owned).collect();
+                for name in names {
+                    if function_variable_escapes(&body, &name) {
+                        bindings.insert_opaque_dynamic(&name, "function nameref write target");
+                        touched.insert(name);
+                    }
+                }
+                bindings.forget_variable_presence();
+            }
             return (self.can_prove_termination && terminates && !command.conditional_execution)
                 .then(|| termination_fence(command, parsed))
                 .flatten();
@@ -473,6 +489,24 @@ pub(crate) fn runtime_write_visible(
             .subshell_span
             .as_ref()
             .is_some_and(|s| target_start < s.start_byte || target_start >= s.end_byte))
+}
+
+pub(crate) fn has_nameref_declaration(body: &ParsedCommandArtifact) -> bool {
+    body.declaration_commands
+        .iter()
+        .any(declaration_uses_nameref)
+}
+
+pub(crate) fn declaration_uses_nameref(d: &caushell_parse::DeclarationCommandFact) -> bool {
+    matches!(
+        d.kind,
+        caushell_parse::DeclarationCommandKind::Declare
+            | caushell_parse::DeclarationCommandKind::Typeset
+            | caushell_parse::DeclarationCommandKind::Local
+    ) && d
+        .options
+        .iter()
+        .any(|o| o.starts_with('-') && !o.starts_with("--") && o[1..].contains('n'))
 }
 
 pub(crate) fn function_variable_escapes(body: &ParsedCommandArtifact, variable: &str) -> bool {

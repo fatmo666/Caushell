@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
 
 identity:
   canonical_name: shuf
@@ -64,8 +65,14 @@ forms:
       - {name: arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     effects: [{kind: transform_data, target: {kind: none}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: range_numeric_stdout
+    selector: {kind: all, items: [{kind: has_modifier, modifier: input_range}, {kind: not, item: {kind: has_modifier, modifier: echo_args}}, {kind: not, item: *output}, {kind: not, item: {kind: has_modifier, modifier: shuffle_controls}}]}
+    remaining_selector: {kind: no_positional_args}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_scalar: arithmetic_text
   - id: range_to_stdout
-    selector: {kind: all, items: [{kind: all, items: [{kind: has_modifier, modifier: input_range}, {kind: not, item: {kind: has_modifier, modifier: echo_args}}]}, {kind: not, item: *output}]}
+    selector: {kind: all, items: [{kind: all, items: [{kind: has_modifier, modifier: input_range}, {kind: not, item: {kind: has_modifier, modifier: echo_args}}]}, {kind: not, item: *output}, {kind: has_modifier, modifier: shuffle_controls}]}
     remaining_selector: {kind: no_positional_args}
     effects: [{kind: transform_data, target: {kind: none}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}

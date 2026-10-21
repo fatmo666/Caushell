@@ -4452,7 +4452,7 @@ fn expanded_assignment_command_substitution_body_roots(
             session.summary(),
             request,
             parsed_request,
-            site.input.span.start_byte,
+            0,
             request.sequence_no,
         );
         children.extend(expanded_shell_evaluation_children(
@@ -4696,44 +4696,21 @@ fn expanded_shell_evaluation_children(
         if only_site.is_some_and(|i| i != site_index) {
             continue;
         }
-        let bindings = if only_site.is_some() {
-            base_bindings.clone()
-        } else {
-            apply_runtime_variable_bindings_before_span(
-                registry,
-                request,
-                base_bindings.clone(),
-                parsed,
-                site.input.span.start_byte,
-                request.sequence_no,
-            )
-        };
-        let mut checked_site = site.clone();
-        checked_site.numeric_locals.retain(|name| {
-            let span = site.numeric_scope_span.as_ref().unwrap_or(&site.top_level_span);
-            let within = |start: usize| start >= span.start_byte && start < span.end_byte;
-            !parsed.assignment_commands.iter().filter(|a| within(a.span.start_byte))
-                .flat_map(|a| &a.assignments).any(|a| a.name == *name && a.value.node_kind != "number")
-                && !parsed.unset_commands.iter().any(|u| within(u.span.start_byte))
-                && !parsed.declaration_commands.iter().any(|d| within(d.span.start_byte))
-                && parsed.commands.iter().enumerate().filter(|(_,c)| within(c.span.start_byte)).all(|(index,c)| {
-                    if c.command_name.as_deref().is_some_and(|n| bindings.function_binding(n).is_some()) { return false; }
-                    match resolve_invocation_artifact_with_bindings(registry, c,
-                        runtime_context_for_parsed_command(parsed, index, c), &bindings) {
-                        ResolveInvocationArtifactResult::Resolved(r) => {
-                            let writes = caushell_profile::runtime_variable_writes(&r.bound);
-                            !r.bound.operation_semantics_unresolved && !writes.unresolved && !writes.names.contains(name)
-                                && !r.bound.effects.iter().any(|e| matches!(e.kind,
-                                    caushell_profile::EffectKind::SourceScriptIntoCurrentShell | caushell_profile::EffectKind::ExecutePayload))
-                        }
-                        _ => false,
-                    }
-                })
-        });
-        let mut evaluation = crate::support::shell_evaluation::evaluate(
+        let bindings = apply_runtime_variable_bindings_before_span(
+            registry,
+            request,
+            base_bindings.clone(),
             parsed,
-            &checked_site,
+            site.input.span.start_byte,
+            request.sequence_no,
+        );
+        let mut evaluation = crate::support::shell_evaluation::evaluate(
+            registry,
+            request,
+            parsed,
+            site,
             &bindings,
+            base_bindings,
             max_depth.saturating_sub(depth),
         );
         // Token/assignment substitutions already have their canonical producer.
@@ -6136,6 +6113,7 @@ fn dispatch_argument_scalar(argument: &caushell_profile::DispatchArgument) -> Op
         return None;
     }
     let projected = caushell_profile::ProjectedArg {
+        word_context: Default::default(),
         text: argument.text.clone(),
         quoted: argument.quoted,
         node_kind: argument.node_kind.clone(),
@@ -6727,6 +6705,7 @@ fn expanded_static_xargs_children(
                     && !tilde_unresolved
                 {
                     let projected = caushell_profile::ProjectedArg {
+                        word_context: Default::default(),
                         text: argument.text.clone(),
                         quoted: argument.quoted,
                         node_kind: argument.node_kind.clone(),

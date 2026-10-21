@@ -46,8 +46,14 @@ forms:
       - kind: transform_data
         target:
           kind: none
+  - id: count_stdin_numeric
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: no_positional_args}]}
+    parameters: *inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_scalar: arithmetic_text
+    effects: *effects
   - id: count_inputs_stdin
-    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin]}
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin, {kind: not, item: {kind: no_positional_args}}]}
     parameters: *inputs
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
     effects: *effects

@@ -247,6 +247,7 @@ pub struct ForLoopFact {
 pub enum ShellEvaluationKind {
     ArrayElementAssignment { name: String, index: String },
     Arithmetic,
+    UnresolvedArithmetic,
     ArrayIndex { name: String },
     UnsetOperand { functions_only: bool },
     ArithmeticBuiltin,
@@ -266,6 +267,7 @@ pub struct ShellEvaluationSite {
 /// Grammar facts only; no arithmetic, substitution or variable evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArithmeticReference {
+    ArithmeticExpansion(String),
     Optional(Vec<ArithmeticReference>),
     Variable(String),
     ExpandedWord {

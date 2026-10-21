@@ -1375,7 +1375,9 @@ fn extract_test_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
 }
 
 fn append_test_expression_tokens(node: Node<'_>, source: &[u8], tokens: &mut Vec<CommandToken>) {
-    if let Some((text, quoted)) = extract_token_text(node, source) {
+    if let Some((text, quoted)) = extract_token_text(node, source)
+        .or_else(|| (node.kind() == "regex").then(|| (source_text(node, source), false)))
+    {
         tokens.push(CommandToken {
             text,
             implicit_input_source: None,
@@ -1390,7 +1392,11 @@ fn append_test_expression_tokens(node: Node<'_>, source: &[u8], tokens: &mut Vec
         return;
     }
 
-    if node.kind() == "test_operator" {
+    if node.kind() == "test_operator"
+        || node
+            .parent()
+            .is_some_and(|p| p.child_by_field_name("operator") == Some(node))
+    {
         tokens.push(CommandToken {
             text: source_text(node, source),
             implicit_input_source: None,
@@ -1591,11 +1597,12 @@ fn extract_shell_evaluations(
                 .then_some(node)
                 .or_else(|| find_ancestor_kind(node, "c_style_for_statement"))
                 && let Some(init) = loop_node.child_by_field_name("initializer")
-                && let (Some(name), Some(value)) = (
+                && let (Some(name), Some(_)) = (
                     init.child_by_field_name("name"),
                     init.child_by_field_name("value"),
                 )
-                && value.kind() == "number"
+                && name.kind() == "variable_name"
+                && !(value.start_byte() == init.start_byte() && value.end_byte() == init.end_byte())
             {
                 numeric_locals.push(source_text(name, source));
                 numeric_scope_span = Some(span_for(loop_node));
@@ -1638,6 +1645,8 @@ fn extract_shell_evaluations(
                     .or_else(|| text.strip_prefix("$[").and_then(|s| s.strip_suffix(']')));
                 if let Some(body) = body {
                     add(K::Arithmetic, node, Some(body.into()));
+                } else if text.starts_with("$((") || text.starts_with("$[") {
+                    add(K::UnresolvedArithmetic, node, None);
                 }
             }
             "compound_statement" if source_text(node, source).starts_with("((") => {
@@ -1674,8 +1683,8 @@ fn extract_shell_evaluations(
             "unset_command" => {
                 let mut functions_only = false;
                 let mut options = true;
-                for value in all_children(node).into_iter().filter(|n| n.is_named()) {
-                    let text = source_text(value, source);
+                for value in state_builtin_words(node, source) {
+                    let text = &value.text;
                     if options && text == "--" {
                         options = false;
                         continue;
@@ -1685,7 +1694,16 @@ fn extract_shell_evaluations(
                         continue;
                     }
                     options = false;
-                    add(K::UnsetOperand { functions_only }, value, None);
+                    // Joined lexical words can span several AST children.
+                    sites.push(ShellEvaluationSite {
+                        kind: K::UnsetOperand { functions_only },
+                        input: value,
+                        top_level_span: top_level_command_span(node),
+                        shell_scope_span: enclosing_shell_scope(node),
+                        numeric_locals: Vec::new(),
+                        numeric_scope_span: None,
+                        conditional_execution: conditionally_executed_in_shell(node),
+                    });
                 }
             }
             "command"
@@ -1794,7 +1812,24 @@ pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::Arithm
     let tree = parser.parse(&source, None)?;
     let root = tree.root_node();
     if root.has_error() || root.named_child_count() != 1 {
-        return None;
+        // Some valid arithmetic expansion words (e.g. $(producer)0) are not
+        // represented by the arithmetic grammar. Preserve a whole lexical word
+        // through the ordinary Bash grammar; never interpret its bytes as a command.
+        return with_single_argument(expression, |node, source| {
+            if node.kind() != "concatenation" {
+                return None;
+            }
+            let substitutions = command_substitutions_for_expansion_node(node, source);
+            if substitutions.is_empty() {
+                return None;
+            }
+            let (text, quoted) = extract_token_text(node, source)?;
+            Some(vec![R::ExpandedWord {
+                text,
+                quoted,
+                node_kind: node.kind().into(),
+            }])
+        });
     }
     let expression_node = root.named_child(0)?;
     if expression_node.kind() != "compound_statement" || expression_node.end_byte() != source.len()
@@ -1839,6 +1874,9 @@ pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::Arithm
             },
             "command_substitution" => {
                 let text = source_text(node, source);
+                if let Some(inner) = text.strip_prefix("$((").and_then(|s| s.strip_suffix("))")) {
+                    return vec![R::ArithmeticExpansion(inner.into())];
+                }
                 match command_substitution_body_text(&text) {
                     Some(body_text) => {
                         vec![R::CommandSubstitution(crate::CommandSubstitutionFact {
@@ -1907,6 +1945,13 @@ pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::Arithm
                         reads_previous,
                         value,
                     }]
+                }
+            }
+            "arithmetic_expansion" => {
+                let text = source_text(node, source);
+                match text.strip_prefix("$((").and_then(|s| s.strip_suffix("))")) {
+                    Some(inner) => vec![R::ArithmeticExpansion(inner.into())],
+                    None => vec![R::Unsupported(text)],
                 }
             }
             "simple_expansion" | "expansion" | "string" | "raw_string" | "ansi_c_string"
@@ -1982,6 +2027,177 @@ pub fn static_array_values(text: &str) -> Option<Vec<String>> {
         .collect()
 }
 
+/// Decode static array values without treating explicit keys as value text.
+pub fn static_array_entry_values(text: &str) -> Option<Vec<String>> {
+    if text.len() > 8192 {
+        return None;
+    }
+    let source = format!("__array__={text}");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return None;
+    }
+    let array = root.named_child(0)?.child_by_field_name("value")?;
+    if array.kind() != "array" || array.end_byte() != source.len() {
+        return None;
+    }
+    all_children(array)
+        .into_iter()
+        .filter(|n| n.is_named())
+        .map(|element| {
+            let children = all_children(element);
+            if element.kind() != "concatenation"
+                || children
+                    .first()
+                    .is_none_or(|c| source_text(*c, source.as_bytes()) != "[")
+            {
+                return decode_static_word_node(element, source.as_bytes());
+            }
+            let close = children
+                .iter()
+                .position(|c| c.kind() == "word" && source_text(*c, source.as_bytes()) == "]")?;
+            let next = children.get(close + 1)?;
+            if next.start_byte() != children[close].end_byte()
+                || !source_text(*next, source.as_bytes()).starts_with('=')
+            {
+                return None;
+            }
+            if children[1..close]
+                .iter()
+                .any(|c| decode_static_word_node(*c, source.as_bytes()).is_none())
+            {
+                return None;
+            }
+            let rhs = &source[next.start_byte() + 1..element.end_byte()];
+            let value_source = format!("__value__={rhs}");
+            let value_tree = parser.parse(&value_source, None)?;
+            let r = value_tree.root_node();
+            if r.has_error() || r.named_child_count() != 1 {
+                return None;
+            }
+            let assignment = r.named_child(0)?;
+            if assignment.end_byte() != value_source.len() {
+                return None;
+            }
+            assignment
+                .child_by_field_name("value")
+                .map(|v| decode_static_word_node(v, value_source.as_bytes()))
+                .unwrap_or_else(|| Some(String::new()))
+        })
+        .collect()
+}
+
+/// Syntax evidence that every completing case arm assigns the requested name.
+pub fn exhaustive_case_assignment_values(
+    source: &str,
+    name: &str,
+    before: usize,
+) -> Option<(SourceSpan, Vec<AssignmentValueFact>)> {
+    if source.len() > 65536 || !source.contains("case") {
+        return None;
+    }
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = parse_with_descriptor_ownership(&mut parser, source, &[]).ok()?;
+    if tree.tree.root_node().has_error() {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut result = None;
+    walk(tree.tree.root_node(), &mut |node| {
+        if node.kind() != "case_statement"
+            || node.end_byte() > before
+            || is_nested_shell_substructure(node)
+            || conditionally_executed_in_shell(node)
+            || enclosing_shell_scope(node).is_some_and(|s| before >= s.end_byte)
+        {
+            return;
+        }
+        let arms: Vec<_> = all_children(node)
+            .into_iter()
+            .filter(|n| n.kind() == "case_item")
+            .collect();
+        if !arms.iter().any(|n| {
+            n.child_by_field_name("value")
+                .is_some_and(|v| source_text(v, bytes) == "*")
+        }) {
+            return;
+        }
+        let values: Option<Vec<_>> = arms
+            .iter()
+            .map(|arm| {
+                all_children(*arm)
+                    .into_iter()
+                    .filter(|n| n.kind() == "variable_assignment")
+                    .filter_map(|n| parse_variable_assignment(n, bytes))
+                    .filter(|a| a.name == name)
+                    .last()
+                    .filter(|a| a.operator == crate::AssignmentOperator::Assign)
+                    .map(|a| a.value)
+            })
+            .collect();
+        if let Some(values) = values
+            && !values.is_empty()
+            && result
+                .as_ref()
+                .is_none_or(|(span, _): &(SourceSpan, Vec<AssignmentValueFact>)| {
+                    node.end_byte() > span.end_byte
+                })
+        {
+            result = Some((span_for(node), values));
+        }
+    });
+    result
+}
+
+/// A direct assignment statement dominates later positions in its own list.
+pub fn assignment_dominates_use(source: &str, definition: usize, use_start: usize) -> bool {
+    if source.len() > 65536 || definition >= use_start || use_start >= source.len() {
+        return false;
+    }
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&match language_for(ShellKind::Bash) {
+            Ok(l) => l,
+            Err(_) => return false,
+        })
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(tree) = parse_with_descriptor_ownership(&mut parser, source, &[]) else {
+        return false;
+    };
+    let root = tree.tree.root_node();
+    if root.has_error() {
+        return false;
+    }
+    let mut node = root.descendant_for_byte_range(definition, definition);
+    while let Some(current) = node {
+        if matches!(
+            current.kind(),
+            "variable_assignment" | "declaration_command"
+        ) && current.start_byte() == definition
+            && let Some(parent) = current.parent()
+            && matches!(parent.kind(), "program" | "compound_statement" | "do_group")
+            && use_start >= current.end_byte()
+            && use_start < parent.end_byte()
+            && !is_nested_shell_substructure(current)
+        {
+            return true;
+        }
+        node = current.parent();
+    }
+    false
+}
+
 fn extract_function_definitions(root: Node<'_>, source: &[u8]) -> Vec<FunctionDefinitionFact> {
     let mut definitions = Vec::new();
 
@@ -2027,33 +2243,38 @@ fn function_body_text(body_node: Node<'_>, source: &[u8]) -> String {
     body.trim().to_string()
 }
 
+fn state_builtin_words(node: Node<'_>, source: &[u8]) -> Vec<AssignmentValueFact> {
+    let mut words: Vec<AssignmentValueFact> = Vec::new();
+    for child in all_children(node).into_iter().filter(|n| n.is_named()) {
+        if let Some(previous) = words.last_mut()
+            && (previous.span.end_byte == child.start_byte()
+                || continuation_gap(source, previous.span.end_byte, child.start_byte()))
+        {
+            previous.span.end_byte = child.end_byte();
+            previous.span.end_row = child.end_position().row;
+            previous.span.end_column = child.end_position().column;
+            previous.text =
+                String::from_utf8_lossy(&source[previous.span.start_byte..child.end_byte()])
+                    .into_owned();
+            previous.quoted = false;
+            previous.node_kind = "concatenation".into();
+            previous
+                .command_substitutions
+                .extend(command_substitutions_for_expansion_node(child, source));
+        } else {
+            words.push(assignment_value_fact_from_node(child, source));
+        }
+    }
+    words
+}
+
 fn parse_unset_command(node: Node<'_>, source: &[u8]) -> UnsetCommandFact {
     let mut options = Vec::new();
     let mut names = Vec::new();
     let mut options_open = true;
 
-    for i in 0..node.child_count() {
-        let Some(child) = child_at(node, i) else {
-            continue;
-        };
-
-        match child.kind() {
-            "unset" => {}
-            "variable_name" => {
-                options_open = false;
-                names.push(source_text(child, source));
-            }
-            _ => {
-                if let Some((text, _quoted)) = extract_token_text(child, source) {
-                    collect_state_builtin_argument(
-                        text,
-                        &mut options_open,
-                        &mut options,
-                        &mut names,
-                    );
-                }
-            }
-        }
+    for word in state_builtin_words(node, source) {
+        collect_state_builtin_argument(word.text, &mut options_open, &mut options, &mut names);
     }
 
     UnsetCommandFact {

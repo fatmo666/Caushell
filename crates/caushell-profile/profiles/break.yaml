@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity:
+  canonical_name: break
+  aliases: [continue]
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bourne, bash, sh, dash]
+  requires_features: []
+
+forms:
+  - id: loop_control
+    selector: {kind: all, items: []}
+    parameters:
+      - name: loop_levels
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+
+modifiers: []
+subcommands: null

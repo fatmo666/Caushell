@@ -2287,6 +2287,7 @@ fn exact_output_field(
         return Some(field.text.clone());
     }
     let argument = caushell_profile::ProjectedArg {
+        word_context: Default::default(),
         text: token.text.clone(),
         quoted: token.quoted,
         node_kind: token.node_kind.clone(),

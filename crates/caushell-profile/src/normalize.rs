@@ -498,6 +498,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     }
 
     Ok(CommandProfile {
+        word_context: raw.word_context,
         identity,
         trust: normalize_trust(raw.trust),
         platform: normalize_platform(raw.platform),
@@ -1154,19 +1155,42 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .map(normalize_stdout_records)
             .transpose()?,
         stdout_scalar: raw.stdout_scalar,
+        stdout_scalar_inputs: raw
+            .stdout_scalar_inputs
+            .into_iter()
+            .map(SlotName::new)
+            .collect(),
         extensions: normalize_extensions(raw.extensions)?,
     })
 }
 
 fn validate_stdout_scalars(forms: &[Form]) -> Result<(), NormalizeError> {
     for form in forms {
-        if form.stdout_scalar.is_some()
+        if form.stdout_scalar == Some(crate::StdoutScalarShape::AbsolutePath)
             && !form
                 .stream_contract
                 .is_some_and(|s| s.stdout_mode == StreamOutputMode::PathList)
         {
             return Err(NormalizeError::InvalidStdoutScalar(
                 "absolute_path requires a path_list stdout contract".into(),
+            ));
+        }
+        if form.stdout_scalar == Some(crate::StdoutScalarShape::ArithmeticText)
+            && !form
+                .stream_contract
+                .is_some_and(|s| s.stdout_mode == StreamOutputMode::Data)
+        {
+            return Err(NormalizeError::InvalidStdoutScalar(
+                "arithmetic_text requires a data stdout contract".into(),
+            ));
+        }
+        if form
+            .stdout_scalar_inputs
+            .iter()
+            .any(|slot| !form.parameters.iter().any(|p| p.name == *slot))
+        {
+            return Err(NormalizeError::InvalidStdoutScalar(
+                "stdout_scalar_inputs must name declared form parameters".into(),
             ));
         }
     }
@@ -1437,6 +1461,9 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
                 ),
             ))
         }
+        RawSelectorExpr::HasSyntaxToken { node_kind, value } => Ok(SelectorExpr::Predicate(
+            SelectorPredicate::HasSyntaxToken(node_kind, value),
+        )),
         RawSelectorExpr::HasArgumentAtMatching { index, matcher } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::HasArgumentAtMatching(index, normalize_value_matcher(matcher)?),
         )),
@@ -3991,6 +4018,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_raw_schema_to_normalized_profile() {
         let raw = RawCommandProfile {
+            word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
@@ -4070,6 +4098,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -4185,6 +4214,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_only_flag_operands() {
         let raw = RawCommandProfile {
+            word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
@@ -4256,6 +4286,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -4298,6 +4329,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_inline_or_short_attached_flag_operands() {
         let raw = RawCommandProfile {
+            word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
@@ -4369,6 +4401,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
             modifiers: vec![RawModifier {
@@ -4411,6 +4444,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_accepts_positional_at_binding() {
         let raw = RawCommandProfile {
+            word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
@@ -4464,6 +4498,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
             modifiers: Vec::new(),
@@ -4482,6 +4517,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_metadata_mutation_semantics() {
         let raw = RawCommandProfile {
+            word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
@@ -4551,6 +4587,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
             ..Default::default()
@@ -4635,6 +4672,7 @@ mod tests {
     #[test]
     fn normalize_command_profile_maps_in_process_code_load_semantics() {
         let raw = RawCommandProfile {
+            word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             argument_files: Vec::new(),
@@ -4705,6 +4743,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
             modifiers: Vec::new(),

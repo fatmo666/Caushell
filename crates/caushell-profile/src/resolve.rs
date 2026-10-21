@@ -30,6 +30,35 @@ pub struct ResolvedInvocationArtifact {
 }
 
 impl ResolvedInvocationArtifact {
+    /// Positive scalar contract; only explicitly declared shape inputs may
+    /// influence this guarantee. Other values remain data to the selected form.
+    pub fn proven_arithmetic_stdout(&self) -> bool {
+        self.bound.stdout_scalar == Some(crate::StdoutScalarShape::ArithmeticText)
+            && self.bound.stdout_scalar_complete
+            && !self.bound.operation_semantics_unresolved
+            && self.bound.residuals.is_empty()
+            && self.bound.stdout_scalar_inputs.iter().all(|slot| {
+                self.bound
+                    .bound_parameters
+                    .iter()
+                    .find(|p| p.name == *slot)
+                    .is_some_and(|p| {
+                        !p.values.is_empty()
+                            && p.semantic_values().all(|v| match v {
+                                crate::SemanticValueRef::Original(source) => {
+                                    crate::project_value(&crate::ValueProjection::Identity, source)
+                                        .is_some_and(|v| {
+                                            matches!(v, crate::SemanticValueResolution::Known(_))
+                                        })
+                                }
+                                crate::SemanticValueRef::Projected { value, .. } => matches!(
+                                    value.resolution,
+                                    crate::SemanticValueResolution::Known(_)
+                                ),
+                            })
+                    })
+            })
+    }
     pub fn proven_stdout_scalar(&self) -> Option<crate::StdoutScalarShape> {
         self.proven_stream_contract()?;
         self.bound.stdout_scalar
@@ -338,6 +367,11 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
     };
 
     let mut projection = project_invocation(command, context);
+    if profile.word_context != crate::WordContext::ShellArgument {
+        for arg in &mut projection.args {
+            arg.word_context = profile.word_context;
+        }
+    }
     if !proofs.is_empty() {
         for arg in &mut projection.args {
             arg.substitution_shape = proofs
@@ -1089,7 +1123,11 @@ mod tests {
         match &write.target {
             EffectTarget::ConfiguredPath(target) => {
                 assert_eq!(
-                    target.sources.iter().map(|source| source.slot.as_str()).collect::<Vec<_>>(),
+                    target
+                        .sources
+                        .iter()
+                        .map(|source| source.slot.as_str())
+                        .collect::<Vec<_>>(),
                     vec!["target_directory", "root_directory", "prefix_directory"]
                 );
                 assert_eq!(target.environment.as_ref().unwrap().name, "PIP_TARGET");
@@ -1097,7 +1135,10 @@ mod tests {
             }
             other => panic!("unexpected pip installation target: {other:?}"),
         }
-        for kind in [EffectKind::ImportPackage, EffectKind::ExecuteImportedPackageLogic] {
+        for kind in [
+            EffectKind::ImportPackage,
+            EffectKind::ExecuteImportedPackageLogic,
+        ] {
             let effect = invocation
                 .effects
                 .iter()
@@ -9730,7 +9771,11 @@ mod tests {
                 assert_eq!(children.len(), 1);
                 assert_eq!(children[0].command.text, "cowsay");
                 assert_eq!(
-                    children[0].argv.iter().map(|arg| arg.text.as_str()).collect::<Vec<_>>(),
+                    children[0]
+                        .argv
+                        .iter()
+                        .map(|arg| arg.text.as_str())
+                        .collect::<Vec<_>>(),
                     vec!["hello"]
                 );
             }
@@ -12469,10 +12514,11 @@ mod tests {
                     ]
                 );
                 assert!(resolved.bound.effects.iter().any(|effect| {
-                    effect.state_operation == Some(caushell_types::StateOperation {
-                        domain: caushell_types::StateOperationDomain::RemoteResource,
-                        operation: caushell_types::StateOperationKind::Mutate,
-                    })
+                    effect.state_operation
+                        == Some(caushell_types::StateOperation {
+                            domain: caushell_types::StateOperationDomain::RemoteResource,
+                            operation: caushell_types::StateOperationKind::Mutate,
+                        })
                 }));
                 assert!(
                     resolved.bound.bound_parameters.iter().any(|p| matches!(

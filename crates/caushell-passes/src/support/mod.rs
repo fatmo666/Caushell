@@ -30,7 +30,10 @@ mod payload_hard_deny;
 mod pipeline;
 mod redirection;
 mod runtime_variable_overlay;
-pub(crate) use runtime_variable_overlay::{function_variable_escapes, runtime_write_visible};
+pub(crate) use runtime_variable_overlay::{
+    declaration_uses_nameref, function_variable_escapes, has_nameref_declaration,
+    runtime_write_visible,
+};
 pub(crate) mod shell_evaluation;
 mod shell_sink_hard_deny;
 mod shell_state_options;

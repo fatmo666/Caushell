@@ -104,6 +104,7 @@ pub struct SessionBindings {
     /// scalar assignment contract. This is analysis metadata, not runtime data.
     unresolved_runtime_variable_targets: std::collections::BTreeSet<String>,
     session_variables: BTreeMap<String, SessionValue>,
+    profile_shadowing_aliases: std::collections::BTreeSet<String>,
     // Local abstract values, not observed bytes and never persisted as a
     // concrete session variable. Scalar writes invalidate this metadata.
     argument_domains: BTreeMap<String, caushell_types::RuntimeArgumentDomain>,
@@ -272,9 +273,20 @@ impl SessionBindings {
         Self::default()
     }
 
+    pub fn mark_profile_shadowing_alias(&mut self, name: &str) {
+        self.profile_shadowing_aliases.insert(name.into());
+    }
+
+    pub fn profile_has_alias_shadow(&self, name: &str) -> bool {
+        self.profile_shadowing_aliases.contains(name)
+    }
+
     pub fn from_session_summary(summary: &SessionSummary) -> Self {
         let mut bindings = Self::new();
         bindings.replace_function_bindings(summary.function_bindings().cloned());
+        for alias in summary.alias_bindings() {
+            bindings.mark_profile_shadowing_alias(&alias.name);
+        }
 
         for binding in summary.variable_bindings() {
             bindings.session_variables.insert(
@@ -314,6 +326,14 @@ impl SessionBindings {
 
         bindings.variables_complete =
             shell_state.observability.variables == ShellStateKnowledge::Complete;
+        if shell_state.observability.aliases != ShellStateKnowledge::Complete {
+            for alias in summary.alias_bindings() {
+                bindings.mark_profile_shadowing_alias(&alias.name);
+            }
+        }
+        for alias in &shell_state.aliases {
+            bindings.mark_profile_shadowing_alias(&alias.name);
+        }
         if shell_state.observability.functions != ShellStateKnowledge::Complete {
             bindings.replace_function_bindings(summary.function_bindings().cloned());
         } else {
@@ -917,6 +937,7 @@ enum ShellWordMode {
     CommandName,
     PositionalArgument,
     Assignment,
+    Scalar,
 }
 
 /// Resolves a shell command word only when it is known to produce one exact field.
@@ -1102,8 +1123,10 @@ fn materialize_shell_word_with_resolver(
                     }
                     let value = resolve(&reference)?;
                     if value.contains('\0')
-                        || (mode != ShellWordMode::Assignment
-                            && !value.is_empty()
+                        || (matches!(
+                            mode,
+                            ShellWordMode::CommandName | ShellWordMode::PositionalArgument
+                        ) && !value.is_empty()
                             && !is_safe_unquoted_scalar(&value))
                     {
                         return None;
@@ -1112,7 +1135,14 @@ fn materialize_shell_word_with_resolver(
                     references.push(reference);
                 }
                 '`' => return None,
-                '*' | '?' | '[' if mode != ShellWordMode::Assignment => return None,
+                '*' | '?' | '['
+                    if matches!(
+                        mode,
+                        ShellWordMode::CommandName | ShellWordMode::PositionalArgument
+                    ) =>
+                {
+                    return None;
+                }
                 // Brace expansion can produce multiple fields before parameter
                 // expansion. This scalar query must not collapse those fields.
                 '{' | '}' if mode == ShellWordMode::PositionalArgument => return None,
@@ -1131,6 +1161,7 @@ fn materialize_shell_word_with_resolver(
 
     let quote_complete = quote == initial_quote;
     let value_allowed = mode == ShellWordMode::Assignment
+        || mode == ShellWordMode::Scalar
         || !out.is_empty()
         || tilde_expanded
         || (mode == ShellWordMode::PositionalArgument && initial_quote == ShellWordQuote::Double);
@@ -1688,6 +1719,7 @@ pub fn materialize_projected_invocation(
 
     for original in &projection.args {
         let expanded = if projection.shell_kind == caushell_types::ShellKind::Bash
+            && original.word_context == crate::WordContext::ShellArgument
             && !original.runtime_data
             && original.implicit_input_source.is_none()
             && matches!(
@@ -1723,7 +1755,9 @@ pub fn materialize_projected_invocation(
             .as_deref()
             .unwrap_or(std::slice::from_ref(original))
         {
-            if let Some(domain) = materialize_argument_domain(arg, bindings) {
+            if arg.word_context == crate::WordContext::ShellArgument
+                && let Some(domain) = materialize_argument_domain(arg, bindings)
+            {
                 let source = if matches!(
                     domain,
                     caushell_types::RuntimeArgumentDomain::GeneratedFileName { .. }
@@ -1748,6 +1782,7 @@ pub fn materialize_projected_invocation(
             }
             for materialized in materialize_argument_fields(arg, bindings) {
                 args.push(ProjectedArg {
+                    word_context: arg.word_context,
                     text: materialized.text,
                     implicit_input_source: arg.implicit_input_source,
                     runtime_argument_domain: arg.runtime_argument_domain.clone(),
@@ -2163,7 +2198,8 @@ fn materialize_argument_fields(
             resolution: ValueMaterialization::Static,
         }];
     }
-    if !matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string")
+    if arg.word_context == crate::WordContext::ShellArgument
+        && !matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string")
         && matches!(
             exact_shell_parameter_reference(&arg.text),
             Some(ShellParameterReference::AllPositionals(_))
@@ -2182,11 +2218,13 @@ fn materialize_argument_fields(
         }
     }
 
-    vec![materialize_argument_text(
+    vec![materialize_argument_text_in_context(
         &arg.text,
         arg.quoted,
         &arg.node_kind,
         bindings,
+        true,
+        arg.word_context,
     )]
 }
 
@@ -2346,6 +2384,25 @@ pub(crate) fn materialize_argument_text_with_tilde(
     bindings: &SessionBindings,
     allow_tilde_expansion: bool,
 ) -> MaterializedText {
+    materialize_argument_text_in_context(
+        text,
+        quoted,
+        node_kind,
+        bindings,
+        allow_tilde_expansion,
+        crate::WordContext::ShellArgument,
+    )
+}
+
+fn materialize_argument_text_in_context(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    bindings: &SessionBindings,
+    allow_tilde_expansion: bool,
+    context: crate::WordContext,
+) -> MaterializedText {
+    let scalar = context == crate::WordContext::Scalar;
     if matches!(node_kind, "raw_string" | "ansi_c_string") {
         return MaterializedText {
             text: text.to_string(),
@@ -2394,7 +2451,7 @@ pub(crate) fn materialize_argument_text_with_tilde(
             SessionValue::ExactScalar(value) => {
                 let value = value.clone();
 
-                if !quoted && !is_safe_unquoted_scalar(&value) {
+                if !scalar && !quoted && !is_safe_unquoted_scalar(&value) {
                     return MaterializedText {
                         text: text.to_string(),
                         resolution: ValueMaterialization::UnsafeUnquotedScalar {
@@ -2417,7 +2474,7 @@ pub(crate) fn materialize_argument_text_with_tilde(
             SessionValue::RuntimeProduced { value, kind } => {
                 let value = value.clone();
 
-                if !quoted && !is_safe_unquoted_scalar(&value) {
+                if !scalar && !quoted && !is_safe_unquoted_scalar(&value) {
                     return MaterializedText {
                         text: text.to_string(),
                         resolution: ValueMaterialization::UnsafeUnquotedScalar {
@@ -2478,7 +2535,7 @@ pub(crate) fn materialize_argument_text_with_tilde(
             SessionValue::ExactScalar(value) => {
                 let value = value.clone();
 
-                if !quoted && !is_safe_unquoted_scalar(&value) {
+                if !scalar && !quoted && !is_safe_unquoted_scalar(&value) {
                     return MaterializedText {
                         text: text.to_string(),
                         resolution: ValueMaterialization::UnsafeUnquotedScalar {
@@ -2501,7 +2558,7 @@ pub(crate) fn materialize_argument_text_with_tilde(
             SessionValue::RuntimeProduced { value, kind } => {
                 let value = value.clone();
 
-                if !quoted && !is_safe_unquoted_scalar(&value) {
+                if !scalar && !quoted && !is_safe_unquoted_scalar(&value) {
                     return MaterializedText {
                         text: text.to_string(),
                         resolution: ValueMaterialization::UnsafeUnquotedScalar {
@@ -2553,7 +2610,7 @@ pub(crate) fn materialize_argument_text_with_tilde(
     ) = exact_shell_parameter_reference(text)
     {
         if let Some(value) = exact_scalar_shell_parameter_value(bindings, &reference) {
-            if !quoted && !is_safe_unquoted_scalar(&value) {
+            if !scalar && !quoted && !is_safe_unquoted_scalar(&value) {
                 return MaterializedText {
                     text: text.to_string(),
                     resolution: ValueMaterialization::UnsafeUnquotedScalar {
@@ -2588,7 +2645,11 @@ pub(crate) fn materialize_argument_text_with_tilde(
         if let Some((value, references)) = materialize_shell_word_with_references(
             text,
             bindings,
-            ShellWordMode::PositionalArgument,
+            if scalar {
+                ShellWordMode::Scalar
+            } else {
+                ShellWordMode::PositionalArgument
+            },
             if quoted && node_kind == "string" {
                 ShellWordQuote::Double
             } else {
@@ -2803,7 +2864,9 @@ fn reclassify_projected_args(args: &mut [ProjectedArg]) {
     let mut dashdash_seen = false;
 
     for arg in args {
-        arg.kind = if arg.text == "--" {
+        arg.kind = if arg.word_context == crate::WordContext::Scalar {
+            ProjectedArgKind::Positional
+        } else if arg.text == "--" {
             dashdash_seen = true;
             ProjectedArgKind::DashDash
         } else if !dashdash_seen && arg.text.len() > 1 && arg.text.starts_with('-') {

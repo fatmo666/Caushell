@@ -18,10 +18,17 @@ platform:
   requires_features: []
 
 forms:
+  - id: emit_numeric_arguments
+    selector: &numeric_format {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^([0-9+[:space:]-]|%[-+ 0-9.]*[diu])+$'}}
+    parameters:
+      - {name: format_string, semantic: {kind: structured_value, context: format_string}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stdout_scalar: arithmetic_text
+    stdout_scalar_inputs: [format_string]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    effects: [{kind: transform_data, target: {kind: none}}]
   - id: emit_formatted_arguments
-    selector:
-      kind: all
-      items: []
+    selector: {kind: not, item: *numeric_format}
     parameters:
       - name: format_string
         semantic:

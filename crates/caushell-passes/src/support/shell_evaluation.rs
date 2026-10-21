@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+mod numeric;
 
 use caushell_parse::{
     ArithmeticReference as Ref, ParsedCommandArtifact, ShellEvaluationKind, ShellEvaluationSite,
@@ -16,15 +17,24 @@ pub(crate) struct Evaluation {
 /// A bounded interpreter of executable *positions*, not of Bash values. Only
 /// an indexed subscript reopens shell expansion while following scalar values.
 pub(crate) fn evaluate(
+    registry: &caushell_profile::ProfileRegistry,
+    request: &caushell_types::CheckRequest,
     parsed: &ParsedCommandArtifact,
     site: &ShellEvaluationSite,
     bindings: &SessionBindings,
+    base_bindings: &SessionBindings,
     max_depth: u8,
 ) -> Evaluation {
+    let facts = numeric::NumericFacts::new(registry, request, parsed, base_bindings);
+    let mut checked_site = site.clone();
+    checked_site
+        .numeric_locals
+        .retain(|name| facts.loop_local(name, site));
     let mut evaluator = Evaluator {
         parsed,
-        site,
+        site: &checked_site,
         bindings,
+        facts: &facts,
         result: Evaluation::default(),
         active: BTreeSet::new(),
         numeric: BTreeSet::new(),
@@ -34,6 +44,7 @@ pub(crate) fn evaluate(
     match &site.kind {
         ShellEvaluationKind::ArrayElementAssignment { .. } => {}
         ShellEvaluationKind::Arithmetic => evaluator.expression(&site.input.text, true, 0),
+        ShellEvaluationKind::UnresolvedArithmetic => evaluator.result.unresolved = true,
         ShellEvaluationKind::ArrayIndex { name } => {
             evaluator.index(name, &site.input.text, false, 0);
         }
@@ -56,7 +67,13 @@ pub(crate) fn evaluate(
                             evaluator.result.unresolved = true;
                         }
                     }
-                    None => evaluator.result.unresolved = true,
+                    None => {
+                        if let Some((name, index)) = array_operand(&site.input.text) {
+                            evaluator.index(name, index, false, 0);
+                        } else {
+                            evaluator.result.unresolved = true;
+                        }
+                    }
                 }
             }
         }
@@ -90,6 +107,7 @@ struct Evaluator<'a> {
     parsed: &'a ParsedCommandArtifact,
     site: &'a ShellEvaluationSite,
     bindings: &'a SessionBindings,
+    facts: &'a numeric::NumericFacts<'a>,
     result: Evaluation,
     active: BTreeSet<String>,
     numeric: BTreeSet<String>,
@@ -122,6 +140,11 @@ impl Evaluator<'_> {
             }
             self.budget -= 1;
             match reference {
+                Ref::ArithmeticExpansion(text) => {
+                    if expands {
+                        self.expression(text, true, depth + 1);
+                    }
+                }
                 Ref::Optional(refs) => {
                     let before = self.numeric.clone();
                     self.references(refs, expands, depth + 1);
@@ -136,7 +159,8 @@ impl Evaluator<'_> {
                 Ref::CommandSubstitution(subst) => {
                     if expands {
                         self.result.programs.push(subst.body_text.clone());
-                        self.result.unresolved = true;
+                        self.result.unresolved |=
+                            !self.facts.stdout(&subst.body_text, self.bindings);
                     }
                     // Literal substitution syntax in a scalar arithmetic value
                     // is invalid arithmetic, not an instruction to execute it.
@@ -156,6 +180,33 @@ impl Evaluator<'_> {
                     .unwrap_or_default()
                     {
                         self.result.programs.push(subst.body_text);
+                    }
+                    let value = caushell_parse::AssignmentValueFact {
+                        text: text.clone(),
+                        quoted: *quoted,
+                        node_kind: node_kind.clone(),
+                        span: self.site.input.span.clone(),
+                        command_substitutions: caushell_parse::parse_command_substitutions(
+                            text,
+                            self.parsed.shell_kind,
+                        )
+                        .unwrap_or_default(),
+                    };
+                    if self
+                        .facts
+                        .word(&value, self.site.top_level_span.start_byte, depth)
+                    {
+                        continue;
+                    }
+                    if matches!(node_kind.as_str(), "simple_expansion" | "expansion")
+                        && let Some(name) = text
+                            .strip_prefix("${")
+                            .and_then(|s| s.strip_suffix('}'))
+                            .or_else(|| text.strip_prefix('$'))
+                        && super::scalar_identifier(name)
+                    {
+                        self.variable(name, depth + 1);
+                        continue;
                     }
                     match materialize_shell_assignment_value(
                         text,
@@ -190,6 +241,12 @@ impl Evaluator<'_> {
 
     fn variable(&mut self, name: &str, depth: usize) {
         if self.numeric.contains(name) || self.site.numeric_locals.iter().any(|n| n == name) {
+            return;
+        }
+        if self
+            .facts
+            .variable(name, self.site.top_level_span.start_byte, depth)
+        {
             return;
         }
         if !self.active.insert(name.into()) {

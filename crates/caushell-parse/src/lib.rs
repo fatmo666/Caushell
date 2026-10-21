@@ -15,6 +15,8 @@ pub use artifact::{
 };
 pub use error::ParseError;
 pub use parser::{
-    concatenated_argument_is_scalar, decode_static_shell_argument, parse_arithmetic_references,
-    parse_command, parse_command_substitutions, parse_process_substitutions, static_array_values,
+    assignment_dominates_use, concatenated_argument_is_scalar, decode_static_shell_argument,
+    exhaustive_case_assignment_values, parse_arithmetic_references, parse_command,
+    parse_command_substitutions, parse_process_substitutions, static_array_entry_values,
+    static_array_values,
 };

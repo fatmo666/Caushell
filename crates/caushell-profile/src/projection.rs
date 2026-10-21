@@ -51,6 +51,7 @@ pub enum ProjectedArgKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedArg {
+    pub word_context: crate::WordContext,
     pub text: String,
     pub implicit_input_source: Option<caushell_types::ImplicitInputSource>,
     pub runtime_argument_domain: Option<caushell_types::RuntimeArgumentDomain>,
@@ -179,6 +180,7 @@ pub fn project_invocation(
         .tokens
         .iter()
         .map(|token| ProjectedArg {
+            word_context: crate::WordContext::ShellArgument,
             text: token.text.clone(),
             implicit_input_source: token.implicit_input_source,
             runtime_argument_domain: token.runtime_argument_domain.clone(),

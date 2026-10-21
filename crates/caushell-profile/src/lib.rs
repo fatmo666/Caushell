@@ -133,6 +133,7 @@ pub use types::OptionOperandMatcher;
 pub use types::PathAccessKind;
 pub use types::PathScope;
 pub use types::StdoutScalarShape;
+pub use types::WordContext;
 pub use types::{
     ArgumentBindingSource, ArgumentFileRule, ArgumentRegion, ArgumentRegionTerminator, BindingSpec,
     BoundArgumentMaterialization, BoundImplicitArgumentOrigin, BoundImplicitInput, BoundInvocation,

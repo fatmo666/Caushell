@@ -33,6 +33,7 @@ pub(crate) fn decoded_task_arguments(
                     },
                 ) => {
                     let argument = caushell_profile::ProjectedArg {
+                        word_context: Default::default(),
                         text: text.clone(),
                         quoted: *quoted,
                         node_kind: node_kind.clone(),

@@ -1,0 +1,26 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+word_context: scalar
+identity: {canonical_name: '[[', aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bash]
+  requires_features: []
+forms:
+  - id: regex_condition
+    selector: &regex
+      {kind: has_syntax_token, node_kind: '=~', value: '=~'}
+    parameters: &expression
+      - name: expression
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - kind: bind_variable_from_runtime_input
+        target: {kind: variable_name, name: BASH_REMATCH}
+  - id: condition
+    selector: {kind: not, item: *regex}
+    parameters: *expression
+modifiers: []
+subcommands: null

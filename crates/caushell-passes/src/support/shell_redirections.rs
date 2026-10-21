@@ -239,6 +239,7 @@ fn materialized_opening_frame(
                     stdin_payload_available: false,
                     interactive_session: false,
                     args: vec![ProjectedArg {
+                        word_context: Default::default(),
                         text: target.text.clone(),
                         quoted: target.quoted,
                         node_kind: target.node_kind.clone(),

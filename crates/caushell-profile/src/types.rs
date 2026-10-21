@@ -192,6 +192,8 @@ pub struct PlatformConstraints {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectorPredicate {
+    /// Match lexical syntax, not a substituted operand's value.
+    HasSyntaxToken(String, String),
     HasFlag(FlagName),
     HasFlagAtLeast(FlagName, usize),
     LacksFlag(FlagName),
@@ -337,6 +339,8 @@ pub struct StdoutRecordContract {
 #[serde(rename_all = "snake_case")]
 pub enum StdoutScalarShape {
     AbsolutePath,
+    /// Decimal digits, whitespace and signs; no identifiers or shell syntax.
+    ArithmeticText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1015,6 +1019,7 @@ pub struct Form {
     pub stdout_growth: Option<StreamGrowthContract>,
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
+    pub stdout_scalar_inputs: Vec<SlotName>,
     pub extensions: ExtensionMap,
 }
 
@@ -1033,6 +1038,7 @@ impl Form {
             stdout_growth: None,
             stdout_records: None,
             stdout_scalar: None,
+            stdout_scalar_inputs: Vec::new(),
             extensions: ExtensionMap::new(),
         }
     }
@@ -1953,6 +1959,8 @@ pub struct BoundInvocation {
     pub stdout_growth_complete: bool,
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
+    pub stdout_scalar_inputs: Vec<SlotName>,
+    pub stdout_scalar_complete: bool,
     pub bound_parameters: Vec<BoundParameter>,
     pub argument_regions: Vec<crate::BoundArgumentRegion>,
     pub payload_projections: Vec<PayloadProjection>,
@@ -2006,6 +2014,8 @@ impl BoundInvocation {
             stdout_growth_complete: false,
             stdout_records: None,
             stdout_scalar: None,
+            stdout_scalar_inputs: Vec::new(),
+            stdout_scalar_complete: false,
             bound_parameters: Vec::new(),
             argument_regions: Vec::new(),
             payload_projections: Vec::new(),
@@ -2050,8 +2060,18 @@ impl BoundInvocation {
     }
 }
 
+/// Expansion rules for source words; independent of their lexical quoting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WordContext {
+    #[default]
+    ShellArgument,
+    Scalar,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandProfile {
+    pub word_context: WordContext,
     pub identity: CommandIdentity,
     pub trust: ProfileTrustMetadata,
     pub platform: PlatformConstraints,
@@ -2125,6 +2145,7 @@ pub struct ArgumentControlVocabulary {
 impl CommandProfile {
     pub fn new(name: &str) -> Self {
         Self {
+            word_context: WordContext::default(),
             identity: CommandIdentity::new(name),
             trust: ProfileTrustMetadata::default(),
             platform: PlatformConstraints::default(),

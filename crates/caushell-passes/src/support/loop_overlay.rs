@@ -42,6 +42,7 @@ pub(super) fn iteration_domain(
         args: items
             .iter()
             .map(|item| ProjectedArg {
+                word_context: Default::default(),
                 text: item.text.clone(),
                 quoted: item.quoted,
                 node_kind: item.node_kind.clone(),

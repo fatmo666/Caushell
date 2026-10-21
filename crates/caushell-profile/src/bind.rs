@@ -14,6 +14,7 @@ use crate::{
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InvocationShape {
+    pub syntax_tokens: BTreeSet<(String, String)>,
     pub option_matching: OptionMatchingPolicy,
     /// Profile context for public shape-only selection; scoped invocations
     /// already contain decoded canonical flags and need no copy of this list.
@@ -495,7 +496,9 @@ pub fn bind_invocation(
             } => !finite_count_slots.is_empty(),
             _ => true,
         });
-    state.audit_operation_semantics = profile.opaque_on_unresolved || audit_growth;
+    let audit_scalar =
+        selection.form.stdout_scalar == Some(crate::StdoutScalarShape::ArithmeticText);
+    state.audit_operation_semantics = profile.opaque_on_unresolved || audit_growth || audit_scalar;
     if state.audit_operation_semantics {
         state.flag_operand_indices = vec![false; projection.args.len()];
     }
@@ -532,6 +535,7 @@ pub fn bind_invocation(
     bound.stdout_growth = selection.form.stdout_growth.clone();
     bound.stdout_records = selection.form.stdout_records.clone();
     bound.stdout_scalar = selection.form.stdout_scalar;
+    bound.stdout_scalar_inputs = selection.form.stdout_scalar_inputs.clone();
     bound.argument_regions = selection
         .option_scope
         .as_ref()
@@ -622,6 +626,7 @@ pub fn bind_invocation(
         let mut accounting_gaps = Vec::new();
         collect_unresolved_arguments(&state, selection, &mut accounting_gaps);
         bound.stdout_growth_complete = accounting_gaps.is_empty();
+        bound.stdout_scalar_complete = audit_scalar && accounting_gaps.is_empty();
         if profile.opaque_on_unresolved {
             residuals.extend(accounting_gaps);
         }
@@ -1686,6 +1691,17 @@ fn populate_argument_selector(
             }
         }
         SelectorExpr::Not(item) => populate_argument_selector(item, projection, shape),
+        SelectorExpr::Predicate(SelectorPredicate::HasSyntaxToken(kind, value)) => {
+            if projection.args.iter().any(|arg| {
+                !arg.quoted
+                    && !arg.runtime_data
+                    && arg.implicit_input_source.is_none()
+                    && arg.node_kind == *kind
+                    && arg.text == *value
+            }) {
+                shape.syntax_tokens.insert((kind.clone(), value.clone()));
+            }
+        }
         SelectorExpr::Predicate(SelectorPredicate::HasArgumentAtMatching(index, _)) => {
             if shape.argument_values.contains_key(index) {
                 return;
@@ -4387,6 +4403,9 @@ fn selector_matches(selector: &SelectorExpr, shape: &InvocationShape) -> bool {
 
 fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> bool {
     match predicate {
+        SelectorPredicate::HasSyntaxToken(kind, value) => {
+            shape.syntax_tokens.contains(&(kind.clone(), value.clone()))
+        }
         SelectorPredicate::HasFlag(flag_name) => shape.has_flag(flag_name.as_str()),
         SelectorPredicate::HasFlagAtLeast(flag_name, count) => {
             shape.flag_count(flag_name.as_str()) >= *count

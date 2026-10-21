@@ -6,6 +6,7 @@ use serde_json::Value as JsonValue;
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RawCommandProfile {
+    pub word_context: crate::WordContext,
     pub dsl_version: String,
     pub kind: String,
     pub identity: RawCommandIdentity,
@@ -214,6 +215,7 @@ pub struct RawForm {
     pub stdout_growth: Option<crate::StreamGrowthContract>,
     pub stdout_records: Option<RawStdoutRecordContract>,
     pub stdout_scalar: Option<crate::StdoutScalarShape>,
+    pub stdout_scalar_inputs: Vec<String>,
     pub extensions: BTreeMap<String, JsonValue>,
 }
 
@@ -267,6 +269,10 @@ fn default_payload_max_operations() -> usize {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RawSelectorExpr {
+    HasSyntaxToken {
+        node_kind: String,
+        value: String,
+    },
     All {
         items: Vec<RawSelectorExpr>,
     },

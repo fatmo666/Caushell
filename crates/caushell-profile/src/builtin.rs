@@ -7,6 +7,14 @@ struct BuiltInProfileSource {
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
+        profile_id: "bash_condition",
+        content: include_str!("../profiles/bash_condition.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "break",
+        content: include_str!("../profiles/break.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "autoconf",
         content: include_str!("../profiles/autoconf.yaml"),
     },

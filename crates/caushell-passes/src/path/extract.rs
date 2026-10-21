@@ -776,6 +776,7 @@ pub(crate) fn collect_redirection_path_fact(
     let mut domain = None;
     if let (Some(bindings), Some(target)) = (bindings, fact.target.as_mut()) {
         let argument = caushell_profile::ProjectedArg {
+            word_context: Default::default(),
             text: target.text.clone(),
             implicit_input_source: None,
             runtime_argument_domain: None,

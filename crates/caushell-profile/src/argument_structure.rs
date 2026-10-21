@@ -475,6 +475,19 @@ fn native_path_common_prefix(roots: &[String]) -> Option<String> {
 /// Ambiguous quoted vectors use a bounded syntax proof; unsupported forms
 /// retain Unknown rather than treating nested command words as outer fields.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
+    if arg.word_context == crate::WordContext::Scalar {
+        if arg.implicit_input_source.is_none() {
+            if arg.runtime_data {
+                return exact_word(arg.text.clone());
+            }
+            if let Some(value) =
+                caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
+            {
+                return exact_word(value);
+            }
+        }
+        return incomplete_word(String::new(), true);
+    }
     if let Some(prefix) = &arg.lexical_field_prefix
         && !arg.runtime_data
         && arg.implicit_input_source.is_none()
@@ -874,6 +887,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
 /// No runtime value, output proof, or source identity is manufactured here.
 pub fn shell_word_structure(text: &str, quoted: bool, node_kind: &str) -> ArgumentStructure {
     argument_structure(&ProjectedArg {
+        word_context: crate::WordContext::ShellArgument,
         text: text.into(),
         implicit_input_source: None,
         runtime_argument_domain: None,
