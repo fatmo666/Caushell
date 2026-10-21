@@ -55,6 +55,20 @@ fn native_prefixes_select_only_a_proven_operation() {
 }
 
 #[test]
+fn compound_form_selectors_reject_an_impossible_branch_without_sampling() {
+    let pattern = r"^\+(%[sYmdHMS]|[0-9+ -])+$";
+    assert_eq!(selection("+%c: ", "", pattern).unwrap(), "ordinary");
+    assert_eq!(selection("+%+: ", "", pattern).unwrap(), "ordinary");
+    assert!(selection("+%s", "", pattern).is_err());
+    assert!(selection("", "+%c: ", pattern).is_err());
+    assert_eq!(
+        selection("safe:x", "", r"^(safe|read):[0-9]+$").unwrap(),
+        "ordinary"
+    );
+    assert!(selection("safe:1", "", r"^(safe|read):[0-9]+$").is_err());
+}
+
+#[test]
 fn unknown_subcommands_cannot_fall_back_to_a_readonly_root_form() {
     let profile = load_command_profile_from_str(r#"
 dsl_version: caushell.profile/v1alpha1
