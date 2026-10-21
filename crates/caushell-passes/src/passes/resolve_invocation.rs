@@ -3166,6 +3166,7 @@ fn collect_execution_unit_resolve_records(
             result: ResolveInvocationArtifactResult::NoProfile {
                 normalized_command_name: scope.function_name.clone(),
                 gap_kind: caushell_types::ResolveGapKind::NoProfile,
+                executable_word: None,
             },
             shell_kind: request.shell_kind,
             root_command_index: scope.source_command_index,
@@ -3598,6 +3599,7 @@ fn collect_execution_unit_resolve_records(
                 ResolveInvocationArtifactResult::NoProfile {
                     normalized_command_name: name.clone(),
                     gap_kind: caushell_types::ResolveGapKind::NoProfile,
+                    executable_word: None,
                 }
             };
         }

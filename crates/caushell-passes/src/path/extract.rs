@@ -43,6 +43,57 @@ pub(crate) struct PathFactCandidate {
     pub metadata_mutation: Option<PathMetadataMutation>,
 }
 
+pub(crate) const EXECUTABLE_FILE_SLOT: &str = "@executable_file";
+
+pub(crate) enum ExecutableFileReference {
+    Known(String),
+    Unresolved(String),
+}
+
+/// An unmodeled invocation with an explicit executable pathname. Resolved
+/// Profiles own their execution semantics; bare names retain name-lookup policy.
+pub(crate) fn unmodeled_executable_path(
+    record: ExecutionResolveRecordRef<'_>,
+) -> Option<ExecutableFileReference> {
+    let ResolveInvocationArtifactResult::NoProfile {
+        executable_word, ..
+    } = record.result()
+    else {
+        return None;
+    };
+    let (word, runtime_data) = if let Some(word) = executable_word {
+        (word.text.as_str(), word.runtime_data)
+    } else {
+        let command = record.command()?;
+        (
+            command.command_name.as_deref()?,
+            command.command_name_runtime_data,
+        )
+    };
+    let executable = if runtime_data {
+        Some(word.to_owned())
+    } else if word.contains('{')
+        && caushell_profile::shell_word_structure(word, false, "word").fields
+            == caushell_profile::ArgumentFieldCount::ZeroOrMore
+    {
+        None
+    } else {
+        caushell_profile::materialize_command_name(word, record.bindings())
+    };
+    match executable {
+        Some(executable) => {
+            if !executable.contains('/')
+                || record.bindings().function_binding(&executable).is_some()
+            {
+                return None;
+            }
+            Some(ExecutableFileReference::Known(executable))
+        }
+        None if word.contains('/') => Some(ExecutableFileReference::Unresolved(word.to_owned())),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RedirectionPathFactCandidate {
     pub fact: RedirectionFact,
@@ -661,6 +712,7 @@ pub(crate) fn collect_path_facts(
 
     for &record in records {
         let home = record.bindings().tilde_home_with_default(home);
+        let executable = unmodeled_executable_path(record);
         for case in record.cwd_cases(cwd) {
             let start = paths.len();
             let resolution_cwd = case.resolution_base(cwd);
@@ -688,8 +740,39 @@ pub(crate) fn collect_path_facts(
                         &mut paths,
                     );
                 }
+                ResolveInvocationArtifactResult::NoProfile {
+                    normalized_command_name,
+                    ..
+                } => {
+                    if let Some(executable) = &executable {
+                        let (resolution, cwd_dependent) = match executable {
+                            ExecutableFileReference::Known(path) => (
+                                PathResolution::Concrete {
+                                    path: lexical_path_from_argv(path, resolution_cwd),
+                                },
+                                !path.starts_with('/'),
+                            ),
+                            ExecutableFileReference::Unresolved(text) => (
+                                PathResolution::UnsupportedDynamicText { text: text.clone() },
+                                true,
+                            ),
+                        };
+                        paths.push(PathFactCandidate {
+                            source_node_id: record.source_node_id().clone(),
+                            command_index: record.command_index(),
+                            slot_name: EXECUTABLE_FILE_SLOT.into(),
+                            semantic_slot: None,
+                            normalized_command_name: normalized_command_name.clone(),
+                            resolution,
+                            content_selector: None,
+                            cwd_dependent,
+                            role: PathRole::Read,
+                            purpose: Some(PathPurpose::ScriptSource),
+                            metadata_mutation: None,
+                        });
+                    }
+                }
                 ResolveInvocationArtifactResult::MissingCommandName { .. }
-                | ResolveInvocationArtifactResult::NoProfile { .. }
                 | ResolveInvocationArtifactResult::SelectionError {
                     partial_bound: None,
                     ..

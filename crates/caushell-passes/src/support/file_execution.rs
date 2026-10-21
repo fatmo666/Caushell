@@ -27,20 +27,29 @@ pub(crate) fn file_execution_checks(
     // Most shell actions have no executable file input. Do not construct the
     // staged-node/path indexes for commands without an execution effect.
     if !ctx.execution_unit_resolve_records().iter().any(|r| {
-        bound_invocation(&r.result).is_some_and(|b| {
-            b.effects.iter().any(|e| {
-                matches!(
-                    (&e.kind, &e.target),
-                    (EffectKind::ExecutePayload, EffectTarget::Slot(_))
-                )
+        crate::path::unmodeled_executable_path(ExecutionResolveRecordRef::new(r)).is_some()
+            || bound_invocation(&r.result).is_some_and(|b| {
+                b.effects.iter().any(|e| {
+                    matches!(
+                        (&e.kind, &e.target),
+                        (EffectKind::ExecutePayload, EffectTarget::Slot(_))
+                    )
+                })
             })
-        })
     }) {
         return Vec::new();
     }
     let records = graph_backed_execution_resolve_records(ctx);
     let mut candidates = Vec::new();
     for record in records {
+        if crate::path::unmodeled_executable_path(record).is_some() {
+            let slot = crate::path::EXECUTABLE_FILE_SLOT.to_owned();
+            candidates.push((
+                record.source_node_id().clone(),
+                slot.clone(),
+                BTreeSet::from([slot]),
+            ));
+        }
         let Some(bound) = bound_invocation(record.result()) else {
             continue;
         };

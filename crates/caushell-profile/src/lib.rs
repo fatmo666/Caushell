@@ -115,7 +115,7 @@ pub use recursive::{
 };
 pub use registry::{ProfileRegistry, RegistryError, RegistryLookupResult};
 pub use resolve::{
-    ResolveInvocationArtifactResult, ResolveInvocationResult, ResolvedInvocation,
+    ExecutableWord, ResolveInvocationArtifactResult, ResolveInvocationResult, ResolvedInvocation,
     ResolvedInvocationArtifact, resolve_invocation, resolve_invocation_artifact,
     resolve_invocation_artifact_with_bindings, resolve_invocation_artifact_with_stdout_proofs,
     resolve_invocation_artifact_with_summary, resolve_invocation_in_namespace,

@@ -172,6 +172,12 @@ impl<'a> ResolvedInvocation<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutableWord {
+    pub text: String,
+    pub runtime_data: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveInvocationResult<'a> {
     MissingCommandName {
         gap_kind: ResolveGapKind,
@@ -179,6 +185,7 @@ pub enum ResolveInvocationResult<'a> {
     NoProfile {
         normalized_command_name: String,
         gap_kind: ResolveGapKind,
+        executable_word: Option<ExecutableWord>,
     },
     Resolved(ResolvedInvocation<'a>),
     SelectionError {
@@ -197,6 +204,7 @@ pub enum ResolveInvocationArtifactResult {
     NoProfile {
         normalized_command_name: String,
         gap_kind: ResolveGapKind,
+        executable_word: Option<ExecutableWord>,
     },
     Resolved(ResolvedInvocationArtifact),
     SelectionError {
@@ -216,9 +224,11 @@ impl<'a> ResolveInvocationResult<'a> {
             Self::NoProfile {
                 normalized_command_name,
                 gap_kind,
+                executable_word,
             } => ResolveInvocationArtifactResult::NoProfile {
                 normalized_command_name,
                 gap_kind,
+                executable_word,
             },
             Self::Resolved(resolved) => {
                 ResolveInvocationArtifactResult::Resolved(resolved.into_artifact())
@@ -324,6 +334,12 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
 ) -> ResolveInvocationResult<'a> {
     let recovered_command = recover_ifs_field_split_command(command, bindings);
     let command = recovered_command.as_ref().unwrap_or(command);
+    let executable_word = || {
+        command.command_name.as_ref().map(|text| ExecutableWord {
+            text: text.clone(),
+            runtime_data: command.command_name_runtime_data,
+        })
+    };
     let materialized_command = materialize_command_word(command, bindings);
     let command_word_was_materialized = materialized_command.is_some();
     let command = materialized_command.as_ref().unwrap_or(command);
@@ -363,6 +379,7 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         return ResolveInvocationResult::NoProfile {
             normalized_command_name,
             gap_kind: ResolveGapKind::NoProfile,
+            executable_word: executable_word(),
         };
     };
 
@@ -1019,7 +1036,7 @@ mod tests {
     use caushell_types::{CommandSequenceNo, InProcessCodeLoadKind, SessionSummary, ShellKind};
 
     use super::{
-        ResolveGapKind, ResolveInvocationArtifactResult, ResolveInvocationResult,
+        ExecutableWord, ResolveGapKind, ResolveInvocationArtifactResult, ResolveInvocationResult,
         resolve_invocation, resolve_invocation_artifact, resolve_invocation_artifact_with_bindings,
         resolve_invocation_artifact_with_summary, resolve_invocation_with_bindings,
         resolve_invocation_with_summary,
@@ -15427,9 +15444,17 @@ mod tests {
             ResolveInvocationResult::NoProfile {
                 normalized_command_name,
                 gap_kind,
+                executable_word,
             } => {
                 assert_eq!(normalized_command_name, "custom-tool");
                 assert_eq!(gap_kind, ResolveGapKind::NoProfile);
+                assert_eq!(
+                    executable_word,
+                    Some(ExecutableWord {
+                        text: "custom-tool".into(),
+                        runtime_data: false,
+                    })
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -16027,6 +16052,10 @@ mod tests {
             ResolveInvocationArtifactResult::NoProfile {
                 normalized_command_name: "unknown-tool".to_string(),
                 gap_kind: ResolveGapKind::NoProfile,
+                executable_word: Some(ExecutableWord {
+                    text: "unknown-tool".into(),
+                    runtime_data: false,
+                }),
             }
         );
     }

@@ -40,6 +40,7 @@ impl SessionAnalysisPass for ResolvePolicyPass {
                     ResolveInvocationArtifactResult::NoProfile {
                         normalized_command_name,
                         gap_kind,
+                        ..
                     } => Some((
                         RuleId::NoProfile,
                         action_for_no_profile_gap(policy, normalized_command_name, *gap_kind),
@@ -547,6 +548,7 @@ mod tests {
                 ResolveInvocationArtifactResult::NoProfile {
                     normalized_command_name: "unknown-tool".to_string(),
                     gap_kind: ResolveGapKind::NoProfile,
+                    executable_word: None,
                 },
             )],
             Vec::new(),
@@ -574,6 +576,7 @@ mod tests {
                 ResolveInvocationArtifactResult::NoProfile {
                     normalized_command_name: "sudo".to_string(),
                     gap_kind: ResolveGapKind::NoProfile,
+                    executable_word: None,
                 },
             )],
             Vec::new(),
@@ -706,6 +709,7 @@ mod tests {
                 ResolveInvocationArtifactResult::NoProfile {
                     normalized_command_name: "unknown-tool".to_string(),
                     gap_kind: ResolveGapKind::NoProfile,
+                    executable_word: None,
                 },
             )],
             Vec::new(),
