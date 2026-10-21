@@ -1,3 +1,4 @@
+mod approval;
 mod decision;
 mod evidence;
 mod execution;
@@ -16,9 +17,12 @@ mod session;
 mod session_summary;
 mod shell_state;
 
+pub use approval::{
+    ApprovalAuthority, ApprovalRequest, ApprovalResolution, ApprovalResponse, CheckId, CheckIntent,
+    CheckReceipt, PendingApproval, SessionApprovalState,
+};
 pub use decision::Decision;
 pub use evidence::{
-    UnboundedFileWriteEvidence,
     CatastrophicShellExpansionModeEvidence, CatastrophicShellProcessExplosionEvidence, Evidence,
     EvidenceKind, ExecutionExpansionTruncatedEvidence, ExecutionRiskSubtype,
     ImportedPackageExecutionEvidence, ImportedPackageExecutionSinkEvidence,
@@ -30,7 +34,7 @@ pub use evidence::{
     OutsideWorkspacePathEvidence, PriorPathWriteEvidence, RepositoryOperationEvidence,
     TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence, TaintedExecutionSinkEvidence,
     TaintedExecutionSourceEvidence, TaintedExecutionUnresolvedOriginEvidence,
-    TaintedExecutionUnresolvedReasonEvidence,
+    TaintedExecutionUnresolvedReasonEvidence, UnboundedFileWriteEvidence,
 };
 pub use execution::{
     DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,
