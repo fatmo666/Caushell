@@ -390,17 +390,24 @@ fn spawn_checkpoint_worker(
     let mut snapshot_writer = store.open_materializer()?;
     let handle = thread::spawn(move || {
         let mut states: BTreeMap<SessionId, CheckpointSessionState> = BTreeMap::new();
+        let mut failed_sessions = std::collections::BTreeSet::new();
 
         while let Ok(command) = rx.recv() {
             match command {
                 SnapshotCommand::Update(event) => {
                     let session_id = event.session_id.clone();
+                    if failed_sessions.contains(&session_id) {
+                        continue;
+                    }
                     if !states.contains_key(&session_id) {
                         match restore_checkpoint_session_state(&store, &session_id) {
                             Ok(state) => {
                                 states.insert(session_id.clone(), state);
                             }
-                            Err(_) => continue,
+                            Err(_) => {
+                                failed_sessions.insert(session_id);
+                                continue;
+                            }
                         }
                     }
 
@@ -410,6 +417,9 @@ fn spawn_checkpoint_worker(
                     if event.event_index > checkpoint_state.applied_event_index
                         && apply_state_effect(&mut checkpoint_state.state, &event).is_err()
                     {
+                        // Never checkpoint past an event we could not replay.
+                        failed_sessions.insert(session_id.clone());
+                        states.remove(&session_id);
                         continue;
                     }
                     checkpoint_state.applied_event_index =
@@ -418,11 +428,15 @@ fn spawn_checkpoint_worker(
                     if !checkpoint_due(checkpoint_state) {
                         continue;
                     }
-                    let _ = write_checkpoint_snapshot(
+                    if write_checkpoint_snapshot(
                         &mut snapshot_writer,
                         &session_id,
                         checkpoint_state,
-                    );
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
                     let _ = log_tx.send(LogCommand::Compact {
                         session_id: session_id.clone(),
                         through_event_index: checkpoint_state
@@ -435,11 +449,15 @@ fn spawn_checkpoint_worker(
                         if checkpoint_state.applied_event_index
                             > checkpoint_state.last_checkpoint_event_index
                         {
-                            let _ = write_checkpoint_snapshot(
+                            if write_checkpoint_snapshot(
                                 &mut snapshot_writer,
                                 session_id,
                                 checkpoint_state,
-                            );
+                            )
+                            .is_err()
+                            {
+                                continue;
+                            }
                             let _ = log_tx.send(LogCommand::Compact {
                                 session_id: session_id.clone(),
                                 through_event_index: checkpoint_state
@@ -736,6 +754,7 @@ impl CliRuntime {
         &mut self,
         request: RuntimeTransportRequest,
     ) -> Result<RuntimeTransportResponse, CliError> {
+        self.require_healthy_persistence()?;
         match request {
             RuntimeTransportRequest::Check(request) => {
                 let response = self.handle_runtime_request_with_receipt(request)?;
@@ -2296,11 +2315,28 @@ pub fn check_unix_socket(
     socket_path: &Path,
     request: &RuntimeCheckRequest,
 ) -> Result<CheckResponse, CliError> {
-    Ok(check_with_receipt_unix_socket(socket_path, request)?.response)
+    if request.intent == caushell_types::CheckIntent::JudgeOnly {
+        return Ok(check_with_receipt_unix_socket(socket_path, request)?.response);
+    }
+    Ok(check_transport_unix_socket(socket_path, request)?.response)
 }
 
 #[cfg(unix)]
 pub fn check_with_receipt_unix_socket(
+    socket_path: &Path,
+    request: &RuntimeCheckRequest,
+) -> Result<caushell_types::RuntimeCheckResponse, CliError> {
+    if ping_unix_socket(socket_path)?.approval_protocol != Some(1) {
+        return Err(CliError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "runtime does not support single-check authorization/judge-only; no check sent",
+        )));
+    }
+    check_transport_unix_socket(socket_path, request)
+}
+
+#[cfg(unix)]
+fn check_transport_unix_socket(
     socket_path: &Path,
     request: &RuntimeCheckRequest,
 ) -> Result<caushell_types::RuntimeCheckResponse, CliError> {
@@ -2736,6 +2772,71 @@ mod tests {
             .as_nanos();
 
         std::env::temp_dir().join(format!("caushell-store-{name}-{unique}"))
+    }
+
+    #[test]
+    fn failed_checkpoint_write_or_replay_never_authorizes_log_compaction() {
+        use caushell_types::{
+            ApprovalAuthority, ApprovalRequest, ApprovalResponse, CheckId, CommandSequenceNo,
+        };
+        for failure in ["snapshot_write", "replay"] {
+            let root = temp_store_root(failure);
+            let store = initialized_store(&root);
+            if failure == "snapshot_write" {
+                store.open_connection().unwrap().execute_batch(
+                    "CREATE TRIGGER fail_snapshot BEFORE INSERT ON snapshots BEGIN SELECT RAISE(FAIL, 'injected'); END;"
+                ).unwrap();
+            }
+            let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+            let (log_tx, log_rx) = std::sync::mpsc::channel();
+            let worker =
+                super::spawn_checkpoint_worker(store.clone(), snapshot_rx, log_tx).unwrap();
+            let session = SessionId::new("sess-1");
+            let mut first = 1;
+            if failure == "replay" {
+                let check_id = CheckId {
+                    session_id: session.clone(),
+                    sequence_no: CommandSequenceNo(1),
+                };
+                snapshot_tx
+                    .send(super::SnapshotCommand::Update(SessionEvent {
+                        session_id: session.clone(),
+                        event_index: 1,
+                        observed_at_ms: 1,
+                        kind: SessionEventKind::Approval {
+                            request: ApprovalRequest {
+                                check_id: check_id.clone(),
+                                state_revision: 0,
+                                approved: true,
+                                authority: ApprovalAuthority::SimulatedUser,
+                            },
+                            response: ApprovalResponse {
+                                check_id,
+                                approved: true,
+                                state_revision: 1,
+                            },
+                        },
+                    }))
+                    .unwrap();
+                first = 2;
+            }
+            for index in first..=60 {
+                snapshot_tx
+                    .send(super::SnapshotCommand::Update(sample_check_event(
+                        &session, index, index, "pwd",
+                    )))
+                    .unwrap();
+            }
+            snapshot_tx.send(super::SnapshotCommand::Shutdown).unwrap();
+            worker.join().unwrap();
+            assert_eq!(
+                log_rx.try_iter().count(),
+                0,
+                "{failure}: no unsafe compact command"
+            );
+            assert!(store.read_snapshot(&session).unwrap().is_none());
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -6401,6 +6502,31 @@ policy:
             vec!["command unknown-tool has no registered profile".to_string()]
         );
         assert_eq!(response.decision_trace.decision_proposals.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn judge_only_client_refuses_legacy_runtime_before_sending_check() {
+        let socket_path = temp_socket_path("no-silent-judge-downgrade");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        caushell_runtime_security::secure_unix_socket(&socket_path).unwrap();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut runtime = create_runtime(None, None).unwrap();
+            serve_unix_socket_connection(&mut runtime, stream, |_, request| {
+                assert!(matches!(request, RuntimeTransportRequest::Ping));
+                let mut old = caushell_types::RuntimePingResponse::ok("old");
+                old.approval_protocol = None;
+                Ok(RuntimeTransportResponse::Ping(old))
+            })
+            .unwrap();
+        });
+        let mut request = sample_request("export MUST_NOT_COMMIT=value");
+        request.intent = caushell_types::CheckIntent::JudgeOnly;
+        let error = check_unix_socket(&socket_path, &request).unwrap_err();
+        assert!(error.to_string().contains("no check sent"));
+        handle.join().unwrap();
+        remove_temp_socket_path(&socket_path);
     }
 
     #[cfg(unix)]

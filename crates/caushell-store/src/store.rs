@@ -826,6 +826,12 @@ impl SessionLogWriter {
             self.unsynced_event_counts.insert(session_id.clone(), 0);
         }
 
+        // File data alone does not make a newly created log name durable.
+        #[cfg(unix)]
+        {
+            File::open(self.store.session_logs_dir())?.sync_all()?;
+            File::open(&self.store.root_dir)?.sync_all()?;
+        }
         Ok(())
     }
 
