@@ -56,6 +56,9 @@ impl StateCandidateQuery<'_> {
     ) -> StateCandidateResult {
         let mut result = StateCandidateResult::default();
         result.incomplete_budgets.extend(graph.incomplete_budgets());
+        if graph.state_history_bytes() >= self.limits.max_state_history_bytes {
+            result.incomplete_budgets.insert(B::StateHistoryBytes);
+        }
         let scope_bytes = match &self.object.scope {
             caushell_types::SafetyScope::Frame { frame_id, .. } => frame_id.len(),
             caushell_types::SafetyScope::Workspace { root } => root.len(),
@@ -261,6 +264,31 @@ mod tests {
     }
 
     #[test]
+    fn total_candidate_payload_limit_is_checked_even_for_an_unrecorded_object() {
+        let mut graph = SessionGraph::new();
+        add(&mut graph, "old", object(), value("/outside"), 1, 0);
+        let mut limits = AnalysisBudgetPolicy::default();
+        limits.max_state_history_bytes = graph.state_history_bytes();
+        let mut key = object();
+        key.name = "unrecorded".into();
+        let query = StateCandidateQuery {
+            object: &key,
+            before_sequence: CommandSequenceNo(2),
+            before_source_start: 0,
+            limits: &limits,
+        };
+        for graph in [
+            &graph,
+            &SessionGraph::from_snapshot(graph.to_snapshot()).unwrap(),
+        ] {
+            let result = query.execute(graph);
+            assert!(result.candidates.is_empty());
+            assert!(result.incomplete_budgets.contains(&B::StateHistoryBytes));
+            assert!(!result.is_complete());
+        }
+    }
+
+    #[test]
     fn indexed_and_scanned_queries_agree_before_and_after_snapshot_rebuild() {
         let mut graph = SessionGraph::new();
         add(&mut graph, "z", object(), value("/outside"), 1, 10);
@@ -280,10 +308,27 @@ mod tests {
         assert!(expected.is_complete());
         let restored = SessionGraph::from_snapshot(graph.to_snapshot()).unwrap();
         assert_eq!(query.execute(&restored), expected);
+        let bytes = graph.nodes().fold(0usize, |bytes, node| {
+            bytes
+                + match &node.kind {
+                    NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                    _ => 0,
+                }
+        });
+        assert_eq!(graph.state_history_bytes(), bytes);
+        assert_eq!(restored.state_history_bytes(), bytes);
         // A derived index replacement cannot retain the replaced object's entry.
         let mut other = object();
         other.name = "OTHER".into();
         add(&mut graph, "z", other, value("elsewhere"), 4, 0);
+        let new_bytes = graph.nodes().fold(0usize, |bytes, node| {
+            bytes
+                + match &node.kind {
+                    NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                    _ => 0,
+                }
+        });
+        assert_eq!(graph.state_history_bytes(), new_bytes);
         assert_eq!(query.execute(&graph), query.execute_scanning(&graph));
         assert_eq!(query.execute(&graph).candidates.len(), 1);
     }

@@ -44,6 +44,8 @@ impl SessionRead for StagedSession<'_> {
 struct OverlayGraphRead<'a> {
     base: &'a dyn GraphRead,
     overlay_state_candidate_index: BTreeMap<caushell_types::SafetyObject, Vec<NodeId>>,
+    total_state_history_bytes: usize,
+    total_state_object_count: usize,
     overlay_nodes: BTreeMap<NodeId, GraphNode>,
     overlay_edges: Vec<Edge>,
     overlay_outgoing_edge_index: BTreeMap<NodeId, Vec<usize>>,
@@ -94,6 +96,8 @@ impl<'a> OverlayGraphRead<'a> {
         let mut graph = Self {
             base,
             overlay_state_candidate_index: BTreeMap::new(),
+            total_state_history_bytes: base.state_history_bytes(),
+            total_state_object_count: base.state_object_count(),
             overlay_nodes,
             overlay_edges,
             overlay_outgoing_edge_index,
@@ -109,6 +113,11 @@ impl<'a> OverlayGraphRead<'a> {
             overlay_path_family_by_directory_index: BTreeMap::new(),
         };
         graph.rebuild_overlay_indexes();
+        graph.total_state_object_count += graph
+            .overlay_state_candidate_index
+            .keys()
+            .filter(|key| graph.base.state_candidate_nodes(key).next().is_none())
+            .count();
 
         graph
     }
@@ -187,6 +196,21 @@ impl<'a> OverlayGraphRead<'a> {
 
     fn rebuild_overlay_indexes(&mut self) {
         for node in self.overlay_nodes.values() {
+            let old = self
+                .base
+                .get_node(&node.id)
+                .map_or(0, |old| match &old.kind {
+                    NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                    _ => 0,
+                });
+            let new = match &node.kind {
+                NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                _ => 0,
+            };
+            self.total_state_history_bytes = self
+                .total_state_history_bytes
+                .saturating_sub(old)
+                .saturating_add(new);
             match &node.kind {
                 NodeKind::StateCandidate { fact } => self
                     .overlay_state_candidate_index
@@ -263,13 +287,12 @@ impl<'a> OverlayGraphRead<'a> {
 }
 
 impl GraphRead for OverlayGraphRead<'_> {
+    fn state_history_bytes(&self) -> usize {
+        self.total_state_history_bytes
+    }
+
     fn state_object_count(&self) -> usize {
-        self.base.state_object_count()
-            + self
-                .overlay_state_candidate_index
-                .keys()
-                .filter(|key| self.base.state_candidate_nodes(key).next().is_none())
-                .count()
+        self.total_state_object_count
     }
 
     fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
@@ -558,6 +581,11 @@ mod tests {
         let summary = caushell_types::SessionSummary::new();
         let staged = super::StagedSession::new(&graph, &request, &summary, &mutations);
         assert_eq!(staged.graph().state_object_count(), 1);
+        assert_eq!(
+            staged.graph().state_history_bytes(),
+            old.retained_bytes() * 2
+        );
+        assert_eq!(graph.state_history_bytes(), old.retained_bytes());
         assert_eq!(
             staged
                 .graph()

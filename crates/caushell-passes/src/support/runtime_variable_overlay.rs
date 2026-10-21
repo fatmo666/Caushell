@@ -25,6 +25,7 @@ pub(crate) struct RuntimeVariableOverlay {
     /// State-only fences. Commands remain present for conservative risk auditing.
     pub state_fences: Vec<(usize, usize)>,
     pub function_mutations: Vec<(caushell_runner::PendingMutation, usize)>,
+    pub state_capture: Option<super::state_capture::StateCapture>,
 }
 
 /// Explicit replay interface for static consumers that otherwise reconstruct
@@ -159,6 +160,45 @@ pub(crate) fn runtime_variable_overlay(
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
 ) -> RuntimeVariableOverlay {
+    runtime_variable_overlay_impl(
+        registry,
+        request,
+        bindings,
+        parsed,
+        span_start_byte,
+        observed_at,
+        None,
+    )
+}
+
+pub(crate) fn runtime_variable_overlay_with_history(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    bindings: SessionBindings,
+    parsed: &ParsedCommandArtifact,
+    observed_at: CommandSequenceNo,
+    limits: caushell_types::AnalysisBudgetPolicy,
+) -> RuntimeVariableOverlay {
+    runtime_variable_overlay_impl(
+        registry,
+        request,
+        bindings,
+        parsed,
+        usize::MAX,
+        observed_at,
+        Some(limits),
+    )
+}
+
+fn runtime_variable_overlay_impl(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    bindings: SessionBindings,
+    parsed: &ParsedCommandArtifact,
+    span_start_byte: usize,
+    observed_at: CommandSequenceNo,
+    capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
+) -> RuntimeVariableOverlay {
     let mut context = RuntimeVariableContext {
         registry,
         request,
@@ -175,6 +215,7 @@ pub(crate) fn runtime_variable_overlay(
             })
             .collect(),
         can_prove_termination: true,
+        capture_limits,
     };
     context.replay(bindings, parsed, span_start_byte, observed_at)
 }
@@ -185,6 +226,7 @@ pub(super) struct RuntimeVariableContext<'a> {
     depth: u8,
     aliases: BTreeMap<String, SessionAliasBinding>,
     can_prove_termination: bool,
+    capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
 }
 
 impl RuntimeVariableContext<'_> {
@@ -206,6 +248,8 @@ impl RuntimeVariableContext<'_> {
                         || self.aliases.contains_key(name)
                         || bindings.function_binding(name).is_some()
                         || !super::alias_assignments(command).is_empty()
+                        || (self.capture_limits.is_some()
+                            && !super::unalias_names(command).is_empty())
                         || parsed.function_definitions.iter().any(|f| f.name == name)
                 })
         });
@@ -219,8 +263,10 @@ impl RuntimeVariableContext<'_> {
                 observed_at,
                 Some(self.registry),
                 None,
+                self.capture_limits.clone(),
             );
         }
+        let capture_limits = self.capture_limits.clone();
         apply_variable_overlay(
             bindings,
             parsed,
@@ -228,6 +274,7 @@ impl RuntimeVariableContext<'_> {
             observed_at,
             Some(self.registry),
             Some(self),
+            capture_limits,
         )
     }
 
@@ -239,12 +286,46 @@ impl RuntimeVariableContext<'_> {
         bindings: &mut SessionBindings,
         touched: &mut BTreeSet<String>,
         function_mutations: &mut Vec<(caushell_runner::PendingMutation, usize)>,
+        capture: &mut Option<super::state_capture::StateCapture>,
     ) -> Option<(usize, usize)> {
         // A pipeline/background shell cannot write the caller's variables.
         // A (...) write is visible only to later commands inside that scope.
         let visible = runtime_write_visible(command, parsed, target_start);
         let (expanded, _) = expand_alias_chain(command, self.request.shell_kind, &self.aliases, 8);
+        let old_aliases = capture.as_ref().map(|_| self.aliases.clone());
         apply_alias_command(&mut self.aliases, command, self.request.sequence_no);
+        if visible && let (Some(capture), Some(old)) = (capture.as_mut(), old_aliases) {
+            let names: BTreeSet<_> = old.keys().chain(self.aliases.keys()).collect();
+            for name in names {
+                if old.get(name) == self.aliases.get(name) {
+                    continue;
+                }
+                if let Some(binding) = old.get(name) {
+                    capture.observe(
+                        caushell_types::SafetyStateKind::Alias,
+                        name,
+                        caushell_types::SafetyStateValue::Definition {
+                            body: binding.body.clone(),
+                            uncertainty: None,
+                        },
+                        command.span.start_byte,
+                    );
+                }
+                let value = self.aliases.get(name).map_or(
+                    caushell_types::SafetyStateValue::Absent,
+                    |binding| caushell_types::SafetyStateValue::Definition {
+                        body: binding.body.clone(),
+                        uncertainty: None,
+                    },
+                );
+                capture.observe(
+                    caushell_types::SafetyStateKind::Alias,
+                    name,
+                    value,
+                    command.span.end_byte,
+                );
+            }
+        }
         if visible {
             for name in self.aliases.keys() {
                 bindings.mark_profile_shadowing_alias(name);
@@ -313,8 +394,36 @@ impl RuntimeVariableContext<'_> {
                 depth: self.depth + 1,
                 aliases: self.aliases.clone(),
                 can_prove_termination: true,
+                capture_limits: self.capture_limits.clone(),
             };
             let mut result = child.replay(local, &body, usize::MAX, self.request.sequence_no);
+            if visible
+                && let (Some(capture), Some(child_capture)) =
+                    (capture.as_mut(), result.state_capture.take())
+            {
+                capture.incomplete.extend(child_capture.incomplete);
+                capture.merge(child_capture.observations.into_iter().filter_map(
+                    |mut observation| {
+                        use caushell_types::SafetyStateKind as K;
+                        let escapes = match observation.kind {
+                            K::Variable => function_variable_escapes_in_frame(
+                                &body,
+                                &observation.name,
+                                Some(bindings),
+                            ),
+                            K::Function | K::Alias => true,
+                            _ => false,
+                        };
+                        if !escapes {
+                            return None;
+                        }
+                        // Child source offsets are not caller offsets. Global
+                        // effects become possible after this call, never before it.
+                        observation.source_end = command.span.end_byte;
+                        Some(observation)
+                    },
+                ));
+            }
             let terminates = result
                 .state_fences
                 .iter()

@@ -2960,6 +2960,80 @@ mod tests {
     }
 
     #[test]
+    fn state_candidate_facts_survive_allow_and_authorized_ask_event_log_replay() {
+        use caushell_types::{
+            ApprovalAuthority, ApprovalRequest, SafetyStateValue,
+            SessionGraphNodeKindSnapshot as N, SessionVariableValue,
+        };
+        for ask in [false, true] {
+            let root = temp_store_root("candidate-recovery");
+            let receipt = {
+                let mut runtime = create_runtime(None, Some(&root)).unwrap();
+                let command = if ask {
+                    "export TARGET=/earlier/a; export TARGET=/outside/a; touch \"$TARGET\""
+                } else {
+                    "TARGET=/earlier/a; TARGET=/outside/a"
+                };
+                let response = runtime
+                    .handle_runtime_request_with_receipt(sample_request(command))
+                    .unwrap();
+                assert_eq!(
+                    response.decision,
+                    if ask {
+                        Decision::NeedApproval
+                    } else {
+                        Decision::Allow
+                    }
+                );
+                response.check_receipt
+            };
+            if let Some(receipt) = receipt {
+                let mut runtime = create_runtime(None, Some(&root)).unwrap();
+                runtime
+                    .ensure_session_loaded(&SessionId::new("sess-1"))
+                    .unwrap();
+                assert!(
+                    !runtime
+                        .core
+                        .session_snapshot(&SessionId::new("sess-1"), 0)
+                        .unwrap()
+                        .graph
+                        .nodes
+                        .iter()
+                        .any(|n| matches!(n.kind, N::StateCandidate { .. }))
+                );
+                runtime
+                    .handle_runtime_transport_request(RuntimeTransportRequest::Authorize(
+                        ApprovalRequest {
+                            check_id: receipt.check_id,
+                            state_revision: receipt.state_revision,
+                            approved: true,
+                            authority: ApprovalAuthority::SimulatedUser,
+                        },
+                    ))
+                    .unwrap();
+            }
+            {
+                let mut runtime = create_runtime(None, Some(&root)).unwrap();
+                runtime
+                    .ensure_session_loaded(&SessionId::new("sess-1"))
+                    .unwrap();
+                let snapshot = runtime
+                    .core
+                    .session_snapshot(&SessionId::new("sess-1"), 0)
+                    .unwrap();
+                for value in ["/earlier/a", "/outside/a"] {
+                    assert!(snapshot.graph.nodes.iter().any(|n| matches!(&n.kind,
+                        N::StateCandidate { fact } if fact.object.name == "TARGET"
+                            && fact.value == SafetyStateValue::Variable { value: SessionVariableValue::exact_scalar(value), exported: ask }
+                    )), "lost {value} during event replay");
+                }
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn exhausted_budget_survives_pending_approval_log_replay_and_checkpoint_compaction() {
         use caushell_types::{ApprovalAuthority, ApprovalRequest, CheckIntent};
         for judge in [false, true] {

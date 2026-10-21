@@ -30,6 +30,7 @@ mod payload_hard_deny;
 mod pipeline;
 mod redirection;
 mod runtime_variable_overlay;
+mod state_capture;
 pub(crate) use runtime_variable_overlay::{
     declaration_uses_nameref, function_variable_escapes, function_variable_escapes_in_frame,
     has_nameref_declaration, runtime_write_visible,
@@ -59,7 +60,7 @@ mod variable_overlay;
 pub(crate) use runtime_variable_overlay::{
     RebasedBindingReplay, RuntimeBindingReplay, VariableBindingReplay,
     apply_runtime_variable_bindings_before_span, runtime_variable_overlay,
-    runtime_visible_variable_bindings_before_span,
+    runtime_variable_overlay_with_history, runtime_visible_variable_bindings_before_span,
 };
 
 pub(crate) use alias::{

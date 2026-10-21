@@ -38,6 +38,20 @@ pub struct StateCandidateFact {
 }
 
 impl StateCandidateFact {
+    /// Charged candidate payload, not a claim about exact allocator usage.
+    pub fn retained_bytes(&self) -> usize {
+        let scope_bytes = match &self.object.scope {
+            SafetyScope::Frame { frame_id, .. } => frame_id.len(),
+            SafetyScope::Workspace { root } => root.len(),
+            _ => 0,
+        };
+        self.object
+            .name
+            .len()
+            .saturating_add(scope_bytes)
+            .saturating_add(self.value.retained_bytes())
+    }
+
     pub fn precedes(&self, sequence: CommandSequenceNo, source_start: usize) -> bool {
         self.sequence_no < sequence
             || (self.sequence_no == sequence && self.source_end <= source_start)

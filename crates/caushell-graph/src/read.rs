@@ -2,6 +2,15 @@ use crate::{Edge, GraphNode, NodeId};
 use caushell_types::CommandSequenceNo;
 
 pub trait GraphRead {
+    fn state_history_bytes(&self) -> usize {
+        self.nodes().fold(0usize, |bytes, node| {
+            bytes.saturating_add(match &node.kind {
+                crate::NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                _ => 0,
+            })
+        })
+    }
+
     fn state_object_count(&self) -> usize {
         self.state_objects().len()
     }

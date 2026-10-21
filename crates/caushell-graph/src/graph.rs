@@ -17,6 +17,7 @@ pub enum GraphError {
 pub struct SessionGraph {
     // Derived solely from StateCandidate graph facts; never persisted separately.
     state_candidate_index: BTreeMap<caushell_types::SafetyObject, Vec<NodeId>>,
+    state_history_bytes: usize,
     nodes: BTreeMap<NodeId, GraphNode>,
     edges: Vec<Edge>,
     outgoing_edge_index: BTreeMap<NodeId, Vec<usize>>,
@@ -272,6 +273,9 @@ impl SessionGraph {
     fn index_node(&mut self, node: &GraphNode) {
         match &node.kind {
             NodeKind::StateCandidate { fact } => {
+                self.state_history_bytes = self
+                    .state_history_bytes
+                    .saturating_add(fact.retained_bytes());
                 let ids = self
                     .state_candidate_index
                     .entry(fact.object.clone())
@@ -366,6 +370,9 @@ impl SessionGraph {
     fn remove_node_indexes(&mut self, node: &GraphNode) {
         match &node.kind {
             NodeKind::StateCandidate { fact } => {
+                self.state_history_bytes = self
+                    .state_history_bytes
+                    .saturating_sub(fact.retained_bytes());
                 remove_index_entry(&mut self.state_candidate_index, &fact.object, &node.id)
             }
             NodeKind::CommandInvocation { sequence_no, .. } => {
@@ -488,6 +495,10 @@ impl SessionGraph {
 }
 
 impl GraphRead for SessionGraph {
+    fn state_history_bytes(&self) -> usize {
+        self.state_history_bytes
+    }
+
     fn state_object_count(&self) -> usize {
         self.state_candidate_index.len()
     }

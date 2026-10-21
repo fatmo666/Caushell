@@ -1198,9 +1198,15 @@ mod tests {
             EvidenceKind::TaintedExecutionBudgetExceeded(_)
         )));
         assert!(
-            ctx.findings[0]
-                .message
-                .contains("truncated by runtime budget")
+            ctx.findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::TaintedExecution
+                    && finding.message.contains("truncated by runtime budget"))
+        );
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::AnalysisIncomplete)
         );
     }
 

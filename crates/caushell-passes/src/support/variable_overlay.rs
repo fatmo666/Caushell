@@ -34,7 +34,16 @@ pub(crate) fn apply_visible_variable_bindings_before_span(
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
 ) -> SessionBindings {
-    apply_variable_overlay(bindings, parsed, span_start_byte, observed_at, None, None).bindings
+    apply_variable_overlay(
+        bindings,
+        parsed,
+        span_start_byte,
+        observed_at,
+        None,
+        None,
+        None,
+    )
+    .bindings
 }
 
 pub(crate) fn static_variable_overlay(
@@ -42,7 +51,7 @@ pub(crate) fn static_variable_overlay(
     parsed: &ParsedCommandArtifact,
     observed_at: CommandSequenceNo,
 ) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
-    apply_variable_overlay(bindings, parsed, usize::MAX, observed_at, None, None)
+    apply_variable_overlay(bindings, parsed, usize::MAX, observed_at, None, None, None)
 }
 
 pub(super) fn apply_variable_overlay(
@@ -52,6 +61,7 @@ pub(super) fn apply_variable_overlay(
     observed_at: CommandSequenceNo,
     registry: Option<&caushell_profile::ProfileRegistry>,
     mut runtime: Option<&mut super::runtime_variable_overlay::RuntimeVariableContext<'_>>,
+    capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
 ) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
     let mut events = Vec::new();
     let mut touched = std::collections::BTreeSet::new();
@@ -59,6 +69,12 @@ pub(super) fn apply_variable_overlay(
     let mut assigned = std::collections::BTreeSet::new();
     let mut state_fences = Vec::new();
     let mut function_mutations = Vec::new();
+    let entry = capture_limits.as_ref().map(|_| bindings.clone());
+    let mut state_capture = capture_limits.map(super::state_capture::StateCapture::new);
+    let mut all_touched = std::collections::BTreeSet::new();
+    let mut all_assigned = std::collections::BTreeSet::new();
+    let mut captured_function_count = 0;
+    let mut event_end = 0;
 
     for iteration in &parsed.for_loops {
         if iteration.body_span.start_byte <= span_start_byte {
@@ -118,12 +134,29 @@ pub(super) fn apply_variable_overlay(
     events.sort_by_key(|event| event.start_byte());
 
     for event in events {
+        // Flush before the next event so early `continue`s in the ordinary
+        // replay cannot bypass history recording. Per-event name sets avoid
+        // rescanning every previously written variable for every statement.
+        capture_event(
+            &mut state_capture,
+            entry.as_ref(),
+            &bindings,
+            &touched,
+            &assigned,
+            &function_mutations[captured_function_count..],
+            &positional_state,
+            event_end,
+        );
+        captured_function_count = function_mutations.len();
+        all_touched.append(&mut touched);
+        all_assigned.append(&mut assigned);
         if state_fences
             .iter()
             .any(|(start, end)| event.start_byte() >= *start && event.start_byte() < *end)
         {
             continue;
         }
+        event_end = event.end_byte();
         match event {
             VariableOverlayEvent::ForEnter(iteration) => {
                 if !state_visible(&iteration.shell_scope_span, span_start_byte) {
@@ -219,6 +252,11 @@ pub(super) fn apply_variable_overlay(
                                 observed_at,
                             ),
                         );
+                        if let (Some(capture), Some(entry)) =
+                            (state_capture.as_mut(), entry.as_ref())
+                        {
+                            capture.variable(entry, &bindings, &assignment.name, event_end);
+                        }
                         if declaration.conditional_execution {
                             bindings.insert_opaque_dynamic(
                                 &assignment.name,
@@ -349,6 +387,11 @@ pub(super) fn apply_variable_overlay(
                                 observed_at,
                             ),
                         );
+                        if let (Some(capture), Some(entry)) =
+                            (state_capture.as_mut(), entry.as_ref())
+                        {
+                            capture.variable(entry, &bindings, &assignment.name, event_end);
+                        }
                         if !declaration.conditional_execution
                             && !bindings.runtime_variable_target_is_unresolved(&assignment.name)
                         {
@@ -430,6 +473,12 @@ pub(super) fn apply_variable_overlay(
                             observed_at,
                         ),
                     );
+                    // A pure assignment command can write the same name more
+                    // than once. Retain each possible partial effect, not just
+                    // the last value at the end of this event.
+                    if let (Some(capture), Some(entry)) = (state_capture.as_mut(), entry.as_ref()) {
+                        capture.variable(entry, &bindings, &assignment.name, event_end);
+                    }
                     if assignment_command.conditional_execution {
                         // A conditional/isolated assignment is not proof that
                         // an invalidated runtime value became exact again.
@@ -648,6 +697,7 @@ pub(super) fn apply_variable_overlay(
                         &mut bindings,
                         &mut touched,
                         &mut function_mutations,
+                        &mut state_capture,
                     ) {
                         state_fences.push(fence);
                     }
@@ -656,13 +706,56 @@ pub(super) fn apply_variable_overlay(
         }
     }
 
+    capture_event(
+        &mut state_capture,
+        entry.as_ref(),
+        &bindings,
+        &touched,
+        &assigned,
+        &function_mutations[captured_function_count..],
+        &positional_state,
+        event_end,
+    );
+    all_touched.append(&mut touched);
+    all_assigned.append(&mut assigned);
+
     super::runtime_variable_overlay::RuntimeVariableOverlay {
         bindings,
-        touched,
+        touched: all_touched,
         positional_state,
-        assigned,
+        assigned: all_assigned,
         state_fences,
         function_mutations,
+        state_capture,
+    }
+}
+
+fn capture_event(
+    capture: &mut Option<super::state_capture::StateCapture>,
+    entry: Option<&SessionBindings>,
+    bindings: &SessionBindings,
+    touched: &std::collections::BTreeSet<String>,
+    assigned: &std::collections::BTreeSet<String>,
+    function_mutations: &[(caushell_runner::PendingMutation, usize)],
+    positionals: &Option<PositionalParameterMutation>,
+    end: usize,
+) {
+    let (Some(capture), Some(entry)) = (capture.as_mut(), entry) else {
+        return;
+    };
+    for name in touched.union(assigned) {
+        capture.variable(entry, bindings, name, end);
+    }
+    for (mutation, _) in function_mutations {
+        let name = match mutation {
+            caushell_runner::PendingMutation::UpsertFunctionBinding { binding } => &binding.name,
+            caushell_runner::PendingMutation::UnsetFunction { name, .. } => name,
+            _ => continue,
+        };
+        capture.function(entry, bindings, name, end);
+    }
+    if positionals.is_some() {
+        capture.positionals(entry, bindings, end);
     }
 }
 
@@ -699,6 +792,21 @@ enum VariableOverlayEvent<'a> {
 }
 
 impl VariableOverlayEvent<'_> {
+    fn end_byte(&self) -> usize {
+        match self {
+            Self::Evaluation(site) => site.input.span.end_byte,
+            Self::ForEnter(iteration) => iteration.body_span.start_byte,
+            Self::ForExit(iteration) => iteration.span.end_byte,
+            Self::FunctionDefinition(definition) => definition.span.end_byte,
+            Self::Declaration(declaration) => declaration.span.end_byte,
+            Self::AssignmentCommand(command) => command.span.end_byte,
+            Self::Unset(unset) => unset.span.end_byte,
+            Self::SetPositionalParameters(command) | Self::RuntimeCommand(command) => {
+                command.span.end_byte
+            }
+        }
+    }
+
     fn start_byte(&self) -> usize {
         match self {
             Self::Evaluation(site) => site.input.span.end_byte,

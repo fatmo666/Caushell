@@ -543,6 +543,9 @@ fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
     if graph.state_object_count() >= limits.max_state_objects {
         budgets.push(B::StateObjects);
     }
+    if graph.state_history_bytes() >= limits.max_state_history_bytes {
+        budgets.push(B::StateHistoryBytes);
+    }
     let changed_objects: std::collections::BTreeSet<_> = ctx
         .pending_mutations()
         .iter()
@@ -6326,7 +6329,15 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             snapshot.summary.last_sequence_no(),
             Some(CommandSequenceNo::new(1))
         );
-        assert_eq!(snapshot.graph.nodes.len(), 3);
+        assert_eq!(snapshot.graph.nodes.len(), 4);
+        assert!(snapshot.graph.nodes.iter().any(|node| matches!(&node.kind,
+            caushell_types::SessionGraphNodeKindSnapshot::StateCandidate { fact }
+                if fact.object.name == "SCRIPT"
+                    && fact.object.scope == caushell_types::SafetyScope::Shell
+                    && fact.value == caushell_types::SafetyStateValue::Variable {
+                        value: SessionVariableValue::exact_scalar("build.sh"), exported: true,
+                    }
+        )));
         assert_eq!(snapshot.graph.edges.len(), 1);
         assert!(
             snapshot
