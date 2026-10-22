@@ -239,6 +239,8 @@ bash ./setup.sh
 
 当操作数除了路径还包含其他信息时，路径参数可以声明 `value_projection`。绑定结果仍保留完整参数、源码位置、绑定来源和物化来源信息，路径分析使用单独的语义视图；命令分派和实际 argv 不会因此被改写。
 
+原生选项归属已确定时，同一选项操作数可供 Form 和多个 Modifier 分别建立语义视图，各自保留绑定来源和约束。操作数的消费记录只用于排除后续位置参数，不使其他声明丢失该值；根命令和子命令仍使用各自的选项作用域。
+
 ```yaml
 - name: test_paths
   semantic: {kind: path, role: read, purpose: generic_operand}

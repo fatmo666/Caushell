@@ -2868,8 +2868,18 @@ impl<'p, 'm> BindingState<'p, 'm> {
 
     fn bind_parameter_values(&mut self, target: &ParameterTarget<'_>) -> Vec<BoundValue> {
         let value_constraints = &target.parameter.value_constraints;
+        // Scoped ownership permits multiple semantic views of one operand.
+        // Consumption excludes it from positionals, not other declared views.
+        let prior = (is_flag_binding(&target.parameter.binding)
+            && self.owned_flag_indices(target.modifier).is_some())
+        .then(|| {
+            (
+                std::mem::replace(&mut self.consumed, vec![false; self.projection.args.len()]),
+                std::mem::take(&mut self.bound_option_occurrences),
+            )
+        });
 
-        match &target.parameter.binding {
+        let values = match &target.parameter.binding {
             BindingSpec::ArgumentRegionCommand(region) => {
                 self.consume_argument_region(region, true, value_constraints)
             }
@@ -2984,7 +2994,19 @@ impl<'p, 'm> BindingState<'p, 'm> {
                     modifier_id,
                     value_constraints,
                 ),
+        };
+        if let Some((consumed, mut occurrences)) = prior {
+            for (current, previous) in self.consumed.iter_mut().zip(consumed) {
+                *current |= previous;
+            }
+            for occurrence in std::mem::take(&mut self.bound_option_occurrences) {
+                if !occurrences.contains(&occurrence) {
+                    occurrences.push(occurrence);
+                }
+            }
+            self.bound_option_occurrences = occurrences;
         }
+        values
     }
 
     fn consume_argument_region(

@@ -113,6 +113,9 @@ dispatch_overrides:
         stream_contract: *help_streams
 
 modifiers:
+  - id: no_optional_locks
+    matcher: {kind: any_flag, flags: [--no-optional-locks]}
+
   - id: work_tree
     matcher:
       kind: any_flag
