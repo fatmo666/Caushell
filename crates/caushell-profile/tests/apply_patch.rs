@@ -180,8 +180,19 @@ fn stdin_starts_unknown_and_requires_explicit_complete_evidence() {
             .count(),
         4
     );
-    for slot in ["patch_reads", "patch_writes", "patch_deletes", "patch_moves"] {
-        assert_eq!(b.bound_parameters.iter().filter(|p| p.name.as_str() == slot).count(), 1);
+    for slot in [
+        "patch_reads",
+        "patch_writes",
+        "patch_deletes",
+        "patch_moves",
+    ] {
+        assert_eq!(
+            b.bound_parameters
+                .iter()
+                .filter(|p| p.name.as_str() == slot)
+                .count(),
+            1
+        );
     }
 }
 #[test]

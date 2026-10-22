@@ -93,6 +93,10 @@ pub enum DerivedInvocationOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMutation {
+    SetShellStateUncertainty {
+        reason: Option<String>,
+        observed_at: CommandSequenceNo,
+    },
     AddPathTargetFact {
         node_id: String,
         fact: crate::PathTargetFact,

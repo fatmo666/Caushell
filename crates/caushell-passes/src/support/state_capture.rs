@@ -117,7 +117,7 @@ impl StateCapture {
         end: usize,
     ) {
         if !self.retained.contains_key(&(K::Function, name.to_owned())) {
-            if let Some(binding) = entry.function_binding(name) {
+            if let Some(binding) = entry.retained_function_binding(name) {
                 self.observe(
                     K::Function,
                     name,
@@ -129,12 +129,16 @@ impl StateCapture {
                 );
             }
         }
-        let value = bindings
-            .function_binding(name)
-            .map_or(V::Absent, |binding| V::Definition {
-                body: binding.body.clone(),
-                uncertainty: binding.uncertainty.clone(),
-            });
+        let value = if bindings.shell_state_uncertainty().is_some() {
+            V::Unknown
+        } else {
+            bindings
+                .retained_function_binding(name)
+                .map_or(V::Absent, |binding| V::Definition {
+                    body: binding.body.clone(),
+                    uncertainty: binding.uncertainty.clone(),
+                })
+        };
         self.observe(K::Function, name, value, end);
     }
 
@@ -201,6 +205,30 @@ fn variable_value(bindings: &SessionBindings, name: &str) -> Option<V> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incomplete_function_state_is_unknown_not_absent() {
+        let mut bindings = caushell_profile::SessionBindings::new();
+        bindings.upsert_function_binding(caushell_types::SessionFunctionBinding::new(
+            "f",
+            "printf SAFE;",
+            caushell_types::CommandSequenceNo::new(1),
+        ));
+        let entry = bindings.clone();
+        bindings.mark_shell_state_uncertain("incomplete source");
+        let mut capture = super::StateCapture::new(caushell_types::AnalysisBudgetPolicy::default());
+        capture.function(&entry, &bindings, "f", 10);
+        assert!(matches!(
+            capture.observations.last().unwrap().value,
+            caushell_types::SafetyStateValue::Unknown
+        ));
+        assert!(
+            !capture
+                .observations
+                .iter()
+                .any(|observation| observation.value == caushell_types::SafetyStateValue::Absent)
+        );
+    }
+
     use super::*;
 
     fn value(text: &str) -> V {

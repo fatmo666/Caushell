@@ -37,11 +37,25 @@ pub enum PathTargetAccess {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PathMutationKind {
+pub enum PathTargetOperation {
     Write,
     Delete,
     MoveSource,
     Metadata,
+    ExecuteFile,
+    LoadCode,
+    StartupConfig,
+    WorkingDirectory,
+    WorkspaceRoot,
+}
+
+impl PathTargetOperation {
+    pub fn is_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::Write | Self::Delete | Self::MoveSource | Self::Metadata
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,7 +89,7 @@ pub struct PathTargetFact {
     pub source_node_id: String,
     pub effect_key: String,
     pub slot_name: String,
-    pub operation: PathMutationKind,
+    pub operation: PathTargetOperation,
     pub access: PathTargetAccess,
     pub lexical: PathResolution,
     pub spelling: Option<String>,

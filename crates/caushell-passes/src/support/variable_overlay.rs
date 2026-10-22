@@ -698,6 +698,7 @@ pub(super) fn apply_variable_overlay(
                         &mut touched,
                         &mut function_mutations,
                         &mut state_capture,
+                        &mut positional_state,
                     ) {
                         state_fences.push(fence);
                     }

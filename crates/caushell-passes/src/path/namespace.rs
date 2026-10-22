@@ -121,6 +121,22 @@ impl NamespaceResolver {
         let mut links = 0;
         let follow = follow || spelling.ends_with('/') || spelling.ends_with("/.");
         while let Some(component) = pending.pop_front() {
+            let process_path = parts
+                .first()
+                .map_or(matches!(component.as_str(), "dev" | "proc"), |part| {
+                    part == "dev" || part == "proc"
+                });
+            if process_path {
+                let remaining = crate::path::normalize_shell_path(&format!(
+                    "/{}/{}/{}",
+                    parts.join("/"),
+                    component,
+                    pending.iter().cloned().collect::<Vec<_>>().join("/")
+                ));
+                if caushell_query::IoTargetQuery::descriptor_alias(&remaining).is_some() {
+                    return Err(gap(SemanticGapKind::UnknownTarget, "descriptor pathname requires an execution I/O target, not a filesystem observation".into()));
+                }
+            }
             self.steps += 1;
             if self.steps > MAX_STEPS {
                 return Err(gap(
@@ -262,6 +278,23 @@ mod tests {
             matches!(resolver.resolve("/work/link", PathTargetAccess::Either).0,
             SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { roots, may_escape: false } } if roots.len() == 2)
         );
+    }
+
+    #[test]
+    fn process_local_descriptors_do_not_use_the_observers_fd_table() {
+        let mut resolver = resolver(&[("/work/door", link("/proc/self/fd"))]);
+        for spelling in ["/dev/fd/9", "/proc/self/fd/9", "/work/door/9"] {
+            let (result, observations) = resolver.resolve(spelling, PathTargetAccess::Follow);
+            assert!(
+                matches!(result, SemanticResolution::Unresolved { gap } if gap.kind == SemanticGapKind::UnknownTarget)
+            );
+            assert!(
+                !observations
+                    .iter()
+                    .any(|entry| entry.path.starts_with("/proc/self")
+                        || entry.path.starts_with("/dev/fd"))
+            );
+        }
     }
 
     #[test]

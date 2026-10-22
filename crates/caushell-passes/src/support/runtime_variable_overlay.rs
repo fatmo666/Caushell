@@ -1,4 +1,4 @@
-//! Ordered variable effects, shared with the ordinary static assignment overlay.
+//! Ordered shell-state effects, shared with the static assignment overlay.
 //! The registry supplies semantics; this module does not know wait/read names.
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -168,6 +168,7 @@ pub(crate) fn runtime_variable_overlay(
         span_start_byte,
         observed_at,
         None,
+        None,
     )
 }
 
@@ -178,6 +179,7 @@ pub(crate) fn runtime_variable_overlay_with_history(
     parsed: &ParsedCommandArtifact,
     observed_at: CommandSequenceNo,
     limits: caushell_types::AnalysisBudgetPolicy,
+    session: caushell_query::QuerySession<'_>,
 ) -> RuntimeVariableOverlay {
     runtime_variable_overlay_impl(
         registry,
@@ -187,7 +189,28 @@ pub(crate) fn runtime_variable_overlay_with_history(
         usize::MAX,
         observed_at,
         Some(limits),
+        Some(session),
     )
+}
+
+pub(crate) fn runtime_source_bindings_before_span(
+    registry: &ProfileRegistry,
+    session: caushell_query::QuerySession<'_>,
+    request: &CheckRequest,
+    parsed: &ParsedCommandArtifact,
+    end: usize,
+) -> SessionBindings {
+    runtime_variable_overlay_impl(
+        registry,
+        request,
+        request_variable_bindings(session.summary(), request),
+        parsed,
+        end,
+        request.sequence_no,
+        None,
+        Some(session),
+    )
+    .bindings
 }
 
 fn runtime_variable_overlay_impl(
@@ -198,6 +221,7 @@ fn runtime_variable_overlay_impl(
     span_start_byte: usize,
     observed_at: CommandSequenceNo,
     capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
+    session: Option<caushell_query::QuerySession<'_>>,
 ) -> RuntimeVariableOverlay {
     let mut context = RuntimeVariableContext {
         registry,
@@ -209,6 +233,12 @@ fn runtime_variable_overlay_impl(
             .collect(),
         can_prove_termination: true,
         capture_limits,
+        session,
+        observations: Vec::new(),
+        entry_cwd: caushell_runner::EffectiveCwd::known(request.shell_state_before.cwd()),
+        source_scopes: Vec::new(),
+        sourced: false,
+        work: std::rc::Rc::new(std::cell::Cell::new(1024usize)),
     };
     context.replay(bindings, parsed, span_start_byte, observed_at)
 }
@@ -220,9 +250,188 @@ pub(super) struct RuntimeVariableContext<'a> {
     aliases: BTreeMap<String, SessionAliasBinding>,
     can_prove_termination: bool,
     capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
+    session: Option<caushell_query::QuerySession<'a>>,
+    observations: Vec<(ResolveInvocationArtifactResult, SessionBindings)>,
+    entry_cwd: caushell_runner::EffectiveCwd,
+    source_scopes: Vec<super::source_state::SourceStateScope>,
+    sourced: bool,
+    work: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 impl RuntimeVariableContext<'_> {
+    fn apply_source(
+        &mut self,
+        command: &CommandFact,
+        expanded: &CommandFact,
+        parsed: &ParsedCommandArtifact,
+        bindings: &mut SessionBindings,
+        touched: &mut BTreeSet<String>,
+        function_mutations: &mut Vec<(caushell_runner::PendingMutation, usize)>,
+        capture: &mut Option<super::state_capture::StateCapture>,
+        positional_state: &mut Option<super::PositionalParameterMutation>,
+        visible: bool,
+        resolved: &caushell_profile::ResolvedInvocationArtifact,
+    ) {
+        if !visible {
+            return;
+        }
+        let scope = super::source_state::SourceStateScope::new(
+            parsed,
+            command,
+            self.request,
+            &self.entry_cwd,
+            &self.observations,
+        );
+        let empty_graph = caushell_graph::SessionGraph::new();
+        let empty_summary = SessionSummary::new();
+        // Without a history view, only bytes proved within the current source
+        // scope can be recovered. Missing history is never a file-content fact.
+        let session = self
+            .session
+            .unwrap_or_else(|| caushell_query::QuerySession::new(&empty_graph, &empty_summary));
+        let body = (self.depth < 8)
+            .then(|| {
+                super::source_state::body(
+                    session,
+                    self.registry,
+                    self.request,
+                    resolved,
+                    bindings,
+                    scope.as_ref()?,
+                    &self.source_scopes,
+                )
+            })
+            .flatten()
+            .filter(|text| text.len() <= 65536)
+            .and_then(|text| caushell_parse::parse_command(&text, parsed.shell_kind).ok())
+            .filter(|p| p.status == caushell_parse::ParseStatus::Complete);
+        let Some(body) = body else {
+            touched.extend(bindings.variable_names().map(str::to_owned));
+            bindings.mark_shell_state_uncertain("sourced shell state is incomplete");
+            *positional_state = Some(super::PositionalParameterMutation::Forget);
+            return;
+        };
+        let projection = materialize_projected_invocation(
+            &project_invocation(
+                expanded,
+                InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind),
+            ),
+            bindings,
+        );
+        if projection.shell_expansion_unresolved {
+            touched.extend(bindings.variable_names().map(str::to_owned));
+            bindings.mark_shell_state_uncertain("sourced argument expansion is incomplete");
+            *positional_state = Some(super::PositionalParameterMutation::Forget);
+            return;
+        }
+        let mut local = super::command_environment_bindings(
+            bindings,
+            parsed,
+            &caushell_runner::ParsedCommandRef::new(usize::MAX, command.span.clone()),
+        );
+        let prefixed_environment = local != *bindings;
+        let args = projection
+            .invocation
+            .args
+            .iter()
+            .skip(1)
+            .map(|arg| SessionValue::exact_scalar(&arg.text))
+            .collect::<Vec<_>>();
+        let temporary_args = !args.is_empty();
+        if temporary_args {
+            local.replace_positional_parameters(args);
+        }
+        let scope = scope.unwrap();
+        let mut source_scopes = self.source_scopes.clone();
+        source_scopes.push(scope.clone());
+        let mut child = RuntimeVariableContext {
+            registry: self.registry,
+            request: self.request,
+            depth: self.depth + 1,
+            aliases: self.aliases.clone(),
+            can_prove_termination: true,
+            capture_limits: self.capture_limits.clone(),
+            session: self.session,
+            observations: Vec::new(),
+            entry_cwd: scope.cwd(),
+            source_scopes,
+            sourced: true,
+            work: self.work.clone(),
+        };
+        let mut result = child.replay(local, &body, usize::MAX, self.request.sequence_no);
+        if prefixed_environment {
+            result.bindings.mark_shell_state_uncertain(
+                "sourced prefix assignment has unresolved caller-frame lifetime",
+            );
+        }
+        if bindings.in_function_scope()
+            && body.declaration_commands.iter().any(|declaration| {
+                matches!(
+                    declaration.kind,
+                    caushell_parse::DeclarationCommandKind::Local
+                        | caushell_parse::DeclarationCommandKind::Declare
+                        | caushell_parse::DeclarationCommandKind::Typeset
+                )
+            })
+        {
+            result.bindings.mark_shell_state_uncertain(
+                "sourced local declaration has unresolved caller-frame lifetime",
+            );
+        }
+        // An unproved branch may execute or retain the entry state. Do not
+        // install its definitions as unconditional caller facts.
+        if command.conditional_execution {
+            touched.extend(bindings.variable_names().map(str::to_owned));
+            touched.extend(result.assigned);
+            touched.extend(result.touched);
+            bindings.mark_shell_state_uncertain("conditional sourced shell state");
+            *positional_state = Some(super::PositionalParameterMutation::Forget);
+            return;
+        }
+        touched.extend(result.assigned);
+        touched.extend(result.touched);
+        if temporary_args {
+            if bindings.positional_parameters_are_complete() {
+                result.bindings.replace_positional_parameters(
+                    bindings.positional_parameters().iter().cloned(),
+                );
+            } else {
+                result.bindings.forget_positional_parameters();
+            }
+        } else if result.positional_state.is_some() {
+            *positional_state = result.positional_state;
+        }
+        if let (Some(parent), Some(child)) = (capture.as_mut(), result.state_capture.take()) {
+            parent.incomplete.extend(child.incomplete);
+            parent.merge(
+                child
+                    .observations
+                    .into_iter()
+                    .filter_map(|mut observation| {
+                        if temporary_args
+                            && observation.kind == caushell_types::SafetyStateKind::Positionals
+                        {
+                            return None;
+                        }
+                        observation.source_end = command.span.end_byte;
+                        Some(observation)
+                    }),
+            );
+        }
+        function_mutations.extend(
+            result
+                .function_mutations
+                .into_iter()
+                .map(|(mutation, _)| (mutation, command.span.start_byte)),
+        );
+        self.aliases = result
+            .bindings
+            .alias_bindings()
+            .map(|binding| (binding.name.clone(), binding.clone()))
+            .collect();
+        *bindings = result.bindings;
+    }
+
     fn replay(
         &mut self,
         bindings: SessionBindings,
@@ -230,22 +439,49 @@ impl RuntimeVariableContext<'_> {
         end: usize,
         observed_at: CommandSequenceNo,
     ) -> RuntimeVariableOverlay {
+        let mut bindings = bindings;
+        if self.sourced {
+            let cost = parsed
+                .commands
+                .len()
+                .saturating_add(parsed.function_definitions.len())
+                .max(1);
+            if cost > self.work.get() {
+                bindings.mark_shell_state_uncertain("sourced state replay budget exceeded");
+                return apply_variable_overlay(
+                    bindings,
+                    parsed,
+                    0,
+                    observed_at,
+                    None,
+                    None,
+                    self.capture_limits.clone(),
+                );
+            }
+            self.work.set(self.work.get() - cost);
+        }
         // Fast path: no candidate, alias or function can introduce a writer.
-        let candidate = parsed.commands.iter().any(|command| {
-            command.span.end_byte <= end
-                && command.command_name.as_deref().is_none_or(|name| {
-                    name.contains('$')
-                        || name.contains('`')
-                        || self.registry.may_write_runtime_variable(name)
-                        || self.registry.may_terminate_shell(name)
-                        || self.aliases.contains_key(name)
-                        || bindings.function_binding(name).is_some()
-                        || !super::alias_assignments(command).is_empty()
-                        || (self.capture_limits.is_some()
-                            && !super::unalias_names(command).is_empty())
-                        || parsed.function_definitions.iter().any(|f| f.name == name)
-                })
-        });
+        let candidate = self.sourced
+            || parsed.commands.iter().any(|command| {
+                command.span.end_byte <= end
+                    && command.command_name.as_deref().is_none_or(|name| {
+                        name.contains('$')
+                            || name.contains('`')
+                            || self.registry.may_write_runtime_variable(name)
+                            || self.registry.may_terminate_shell(name)
+                            || self.registry.lookup(name).profile.is_some_and(|profile| {
+                                profile.forms.iter().flat_map(|f| &f.effects).any(|e| {
+                                e.kind == caushell_profile::EffectKind::SourceScriptIntoCurrentShell
+                            })
+                            })
+                            || self.aliases.contains_key(name)
+                            || bindings.function_binding(name).is_some()
+                            || !super::alias_assignments(command).is_empty()
+                            || (self.capture_limits.is_some()
+                                && !super::unalias_names(command).is_empty())
+                            || parsed.function_definitions.iter().any(|f| f.name == name)
+                    })
+            });
         if !candidate {
             // Static state effects still need the same ordered result for
             // persistence and for propagation through a called function.
@@ -280,6 +516,7 @@ impl RuntimeVariableContext<'_> {
         touched: &mut BTreeSet<String>,
         function_mutations: &mut Vec<(caushell_runner::PendingMutation, usize)>,
         capture: &mut Option<super::state_capture::StateCapture>,
+        positional_state: &mut Option<super::PositionalParameterMutation>,
     ) -> Option<(usize, usize)> {
         // A pipeline/background shell cannot write the caller's variables.
         // A (...) write is visible only to later commands inside that scope.
@@ -337,6 +574,35 @@ impl RuntimeVariableContext<'_> {
             .as_deref()
             .and_then(|name| materialize_command_name(name, bindings))
             .or_else(|| expanded.command_name.clone());
+        let result = resolve_invocation_artifact_with_bindings(
+            self.registry,
+            &expanded,
+            InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind),
+            bindings,
+        );
+        self.observations.push((result.clone(), bindings.clone()));
+        if let ResolveInvocationArtifactResult::Resolved(resolved) = &result
+            && resolved
+                .bound
+                .effects
+                .iter()
+                .any(|e| e.kind == caushell_profile::EffectKind::SourceScriptIntoCurrentShell)
+        {
+            self.apply_source(
+                command,
+                &expanded,
+                parsed,
+                bindings,
+                touched,
+                function_mutations,
+                capture,
+                positional_state,
+                visible,
+                resolved,
+            );
+            self.can_prove_termination = false;
+            return None;
+        }
         if let Some(function) = name
             .as_ref()
             .and_then(|n| bindings.function_binding(n))
@@ -389,6 +655,17 @@ impl RuntimeVariableContext<'_> {
                 &caushell_runner::ParsedCommandRef::new(usize::MAX, command.span.clone()),
             );
             let local = super::function_call_bindings(&environment, &projection);
+            let call_scope = super::source_state::SourceStateScope::new(
+                parsed,
+                command,
+                self.request,
+                &self.entry_cwd,
+                &self.observations,
+            );
+            let mut source_scopes = self.source_scopes.clone();
+            if let Some(scope) = &call_scope {
+                source_scopes.push(scope.clone());
+            }
             let mut child = RuntimeVariableContext {
                 registry: self.registry,
                 request: self.request,
@@ -396,8 +673,40 @@ impl RuntimeVariableContext<'_> {
                 aliases: self.aliases.clone(),
                 can_prove_termination: true,
                 capture_limits: self.capture_limits.clone(),
+                session: self.session,
+                observations: Vec::new(),
+                entry_cwd: call_scope
+                    .map_or(caushell_runner::EffectiveCwd::Unknown, |scope| scope.cwd()),
+                source_scopes,
+                sourced: self.sourced,
+                work: self.work.clone(),
             };
             let mut result = child.replay(local, &body, usize::MAX, self.request.sequence_no);
+            if visible && let Some(reason) = result.bindings.shell_state_uncertainty() {
+                bindings.mark_shell_state_uncertain(reason);
+            }
+            if visible {
+                let before: BTreeMap<_, _> = bindings
+                    .retained_alias_bindings()
+                    .map(|binding| (binding.name.clone(), binding.clone()))
+                    .collect();
+                let after: BTreeMap<_, _> = result
+                    .bindings
+                    .retained_alias_bindings()
+                    .map(|binding| (binding.name.clone(), binding.clone()))
+                    .collect();
+                if before != after && command.conditional_execution {
+                    bindings.mark_shell_state_uncertain("conditional alias state effect");
+                } else {
+                    for name in before.keys().filter(|name| !after.contains_key(*name)) {
+                        bindings.unset_alias(name);
+                    }
+                    for binding in after.values() {
+                        bindings.upsert_alias_binding(binding.clone());
+                    }
+                    self.aliases = after;
+                }
+            }
             if visible
                 && let (Some(capture), Some(child_capture)) =
                     (capture.as_mut(), result.state_capture.take())
@@ -452,7 +761,7 @@ impl RuntimeVariableContext<'_> {
                         );
                         bindings.upsert_function_binding(binding.clone());
                         caushell_runner::PendingMutation::UpsertFunctionBinding { binding }
-                    } else if let Some(binding) = result.bindings.function_binding(&name) {
+                    } else if let Some(binding) = result.bindings.retained_function_binding(&name) {
                         bindings.upsert_function_binding(binding.clone());
                         caushell_runner::PendingMutation::UpsertFunctionBinding {
                             binding: binding.clone(),
@@ -530,6 +839,24 @@ impl RuntimeVariableContext<'_> {
             self.can_prove_termination = false;
             return None;
         };
+        if self.sourced
+            && match &result {
+                ResolveInvocationArtifactResult::Resolved(resolved) => {
+                    resolved.bound.effects.iter().any(|effect| {
+                        matches!(
+                            effect.kind,
+                            caushell_profile::EffectKind::ExecutePayload
+                                | caushell_profile::EffectKind::LoadInProcessCode
+                        )
+                    })
+                }
+                _ => true,
+            }
+        {
+            touched.extend(bindings.variable_names().map(str::to_owned));
+            bindings
+                .mark_shell_state_uncertain("sourced command has unresolved shell-state effects");
+        }
         if self.depth > 0 {
             // An unmodeled invocation can return from the function before a
             // later terminator. Opaque payload execution can change control
@@ -556,14 +883,7 @@ impl RuntimeVariableContext<'_> {
         {
             return None;
         }
-        let ResolveInvocationArtifactResult::Resolved(resolved) =
-            resolve_invocation_artifact_with_bindings(
-                self.registry,
-                &expanded,
-                InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind),
-                bindings,
-            )
-        else {
+        let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
             return None;
         };
         let terminates = self.can_prove_termination

@@ -167,6 +167,9 @@ pub struct ExecutionUnitInheritedScope {
     pub native_template_input: Option<std::sync::Arc<NativeTemplateInput>>,
     /// Tool-owned argv data, scoped to the exact consumer's span coordinates.
     pub native_argument_inputs: Vec<NativeArgumentInput>,
+    /// Native job FD 0 has no declared routing proof. This frame property
+    /// survives functions and nested interpreters independently of argv spans.
+    pub native_stdin_route_unproven: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +184,16 @@ pub struct NativeInputOrigin {
 pub struct NativeArgumentInput {
     pub consumer_node_id: NodeId,
     pub origin: std::sync::Arc<NativeInputOrigin>,
+    pub projections: Vec<NativeArgumentProjection>,
+}
+
+/// Native data ranges in one exact, decoded argv value. Source spans identify
+/// the operand; value-relative ranges survive entry into a new shell parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeArgumentProjection {
+    pub argument_span: caushell_parse::SourceSpan,
+    pub value: String,
+    pub data_ranges: Vec<std::ops::Range<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

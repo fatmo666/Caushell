@@ -28,8 +28,81 @@ pub(crate) fn forwarded_native_argument_inputs(
         .map(|input| caushell_runner::NativeArgumentInput {
             consumer_node_id: child.clone(),
             origin: input.origin.clone(),
+            projections: input
+                .projections
+                .iter()
+                .filter(|projection| {
+                    command.tokens.iter().any(|token| {
+                        token.span == projection.argument_span
+                            && token.runtime_data
+                            && token.implicit_input_source.is_none()
+                            && token.text == projection.value
+                    })
+                })
+                .cloned()
+                .collect(),
         })
         .collect()
+}
+
+/// Replacement occurs in decoded native argv, not in the parent shell spelling.
+pub(crate) fn replace_native_argument(
+    value: &str,
+    marker: &str,
+    replacement: &str,
+) -> (String, Vec<std::ops::Range<usize>>) {
+    let mut output = String::new();
+    let mut ranges = Vec::new();
+    let mut offset = 0;
+    for (start, _) in value.match_indices(marker) {
+        output.push_str(&value[offset..start]);
+        let data_start = output.len();
+        output.push_str(replacement);
+        ranges.push(data_start..output.len());
+        offset = start + marker.len();
+    }
+    output.push_str(&value[offset..]);
+    (output, ranges)
+}
+
+pub(crate) fn native_shell_payload_projection<'a>(
+    projections: &'a [caushell_runner::NativeArgumentProjection],
+    span: &caushell_parse::SourceSpan,
+    payload: &str,
+    shell_kind: caushell_types::ShellKind,
+) -> Option<&'a caushell_runner::NativeArgumentProjection> {
+    let projection = projections.iter().find(|projection| {
+        projection.argument_span == *span
+            && projection.value == payload
+            && projection
+                .data_ranges
+                .iter()
+                .all(|range| range.start <= range.end && payload.get(range.clone()).is_some())
+    })?;
+    let parsed = caushell_parse::parse_command(payload, shell_kind).ok()?;
+    if parsed.status != caushell_parse::ParseStatus::Complete {
+        return None;
+    }
+    // Direct words retain their source slots. Assignments, substitutions,
+    // function definitions and shell syntax need a separate scope mapping.
+    projection
+        .data_ranges
+        .iter()
+        .all(|range| {
+            range.is_empty()
+                || (!parsed.function_definitions.iter().any(|definition| {
+                    definition.span.start_byte < range.end && range.start < definition.span.end_byte
+                }) && parsed.commands.iter().any(|command| {
+                    command.tokens.iter().any(|token| {
+                        token.span.start_byte <= range.start
+                            && range.end <= token.span.end_byte
+                            && token.command_substitutions.is_empty()
+                            && caushell_parse::parse_process_substitutions(&token.text, shell_kind)
+                                .is_ok_and(|substitutions| substitutions.is_empty())
+                    })
+                }))
+        })
+        .then_some(projection)
 }
 
 /// Reify compiler-owned data holes before ordinary shell-frame replay. A job
@@ -219,4 +292,103 @@ pub(crate) fn collect_native_template_input_mutations(
         }
     }
     mutations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span() -> caushell_parse::SourceSpan {
+        caushell_parse::SourceSpan {
+            start_byte: 20,
+            end_byte: 40,
+            start_row: 0,
+            start_column: 20,
+            end_row: 0,
+            end_column: 40,
+        }
+    }
+
+    #[test]
+    fn native_replacements_use_decoded_byte_offsets() {
+        let (value, ranges) = replace_native_argument("echo 前@后 @", "@", "字");
+        assert_eq!(value, "echo 前字后 字");
+        assert_eq!(ranges, vec![8..11, 15..18]);
+        assert_eq!(
+            replace_native_argument("echo @suffix", "@", ""),
+            ("echo suffix".into(), vec![5..5])
+        );
+    }
+
+    #[test]
+    fn shell_projection_requires_exact_value_span_and_valid_boundaries() {
+        let make = |value: &str, range| caushell_runner::NativeArgumentProjection {
+            argument_span: span(),
+            value: value.into(),
+            data_ranges: vec![range],
+        };
+        let good = [make("echo 字", 5..8)];
+        assert!(
+            native_shell_payload_projection(
+                &good,
+                &span(),
+                "echo 字",
+                caushell_types::ShellKind::Sh
+            )
+            .is_some()
+        );
+        for projections in [
+            vec![make("echo 字", 6..8)],
+            vec![make("echo 字", 5..20)],
+            vec![make("echo old", 5..8)],
+        ] {
+            assert!(
+                native_shell_payload_projection(
+                    &projections,
+                    &span(),
+                    "echo 字",
+                    caushell_types::ShellKind::Sh
+                )
+                .is_none()
+            );
+        }
+        let mut different_span = span();
+        different_span.start_byte += 1;
+        assert!(
+            native_shell_payload_projection(
+                &good,
+                &different_span,
+                "echo 字",
+                caushell_types::ShellKind::Sh
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn shell_projection_does_not_claim_variable_or_substitution_lineage() {
+        for (value, range) in [
+            ("DATA=one; echo $DATA", 5..8),
+            ("echo $(echo one)", 12..15),
+            ("echo <(echo one)", 12..15),
+            ("for x in one; do echo $x; done", 9..12),
+            ("f(){ echo one; }; f", 10..13),
+        ] {
+            let projections = [caushell_runner::NativeArgumentProjection {
+                argument_span: span(),
+                value: value.into(),
+                data_ranges: vec![range],
+            }];
+            assert!(
+                native_shell_payload_projection(
+                    &projections,
+                    &span(),
+                    value,
+                    caushell_types::ShellKind::Sh
+                )
+                .is_none(),
+                "{value}"
+            );
+        }
+    }
 }

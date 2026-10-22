@@ -1,13 +1,12 @@
 use std::collections::BTreeSet;
 
-use caushell_profile::{EffectKind, ResolveInvocationArtifactResult};
-use caushell_query::{PathFactsQuery, QuerySession};
+use caushell_query::QuerySession;
 use caushell_runner::{PathOperation, RunnerContext, SessionAnalysisPass, SessionView};
 #[cfg(test)]
 use caushell_types::PathResolution;
-use caushell_types::{ResolvedPathPurpose, RuleId};
+use caushell_types::{ProvenanceConsumeKind, RuleId};
 
-use crate::support::{decision_for_rule_action, graph_backed_execution_resolve_records};
+use crate::support::{collect_outside_workspace_path_consumes, decision_for_rule_action};
 #[cfg(test)]
 use caushell_query::path_is_within_root;
 
@@ -27,56 +26,15 @@ impl SessionAnalysisPass for CodeLoadPathGuardPass {
         staged_session: SessionView<'_>,
         ctx: &mut RunnerContext,
     ) {
-        let loads_code = |result: &ResolveInvocationArtifactResult| {
-            matches!(result, ResolveInvocationArtifactResult::Resolved(resolved)
-                if resolved.bound.effects.iter().any(|effect| effect.kind == EffectKind::LoadInProcessCode))
-        };
-        if !ctx
-            .execution_unit_resolve_records()
-            .iter()
-            .any(|record| loads_code(&record.result))
-        {
-            return;
-        }
-
-        let candidates: BTreeSet<_> = graph_backed_execution_resolve_records(ctx)
-            .into_iter()
-            .filter(|record| loads_code(record.result()))
-            .map(|record| record.source_node_id().clone())
-            .collect();
-        if candidates.is_empty() {
-            return;
-        }
-
         let rule = RuleId::CodeLoadPath;
-        let request = ctx.request();
-        let policy = ctx.path_exemption_policy();
-        let paths = PathFactsQuery::new()
-            .purpose(ResolvedPathPurpose::InProcessCode)
-            .used_by_root_sequence(request.sequence_no)
-            .execute(QuerySession::from_session(&staged_session));
-        let mut reasons = BTreeSet::new();
-        for path in paths.facts() {
-            if !path
-                .used_by()
-                .iter()
-                .any(|usage| candidates.contains(usage.execution_unit().node_id()))
-            {
-                continue;
-            }
-            if policy
-                .check(path.resolution(), PathOperation::LoadCodeFile, rule)
-                .is_exempt()
-            {
-                continue;
-            }
-            reasons.insert(format!(
-                "code load path for slot {} in command {} is outside the workspace/temporary scope or cannot be resolved: {:?}",
-                path.slot_name(),
-                path.normalized_command_name().unwrap_or("<unknown>"),
-                path.resolution(),
-            ));
-        }
+        let paths = collect_outside_workspace_path_consumes(
+            QuerySession::from_session(&staged_session),
+            ctx,
+            ProvenanceConsumeKind::InProcessCodeSource,
+            PathOperation::LoadCodeFile,
+            rule,
+        );
+        let reasons: BTreeSet<_> = paths.consumes.into_iter().map(|path| path.reason).collect();
 
         let action = ctx.policy().rule_policy.action_for(rule);
         for reason in reasons {

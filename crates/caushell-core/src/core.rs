@@ -618,8 +618,8 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingIntentPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
-    runner.register_session_transform_pass(caushell_passes::ResolvePathTargetsPass);
     runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
+    runner.register_session_transform_pass(caushell_passes::ResolvePathTargetsPass);
     runner.register_session_transform_pass(ExtractRedirectProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingsPass);
     runner.register_session_transform_pass(ExtractEndpointProvenancePass);
@@ -630,7 +630,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_transform_pass(ExtractValueProvenancePass);
     runner.register_session_transform_pass(ExtractPipelineStreamProvenancePass);
     runner.register_session_analysis_pass(ResolvePolicyPass);
-    runner.register_request_analysis_pass(CwdWorkspaceBoundaryPass);
+    runner.register_session_analysis_pass(CwdWorkspaceBoundaryPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
     runner.register_session_analysis_pass(FileDeletionGuardPass);
     runner.register_session_analysis_pass(OutsideWorkspaceMutationGuardPass);
@@ -2019,7 +2019,7 @@ mod tests {
         let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-delta");
 
-        let response = core.check(sample_request("sess-delta", 1, "source ./env.sh"));
+        let response = core.check(sample_request("sess-delta", 1, "source /dev/null"));
         assert_eq!(response.decision, Decision::Allow);
 
         let committed_mutations = core
@@ -2249,7 +2249,19 @@ mod tests {
             .session_graph(&session_id)
             .expect("expected session graph to exist");
 
-        assert_eq!(graph.node_count(), 2);
+        assert_eq!(graph.node_count(), 4);
+        assert_eq!(response.decision_trace.path_targets.len(), 2);
+        assert!(
+            response
+                .decision_trace
+                .path_targets
+                .iter()
+                .all(|fact| matches!(
+                    fact.operation,
+                    caushell_types::PathTargetOperation::WorkingDirectory
+                        | caushell_types::PathTargetOperation::WorkspaceRoot
+                ))
+        );
     }
 
     #[test]
@@ -2447,7 +2459,7 @@ policy:
 
         assert_eq!(response.decision, Decision::NeedApproval);
         assert!(response.reasons.iter().any(|reason| reason ==
-            "script source path /opt/shared/build.sh for slot script_path in command bash is outside workspace root /tmp/project"));
+            "file input /opt/shared/build.sh for slot script_path is outside the granted path scope or unproven"));
         let temporary = core.check(sample_request(
             "sess-script-source-tmp",
             1,
@@ -2476,7 +2488,7 @@ policy:
         assert_eq!(
             response.reasons,
             vec![
-                "startup config path /tmp/shared/team.rc for slot startup_config in command bash is outside workspace root /tmp/project".to_string()
+                "file input /tmp/shared/team.rc for slot startup_config is outside the granted path scope or unproven".to_string()
             ]
         );
     }
@@ -2501,7 +2513,7 @@ policy:
         assert_eq!(
             response.reasons,
             vec![
-                "startup config path /tmp/shared/r3.env for slot startup_config in command bash is outside workspace root /tmp/project".to_string()
+                "file input /tmp/shared/r3.env for slot startup_config is outside the granted path scope or unproven".to_string()
             ]
         );
     }
@@ -3740,6 +3752,7 @@ policy:
         let graph = SessionGraph::new();
         let summary = SessionSummary::default();
         let mut ctx = RunnerContext::new(sample_request("sess-1", 1, "pwd"));
+        ctx.set_filesystem_view(std::sync::Arc::new(crate::LocalFilesystem));
 
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
 
@@ -6247,7 +6260,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         assert_eq!(
             response.reasons,
             vec![
-                "startup config path /tmp/shared/team.rc for slot startup_config in command bash is outside workspace root /tmp/project".to_string()
+                "file input /tmp/shared/team.rc for slot startup_config is outside the granted path scope or unproven".to_string()
             ]
         );
         assert!(
@@ -6367,7 +6380,13 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             snapshot.summary.last_sequence_no(),
             Some(CommandSequenceNo::new(1))
         );
-        assert_eq!(snapshot.graph.nodes.len(), 4);
+        assert_eq!(snapshot.graph.nodes.len(), 6);
+        assert_eq!(snapshot.graph.nodes.iter().filter(|node| matches!(&node.kind,
+            caushell_types::SessionGraphNodeKindSnapshot::PathTargetFact { fact }
+                if fact.source_node_id == "command-request:sess-snapshot:1"
+                    && matches!(fact.operation, caushell_types::PathTargetOperation::WorkingDirectory
+                        | caushell_types::PathTargetOperation::WorkspaceRoot)
+        )).count(), 2);
         assert!(snapshot.graph.nodes.iter().any(|node| matches!(&node.kind,
             caushell_types::SessionGraphNodeKindSnapshot::StateCandidate { fact }
                 if fact.object.name == "SCRIPT"
@@ -6376,7 +6395,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
                         value: SessionVariableValue::exact_scalar("build.sh"), exported: true,
                     }
         )));
-        assert_eq!(snapshot.graph.edges.len(), 1);
+        assert_eq!(snapshot.graph.edges.len(), 3);
         assert!(
             snapshot
                 .graph

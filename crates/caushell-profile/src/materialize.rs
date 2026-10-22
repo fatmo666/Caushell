@@ -104,6 +104,7 @@ pub struct ShellVariableFacts {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionBindings {
+    shell_state_uncertainty: Option<String>,
     variable_facts: BTreeMap<String, ShellVariableFacts>,
     // Account-home fact supplied by the request, not a shell variable or an
     // exported environment entry. Explicit HOME facts override this default.
@@ -153,6 +154,20 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn shell_state_uncertainty(&self) -> Option<&str> {
+        self.shell_state_uncertainty.as_deref()
+    }
+
+    pub fn mark_shell_state_uncertain(&mut self, reason: &str) {
+        self.shell_state_uncertainty = Some(reason.to_owned());
+        let names: Vec<_> = self.variable_names().map(str::to_owned).collect();
+        for name in names {
+            self.insert_opaque_dynamic(&name, reason);
+        }
+        self.forget_variable_presence();
+        self.forget_environment();
+        self.forget_positional_parameters();
+    }
     pub fn variable_facts(&self, name: &str) -> ShellVariableFacts {
         self.variable_facts.get(name).copied().unwrap_or_default()
     }
@@ -282,6 +297,13 @@ impl SessionBindings {
     }
 
     pub fn function_binding(&self, name: &str) -> Option<&SessionFunctionBinding> {
+        self.shell_state_uncertainty
+            .is_none()
+            .then(|| self.functions.get(name))
+            .flatten()
+    }
+
+    pub fn retained_function_binding(&self, name: &str) -> Option<&SessionFunctionBinding> {
         self.functions.get(name)
     }
 
@@ -331,6 +353,12 @@ impl SessionBindings {
     }
 
     pub fn alias_bindings(&self) -> impl Iterator<Item = &SessionAliasBinding> {
+        self.aliases
+            .values()
+            .filter(|_| self.shell_state_uncertainty.is_none())
+    }
+
+    pub fn retained_alias_bindings(&self) -> impl Iterator<Item = &SessionAliasBinding> {
         self.aliases.values()
     }
 
@@ -373,6 +401,9 @@ impl SessionBindings {
             );
         }
 
+        if let Some(reason) = summary.shell_state_uncertainty() {
+            bindings.mark_shell_state_uncertain(reason);
+        }
         bindings
     }
 
@@ -386,6 +417,9 @@ impl SessionBindings {
                 Self::from_session_summary(summary)
             }
         };
+        if let Some(reason) = summary.shell_state_uncertainty() {
+            bindings.mark_shell_state_uncertain(reason);
+        }
 
         bindings.variables_complete =
             shell_state.observability.variables == ShellStateKnowledge::Complete;
@@ -408,6 +442,13 @@ impl SessionBindings {
             bindings.replace_function_bindings(summary.function_bindings().cloned());
         } else {
             bindings.functions.clear();
+        }
+        if shell_state.observability.functions == ShellStateKnowledge::Complete
+            && shell_state.observability.aliases == ShellStateKnowledge::Complete
+            && shell_state.observability.variables == ShellStateKnowledge::Complete
+            && shell_state.observability.positional_parameters == ShellStateKnowledge::Complete
+        {
+            bindings.shell_state_uncertainty = None;
         }
         for function in &shell_state.functions {
             bindings.upsert_function_binding(SessionFunctionBinding::new(
@@ -2955,6 +2996,26 @@ fn reclassify_projected_args(args: &mut [ProjectedArg]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incomplete_shell_state_retains_definitions_without_resolving_them() {
+        let mut bindings = super::SessionBindings::new();
+        bindings.upsert_function_binding(caushell_types::SessionFunctionBinding::new(
+            "f",
+            "printf SAFE;",
+            caushell_types::CommandSequenceNo::new(1),
+        ));
+        bindings.upsert_alias_binding(caushell_types::SessionAliasBinding::new(
+            "a",
+            "printf SAFE",
+            caushell_types::CommandSequenceNo::new(1),
+        ));
+        bindings.mark_shell_state_uncertain("incomplete source");
+        assert!(bindings.function_binding("f").is_none());
+        assert_eq!(bindings.alias_bindings().count(), 0);
+        assert!(bindings.retained_function_binding("f").is_some());
+        assert_eq!(bindings.retained_alias_bindings().count(), 1);
+    }
+
     use std::path::PathBuf;
 
     use caushell_parse::{SourceSpan, parse_command};

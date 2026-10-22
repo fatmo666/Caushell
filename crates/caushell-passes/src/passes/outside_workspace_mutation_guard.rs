@@ -16,7 +16,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
     }
 
     fn run(&self, _session: SessionView<'_>, staged: SessionView<'_>, ctx: &mut RunnerContext) {
-        use caushell_types::{PathMutationKind, SemanticResolution};
+        use caushell_types::{PathTargetOperation, SemanticResolution};
         let facts = caushell_query::PathTargetQuery::new(ctx.request().sequence_no)
             .execute(caushell_query::QuerySession::from_session(&staged));
         let declared = ctx.execution_unit_resolve_records().iter().any(|record| {
@@ -53,7 +53,10 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
             reasons.insert("declared filesystem effects have no target-scope proof".to_string());
         }
         if let Some(policy) = ctx.target_path_policy() {
-            for fact in facts {
+            for fact in facts
+                .into_iter()
+                .filter(|fact| fact.operation.is_mutation())
+            {
                 if fact.implicit_incidental_cache && fact.lexical.concrete_path().is_none() {
                     continue;
                 }
@@ -72,10 +75,11 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                     SemanticResolution::Resolved { value } => value,
                 };
                 let operation = match fact.operation {
-                    PathMutationKind::Write => EffectKind::WritePath,
-                    PathMutationKind::Delete => EffectKind::DeletePath,
-                    PathMutationKind::MoveSource => EffectKind::MovePath,
-                    PathMutationKind::Metadata => EffectKind::MetadataMutation,
+                    PathTargetOperation::Write => EffectKind::WritePath,
+                    PathTargetOperation::Delete => EffectKind::DeletePath,
+                    PathTargetOperation::MoveSource => EffectKind::MovePath,
+                    PathTargetOperation::Metadata => EffectKind::MetadataMutation,
+                    _ => continue,
                 };
                 let operation_scope = match exemption_operation_for_target(
                     operation,
@@ -121,12 +125,13 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
     }
 }
 
-fn mutation_name(kind: caushell_types::PathMutationKind) -> &'static str {
+fn mutation_name(kind: caushell_types::PathTargetOperation) -> &'static str {
     match kind {
-        caushell_types::PathMutationKind::Write => "write",
-        caushell_types::PathMutationKind::Delete => "delete",
-        caushell_types::PathMutationKind::MoveSource => "move source",
-        caushell_types::PathMutationKind::Metadata => "metadata mutation",
+        caushell_types::PathTargetOperation::Write => "write",
+        caushell_types::PathTargetOperation::Delete => "delete",
+        caushell_types::PathTargetOperation::MoveSource => "move source",
+        caushell_types::PathTargetOperation::Metadata => "metadata mutation",
+        _ => unreachable!("mutation facts only"),
     }
 }
 
@@ -200,7 +205,7 @@ mod exemption_tests {
     use super::*;
     use caushell_runner::PathExemptionPolicy;
     use caushell_types::{
-        CommandSequenceNo, PathMutationKind, PathResolution, PathTargetAccess, PathTargetFact,
+        CommandSequenceNo, PathResolution, PathTargetAccess, PathTargetFact, PathTargetOperation,
         PolicyConfig, SemanticGap, SemanticGapKind, SemanticResolution,
     };
 
@@ -228,7 +233,7 @@ mod exemption_tests {
                 source_node_id: "command:1".into(),
                 effect_key: "effect:0".into(),
                 slot_name: "output".into(),
-                operation: PathMutationKind::Write,
+                operation: PathTargetOperation::Write,
                 access: PathTargetAccess::Either,
                 lexical: PathResolution::Concrete {
                     path: "/workspace/output".into(),

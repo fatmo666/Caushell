@@ -59,6 +59,7 @@ impl SessionAnalysisPass for ResolvePolicyPass {
                         policy.action_for_resolve_gap(*gap_kind),
                         match error {
                             caushell_profile::BindError::UncertainFunctionBinding { .. }
+                            | caushell_profile::BindError::UncertainShellState { .. }
                             | caushell_profile::BindError::UnresolvedAliasExpansion { .. } => {
                                 error.to_string()
                             }

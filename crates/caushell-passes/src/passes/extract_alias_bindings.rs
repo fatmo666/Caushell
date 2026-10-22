@@ -11,6 +11,9 @@ impl SessionTransformPass for ExtractAliasBindingsPass {
     }
 
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
+        if ctx.runtime_function_mutations().is_some() {
+            return;
+        }
         let observed_at = ctx.request().sequence_no;
         let Some(parsed) = ctx.parsed_command() else {
             return;

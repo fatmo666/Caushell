@@ -6,7 +6,7 @@ use caushell_profile::{
 use caushell_query::IoTarget;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
-    PathMutationKind, PathResolution, PathTargetAccess, PathTargetFact, SemanticGapKind,
+    PathResolution, PathTargetAccess, PathTargetFact, PathTargetOperation, SemanticGapKind,
     SemanticResolution,
 };
 
@@ -20,17 +20,19 @@ use crate::support::{
     is_file_write_redirection_operator, redirection_parent_command_index, slot_uses_content_open,
 };
 
+mod consumption;
+
 pub struct ResolvePathTargetsPass;
 
-pub(crate) fn path_mutation_kind(kind: EffectKind) -> Option<PathMutationKind> {
+pub(crate) fn path_mutation_kind(kind: EffectKind) -> Option<PathTargetOperation> {
     Some(match kind {
-        EffectKind::WritePath => PathMutationKind::Write,
-        EffectKind::DeletePath => PathMutationKind::Delete,
-        EffectKind::MovePath => PathMutationKind::MoveSource,
+        EffectKind::WritePath => PathTargetOperation::Write,
+        EffectKind::DeletePath => PathTargetOperation::Delete,
+        EffectKind::MovePath => PathTargetOperation::MoveSource,
         EffectKind::ChangeMode
         | EffectKind::ChangeOwner
         | EffectKind::ChangeGroup
-        | EffectKind::MetadataMutation => PathMutationKind::Metadata,
+        | EffectKind::MetadataMutation => PathTargetOperation::Metadata,
         _ => return None,
     })
 }
@@ -49,6 +51,8 @@ impl SessionTransformPass for ResolvePathTargetsPass {
 
     fn run(&self, _session: SessionView<'_>, ctx: &mut RunnerContext) {
         let mut inputs = collect_inputs(ctx);
+        inputs.extend(consumption::collect(ctx));
+        inputs.extend(entry_context_inputs(ctx));
         if inputs.is_empty() {
             return;
         }
@@ -101,27 +105,32 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     Vec::new(),
                 )
             };
-            let changed_by_sibling = namespace_writes.iter().any(|(other, root)| {
-                comparisons += 1;
-                if comparisons > 65536 {
-                    return true;
-                }
-                if *other == index {
-                    return false;
-                }
-                let Some(root) = root else {
-                    return true;
-                };
-                spelling.is_some_and(|path| spelling_visits(path, root))
-                    || observations.iter().any(|observation| {
-                        caushell_query::path_is_within_root(&observation.path, root)
-                    })
-                    || inputs[index]
-                        .fact
-                        .lexical
-                        .concrete_path()
-                        .is_some_and(|path| caushell_query::path_is_within_root(path, root))
-            });
+            let entry_context = matches!(
+                inputs[index].fact.operation,
+                PathTargetOperation::WorkingDirectory | PathTargetOperation::WorkspaceRoot
+            );
+            let changed_by_sibling = !entry_context
+                && namespace_writes.iter().any(|(other, root)| {
+                    comparisons += 1;
+                    if comparisons > 65536 {
+                        return true;
+                    }
+                    if *other == index {
+                        return false;
+                    }
+                    let Some(root) = root else {
+                        return true;
+                    };
+                    spelling.is_some_and(|path| spelling_visits(path, root))
+                        || observations.iter().any(|observation| {
+                            caushell_query::path_is_within_root(&observation.path, root)
+                        })
+                        || inputs[index]
+                            .fact
+                            .lexical
+                            .concrete_path()
+                            .is_some_and(|path| caushell_query::path_is_within_root(path, root))
+                });
             if comparisons > 65536 {
                 resolution = unresolved(
                     SemanticGapKind::BudgetExceeded,
@@ -161,12 +170,47 @@ impl SessionTransformPass for ResolvePathTargetsPass {
     }
 }
 
+fn entry_context_inputs(ctx: &RunnerContext) -> Vec<Input> {
+    let Some(workspace) = ctx.request().workspace_root.as_deref() else {
+        return Vec::new();
+    };
+    let source = caushell_runner::request_anchor_node_id(ctx.request());
+    [
+        (
+            PathTargetOperation::WorkingDirectory,
+            "cwd",
+            ctx.request().shell_state_before.cwd(),
+        ),
+        (
+            PathTargetOperation::WorkspaceRoot,
+            "workspace_root",
+            workspace,
+        ),
+    ]
+    .into_iter()
+    .map(|(operation, slot, spelling)| {
+        new_input(
+            ctx,
+            &source,
+            format!("entry-context:{slot}"),
+            slot.into(),
+            operation,
+            PathTargetAccess::Follow,
+            PathResolution::Concrete {
+                path: normalize_shell_path(spelling),
+            },
+            Some(spelling.into()),
+        )
+    })
+    .collect()
+}
+
 fn new_input(
     ctx: &RunnerContext,
     source: &NodeId,
     key: String,
     slot: String,
-    operation: PathMutationKind,
+    operation: PathTargetOperation,
     access: PathTargetAccess,
     lexical: PathResolution,
     spelling: Option<String>,
@@ -190,7 +234,8 @@ fn new_input(
             metadata_mutation: None,
             implicit_incidental_cache: false,
         },
-        namespace_write: operation != PathMutationKind::Metadata
+        namespace_write: operation.is_mutation()
+            && operation != PathTargetOperation::Metadata
             && access != PathTargetAccess::Follow,
         pending_resolution: true,
         cwd_dependent: false,
@@ -223,7 +268,7 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                     for target in targets.iter().filter(|t| t.effect_index == effect_index) {
                         let access = if matches!(
                             operation,
-                            PathMutationKind::Delete | PathMutationKind::MoveSource
+                            PathTargetOperation::Delete | PathTargetOperation::MoveSource
                         ) {
                             PathTargetAccess::Entry
                         } else if slot_uses_content_open(bound, &target.slot_name, effect.kind) {
@@ -398,7 +443,7 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                     record.source_node_id(),
                     format!("redirect:{}", path.redirection_index),
                     path.slot_name.clone(),
-                    PathMutationKind::Write,
+                    PathTargetOperation::Write,
                     PathTargetAccess::Follow,
                     project_path_at_cwd(
                         lexical.clone().unwrap_or_else(|| path.resolution.clone()),
@@ -449,7 +494,7 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
             &syntax.source,
             format!("syntax-redirect:{}", syntax.path.redirection_index),
             syntax.path.slot_name,
-            PathMutationKind::Write,
+            PathTargetOperation::Write,
             PathTargetAccess::Follow,
             lexical.clone().unwrap_or(syntax.path.resolution),
             spelling,
@@ -553,6 +598,32 @@ fn target_spelling(
     home: Option<&str>,
 ) -> Option<String> {
     let path = lexical.concrete_path()?;
+    if slot == crate::path::EXECUTABLE_FILE_SLOT {
+        let tilde_expansion = match record.result() {
+            caushell_profile::ResolveInvocationArtifactResult::NoProfile {
+                executable_word: Some(word),
+                ..
+            } => !word.runtime_data && word.text.starts_with('~'),
+            _ => record.command().is_some_and(|command| {
+                !command.command_name_runtime_data
+                    && command
+                        .command_name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with('~'))
+            }),
+        };
+        return match crate::path::unmodeled_executable_path(record)? {
+            crate::path::ExecutableFileReference::Known(text) => {
+                let text = if tilde_expansion && text.starts_with('~') {
+                    crate::path::expand_home_path_spelling(&text, home)?
+                } else {
+                    text
+                };
+                Some(absolute_spelling(&text, cwd))
+            }
+            _ => None,
+        };
+    }
     let bound = bound_invocation(record.result())?;
     if let Some(parameter) = bound
         .bound_parameters

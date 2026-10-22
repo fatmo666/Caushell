@@ -89,7 +89,13 @@ fn remote_and_shell_payload_effects_keep_existing_nested_analysis() {
 fn remote_copy_is_not_local_mutation_or_unconditionally_denied_networking() {
     let result = check("scp -3 user@a.test:/in user@b.test:/out");
     assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
-    assert!(result.decision_trace.findings.iter().any(|f| f.rule_id == RuleId::NetworkUpload));
+    assert!(
+        result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::NetworkUpload)
+    );
     assert!(
         !result
             .decision_trace

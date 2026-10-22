@@ -73,7 +73,9 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
                 | PayloadFormat::RenamePerlArguments
         ) {
             generated.extend(crate::rename_payload::project(
-                bound, projection, complete_stdin,
+                bound,
+                projection,
+                complete_stdin,
             ));
             continue;
         }

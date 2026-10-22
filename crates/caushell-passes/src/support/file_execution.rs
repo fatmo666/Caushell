@@ -6,13 +6,13 @@ use super::{
 };
 use caushell_graph::NodeId;
 use caushell_profile::{EffectKind, EffectTarget, PathPurpose, PayloadSource, SemanticType};
-use caushell_query::{IoTarget, PathFactsQuery, QuerySession};
-use caushell_runner::{PathExemption, PathOperation, RunnerContext};
+use caushell_query::{IoTarget, PathTargetQuery, QuerySession};
+use caushell_runner::{PathOperation, RunnerContext};
 use caushell_types::{
     NestedPayloadContextEvidence, NestedPayloadOriginEvidence, NestedPayloadParentEvidence,
-    NestedPayloadSourceEvidence, ResolvedPathPurpose, RuleId,
+    NestedPayloadSourceEvidence, PathTargetOperation, RuleId, SemanticResolution,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub(crate) struct FileExecutionCheck {
     pub source: NodeId,
@@ -20,10 +20,13 @@ pub(crate) struct FileExecutionCheck {
     pub exempt: bool,
     pub reason: String,
 }
-pub(crate) fn file_execution_checks(
-    ctx: &RunnerContext,
-    session: QuerySession<'_>,
-) -> Vec<FileExecutionCheck> {
+pub(crate) struct FileExecutionReference {
+    pub source: NodeId,
+    pub slot: String,
+    pub slots: BTreeSet<String>,
+}
+
+pub(crate) fn file_execution_references(ctx: &RunnerContext) -> Vec<FileExecutionReference> {
     // Most shell actions have no executable file input. Do not construct the
     // staged-node/path indexes for commands without an execution effect.
     if !ctx.execution_unit_resolve_records().iter().any(|r| {
@@ -32,7 +35,10 @@ pub(crate) fn file_execution_checks(
                 b.effects.iter().any(|e| {
                     matches!(
                         (&e.kind, &e.target),
-                        (EffectKind::ExecutePayload, EffectTarget::Slot(_))
+                        (
+                            EffectKind::ExecutePayload | EffectKind::SourceScriptIntoCurrentShell,
+                            EffectTarget::Slot(_)
+                        )
                     )
                 })
             })
@@ -54,8 +60,10 @@ pub(crate) fn file_execution_checks(
             continue;
         };
         for effect in &bound.effects {
-            let (EffectKind::ExecutePayload, EffectTarget::Slot(slot)) =
-                (&effect.kind, &effect.target)
+            let (
+                EffectKind::ExecutePayload | EffectKind::SourceScriptIntoCurrentShell,
+                EffectTarget::Slot(slot),
+            ) = (&effect.kind, &effect.target)
             else {
                 continue;
             };
@@ -74,9 +82,6 @@ pub(crate) fn file_execution_checks(
                 matches!(&p.semantic, SemanticType::Path(s) if s.purpose == Some(PathPurpose::ScriptSource))
                 && (p.name == *slot || p.structured_source.as_ref() == Some(slot))
             }).map(|p| p.name.as_str().to_owned()).collect();
-            if opens_only_non_file_inputs(ctx, record, &slots) {
-                continue;
-            }
             candidates.push((
                 record.source_node_id().clone(),
                 slot.as_str().to_owned(),
@@ -84,77 +89,76 @@ pub(crate) fn file_execution_checks(
             ));
         }
     }
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-    let facts = PathFactsQuery::new()
-        .purpose(ResolvedPathPurpose::ScriptSource)
-        .used_by_root_sequence(ctx.request().sequence_no)
-        .execute(session);
-    let mut index: BTreeMap<_, Vec<_>> = BTreeMap::new();
-    for fact in facts.facts() {
-        for usage in fact.used_by() {
-            index
-                .entry((
-                    usage.execution_unit().node_id().clone(),
-                    fact.slot_name().to_owned(),
-                ))
-                .or_default()
-                .push(fact.resolution());
-        }
-    }
-    let policy = ctx.path_exemption_policy();
     candidates
         .into_iter()
-        .map(|(source, slot, slots)| {
-            let targets: Vec<_> = slots
-                .iter()
-                .flat_map(|s| {
-                    index
-                        .get(&(source.clone(), s.clone()))
-                        .into_iter()
-                        .flatten()
-                })
-                .collect();
-            let complete = !slots.is_empty()
-                && slots.iter().all(|s| {
-                    index
-                        .get(&(source.clone(), s.clone()))
-                        .is_some_and(|facts| !facts.is_empty())
-                });
-            let assessments: Vec<PathExemption> = targets
-                .iter()
-                .map(|r| {
-                    policy.check(
-                        r,
-                        PathOperation::ExecuteFile,
-                        RuleId::OutsideWorkspaceScriptSource,
-                    )
-                })
-                .collect();
-            let exempt = complete && assessments.iter().all(|a| a.is_exempt());
-            let reason = if !complete {
-                format!(
-                    "execution-file reference {slot} at {} has no proven filesystem target",
-                    source.0
-                )
+        .map(|(source, slot, slots)| FileExecutionReference {
+            source,
+            slot,
+            slots,
+        })
+        .collect()
+}
+
+pub(crate) fn file_execution_checks(
+    ctx: &RunnerContext,
+    session: QuerySession<'_>,
+) -> Vec<FileExecutionCheck> {
+    let references = file_execution_references(ctx);
+    if references.is_empty() {
+        return Vec::new();
+    }
+    let facts = PathTargetQuery::new(ctx.request().sequence_no).execute(session);
+    references
+        .into_iter()
+        .map(|reference| {
+            let slots = if reference.slots.is_empty() {
+                BTreeSet::from([reference.slot.clone()])
             } else {
-                format!(
-                    "execution-file reference {slot} at {} has path assessments {:?}",
-                    source.0, assessments
-                )
+                reference.slots
             };
+            let complete = slots.iter().all(|slot| {
+                facts.iter().any(|fact| {
+                    fact.operation == PathTargetOperation::ExecuteFile
+                        && fact.source_node_id == reference.source.0
+                        && fact.slot_name == *slot
+                })
+            });
+            let exempt = complete
+                && facts
+                    .iter()
+                    .filter(|fact| {
+                        fact.operation == PathTargetOperation::ExecuteFile
+                            && fact.source_node_id == reference.source.0
+                            && slots.contains(&fact.slot_name)
+                    })
+                    .all(|fact| {
+                        matches!(&fact.resolution, SemanticResolution::NotApplicable { .. })
+                            || ctx.target_path_policy().is_some_and(|policy| {
+                                policy
+                                    .check_target(
+                                        fact,
+                                        PathOperation::ExecuteFile,
+                                        RuleId::OutsideWorkspaceScriptSource,
+                                    )
+                                    .is_exempt()
+                            })
+                    });
             FileExecutionCheck {
-                source,
-                slot,
+                reason: format!(
+                    "execution-file reference {} at {} has {} target-scope proof",
+                    reference.slot,
+                    reference.source.0,
+                    if exempt { "a complete" } else { "no complete" }
+                ),
+                source: reference.source,
+                slot: reference.slot,
                 exempt,
-                reason,
             }
         })
         .collect()
 }
 
-fn opens_only_non_file_inputs(
+pub(crate) fn opens_only_non_file_inputs(
     ctx: &RunnerContext,
     record: ExecutionResolveRecordRef<'_>,
     slots: &BTreeSet<String>,
@@ -175,6 +179,11 @@ fn opens_only_non_file_inputs(
         .tilde_home_with_default(ctx.request().home.as_deref());
     let paths = crate::path::collect_path_facts(&[record], cwd, home);
     slots.iter().all(|slot| {
+        if bound.bound_parameters.iter().find(|parameter| parameter.name.as_str() == slot.as_str()).is_some_and(|parameter|
+            !parameter.values.is_empty() && parameter.values.iter().all(|value| matches!(value,
+                caushell_profile::BoundValue::Argument { node_kind, .. } if node_kind == "process_substitution"))) {
+            return true;
+        }
         let mut seen = false;
         for path in paths.iter().filter(|p| {
             p.slot_name == *slot
@@ -186,8 +195,7 @@ fn opens_only_non_file_inputs(
                 ctx.effective_cwd_for_node(record.source_node_id()),
                 cwd,
             ) {
-                if matches!(
-                    execution_content_io_target(
+                let target = execution_content_io_target(
                         ctx,
                         record.source_node_id(),
                         record.parsed_scope(),
@@ -197,9 +205,13 @@ fn opens_only_non_file_inputs(
                         path.cwd_dependent,
                         entry_cwd.resolution_base(cwd),
                         home
-                    ),
-                    IoTarget::Path { .. }
-                ) {
+                    );
+                let file_or_unknown = match target {
+                    IoTarget::Path { .. } | IoTarget::UnknownDescriptor { .. } => true,
+                    IoTarget::InheritedDescriptor { descriptor } => descriptor != "0" || !super::pipeline_has_upstream(record.parsed_scope(), record.command_index()),
+                    _ => false,
+                };
+                if file_or_unknown {
                     return false;
                 }
             }

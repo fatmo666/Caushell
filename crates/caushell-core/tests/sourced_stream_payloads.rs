@@ -154,14 +154,20 @@ fn ordinary_local_script_references_are_not_reclassified_as_streams() {
         "source '/bench/workspace/<(literal)'",
         "source /dev/stdin < ./unknown.sh",
         "source /dev/fd/3 3< ./unknown.sh",
-        "cat ./data.txt",
     ] {
-        check(command, Decision::Allow, false);
+        let response = check(command, Decision::NeedApproval, false);
+        assert!(
+            response
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("sourced shell state"))
+        );
     }
+    check("cat ./data.txt", Decision::Allow, false);
 }
 
 #[test]
-fn external_stream_rule_can_be_overridden_without_hiding_the_gap() {
+fn stream_policy_override_does_not_certify_incomplete_shell_state() {
     let mut policy = PolicyConfig::default();
     policy
         .rule_policy
@@ -172,7 +178,12 @@ fn external_stream_rule_can_be_overridden_without_hiding_the_gap() {
             RuleAction::Observe,
         );
     let r = ShellQueryCore::with_policy(policy).check(request("source <(./generate_commands)", 1));
-    assert_eq!(r.decision, Decision::Allow, "{r:#?}");
+    assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
+    assert!(
+        r.reasons
+            .iter()
+            .any(|reason| reason.contains("sourced shell state"))
+    );
     assert!(external(&r));
 }
 
@@ -185,13 +196,20 @@ fn descriptor_file_contents_do_not_use_a_stale_known_prefix() {
     );
     let response = check(
         "printf '%s\\n' 'echo safe' >./code; ./generator >./code; source /dev/fd/3 3<./code",
-        Decision::Allow,
+        Decision::NeedApproval,
         false,
     );
-    assert!(!response.decision_trace.nested_payloads.iter().any(|payload|
-        payload.source == NestedPayloadSource::ScriptFileRef
-            && payload.resolution.kind == NestedPayloadResolutionKind::Parsed
-    ), "stale bytes were parsed as the current script: {response:#?}");
+    assert!(
+        !response
+            .decision_trace
+            .nested_payloads
+            .iter()
+            .any(
+                |payload| payload.source == NestedPayloadSource::ScriptFileRef
+                    && payload.resolution.kind == NestedPayloadResolutionKind::Parsed
+            ),
+        "stale bytes were parsed as the current script: {response:#?}"
+    );
 }
 
 #[test]

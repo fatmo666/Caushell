@@ -83,10 +83,14 @@ fn nested_and_materialized_invocations_retain_the_code_origin() {
     for command in [
         "env --chdir=/tmp ssh-keygen -D ./lib.so",
         "bash -c 'ssh-keygen -D ./lib.so'",
-        "find ./sub -mindepth 1 -type f -execdir ssh-keygen -D ./lib.so \\;",
     ] {
         check(command, Decision::Allow, false);
     }
+    check(
+        "find ./sub -mindepth 1 -type f -execdir ssh-keygen -D ./lib.so \\;",
+        Decision::NeedApproval,
+        true,
+    );
 }
 
 #[test]
@@ -99,10 +103,21 @@ fn ordinary_reads_information_modes_and_registered_modules_are_unchanged() {
         "getent --service=dns hosts example.test",
         "python -m json.tool input.json output.json",
         "python -m http.server --bind 127.0.0.1",
+    ] {
+        check(command, Decision::Allow, false);
+    }
+}
+
+#[test]
+fn unknown_namespace_writes_do_not_certify_a_consumed_test_file() {
+    for command in [
         "python -m pytest tests/test_api.py::test_login",
         "pytest tests/test_api.py::test_login",
     ] {
-        check(command, Decision::Allow, false);
+        let result = ShellQueryCore::new().check(request(command, 1));
+        assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+        assert!(result.decision_trace.path_targets.iter().any(|fact| !fact.operation.is_mutation() &&
+            matches!(&fact.resolution, SemanticResolution::Unresolved { gap } if gap.kind == SemanticGapKind::NamespaceMutation)), "{result:#?}");
     }
 }
 

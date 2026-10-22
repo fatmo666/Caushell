@@ -1,5 +1,5 @@
 //! Request-local, purpose-scoped path exemptions; never a final Allow decision.
-use caushell_query::{PathScopeProof, PathScopeQuery, normalize_shell_path, path_is_within_root};
+use caushell_query::{PathScopeProof, PathScopeQuery, path_is_within_root};
 use caushell_types::{
     MutationExemptionOperation, PathResolution, PathTrustScope, PolicyConfig, RuleId,
 };
@@ -53,7 +53,7 @@ impl PathExemptionPolicy {
         let mut add = |root: &str, operations: Vec<PathOperation>, rule, basis| {
             if root.starts_with('/') && !root.contains('\0') {
                 grants.push(Grant {
-                    root: normalize_shell_path(root),
+                    root: root.to_owned(),
                     operations,
                     rule,
                     basis,
@@ -216,6 +216,96 @@ impl PathExemptionPolicy {
 mod tests {
     use super::*;
     use caushell_types::{PathTrustGrant, PathTrustSet, RuleAction, RulePolicyEntry};
+
+    #[test]
+    fn workspace_root_spelling_reaches_the_namespace_mapper_unchanged() {
+        let policy =
+            PathExemptionPolicy::new(Some("/work/link/.."), None, &PolicyConfig::default());
+        let mapped = policy.map_roots(|root| (root == "/work/link/..").then(|| "/outside".into()));
+        assert!(
+            mapped
+                .check(
+                    &PathResolution::Concrete {
+                        path: "/outside/file".into()
+                    },
+                    PathOperation::Write,
+                    RuleId::OutsideWorkspaceMutation
+                )
+                .is_exempt()
+        );
+        assert!(
+            !mapped
+                .check(
+                    &PathResolution::Concrete {
+                        path: "/work/file".into()
+                    },
+                    PathOperation::Write,
+                    RuleId::OutsideWorkspaceMutation
+                )
+                .is_exempt()
+        );
+    }
+
+    #[test]
+    fn configured_roots_keep_parent_components_after_home_expansion() {
+        let mut config = PolicyConfig::default();
+        config
+            .mutation_path_exemptions
+            .push(caushell_types::MutationPathExemption {
+                root: "/opt/link/..".into(),
+                operations: [MutationExemptionOperation::Write].into_iter().collect(),
+            });
+        config.path_trust_sets.insert(
+            "scripts".into(),
+            PathTrustSet::new(
+                vec!["~/link/..".into()],
+                PathTrustGrant::Scoped {
+                    scopes: [PathTrustScope::ScriptSourceExecute].into_iter().collect(),
+                },
+            ),
+        );
+        config.rule_policy.rules.insert(
+            RuleId::OutsideWorkspaceScriptSource,
+            RulePolicyEntry::new(RuleAction::NeedApproval).with_trust_sets(vec!["scripts".into()]),
+        );
+        let policy = PathExemptionPolicy::new(None, Some("/home/alice"), &config);
+        for (spelling, operation, rule) in [
+            (
+                "/opt/link/..",
+                PathOperation::Write,
+                RuleId::OutsideWorkspaceMutation,
+            ),
+            (
+                "/home/alice/link/..",
+                PathOperation::ExecuteFile,
+                RuleId::OutsideWorkspaceScriptSource,
+            ),
+        ] {
+            let mapped = policy.map_roots(|root| (root == spelling).then(|| "/outside".into()));
+            assert!(
+                mapped
+                    .check(
+                        &PathResolution::Concrete {
+                            path: "/outside/file".into()
+                        },
+                        operation,
+                        rule
+                    )
+                    .is_exempt()
+            );
+            assert!(
+                !mapped
+                    .check(
+                        &PathResolution::Concrete {
+                            path: "/home/alice/file".into()
+                        },
+                        operation,
+                        rule
+                    )
+                    .is_exempt()
+            );
+        }
+    }
 
     #[test]
     fn configured_grants_require_both_selected_rule_and_operation_scope() {

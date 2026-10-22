@@ -258,7 +258,9 @@ fn update_static_file_content(
                             r.kind,
                             RedirectionKind::HereDoc | RedirectionKind::HereString
                         ) && r.content.as_ref().is_some_and(|c| {
-                            c.quoted || (!c.text.contains('$') && !c.text.contains('`'))
+                            c.quoted
+                                || r.heredoc_start.as_ref().is_some_and(|start| start.quoted)
+                                || (!c.text.contains('$') && !c.text.contains('`'))
                         })
                     }));
         if !self_contained_output {

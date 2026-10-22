@@ -18,17 +18,13 @@ impl SessionAnalysisPass for OutsideWorkspaceStartupConfigPass {
         staged_session: SessionView<'_>,
         ctx: &mut RunnerContext,
     ) {
-        let request = ctx.request().clone();
-        let Some(path_facts) = collect_outside_workspace_path_consumes(
+        let path_facts = collect_outside_workspace_path_consumes(
             caushell_query::QuerySession::from_session(&staged_session),
-            &request,
-            ctx.path_exemption_policy(),
+            ctx,
             ProvenanceConsumeKind::StartupConfigSource,
             PathOperation::StartupConfig,
             RuleId::OutsideWorkspaceStartupConfig,
-        ) else {
-            return;
-        };
+        );
 
         let rule_action = ctx
             .policy()
@@ -38,27 +34,19 @@ impl SessionAnalysisPass for OutsideWorkspaceStartupConfigPass {
         let mut reasons = Vec::new();
 
         for path in path_facts.consumes {
-            ctx.add_evidence(Evidence::outside_workspace_path(
-                RuleId::OutsideWorkspaceStartupConfig,
-                &path.path,
-                path.slot_name.as_deref().unwrap_or("<unknown>"),
-                path.normalized_command_name
-                    .as_deref()
-                    .unwrap_or("<unknown>"),
-                normalized_workspace_root.clone(),
-            ));
-            push_unique_reason(
-                &mut reasons,
-                format!(
-                    "startup config path {} for slot {} in command {} is outside workspace root {}",
-                    path.path,
+            if matches!(&path.resolution, caushell_types::SemanticResolution::Resolved { value } if value.concrete_path().is_some())
+            {
+                ctx.add_evidence(Evidence::outside_workspace_path(
+                    RuleId::OutsideWorkspaceStartupConfig,
+                    &path.path,
                     path.slot_name.as_deref().unwrap_or("<unknown>"),
                     path.normalized_command_name
                         .as_deref()
                         .unwrap_or("<unknown>"),
-                    normalized_workspace_root
-                ),
-            );
+                    normalized_workspace_root.clone(),
+                ));
+            }
+            push_unique_reason(&mut reasons, path.reason);
         }
 
         for reason in reasons {
@@ -159,6 +147,7 @@ mod tests {
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
+        runner.register_session_transform_pass(crate::ResolvePathTargetsPass);
         runner.register_session_analysis_pass(OutsideWorkspaceStartupConfigPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
 
@@ -167,6 +156,7 @@ mod tests {
         let mut ctx =
             RunnerContext::with_policy(sample_request(command, cwd, home, workspace_root), policy);
 
+        crate::test_support::supply_filesystem(&mut ctx);
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
     }
@@ -178,6 +168,7 @@ mod tests {
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
+        runner.register_session_transform_pass(crate::ResolvePathTargetsPass);
         runner.register_session_analysis_pass(OutsideWorkspaceStartupConfigPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
 
@@ -185,6 +176,7 @@ mod tests {
         let summary = SessionSummary::default();
         let mut ctx = RunnerContext::with_policy(request, policy);
 
+        crate::test_support::supply_filesystem(&mut ctx);
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
     }
@@ -219,7 +211,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceStartupConfig,
-                "startup config path /tmp/project/shared/team.rc for slot startup_config in command bash is outside workspace root /tmp/project/work"
+                "file input /tmp/project/shared/team.rc for slot startup_config is outside the granted path scope or unproven"
             )]
         );
         assert!(ctx.evidence.contains(&Evidence::outside_workspace_path(
@@ -252,7 +244,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceStartupConfig,
-                "startup config path /tmp/project/shared/team.rc for slot startup_config in command bash is outside workspace root /tmp/project/work"
+                "file input /tmp/project/shared/team.rc for slot startup_config is outside the granted path scope or unproven"
             )]
         );
     }
@@ -277,7 +269,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceStartupConfig,
-                "startup config path /tmp/project/shared/team.rc for slot startup_config in command bash is outside workspace root /tmp/project/work"
+                "file input /tmp/project/shared/team.rc for slot startup_config is outside the granted path scope or unproven"
             )]
         );
     }
@@ -416,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn outside_workspace_startup_config_skips_when_workspace_root_is_missing() {
+    fn outside_workspace_startup_config_cannot_prove_arbitrary_paths_without_workspace() {
         let ctx = run_pass(
             policy_with_rule(RuleAction::NeedApproval),
             "bash --rcfile /opt/trusted-rc/team.rc -c 'echo ok'",
@@ -425,8 +417,19 @@ mod tests {
             None,
         );
 
-        assert_eq!(ctx.final_decision, Some(Decision::Allow));
-        assert!(ctx.findings.is_empty());
-        assert!(ctx.decision_proposals.is_empty());
+        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceStartupConfig)
+        );
+        assert!(
+            ctx.decision_proposals
+                .iter()
+                .any(
+                    |proposal| proposal.rule_id == RuleId::OutsideWorkspaceStartupConfig
+                        && proposal.decision == Decision::NeedApproval
+                )
+        );
     }
 }

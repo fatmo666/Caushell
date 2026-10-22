@@ -13,6 +13,10 @@ use caushell_types::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PendingMutation {
+    SetShellStateUncertainty {
+        reason: Option<String>,
+        observed_at: CommandSequenceNo,
+    },
     AddPathTargetFact {
         node_id: NodeId,
         fact: caushell_types::PathTargetFact,
@@ -211,6 +215,7 @@ impl PendingMutation {
             Self::AddRequestAnchor { .. }
                 | Self::AddStateCandidate { .. }
                 | Self::MarkAnalysisIncomplete { .. }
+                | Self::SetShellStateUncertainty { .. }
                 | Self::AddTopLevelCommandInvocation { .. }
                 | Self::AddShellStateReconciliationAnchor { .. }
                 | Self::ReplaceProvenanceArtifact { .. }
@@ -226,6 +231,7 @@ impl PendingMutation {
         !matches!(
             self,
             Self::SetPositionalParameters { .. }
+                | Self::SetShellStateUncertainty { .. }
                 | Self::ForgetPositionalParameters { .. }
                 | Self::UpsertVariableBinding { .. }
                 | Self::UnsetVariable { .. }
@@ -719,6 +725,7 @@ impl PendingMutation {
                 }
             }
             Self::UpsertVariableBinding { .. }
+            | Self::SetShellStateUncertainty { .. }
             | Self::SetPositionalParameters { .. }
             | Self::ForgetPositionalParameters { .. }
             | Self::UnsetVariable { .. }
@@ -728,6 +735,16 @@ impl PendingMutation {
 
     pub fn apply_summary(&self, summary: &mut SessionSummary) {
         match self {
+            Self::SetShellStateUncertainty {
+                reason,
+                observed_at,
+            } => {
+                if let Some(reason) = reason {
+                    summary.mark_shell_state_uncertain(reason, *observed_at);
+                } else {
+                    summary.clear_shell_state_uncertainty(*observed_at);
+                }
+            }
             Self::AddPathTargetFact { .. } => {}
             Self::AddStateCandidate { .. } => {}
             Self::MarkAnalysisIncomplete { .. } => {}
@@ -787,6 +804,22 @@ impl PendingMutation {
         capabilities: ShellRuntimeCapabilities,
     ) {
         match self {
+            Self::SetShellStateUncertainty {
+                reason,
+                observed_at,
+            } => {
+                if capabilities.persists_functions
+                    || capabilities.persists_aliases
+                    || capabilities.persists_variables
+                    || capabilities.persists_exported_environment
+                {
+                    if let Some(reason) = reason {
+                        summary.mark_shell_state_uncertain(reason, *observed_at);
+                    } else {
+                        summary.clear_shell_state_uncertainty(*observed_at);
+                    }
+                }
+            }
             Self::SetCurrentWorkingDirectory {
                 path,
                 observed_at,
@@ -845,6 +878,13 @@ impl PendingMutation {
 
     pub fn to_session_mutation(&self) -> SessionMutation {
         match self {
+            Self::SetShellStateUncertainty {
+                reason,
+                observed_at,
+            } => SessionMutation::SetShellStateUncertainty {
+                reason: reason.clone(),
+                observed_at: *observed_at,
+            },
             Self::AddStateCandidate { node_id, fact } => SessionMutation::AddStateCandidate {
                 node_id: node_id.0.clone(),
                 fact: fact.clone(),
@@ -1110,6 +1150,13 @@ impl PendingMutation {
 
     pub fn from_session_mutation(mutation: SessionMutation) -> Self {
         match mutation {
+            SessionMutation::SetShellStateUncertainty {
+                reason,
+                observed_at,
+            } => Self::SetShellStateUncertainty {
+                reason,
+                observed_at,
+            },
             SessionMutation::AddStateCandidate { node_id, fact } => Self::AddStateCandidate {
                 node_id: NodeId::new(node_id),
                 fact,
@@ -1525,6 +1572,31 @@ fn graph_projections(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_state_uncertainty_roundtrips_and_respects_runtime_persistence() {
+        use caushell_types::{CommandSequenceNo, SessionSummary, ShellRuntimeCapabilities};
+        let mut summary = SessionSummary::new();
+        for (sequence, reason) in [(1, Some("incomplete source")), (2, None)] {
+            let mutation = super::PendingMutation::SetShellStateUncertainty {
+                reason: reason.map(str::to_owned),
+                observed_at: CommandSequenceNo::new(sequence),
+            };
+            let restored =
+                super::PendingMutation::from_session_mutation(mutation.to_session_mutation());
+            assert_eq!(mutation, restored);
+            restored.apply_live_summary(&mut summary, ShellRuntimeCapabilities::persistent_shell());
+            assert_eq!(summary.shell_state_uncertainty(), reason);
+        }
+        summary.mark_shell_state_uncertain("stale", CommandSequenceNo::new(1));
+        assert!(summary.shell_state_uncertainty().is_none());
+        super::PendingMutation::SetShellStateUncertainty {
+            reason: Some("request only".into()),
+            observed_at: CommandSequenceNo::new(3),
+        }
+        .apply_live_summary(&mut summary, ShellRuntimeCapabilities::request_only());
+        assert!(summary.shell_state_uncertainty().is_none());
+    }
+
     use super::{MutationGraphError, PendingMutation};
     use caushell_graph::{
         Edge, EdgeKind, GraphError, GraphNode, GraphRead, NodeId, NodeKind, SessionGraph,

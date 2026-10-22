@@ -18,7 +18,6 @@ impl SessionAnalysisPass for OutsideWorkspaceScriptSourcePass {
         staged_session: SessionView<'_>,
         ctx: &mut RunnerContext,
     ) {
-        let request = ctx.request().clone();
         let checks = crate::support::file_execution_checks(
             ctx,
             caushell_query::QuerySession::from_session(&staged_session),
@@ -29,19 +28,15 @@ impl SessionAnalysisPass for OutsideWorkspaceScriptSourcePass {
             .action_for(RuleId::OutsideWorkspaceScriptSource);
         let path_facts = collect_outside_workspace_path_consumes(
             caushell_query::QuerySession::from_session(&staged_session),
-            &request,
-            ctx.path_exemption_policy(),
+            ctx,
             ProvenanceConsumeKind::ScriptSource,
             PathOperation::ExecuteFile,
             RuleId::OutsideWorkspaceScriptSource,
         );
         for check in checks.iter().filter(|c| {
             !c.exempt
-                && !path_facts.as_ref().is_some_and(|facts| {
-                    facts.consumes.iter().any(|p| {
-                        p.source_node_id == c.source
-                            && p.slot_name.as_deref() == Some(c.slot.as_str())
-                    })
+                && !path_facts.consumes.iter().any(|p| {
+                    p.source_node_id == c.source && p.slot_name.as_deref() == Some(c.slot.as_str())
                 })
         }) {
             ctx.add_finding(RuleId::OutsideWorkspaceScriptSource, check.reason.clone());
@@ -54,30 +49,14 @@ impl SessionAnalysisPass for OutsideWorkspaceScriptSourcePass {
                 );
             }
         }
-        let Some(path_facts) = path_facts else {
-            return;
-        };
-
         let rule_action = ctx
             .policy()
             .rule_policy
             .action_for(RuleId::OutsideWorkspaceScriptSource);
-        let normalized_workspace_root = path_facts.normalized_workspace_root.clone();
         let mut reasons = Vec::new();
 
         for path in path_facts.consumes {
-            push_unique_reason(
-                &mut reasons,
-                format!(
-                    "script source path {} for slot {} in command {} is outside workspace root {}",
-                    path.path,
-                    path.slot_name.as_deref().unwrap_or("<unknown>"),
-                    path.normalized_command_name
-                        .as_deref()
-                        .unwrap_or("<unknown>"),
-                    normalized_workspace_root
-                ),
-            );
+            push_unique_reason(&mut reasons, path.reason);
 
             if let Some(write) = path.latest_prior_write {
                 ctx.add_evidence(Evidence::prior_path_write(
@@ -89,7 +68,7 @@ impl SessionAnalysisPass for OutsideWorkspaceScriptSourcePass {
                 push_unique_reason(
                     &mut reasons,
                     format!(
-                        "script source path {} was previously written at sequence {} by command {}",
+                        "script source path {} has a prior write intent at sequence {} from command {}",
                         path.path, write.sequence_no.0, write.raw_text,
                     ),
                 );
@@ -179,6 +158,7 @@ mod tests {
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
         runner.register_session_transform_pass(ExtractPathFactsPass);
+        runner.register_session_transform_pass(crate::ResolvePathTargetsPass);
         runner.register_session_analysis_pass(OutsideWorkspaceScriptSourcePass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
 
@@ -187,6 +167,7 @@ mod tests {
         let mut ctx =
             RunnerContext::with_policy(sample_request(command, cwd, home, workspace_root), policy);
 
+        crate::test_support::supply_filesystem(&mut ctx);
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
     }
@@ -277,7 +258,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceScriptSource,
-                "script source path /opt/project/shared/build.sh for slot script_path in command bash is outside workspace root /opt/project/work"
+                "file input /opt/project/shared/build.sh for slot script_path is outside the granted path scope or unproven"
             )]
         );
         assert_eq!(ctx.decision_proposals.len(), 1);
@@ -303,7 +284,7 @@ mod tests {
             ctx.findings,
             vec![Finding::new(
                 RuleId::OutsideWorkspaceScriptSource,
-                "script source path /opt/project/shared/build.sh for slot script_path in command bash is outside workspace root /opt/project/work"
+                "file input /opt/project/shared/build.sh for slot script_path is outside the granted path scope or unproven"
             )]
         );
     }
@@ -315,6 +296,7 @@ mod tests {
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
         runner.register_session_transform_pass(ExtractPathFactsPass);
+        runner.register_session_transform_pass(crate::ResolvePathTargetsPass);
         runner.register_session_analysis_pass(OutsideWorkspaceScriptSourcePass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
 
@@ -341,6 +323,7 @@ mod tests {
             policy_with_rule(RuleAction::Observe),
         );
 
+        crate::test_support::supply_filesystem(&mut ctx);
         runner.run(session, &mut ctx);
 
         assert_eq!(ctx.final_decision, Some(Decision::Allow));
@@ -374,7 +357,7 @@ mod tests {
             ctx.findings[1],
             Finding::new(
                 RuleId::OutsideWorkspaceScriptSource,
-                "script source path /opt/shared/build.sh was previously written at sequence 3 by command echo hi > ../../shared/build.sh"
+                "script source path /opt/shared/build.sh has a prior write intent at sequence 3 from command echo hi > ../../shared/build.sh"
             )
         );
     }

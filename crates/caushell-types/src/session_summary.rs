@@ -204,6 +204,10 @@ impl SessionPositionalParameters {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shell_state_uncertainty: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shell_state_uncertainty_observed_at: Option<CommandSequenceNo>,
     last_sequence_no: Option<CommandSequenceNo>,
     variable_bindings: BTreeMap<String, SessionVariableBinding>,
     alias_bindings: BTreeMap<String, SessionAliasBinding>,
@@ -216,6 +220,27 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
+    pub fn shell_state_uncertainty(&self) -> Option<&str> {
+        self.shell_state_uncertainty.as_deref()
+    }
+
+    pub fn mark_shell_state_uncertain(&mut self, reason: &str, observed_at: CommandSequenceNo) {
+        if self.shell_state_uncertainty_observed_at > Some(observed_at) {
+            return;
+        }
+        self.shell_state_uncertainty_observed_at = Some(observed_at);
+        self.shell_state_uncertainty = Some(reason.to_owned());
+        self.observe_sequence(observed_at);
+    }
+
+    pub fn clear_shell_state_uncertainty(&mut self, observed_at: CommandSequenceNo) {
+        if self.shell_state_uncertainty_observed_at > Some(observed_at) {
+            return;
+        }
+        self.shell_state_uncertainty_observed_at = Some(observed_at);
+        self.shell_state_uncertainty = None;
+        self.observe_sequence(observed_at);
+    }
     pub fn new() -> Self {
         Self::default()
     }

@@ -214,6 +214,10 @@ enum FlagTokenMatch<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindError {
+    UncertainShellState {
+        command_name: String,
+        reason: String,
+    },
     UnresolvedAliasExpansion {
         command_name: String,
         reason: String,
@@ -246,6 +250,13 @@ pub enum BindError {
 impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UncertainShellState {
+                command_name,
+                reason,
+            } => write!(
+                f,
+                "shell state for {command_name:?} is incomplete: {reason}"
+            ),
             Self::UnresolvedAliasExpansion {
                 command_name,
                 reason,

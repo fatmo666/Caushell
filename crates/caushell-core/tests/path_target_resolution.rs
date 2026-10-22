@@ -191,11 +191,20 @@ fn standard_channels_have_explicit_not_applicable_results() {
 
 #[test]
 fn a_plain_unknown_command_keeps_its_existing_policy() {
-    let mut core = ShellQueryCore::new()
-        .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem));
+    let mut core =
+        ShellQueryCore::new().with_filesystem_view(Arc::new(MemoryFilesystem::default()));
     let response = core.check(request(1, "mystery"));
     assert_eq!(response.decision, Decision::Allow);
-    assert!(response.decision_trace.path_targets.is_empty());
+    assert!(
+        response
+            .decision_trace
+            .path_targets
+            .iter()
+            .all(|fact| matches!(
+                fact.operation,
+                PathTargetOperation::WorkingDirectory | PathTargetOperation::WorkspaceRoot
+            ))
+    );
 }
 
 #[test]
@@ -281,7 +290,7 @@ fn tool_directory_parent_components_require_their_own_namespace_proof() {
 }
 
 #[test]
-fn actions_without_mutation_targets_do_not_probe_the_filesystem() {
+fn actions_without_path_targets_or_workspace_do_not_probe_the_filesystem() {
     struct CountingView(Arc<std::sync::atomic::AtomicUsize>);
     impl FilesystemView for CountingView {
         fn entry(&self, _path: &str) -> FilesystemEntry {
@@ -292,10 +301,11 @@ fn actions_without_mutation_targets_do_not_probe_the_filesystem() {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut core =
         ShellQueryCore::new().with_filesystem_view(Arc::new(CountingView(count.clone())));
-    assert_eq!(
-        core.check(request(1, "printf hello")).decision,
-        Decision::Allow
-    );
+    let mut request = request(1, "printf hello");
+    request.workspace_root = None;
+    let response = core.check(request);
+    assert_eq!(response.decision, Decision::Allow);
+    assert!(response.decision_trace.path_targets.is_empty());
     assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 

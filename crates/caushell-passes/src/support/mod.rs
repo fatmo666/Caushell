@@ -4,7 +4,10 @@ mod execution_records;
 mod file_execution;
 mod function_overlay;
 pub(crate) mod git_hooks;
-pub(crate) use file_execution::{file_execution_checks, file_reference_is_exempt};
+pub(crate) use file_execution::{
+    file_execution_checks, file_execution_references, file_reference_is_exempt,
+    opens_only_non_file_inputs,
+};
 mod hard_deny;
 mod implicit_startup;
 mod io_provenance;
@@ -21,7 +24,7 @@ mod native_template;
 mod node_ids;
 pub(crate) use native_template::{
     bind_symbolic_template_inputs, collect_native_template_input_mutations,
-    forwarded_native_argument_inputs,
+    forwarded_native_argument_inputs, native_shell_payload_projection, replace_native_argument,
 };
 mod outside_workspace;
 mod path_list;
@@ -31,10 +34,11 @@ mod payload_hard_deny;
 mod pipeline;
 mod redirection;
 mod runtime_variable_overlay;
+mod source_state;
 mod state_capture;
 pub(crate) use runtime_variable_overlay::{
     declaration_uses_nameref, function_variable_escapes, function_variable_escapes_in_frame,
-    has_nameref_declaration, runtime_write_visible,
+    has_nameref_declaration, runtime_source_bindings_before_span, runtime_write_visible,
 };
 pub(crate) mod shell_evaluation;
 mod shell_sink_hard_deny;
@@ -92,7 +96,8 @@ pub(crate) use node_ids::{
     variable_binding_intent_node_id,
 };
 pub(crate) use outside_workspace::{
-    collect_outside_workspace_path_consumes, decision_for_rule_action, push_unique_reason,
+    collect_outside_workspace_path_consumes, decision_for_rule_action, declared_path_consumptions,
+    push_unique_reason,
 };
 pub(crate) use payload_hard_deny::{
     collect_block_device_destructive_reasons, collect_block_device_session_reasons,

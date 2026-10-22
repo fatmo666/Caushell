@@ -39,7 +39,8 @@ use crate::support::{
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
     materialize_static_token_command_substitutions, materialize_static_token_text,
     pipeline_has_upstream, process_substitution_evidence, redirection_parent_command_index,
-    redirection_targets_stdin_payload, request_variable_bindings, runtime_variable_overlay,
+    redirection_targets_stdin_payload, request_variable_bindings,
+    runtime_source_bindings_before_span, runtime_variable_overlay,
     runtime_variable_overlay_with_history, runtime_visible_variable_bindings_before_span,
     source_node_id_for_command, static_io_target_evidence,
     static_stdin_evidence_for_scoped_command, top_level_unit_for_command, top_level_unit_for_span,
@@ -87,7 +88,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         let (records, alias_derived_commands, function_derived_commands, function_scopes) =
             collect_top_level_command_resolve_records(
                 &self.registry,
-                session.summary(),
+                staged_view,
                 &binding_request,
                 &parsed,
                 ctx.policy().semantic_expansion.max_nested_parse_depth,
@@ -323,7 +324,63 @@ impl SessionTransformPass for ResolveInvocationPass {
             &parsed,
             ctx.request().sequence_no,
             ctx.policy().analysis_budget.clone(),
+            caushell_query::QuerySession::new(staged_view.graph(), staged_view.summary()),
         );
+        if let Some(reason) = final_overlay.bindings.shell_state_uncertainty() {
+            ctx.propose_decision(
+                self.name(),
+                caushell_types::RuleId::SelectionError,
+                caushell_types::Decision::NeedApproval,
+                reason,
+            );
+            ctx.stage_mutation(PendingMutation::SetShellStateUncertainty {
+                reason: Some(reason.to_owned()),
+                observed_at: ctx.request().sequence_no,
+            });
+        } else if session.summary().shell_state_uncertainty().is_some() {
+            ctx.stage_mutation(PendingMutation::SetShellStateUncertainty {
+                reason: None,
+                observed_at: ctx.request().sequence_no,
+            });
+        }
+        let initial_aliases = request_bindings(session.summary(), ctx.request());
+        let names = initial_aliases
+            .retained_alias_bindings()
+            .map(|b| b.name.clone())
+            .chain(
+                final_overlay
+                    .bindings
+                    .retained_alias_bindings()
+                    .map(|b| b.name.clone()),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        for name in names {
+            if initial_aliases
+                .retained_alias_bindings()
+                .find(|b| b.name == name)
+                == final_overlay
+                    .bindings
+                    .retained_alias_bindings()
+                    .find(|b| b.name == name)
+            {
+                continue;
+            }
+            let mutation = if let Some(binding) = final_overlay
+                .bindings
+                .retained_alias_bindings()
+                .find(|b| b.name == name)
+            {
+                PendingMutation::UpsertAliasBinding {
+                    binding: binding.clone(),
+                }
+            } else {
+                PendingMutation::UnsetAlias {
+                    name,
+                    observed_at: ctx.request().sequence_no,
+                }
+            };
+            ctx.stage_mutation(mutation);
+        }
         ctx.set_shell_state_fences(final_overlay.state_fences);
         if let Some(capture) = final_overlay.state_capture {
             for budget in capture.incomplete {
@@ -1398,7 +1455,7 @@ struct TopLevelAliasDerivedCommand {
 
 fn collect_top_level_command_resolve_records(
     registry: &ProfileRegistry,
-    summary: &caushell_types::SessionSummary,
+    session: SessionView<'_>,
     request: &CheckRequest,
     parsed: &caushell_parse::ParsedCommandArtifact,
     max_nested_parse_depth: u8,
@@ -1408,7 +1465,6 @@ fn collect_top_level_command_resolve_records(
     Vec<TopLevelFunctionDerivedCommand>,
     Vec<TopLevelFunctionScope>,
 ) {
-    let mut alias_overlay = alias_bindings(summary, request);
     let mut records = Vec::with_capacity(parsed.commands.len());
     let mut alias_derived_commands = Vec::new();
     let mut function_derived_commands = Vec::new();
@@ -1416,14 +1472,17 @@ fn collect_top_level_command_resolve_records(
 
     for (command_index, command) in parsed.commands.iter().enumerate() {
         let source_node_id = source_node_id_for_command(request, parsed, command_index, command);
-        let variable_overlay = runtime_visible_variable_bindings_before_span(
+        let variable_overlay = runtime_source_bindings_before_span(
             registry,
-            summary,
+            caushell_query::QuerySession::new(session.graph(), session.summary()),
             request,
             parsed,
             command.span.start_byte,
-            request.sequence_no,
         );
+        let mut alias_overlay = variable_overlay
+            .alias_bindings()
+            .map(|b| (b.name.clone(), b.clone()))
+            .collect();
         let expansion = crate::support::expand_alias_scope(
             command,
             request.shell_kind,
@@ -3125,13 +3184,12 @@ fn collect_execution_unit_resolve_records(
         else {
             continue;
         };
-        let command_bindings = runtime_visible_variable_bindings_before_span(
+        let command_bindings = runtime_source_bindings_before_span(
             registry,
-            session.summary(),
+            caushell_query::QuerySession::new(session.graph(), session.summary()),
             request,
             parsed_request,
             command.span.start_byte,
-            request.sequence_no,
         );
         program_contexts.insert(
             record.source_node_id.clone(),
@@ -3552,26 +3610,28 @@ fn collect_execution_unit_resolve_records(
         // unresolved. Explicit job redirections and intra-job pipes retain
         // their ordinary stream analysis. This is semantic uncertainty, not
         // a command-name risk exception.
-        if entry.inherited_scope.native_template_input.is_some()
-            && crate::support::effective_stdin_source(
-                &entry.parsed_scope,
-                entry.command_ref.command_index,
-            ) == crate::support::EffectiveStdinSource::Inherited
-            && entry
-                .parsed_scope
-                .commands
-                .get(entry.command_ref.command_index)
-                .is_none_or(|command| {
-                    command.pipeline_position.is_none_or(|position| {
-                        matches!(
-                            position,
-                            caushell_parse::PipelinePosition::First
-                                | caushell_parse::PipelinePosition::Only
-                        )
-                    })
-                })
+        let inherits_stdin = execution_unit_inherits_stdin(&entry);
+        if !inherits_stdin {
+            entry.inherited_scope.native_stdin_route_unproven = false;
+        }
+        if (entry.inherited_scope.native_stdin_route_unproven
+            || entry.inherited_scope.native_template_input.is_some()
+            || entry
+                .inherited_scope
+                .native_argument_inputs
+                .iter()
+                .any(|input| input.consumer_node_id == entry.source_node_id))
+            && inherits_stdin
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
-            && resolved.bound.effects.iter().any(|effect| {
+            && (resolved.bound.stream_contract.is_some_and(|contract| {
+                matches!(
+                    contract.stdin_mode,
+                    caushell_profile::StreamInputMode::DataOptional
+                        | caushell_profile::StreamInputMode::DataRequired
+                        | caushell_profile::StreamInputMode::PayloadOptional
+                        | caushell_profile::StreamInputMode::PayloadRequired
+                )
+            }) || resolved.bound.effects.iter().any(|effect| {
                 effect.kind == EffectKind::ConsumeStdin
                     && match &effect.target {
                         EffectTarget::Slot(slot) => {
@@ -3584,7 +3644,7 @@ fn collect_execution_unit_resolve_records(
                         EffectTarget::ImplicitInput(_) => true,
                         _ => false,
                     }
-            })
+            }))
         {
             resolved.bound.operation_semantics_unresolved = true;
         }
@@ -3633,7 +3693,7 @@ fn collect_execution_unit_resolve_records(
                 || (entry.origin_kind == ExecutionUnitOriginKind::Dispatch
                     && entry.parent_execution_node_id != origin.origin.producer_node_id))
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result
-            && native_template_frame_input_unresolved(resolved, &entry.bindings, &origin.origin)
+            && native_template_frame_input_unresolved(resolved, &entry.bindings, &origin.origin, &[])
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
         {
             resolved.bound.operation_semantics_unresolved = true;
@@ -3650,6 +3710,7 @@ fn collect_execution_unit_resolve_records(
                             resolved,
                             &entry.bindings,
                             &input.origin,
+                            &input.projections,
                         )
                 })
         {
@@ -3670,7 +3731,7 @@ fn collect_execution_unit_resolve_records(
             &mut syntax_scopes,
         );
         if let Some((name, _, incomplete)) = &function_children {
-            let native_scope_unresolved = entry
+            let template_scope_unresolved = entry
                 .inherited_scope
                 .native_template_input
                 .as_ref()
@@ -3700,6 +3761,37 @@ fn collect_execution_unit_resolve_records(
                                     })
                                 }))
                 });
+            let argument_scope_unresolved = entry
+                .inherited_scope
+                .native_argument_inputs
+                .iter()
+                .filter(|input| input.consumer_node_id == entry.source_node_id)
+                .any(|input| {
+                    entry
+                        .parsed_scope
+                        .function_definitions
+                        .iter()
+                        .any(|definition| {
+                            definition.name == *name
+                                && input.origin.data_ranges.iter().any(|range| {
+                                    definition.span.start_byte < range.end
+                                        && range.start < definition.span.end_byte
+                                })
+                        })
+                        || entry
+                            .parsed_scope
+                            .commands
+                            .get(entry.command_ref.command_index)
+                            .is_some_and(|command| {
+                                command.tokens.iter().any(|token| {
+                                    input.origin.data_ranges.iter().any(|range| {
+                                        token.span.start_byte < range.end
+                                            && range.start < token.span.end_byte
+                                    })
+                                })
+                            })
+                });
+            let native_scope_unresolved = template_scope_unresolved || argument_scope_unresolved;
             let reason = incomplete.as_deref().or_else(|| {
                 native_scope_unresolved.then_some(
                 "native replacement input crosses a function scope without proven data provenance"
@@ -4060,14 +4152,31 @@ fn register_shell_redirection_scope(
     }
 }
 
-/// Native replacement inputs passed into another shell frame currently lack
-/// scoped variable/positional lineage. This is an explicit modeling boundary,
-/// not a risk decision or a command-name exception. Ordinary wrapper argv keep
-/// their spans and continue through the existing source-slot propagation.
+fn execution_unit_inherits_stdin(entry: &ExpandedFrontierEntry) -> bool {
+    crate::support::effective_stdin_source(&entry.parsed_scope, entry.command_ref.command_index)
+        == crate::support::EffectiveStdinSource::Inherited
+        && entry
+            .parsed_scope
+            .commands
+            .get(entry.command_ref.command_index)
+            .is_none_or(|command| {
+                command.pipeline_position.is_none_or(|position| {
+                    matches!(
+                        position,
+                        caushell_parse::PipelinePosition::First
+                            | caushell_parse::PipelinePosition::Only
+                    )
+                })
+            })
+}
+
+/// Exact argv-to-source mappings preserve direct words across a shell frame.
+/// Variable and positional transfers still require their own lineage proof.
 fn native_template_frame_input_unresolved(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     bindings: &SessionBindings,
     origin: &caushell_runner::NativeInputOrigin,
+    projections: &[caushell_runner::NativeArgumentProjection],
 ) -> bool {
     let overlaps = |span: &caushell_parse::SourceSpan| {
         origin
@@ -4085,6 +4194,16 @@ fn native_template_frame_input_unresolved(
             _ => false,
         })
     };
+    let shell_payload = shell_payload_from_bound_invocation(resolved, bindings);
+    let projected_payload_span = shell_payload.as_ref().and_then(|(payload, span, _)| {
+        let shell_kind = match resolved.normalized_command_name.as_str() {
+            "bash" => caushell_types::ShellKind::Bash,
+            "sh" => caushell_types::ShellKind::Sh,
+            _ => return None,
+        };
+        crate::support::native_shell_payload_projection(projections, span, payload, shell_kind)
+            .map(|_| span)
+    });
     resolved
         .bound
         .effects
@@ -4097,14 +4216,21 @@ fn native_template_frame_input_unresolved(
                     .iter()
                     .any(|parameter| parameter.name == *slot && parameter_uses_input(parameter))
             }),
-            EffectTarget::Slot(slot) if effect.kind == EffectKind::ExecutePayload => resolved
-                .bound
-                .bound_parameters
-                .iter()
-                .any(|parameter| parameter.name == *slot && parameter_uses_input(parameter)),
+            EffectTarget::Slot(slot) if effect.kind == EffectKind::ExecutePayload => {
+                resolved.bound.bound_parameters.iter().any(|parameter| {
+                    parameter.name == *slot
+                        && parameter_uses_input(parameter)
+                        && !parameter.values.iter().all(|value| match value {
+                            BoundValue::Argument { span, .. } => {
+                                projected_payload_span == Some(span)
+                            }
+                            _ => false,
+                        })
+                })
+            }
             _ => false,
         })
-        || shell_payload_from_bound_invocation(resolved, bindings)
+        || shell_payload
             .is_some_and(|(_, _, arguments)| arguments.iter().any(|arg| overlaps(&arg.span)))
 }
 
@@ -5279,7 +5405,7 @@ fn expanded_shell_payload_children(
         &entry.parsed_scope,
         &entry.command_ref,
     );
-    let Some((shell_payload, _payload_span, positional_args)) =
+    let Some((shell_payload, payload_span, positional_args)) =
         shell_payload_from_bound_invocation(resolved, &parent_bindings)
     else {
         return Vec::new();
@@ -5310,6 +5436,30 @@ fn expanded_shell_payload_children(
     }
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
+    let mut payload_scope = entry.inherited_scope.clone();
+    payload_scope.native_template_input = payload_scope
+        .native_template_input
+        .filter(|input| input.source_text == shell_payload);
+    payload_scope.native_argument_inputs.clear();
+    let payload_inputs: Vec<_> = entry
+        .inherited_scope
+        .native_argument_inputs
+        .iter()
+        .filter(|input| input.consumer_node_id == entry.source_node_id)
+        .filter_map(|input| {
+            let projection = crate::support::native_shell_payload_projection(
+                &input.projections,
+                &payload_span,
+                &shell_payload,
+                shell_kind,
+            )?;
+            let mut origin = input.origin.as_ref().clone();
+            origin.data_ranges = projection.data_ranges.clone();
+            Some(std::sync::Arc::new(origin))
+        })
+        .collect();
+    payload_scope.native_stdin_route_unproven |=
+        !payload_inputs.is_empty() && execution_unit_inherits_stdin(entry);
     if parsed_payload.commands.is_empty() {
         register_shell_redirection_scope(
             registry,
@@ -5333,6 +5483,17 @@ fn expanded_shell_payload_children(
         .iter()
         .enumerate()
         .map(|(command_index, command)| {
+            let source_node_id =
+                expanded_virtual_node_id("shell-payload", &entry.source_node_id, command_index);
+            let mut inherited_scope = payload_scope.clone();
+            inherited_scope.native_argument_inputs = payload_inputs
+                .iter()
+                .map(|origin| caushell_runner::NativeArgumentInput {
+                    consumer_node_id: source_node_id.clone(),
+                    origin: origin.clone(),
+                    projections: Vec::new(),
+                })
+                .collect();
             let command_bindings = apply_runtime_variable_bindings_before_span(
                 registry,
                 request,
@@ -5342,11 +5503,7 @@ fn expanded_shell_payload_children(
                 request.sequence_no,
             );
             ExpandedFrontierEntry {
-                source_node_id: expanded_virtual_node_id(
-                    "shell-payload",
-                    &entry.source_node_id,
-                    command_index,
-                ),
+                source_node_id,
                 command_ref: ParsedCommandRef::new(command_index, command.span.clone()),
                 parsed_scope: parsed_payload.clone(),
                 rendered_command_text: command.text.clone(),
@@ -5388,7 +5545,7 @@ fn expanded_shell_payload_children(
                 origin_kind: ExecutionUnitOriginKind::ShellCommandStringPayload,
                 origin_index: command_index,
                 origin_locator: ExecutionUnitOriginLocator::None,
-                inherited_scope: entry.inherited_scope.clone(),
+                inherited_scope,
             }
         })
         .collect();
@@ -5405,7 +5562,7 @@ fn expanded_shell_payload_children(
             entry.root_command_index,
             entry.depth.saturating_add(2),
             &shell_bindings,
-            &entry.inherited_scope,
+            &payload_scope,
             None,
             Some("shell-payload"),
             children
@@ -6949,6 +7106,7 @@ fn expanded_static_xargs_children(
     for (command_index, group) in groups.into_iter().enumerate() {
         let mut child_candidate = candidate.clone();
         let mut data_ranges = Vec::new();
+        let mut projections = Vec::new();
         let mut next_byte = child_candidate
             .argv
             .iter()
@@ -7032,7 +7190,22 @@ fn expanded_static_xargs_children(
                     let Some(XargsItem::Known(item)) = item else {
                         continue;
                     };
-                    argument.text = argument.text.replace(replace_token, item);
+                    let exact = argument.runtime_data
+                        && argument.implicit_input_source.is_none()
+                        && !tilde_unresolved;
+                    let (value, ranges) = crate::support::replace_native_argument(
+                        &argument.text,
+                        replace_token,
+                        item,
+                    );
+                    argument.text = value;
+                    if exact {
+                        projections.push(caushell_runner::NativeArgumentProjection {
+                            argument_span: argument.span.clone(),
+                            value: argument.text.clone(),
+                            data_ranges: ranges,
+                        });
+                    }
                     argument.runtime_data = !tilde_unresolved;
                 }
                 data_ranges.push(argument.span.start_byte..argument.span.end_byte);
@@ -7083,6 +7256,13 @@ fn expanded_static_xargs_children(
                     .last()
                     .expect("appended native argument");
                 data_ranges.push(argument.span.start_byte..argument.span.end_byte);
+                if argument.runtime_data && argument.implicit_input_source.is_none() {
+                    projections.push(caushell_runner::NativeArgumentProjection {
+                        argument_span: argument.span.clone(),
+                        value: argument.text.clone(),
+                        data_ranges: vec![0..argument.text.len()],
+                    });
+                }
                 next_byte = next_byte.saturating_add(1);
             }
             if let Some(suffix) = suffix {
@@ -7136,6 +7316,7 @@ fn expanded_static_xargs_children(
                         },
                         stdin: !arg_file,
                     }),
+                    projections,
                 });
         }
         children.push(ExpandedFrontierEntry {

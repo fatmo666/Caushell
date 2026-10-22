@@ -144,7 +144,7 @@ fn collect_candidates_from_records(
                 command_prefix_environment_value(command, environment_name, &record.bindings)
             })
         {
-            if environment_value.is_empty() {
+            if known_empty(&environment_state) {
                 continue;
             }
 
@@ -153,7 +153,7 @@ fn collect_candidates_from_records(
                 command_index: record.command_ref.command_index,
                 normalized_command_name: resolved.normalized_command_name.clone(),
                 environment_name: environment_name.to_string(),
-                resolution: resolve_implicit_startup_path(&environment_value, cwd),
+                resolution: resolve_candidate_path(&environment_value, &environment_state, cwd),
                 environment_state,
                 environment_source: ImplicitStartupEnvironmentSource::CommandPrefixAssignment,
             });
@@ -194,7 +194,7 @@ fn collect_candidates_from_records(
             continue;
         };
 
-        if environment_value.is_empty() {
+        if known_empty(&environment_state) {
             continue;
         }
 
@@ -203,10 +203,30 @@ fn collect_candidates_from_records(
             command_index: record.command_ref.command_index,
             normalized_command_name: resolved.normalized_command_name.clone(),
             environment_name: environment_name.to_string(),
-            resolution: resolve_implicit_startup_path(&environment_value, cwd),
+            resolution: resolve_candidate_path(&environment_value, &environment_state, cwd),
             environment_state,
             environment_source: ImplicitStartupEnvironmentSource::InheritedEnvironment,
         });
+    }
+}
+
+fn known_empty(state: &ProvenanceVariableValueState) -> bool {
+    matches!(state, ProvenanceVariableValueState::ExactScalar { value } | ProvenanceVariableValueState::RuntimeProduced { value, .. } if value.is_empty())
+}
+
+fn resolve_candidate_path(
+    value: &str,
+    state: &ProvenanceVariableValueState,
+    cwd: &str,
+) -> PathResolution {
+    match state {
+        ProvenanceVariableValueState::ExactScalar { .. }
+        | ProvenanceVariableValueState::RuntimeProduced { .. } => {
+            resolve_implicit_startup_path(value, cwd)
+        }
+        _ => PathResolution::UnsupportedDynamicText {
+            text: "startup environment value is unresolved".into(),
+        },
     }
 }
 

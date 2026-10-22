@@ -355,6 +355,21 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
     };
 
     if module_runtime.is_none()
+        && !command_name.contains('/')
+        && let Some(reason) = bindings.shell_state_uncertainty()
+    {
+        return ResolveInvocationResult::SelectionError {
+            normalized_command_name: command_name.into(),
+            gap_kind: ResolveGapKind::OpaqueInvocation,
+            error: BindError::UncertainShellState {
+                command_name: command_name.into(),
+                reason: reason.to_owned(),
+            },
+            partial_bound: None,
+        };
+    }
+
+    if module_runtime.is_none()
         && let Some(reason) = bindings
             .function_binding(command_name)
             .and_then(|b| b.uncertainty.as_ref())
@@ -812,6 +827,7 @@ pub fn resolve_invocation_artifact_with_bindings(
 fn gap_kind_for_bind_error(error: &BindError) -> ResolveGapKind {
     match error {
         BindError::UncertainFunctionBinding { .. }
+        | BindError::UncertainShellState { .. }
         | BindError::UnresolvedAliasExpansion { .. }
         | BindError::IndeterminateDispatch { .. } => ResolveGapKind::OpaqueInvocation,
         BindError::UnknownSubcommand { .. } => ResolveGapKind::UnknownSubcommandPath,

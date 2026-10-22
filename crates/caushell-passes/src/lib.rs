@@ -23,3 +23,5 @@ pub use passes::{
     ProcessControlGuardPass, ProjectTopLevelCommandsPass, ResolveInvocationPass, ResolvePolicyPass,
     SensitiveDataExfiltrationGuardPass, SequenceIntegrityPass, TaintedExecutionGuardPass,
 };
+#[cfg(test)]
+mod test_support;
