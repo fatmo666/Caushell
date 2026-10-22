@@ -47,12 +47,14 @@ fn conditional_projection_respects_override_even_for_unknown_input() {
         assert_eq!(
             b.bound_parameters
                 .iter()
-                .any(|p| p.name.as_str() == "remote"),
+                .any(|p| p.name.as_str() == "remote" && p.semantic_values().next().is_some()),
             remote,
             "{b:#?}"
         );
         assert_eq!(
-            b.bound_parameters.iter().any(|p| p.name.as_str() == "file"),
+            b.bound_parameters
+                .iter()
+                .any(|p| p.name.as_str() == "file" && p.semantic_values().next().is_some()),
             !remote,
             "{b:#?}"
         );

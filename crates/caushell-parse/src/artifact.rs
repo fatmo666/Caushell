@@ -183,6 +183,8 @@ pub struct RedirectionOperandFact {
     pub quoted: bool,
     pub node_kind: String,
     pub span: SourceSpan,
+    pub command_substitutions: Vec<CommandSubstitutionFact>,
+    pub expansion_unresolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +198,8 @@ pub struct RedirectionFact {
     pub content: Option<RedirectionOperandFact>,
     pub parent_command_name: Option<String>,
     pub parent_command_span: Option<SourceSpan>,
+    pub shell_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
     /// Shell statement that opens an unowned redirect, before its body runs.
     /// This is syntax/context metadata, not an external command invocation.
     pub opening_statement: Option<CommandFact>,
@@ -245,6 +249,12 @@ pub struct ForLoopFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEvaluationKind {
+    /// Expansion performed by the shell while opening a redirection, even
+    /// when the invoked command never reads from that descriptor.
+    RedirectionExpansion {
+        redirection_index: usize,
+        unresolved: bool,
+    },
     ParameterAssignment {
         name: Option<String>,
         array_element: bool,

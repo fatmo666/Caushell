@@ -25,6 +25,17 @@ pub(crate) fn evaluate(
     base_bindings: &SessionBindings,
     max_depth: u8,
 ) -> Evaluation {
+    if let ShellEvaluationKind::RedirectionExpansion { unresolved, .. } = site.kind {
+        return Evaluation {
+            programs: site
+                .input
+                .command_substitutions
+                .iter()
+                .map(|substitution| substitution.body_text.clone())
+                .collect(),
+            unresolved,
+        };
+    }
     let facts = numeric::NumericFacts::new(registry, request, parsed, base_bindings);
     let mut checked_site = site.clone();
     checked_site
@@ -42,6 +53,7 @@ pub(crate) fn evaluate(
         max_depth: usize::from(max_depth),
     };
     match &site.kind {
+        ShellEvaluationKind::RedirectionExpansion { .. } => unreachable!(),
         ShellEvaluationKind::ParameterAssignment { .. } => {}
         ShellEvaluationKind::ArrayElementAssignment { .. } => {}
         ShellEvaluationKind::Arithmetic => evaluator.expression(&site.input.text, true, 0),

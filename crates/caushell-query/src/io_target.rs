@@ -6,6 +6,10 @@ use caushell_types::PathResolution;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoTarget {
+    /// A shell-opened socket address, not a pathname or a host FD observation.
+    Network {
+        endpoint: Option<String>,
+    },
     Path {
         resolution: PathResolution,
         cwd_dependent: bool,
@@ -29,6 +33,34 @@ pub enum IoTarget {
 pub struct IoTargetQuery;
 
 impl IoTargetQuery {
+    /// Already-decoded Bash redirect spelling, BEFORE filesystem normalization.
+    /// Bash's special open pattern is /dev/{tcp,udp}/*/*, not a path alias.
+    pub fn bash_network_redirection(spelling: &str) -> Option<IoTarget> {
+        let rest = spelling
+            .strip_prefix("/dev/tcp/")
+            .or_else(|| spelling.strip_prefix("/dev/udp/"))?;
+        let (host, service) = rest.split_once('/')?;
+        let host = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+            Some(format!("[{host}]"))
+        } else if !host.is_empty()
+            && host
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_'))
+        {
+            Some(host.to_string())
+        } else {
+            None
+        };
+        let service_known = !service.is_empty()
+            && service
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'));
+        Some(IoTarget::Network {
+            endpoint: host
+                .filter(|_| service_known)
+                .map(|host| format!("{host}:{service}")),
+        })
+    }
     /// Only exact same-process aliases; no arbitrary /dev or /proc exemption.
     pub fn descriptor_alias(path: &str) -> Option<&str> {
         match path {
@@ -121,6 +153,42 @@ mod tests {
             "/dev/sda",
         ] {
             assert_eq!(IoTargetQuery::descriptor_alias(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn bash_socket_open_uses_native_spelling_without_path_normalization() {
+        for (spelling, endpoint) in [
+            ("/dev/tcp/127.0.0.1/80", "127.0.0.1:80"),
+            ("/dev/udp/localhost/domain", "localhost:domain"),
+            ("/dev/tcp/::1/80", "[::1]:80"),
+            ("/dev/tcp/collector.example/443", "collector.example:443"),
+        ] {
+            assert_eq!(
+                IoTargetQuery::bash_network_redirection(spelling),
+                Some(IoTarget::Network {
+                    endpoint: Some(endpoint.into())
+                })
+            );
+        }
+        for spelling in [
+            "/tmp/../dev/tcp/127.0.0.1/80",
+            "/dev//tcp/127.0.0.1/80",
+            "/dev/tcp/localhost",
+            "./dev/tcp/localhost/80",
+            "/dev/tcpish/localhost/80",
+        ] {
+            assert_eq!(IoTargetQuery::bash_network_redirection(spelling), None);
+        }
+        for spelling in [
+            "/dev/tcp/evil@127.0.0.1/80",
+            "/dev/tcp/localhost/80/../out",
+            "/dev/tcp/$HOST/80",
+        ] {
+            assert_eq!(
+                IoTargetQuery::bash_network_redirection(spelling),
+                Some(IoTarget::Network { endpoint: None })
+            );
         }
     }
 

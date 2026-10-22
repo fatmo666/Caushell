@@ -1225,6 +1225,31 @@ fn normalize_stdout_records(
                 escape_modifiers: escape_modifiers.into_iter().map(ModifierId::new).collect(),
             }
         }
+        crate::RawStdoutRecordProjection::FormattedPaths {
+            roots_slot,
+            default_root,
+            formats_slot,
+            syntax,
+            escape_modifiers,
+        } => {
+            ensure_non_empty(&roots_slot, "stdout_records.roots_slot")?;
+            ensure_non_empty(&formats_slot, "stdout_records.formats_slot")?;
+            if default_root
+                .as_ref()
+                .is_some_and(|r| r.is_empty() || r.contains('\0'))
+            {
+                return Err(NormalizeError::InvalidStdoutRecords(
+                    "invalid default root".into(),
+                ));
+            }
+            crate::StdoutRecordProjection::FormattedPaths {
+                roots_slot: SlotName::new(roots_slot),
+                default_root,
+                formats_slot: SlotName::new(formats_slot),
+                syntax,
+                escape_modifiers: escape_modifiers.into_iter().map(ModifierId::new).collect(),
+            }
+        }
         crate::RawStdoutRecordProjection::Stdin => crate::StdoutRecordProjection::Stdin,
     };
     Ok(crate::StdoutRecordContract {
@@ -1293,6 +1318,32 @@ fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(),
                         "stdin forwarding requires data input/output".into(),
                     ));
                 }
+            }
+            crate::StdoutRecordProjection::FormattedPaths {
+                roots_slot,
+                formats_slot,
+                escape_modifiers,
+                ..
+            } => {
+                if stream.stdout_mode == StreamOutputMode::Opaque
+                    || !form.parameters.iter().any(|p| {
+                        p.name == *roots_slot && matches!(p.semantic, SemanticType::Path(_))
+                    })
+                    || !form
+                        .parameters
+                        .iter()
+                        .chain(modifiers.iter().flat_map(|m| &m.parameters))
+                        .any(|p| {
+                            p.name == *formats_slot
+                                && matches!(&p.semantic, SemanticType::StructuredValue(s)
+                                    if s.context == crate::StructuredValueContext::FormatString)
+                        })
+                {
+                    return Err(NormalizeError::InvalidStdoutRecords(
+                        "formatted_paths requires nonopaque stdout, a path slot and a format_string slot".into(),
+                    ));
+                }
+                ids.extend(escape_modifiers);
             }
         }
         if ids.iter().any(|id| !modifiers.iter().any(|m| m.id == **id))

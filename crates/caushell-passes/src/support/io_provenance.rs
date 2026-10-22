@@ -18,6 +18,55 @@ pub(crate) fn stream_provenance_mutations(
     slot: &str,
     command_name: Option<&str>,
 ) -> Vec<PendingMutation> {
+    if let IoTarget::Network { endpoint } = target {
+        let usage = match role {
+            PathRole::Write => caushell_types::ProvenanceEndpointUsage::UploadTarget,
+            PathRole::Read => caushell_types::ProvenanceEndpointUsage::FetchSource,
+            _ => return Vec::new(),
+        };
+        let node_id = NodeId::new(format!(
+            "artifact:network-stream:{}:{slot}:{usage:?}:{endpoint:?}",
+            source.0
+        ));
+        let artifact = ProvenanceArtifact::NetworkEndpoint {
+            endpoint: endpoint.clone(),
+            endpoint_kind: caushell_types::ProvenanceEndpointKind::HostPort,
+            usage,
+        };
+        let mut result = vec![PendingMutation::AddProvenanceArtifact {
+            source_node_id: source.clone(),
+            node_id: node_id.clone(),
+            artifact: artifact.clone(),
+            relation: EdgeKind::Consumes,
+            semantics: ProvenanceEdgeSemantics::Consume {
+                consume_kind: ProvenanceConsumeKind::NetworkEndpoint,
+                slot_name: Some(slot.into()),
+                normalized_command_name: command_name.map(str::to_string),
+                domain_label: (role == PathRole::Read).then(|| {
+                    caushell_types::ProvenanceDomainLabel::EndpointInputScope {
+                        slots: vec![slot.into()],
+                        stdin: false,
+                    }
+                }),
+            },
+        }];
+        if role == PathRole::Write {
+            // Retain the output port for existing shell-scope producer projection.
+            result.push(PendingMutation::AddProvenanceArtifact {
+                source_node_id: source.clone(),
+                node_id,
+                artifact,
+                relation: EdgeKind::Produces,
+                semantics: ProvenanceEdgeSemantics::Produce {
+                    produce_kind: ProvenanceProduceKind::StreamWrite,
+                    slot_name: Some(slot.into()),
+                    normalized_command_name: command_name.map(str::to_string),
+                    domain_label: None,
+                },
+            });
+        }
+        return result;
+    }
     let (node_id, artifact) = match target {
         IoTarget::InheritedDescriptor { descriptor } => record
             .and_then(|record| crate::passes::inherited_pipeline_artifact(ctx, record, descriptor))
@@ -80,7 +129,9 @@ pub(crate) fn stream_provenance_mutations(
                 },
             )
         }
-        IoTarget::Path { .. } | IoTarget::Closed | IoTarget::Discard => return Vec::new(),
+        IoTarget::Network { .. } | IoTarget::Path { .. } | IoTarget::Closed | IoTarget::Discard => {
+            return Vec::new();
+        }
     };
     let (relation, semantics) = match role {
         PathRole::Read => (

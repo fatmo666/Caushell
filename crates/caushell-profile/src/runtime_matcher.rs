@@ -5,7 +5,7 @@ use regex_automata::{
     dfa::{Automaton, StartKind, dense},
     nfa::thompson,
 };
-use regex_syntax::hir::{Class, Hir, HirKind, Look};
+use regex_syntax::hir::{Class, ClassUnicode, ClassUnicodeRange, Hir, HirKind, Look};
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock, RwLock},
@@ -15,6 +15,7 @@ const MAX_PATTERNS: usize = 32;
 const MAX_PREFIX_BYTES: usize = 1024;
 const MAX_DFA_BYTES: usize = 64 * 1024;
 const MAX_BUILD_BYTES: usize = 256 * 1024;
+const MAX_PREFIX_STATES: usize = 64;
 
 enum PrefixPlan {
     Atom(Hir),
@@ -23,6 +24,56 @@ enum PrefixPlan {
 }
 
 impl PrefixPlan {
+    fn matches_pathname_prefix(&self, prefix: &str) -> Option<bool> {
+        // nocaseglob may change the case of literal pathname components.
+        // Reject only if every simple case variant is impossible. Non-ASCII
+        // source prefixes and excessive state sets remain outside this proof.
+        if prefix.is_empty() || prefix.len() > MAX_PREFIX_BYTES || !prefix.is_ascii() {
+            return None;
+        }
+        let Self::RejectOnly(dfa) = self else {
+            return (!prefix.bytes().any(|b| b.is_ascii_alphabetic()))
+                .then(|| self.matches(prefix))
+                .flatten();
+        };
+        let mut states = vec![
+            dfa.start_state_forward(&Input::new(prefix).anchored(Anchored::Yes))
+                .ok()?,
+        ];
+        for byte in prefix.bytes() {
+            let mut variants =
+                ClassUnicode::new([ClassUnicodeRange::new(byte as char, byte as char)]);
+            variants.try_case_fold_simple().ok()?;
+            let mut next = Vec::new();
+            for state in states {
+                for range in variants.iter() {
+                    for variant in range.start()..=range.end() {
+                        let mut state = state;
+                        for &byte in variant.encode_utf8(&mut [0; 4]).as_bytes() {
+                            state = dfa.next_state(state, byte);
+                            if dfa.is_quit_state(state) || dfa.is_match_state(state) {
+                                return None;
+                            }
+                        }
+                        if !dfa.is_dead_state(state) {
+                            next.push(state);
+                        }
+                    }
+                }
+            }
+            next.sort_unstable();
+            next.dedup();
+            if next.is_empty() {
+                return Some(false);
+            }
+            if next.len() > MAX_PREFIX_STATES {
+                return None;
+            }
+            states = next;
+        }
+        None
+    }
+
     fn compile(pattern: &str) -> Self {
         let Ok(hir) = regex_syntax::ParserBuilder::new()
             .nest_limit(32)
@@ -132,7 +183,12 @@ pub(crate) fn matches(structure: &ArgumentStructure, matcher: &ValueMatcher) -> 
                 .then_some(false)
         }
         ValueMatcher::RegexPattern(pattern) if pattern.len() <= 4096 => {
-            prefix_plan(pattern)?.matches(&structure.static_prefix)
+            let plan = prefix_plan(pattern)?;
+            if structure.has_pathname_generation() {
+                plan.matches_pathname_prefix(&structure.static_prefix)
+            } else {
+                plan.matches(&structure.static_prefix)
+            }
         }
         _ => None,
     }

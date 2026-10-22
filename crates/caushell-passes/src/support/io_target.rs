@@ -59,6 +59,7 @@ pub(crate) fn content_io_target(
     cwd_dependent: bool,
     shell_cwd: &str,
     home: Option<&str>,
+    bindings: Option<&caushell_profile::SessionBindings>,
 ) -> IoTarget {
     content_io_target_with_entry(
         parsed,
@@ -68,6 +69,7 @@ pub(crate) fn content_io_target(
         cwd_dependent,
         shell_cwd,
         home,
+        bindings,
         &BTreeMap::new(),
     )
 }
@@ -80,6 +82,7 @@ pub(super) fn content_io_target_with_entry(
     cwd_dependent: bool,
     shell_cwd: &str,
     home: Option<&str>,
+    bindings: Option<&caushell_profile::SessionBindings>,
     inherited: &BTreeMap<String, IoTarget>,
 ) -> IoTarget {
     let Some(path) = resolution.concrete_path() else {
@@ -206,7 +209,9 @@ pub(super) fn content_io_target_with_entry(
                         )
                     },
                 );
-                IoTargetQuery::content_path(&resolution, dependent, &snapshot)
+                network_redirect_target(parsed, index, bindings, shell_cwd, home).unwrap_or_else(
+                    || IoTargetQuery::content_path(&resolution, dependent, &snapshot),
+                )
             }
             _ => continue,
         };
@@ -242,6 +247,11 @@ pub(crate) fn execution_content_io_target(
     shell_cwd: &str,
     home: Option<&str>,
 ) -> IoTarget {
+    let bindings = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .find(|record| &record.source_node_id == source)
+        .map(|r| &r.bindings);
     let Some(descriptor) = resolution
         .concrete_path()
         .and_then(IoTargetQuery::descriptor_alias)
@@ -254,6 +264,7 @@ pub(crate) fn execution_content_io_target(
             cwd_dependent,
             shell_cwd,
             home,
+            bindings,
         );
     };
     // Seed only referenced entry FDs, BEFORE ordered local changes. Resolving
@@ -300,8 +311,145 @@ pub(crate) fn execution_content_io_target(
         cwd_dependent,
         shell_cwd,
         home,
+        bindings,
         &inherited,
     )
+}
+
+/// A shell redirect opening has native syntax that an ordinary tool content
+/// operand does not. FD snapshot queries remain independent of this spelling.
+pub(crate) fn redirection_io_target(
+    parsed: &ParsedCommandArtifact,
+    command_index: Option<usize>,
+    index: usize,
+    resolution: &PathResolution,
+    cwd_dependent: bool,
+    cwd: &str,
+    home: Option<&str>,
+    bindings: Option<&caushell_profile::SessionBindings>,
+) -> IoTarget {
+    network_redirect_target(parsed, index, bindings, cwd, home).unwrap_or_else(|| {
+        content_io_target(
+            parsed,
+            command_index,
+            Some(index),
+            resolution,
+            cwd_dependent,
+            cwd,
+            home,
+            bindings,
+        )
+    })
+}
+
+pub(crate) fn execution_redirection_io_target(
+    ctx: &caushell_runner::RunnerContext,
+    source: &caushell_graph::NodeId,
+    parsed: &ParsedCommandArtifact,
+    command_index: usize,
+    index: usize,
+    resolution: &PathResolution,
+    cwd_dependent: bool,
+    cwd: &str,
+    home: Option<&str>,
+) -> IoTarget {
+    let bindings = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .find(|r| &r.source_node_id == source)
+        .map(|r| &r.bindings);
+    network_redirect_target(parsed, index, bindings, cwd, home).unwrap_or_else(|| {
+        execution_content_io_target(
+            ctx,
+            source,
+            parsed,
+            command_index,
+            Some(index),
+            resolution,
+            cwd_dependent,
+            cwd,
+            home,
+        )
+    })
+}
+
+fn network_redirect_target(
+    parsed: &ParsedCommandArtifact,
+    index: usize,
+    bindings: Option<&caushell_profile::SessionBindings>,
+    cwd: &str,
+    home: Option<&str>,
+) -> Option<IoTarget> {
+    if parsed.shell_kind != caushell_types::ShellKind::Bash {
+        return None;
+    }
+    let redirect = parsed.redirections.get(index)?;
+    if !matches!(
+        redirect.operator.as_deref(),
+        Some("<" | "<>" | ">" | ">>" | ">|" | "&>" | "&>>")
+    ) {
+        return None;
+    }
+    let original = redirect.target.as_ref()?;
+    // Literal opens need only quote removal, not a variable/path projection.
+    if let Some(value) = caushell_parse::decode_static_shell_argument(
+        &original.text,
+        original.quoted,
+        &original.node_kind,
+    ) {
+        return IoTargetQuery::bash_network_redirection(&value);
+    }
+    let fact = crate::path::collect_redirection_path_fact(
+        redirect,
+        index,
+        cwd,
+        home,
+        bindings,
+        parsed.shell_kind,
+    )?;
+    let token = fact.fact.target.as_ref()?;
+    let arg = caushell_profile::ProjectedArg {
+        word_context: Default::default(),
+        text: token.text.clone(),
+        quoted: token.quoted,
+        node_kind: token.node_kind.clone(),
+        span: token.span.clone(),
+        kind: caushell_profile::ProjectedArgKind::Positional,
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: false,
+        substitution_shape: None,
+        lexical_field_prefix: None,
+    };
+    let shape = caushell_profile::argument_structure(&arg);
+    if let Some(value) = shape.exact_value() {
+        return IoTargetQuery::bash_network_redirection(value);
+    }
+    // Mask one opaque scalar expansion only to prove the surrounding native
+    // open grammar. The marker is never an address or a materialized value.
+    if token.quoted
+        && token.node_kind == "string"
+        && token.text.len() <= 8192
+        && let [substitution] = original.command_substitutions.as_slice()
+    {
+        let masked = token
+            .text
+            .replacen(&substitution.text, "UNKNOWN_SOCKET_COMPONENT", 1);
+        if caushell_parse::decode_static_shell_argument(&masked, true, "string")
+            .is_some_and(|value| IoTargetQuery::bash_network_redirection(&value).is_some())
+        {
+            return Some(IoTarget::Network { endpoint: None });
+        }
+    }
+    let rest = shape
+        .static_prefix
+        .strip_prefix("/dev/tcp/")
+        .or_else(|| shape.static_prefix.strip_prefix("/dev/udp/"))?;
+    // Every possible spelling must match the native socket-open grammar.
+    // Unknown host/service bytes never stand in for a proven destination.
+    (shape.fields == caushell_profile::ArgumentFieldCount::ExactlyOne
+        && (rest.contains('/') || shape.static_suffix.contains('/')))
+    .then_some(IoTarget::Network { endpoint: None })
 }
 
 fn pipeline_merges_stderr(parsed: &ParsedCommandArtifact, index: usize) -> bool {
@@ -410,6 +558,7 @@ mod tests {
             false,
             "/tmp/project",
             None,
+            None,
         )
     }
 
@@ -443,6 +592,27 @@ mod tests {
                 Some(1)
             ),
             path("/opt/shared/out", false)
+        );
+    }
+
+    #[test]
+    fn socket_opening_does_not_reinterpret_arbitrary_snapshot_path_queries() {
+        let command = "printf x >/dev/tcp/127.0.0.1/80";
+        assert_eq!(
+            query(command, "/dev/stdout", Some(0)),
+            IoTarget::InheritedDescriptor {
+                descriptor: "1".into()
+            }
+        );
+        assert_eq!(
+            query(command, "/dev/stdout", None),
+            IoTarget::Network {
+                endpoint: Some("127.0.0.1:80".into())
+            }
+        );
+        assert_eq!(
+            query(command, "/dev/tcp/127.0.0.1/80", None),
+            path("/dev/tcp/127.0.0.1/80", false)
         );
     }
 

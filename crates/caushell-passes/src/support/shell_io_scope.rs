@@ -133,7 +133,7 @@ pub(crate) fn inherited_shell_descriptor_target(
         {
             Some(target)
         }
-        IoTarget::Closed | IoTarget::Discard => Some(target),
+        IoTarget::Network { .. } | IoTarget::Closed | IoTarget::Discard => Some(target),
         _ => None,
     }
 }
@@ -227,6 +227,13 @@ fn output(
 ) -> Option<Output> {
     let mut scope_stdout = false;
     let target = match artifact {
+        ProvenanceArtifact::NetworkEndpoint {
+            endpoint,
+            usage: caushell_types::ProvenanceEndpointUsage::UploadTarget,
+            endpoint_kind: caushell_types::ProvenanceEndpointKind::HostPort,
+        } => IoTarget::Network {
+            endpoint: endpoint.clone(),
+        },
         ProvenanceArtifact::PathContent { path, .. } => IoTarget::Path {
             resolution: caushell_types::PathResolution::Concrete { path: path.clone() },
             cwd_dependent: false,
@@ -486,7 +493,7 @@ pub(crate) fn collect_shell_io_scope_mutations(
                 let inherited = match target {
                     IoTarget::InheritedDescriptor { descriptor } => descriptor.as_str(),
                     IoTarget::UnknownDescriptor { .. } => "unknown",
-                    IoTarget::Path { .. } => "path",
+                    IoTarget::Path { .. } | IoTarget::Network { .. } => "path",
                     _ => continue,
                 };
                 // Nonterminal stdout (including stderr duplicated to it) is
@@ -543,6 +550,43 @@ pub(crate) fn collect_shell_io_scope_mutations(
                         relation: EdgeKind::Produces,
                         semantics: semantics.clone(),
                     });
+                    if matches!(
+                        &out.artifact,
+                        ProvenanceArtifact::NetworkEndpoint {
+                            usage: caushell_types::ProvenanceEndpointUsage::UploadTarget,
+                            ..
+                        }
+                    ) {
+                        let independent = matches!(
+                            &semantics,
+                            ProvenanceEdgeSemantics::Produce {
+                                domain_label: Some(
+                                    caushell_types::ProvenanceDomainLabel::StreamOutput {
+                                        dependency: StreamDataDependency::Independent,
+                                        ..
+                                    }
+                                ),
+                                ..
+                            }
+                        );
+                        mutations.push(PendingMutation::AddProvenanceArtifact {
+                            source_node_id: node.clone(),
+                            node_id: out.node.clone(),
+                            artifact: out.artifact.clone(),
+                            relation: EdgeKind::Consumes,
+                            semantics: ProvenanceEdgeSemantics::Consume {
+                                consume_kind: ProvenanceConsumeKind::NetworkEndpoint,
+                                slot_name: Some("scope_network_output".into()),
+                                normalized_command_name: None,
+                                domain_label: independent.then(|| {
+                                    caushell_types::ProvenanceDomainLabel::EndpointInputScope {
+                                        slots: vec!["scope_network_output".into()],
+                                        stdin: false,
+                                    }
+                                }),
+                            },
+                        });
+                    }
                     let projected = Output {
                         target: target.clone(),
                         semantics,

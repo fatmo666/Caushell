@@ -369,6 +369,9 @@ pub enum ExecutionUnitOriginLocator {
         substitution_index: usize,
         expression: String,
         substitution_body: Option<String>,
+        /// Source scope of a redirection expansion; separate from the nested
+        /// substitution's own parsed scope and from its operational parent.
+        redirection_source: Option<(ShellSourceCwdAnchor, usize)>,
     },
     #[default]
     None,

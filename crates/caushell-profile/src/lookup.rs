@@ -68,6 +68,10 @@ pub(crate) fn normalize_command_name_without_family_coalescing(command_name: &st
         }
     }
 
+    normalize_executable_name_without_family_coalescing(normalized)
+}
+
+pub(crate) fn normalize_executable_name_without_family_coalescing(normalized: &str) -> String {
     if is_windows_absolute_path(normalized) {
         return strip_windows_command_suffix(basename(normalized)).to_string();
     }

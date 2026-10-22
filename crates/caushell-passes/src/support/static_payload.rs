@@ -1101,9 +1101,9 @@ pub(crate) fn static_io_target_evidence(
                 remaining_depth,
             )
         }
-        IoTarget::InheritedDescriptor { .. } | IoTarget::UnknownDescriptor { .. } => {
-            StaticStreamEvidence::unknown()
-        }
+        IoTarget::Network { .. }
+        | IoTarget::InheritedDescriptor { .. }
+        | IoTarget::UnknownDescriptor { .. } => StaticStreamEvidence::unknown(),
     }
 }
 
@@ -1146,6 +1146,7 @@ fn immediate_file_write_evidence(
         false,
         cwd,
         home,
+        None,
     );
     if !matches!(target, IoTarget::Path { ref resolution, .. }
         if resolution.concrete_path() == Some(path))

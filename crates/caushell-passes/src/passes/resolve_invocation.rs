@@ -2030,17 +2030,19 @@ fn find_dispatch_candidates(
     let mut roots_unknown = root_values
         .iter()
         .any(|value| matches!(value, BoundValue::ImplicitInput { .. }));
-    let roots = if root_values.is_empty() {
+    let mut only_bounded_glob_roots = !root_values.is_empty();
+    let mut roots = if root_values.is_empty() {
         vec![".".to_string()]
     } else {
         root_values
             .iter()
-            .filter_map(|value| match value {
+            .flat_map(|value| match value {
                 BoundValue::Argument {
                     text,
                     quoted,
                     node_kind,
                     materialization,
+                    ownership,
                     ..
                 } => {
                     let runtime_data = matches!(
@@ -2055,29 +2057,73 @@ fn find_dispatch_candidates(
                         caushell_parse::decode_static_shell_argument(text, *quoted, node_kind)
                     };
                     let Some(root) = decoded_root else {
+                        // Preserve a set bound, not an invented glob member.
+                        // Relative bounds belong to the eventual execution cwd,
+                        // which may differ from the request's initial cwd.
+                        if !runtime_data
+                            && let Some(bounds) = crate::path::iteration_glob_bounds(
+                                text,
+                                *quoted,
+                                node_kind,
+                                ".",
+                                home,
+                                *ownership == caushell_profile::ArgumentOwnership::Operand,
+                            )
+                        {
+                            match bounds {
+                                caushell_types::PathResolution::BoundedPathSet {
+                                    roots,
+                                    may_escape,
+                                } => {
+                                    roots_unknown |= may_escape;
+                                    return roots;
+                                }
+                                caushell_types::PathResolution::Concrete { path } => {
+                                    only_bounded_glob_roots = false;
+                                    return vec![path];
+                                }
+                                _ => {}
+                            }
+                        }
+                        only_bounded_glob_roots = false;
                         roots_unknown = true;
-                        return None;
+                        return Vec::new();
                     };
+                    only_bounded_glob_roots = false;
                     let Some(_) =
                         resolve_path_operand(&root, *quoted, node_kind, cwd, home)
                     else {
                         roots_unknown = true;
-                        return None;
+                        return Vec::new();
                     };
                     let tilde_expanded =
                         !runtime_data && !quoted && (root == "~" || root.starts_with("~/"));
                     if tilde_expanded {
-                        crate::path::expand_home_path_spelling(&root, home)
+                        match crate::path::expand_home_path_spelling(&root, home) {
+                            Some(root) => vec![root],
+                            None => {
+                                roots_unknown = true;
+                                Vec::new()
+                            }
+                        }
                     } else {
                         // Keep argv spelling, including absolute trailing '/'
                         // and dot components, until any suffix is applied.
-                        Some(root)
+                        vec![root]
                     }
                 }
-                BoundValue::ImplicitInput { .. } => None,
+                BoundValue::ImplicitInput { .. } => {
+                    only_bounded_glob_roots = false;
+                    Vec::new()
+                }
             })
             .collect()
     };
+    // nullglob can remove every search operand. In that case find searches
+    // '.' rather than the nominal glob scope. Keep it relative to execution cwd.
+    if only_bounded_glob_roots && !roots.iter().any(|root| root == ".") {
+        roots.push(".".into());
+    }
     let follows_symlinks = resolved
         .bound
         .applied_modifiers
@@ -3004,6 +3050,7 @@ fn collect_execution_unit_resolve_records(
     let mut records = Vec::new();
     let mut syntax_scopes = Vec::new();
     let mut expansion_limit_evidence = Vec::new();
+    let mut symbolic_xargs_arity_budget = 32usize;
     let mut derived_payloads = Vec::new();
     let mut canonical_inline_payload_ids = std::collections::BTreeSet::new();
     let first_payload_id = nested_payload_records
@@ -3845,6 +3892,7 @@ fn collect_execution_unit_resolve_records(
                 &entry,
                 resolved,
                 max_nested_parse_depth,
+                &mut symbolic_xargs_arity_budget,
             ));
             children.extend(expanded_native_parallel_children(
                 registry,
@@ -4751,12 +4799,27 @@ fn expanded_shell_evaluation_children(
         if only_site.is_some_and(|i| i != site_index) {
             continue;
         }
+        let evaluation_start = match site.kind {
+            caushell_parse::ShellEvaluationKind::RedirectionExpansion {
+                redirection_index, ..
+            } => {
+                let redirect = &parsed.redirections[redirection_index];
+                redirect
+                    .opening_statement
+                    .as_ref()
+                    .map(|s| &s.span)
+                    .or(redirect.parent_command_span.as_ref())
+                    .unwrap_or(&redirect.top_level_span)
+                    .start_byte
+            }
+            _ => site.input.span.start_byte,
+        };
         let bindings = apply_runtime_variable_bindings_before_span(
             registry,
             request,
             base_bindings.clone(),
             parsed,
-            site.input.span.start_byte,
+            evaluation_start,
             request.sequence_no,
         );
         let mut evaluation = crate::support::shell_evaluation::evaluate(
@@ -4773,6 +4836,7 @@ fn expanded_shell_evaluation_children(
         if !matches!(
             site.kind,
             caushell_parse::ShellEvaluationKind::UnsetOperand { .. }
+                | caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
         ) {
             for direct in &site.input.command_substitutions {
                 let owned = parsed
@@ -4784,6 +4848,12 @@ fn expanded_shell_evaluation_children(
                     || assignment_substitution_groups(parsed)
                         .flat_map(|(_, _, assignments)| assignments)
                         .flat_map(|a| &a.value.command_substitutions)
+                        .any(|s| s.span == direct.span)
+                    || parsed
+                        .redirections
+                        .iter()
+                        .flat_map(|r| r.target.iter().chain(r.content.iter()))
+                        .flat_map(|v| &v.command_substitutions)
                         .any(|s| s.span == direct.span);
                 if owned
                     && let Some(index) = evaluation
@@ -4799,18 +4869,41 @@ fn expanded_shell_evaluation_children(
         if evaluation.unresolved {
             evaluation.programs.push(site.input.text.clone());
         }
-        let anchor = cwd_source.at(site.top_level_span.start_byte);
+        let anchor = cwd_source.at(
+            if matches!(
+                site.kind,
+                caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
+            ) {
+                evaluation_start
+            } else {
+                site.top_level_span.start_byte
+            },
+        );
         for (substitution_index, body) in evaluation.programs.iter().enumerate() {
             let unresolved = substitution_index == program_count;
             let (mut scope, unknown_index) = execution_body_scope(
                 body,
                 shell_kind,
                 unresolved || depth > max_depth,
-                "shell arithmetic/index evaluation",
+                if matches!(
+                    site.kind,
+                    caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
+                ) {
+                    "redirection command substitution"
+                } else {
+                    "shell arithmetic/index evaluation"
+                },
             );
             if unresolved {
                 for diagnostic in &mut scope.diagnostics {
-                    diagnostic.text = "shell arithmetic/index expression is unresolved".into();
+                    diagnostic.text = if matches!(
+                        site.kind,
+                        caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
+                    ) {
+                        "redirection expansion is unresolved".into()
+                    } else {
+                        "shell arithmetic/index expression is unresolved".into()
+                    };
                 }
             }
             let locator = ExecutionUnitOriginLocator::ShellEvaluation {
@@ -4821,6 +4914,13 @@ fn expanded_shell_evaluation_children(
                 substitution_index,
                 expression: site.input.text.clone(),
                 substitution_body: (!unresolved).then(|| body.clone()),
+                redirection_source: match site.kind {
+                    caushell_parse::ShellEvaluationKind::RedirectionExpansion {
+                        redirection_index,
+                        ..
+                    } => Some((anchor.clone(), redirection_index)),
+                    _ => None,
+                },
             };
             if scope.commands.is_empty() {
                 register_shell_redirection_scope(
@@ -6575,6 +6675,7 @@ fn expanded_static_xargs_children(
     entry: &ExpandedFrontierEntry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     max_nested_parse_depth: u8,
+    arity_budget: &mut usize,
 ) -> Vec<ExpandedFrontierEntry> {
     if resolved.normalized_command_name.as_str() != "xargs"
         || resolved.bound.form_id.as_str() != "dispatch_from_stdin"
@@ -6714,6 +6815,7 @@ fn expanded_static_xargs_children(
             }
             groups.push(vec![XargsItem::UnknownTail]);
         }
+        groups = bounded_xargs_unknown_groups(&config, groups, arity_budget);
     }
 
     let replace_token = match config.dispatch_mode {
@@ -6721,6 +6823,10 @@ fn expanded_static_xargs_children(
         _ => None,
     };
     let mut children = Vec::new();
+    let arity_alternatives = groups
+        .iter()
+        .flatten()
+        .any(|item| matches!(item, XargsItem::UnknownScalar));
     for (command_index, group) in groups.into_iter().enumerate() {
         let mut child_candidate = candidate.clone();
         let mut data_ranges = Vec::new();
@@ -6834,6 +6940,7 @@ fn expanded_static_xargs_children(
                         None,
                         None,
                         next_byte,
+                        false,
                     ),
                     XargsItem::UnknownTail => append_xargs_data_argument(
                         &mut child_candidate,
@@ -6841,6 +6948,15 @@ fn expanded_static_xargs_children(
                         Some(caushell_types::ImplicitInputSource::StdinData),
                         input_domain.as_ref(),
                         next_byte,
+                        true,
+                    ),
+                    XargsItem::UnknownScalar => append_xargs_data_argument(
+                        &mut child_candidate,
+                        String::new(),
+                        Some(caushell_types::ImplicitInputSource::StdinData),
+                        input_domain.as_ref(),
+                        next_byte,
+                        false,
                     ),
                 }
                 let argument = child_candidate
@@ -6865,7 +6981,7 @@ fn expanded_static_xargs_children(
         let mut command = child_candidate.to_command_fact();
         // A tool-level confirmation is a possible execution branch, not proof
         // that the child has no effects. Preserve its conditional status.
-        command.conditional_execution |= config.requires_confirmation;
+        command.conditional_execution |= config.requires_confirmation || arity_alternatives;
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
@@ -6934,7 +7050,54 @@ fn expanded_static_xargs_children(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum XargsItem {
     Known(String),
+    UnknownScalar,
     UnknownTail,
+}
+
+fn bounded_xargs_unknown_groups(
+    config: &XargsStaticExpansionConfig,
+    groups: Vec<Vec<XargsItem>>,
+    arity_budget: &mut usize,
+) -> Vec<Vec<XargsItem>> {
+    // Enumerate complete arity alternatives, never just the largest batch.
+    // Larger/unbounded batches retain the original unresolved list marker.
+    const MAX_SYMBOLIC_BATCH_ARGS: usize = 8;
+    let max_args = match config.dispatch_mode {
+        XargsDispatchMode::MaxArgs { max_args } => max_args,
+        XargsDispatchMode::MaxLines { max_lines }
+            if matches!(
+                config.item_mode,
+                XargsItemMode::NullSeparated | XargsItemMode::Delimited { .. }
+            ) =>
+        {
+            max_lines
+        }
+        _ => return groups,
+    };
+    if max_args == 0 || max_args > MAX_SYMBOLIC_BATCH_ARGS {
+        return groups;
+    }
+    let extra_groups = groups
+        .iter()
+        .filter(|group| group.as_slice() == [XargsItem::UnknownTail])
+        .count()
+        .saturating_mul(max_args - 1);
+    if extra_groups > *arity_budget {
+        return groups;
+    }
+    *arity_budget -= extra_groups;
+    groups
+        .into_iter()
+        .flat_map(|group| {
+            if group.as_slice() == [XargsItem::UnknownTail] {
+                (1..=max_args)
+                    .map(|count| vec![XargsItem::UnknownScalar; count])
+                    .collect()
+            } else {
+                vec![group]
+            }
+        })
+        .collect()
 }
 
 fn refresh_path_list_targets(
@@ -7162,6 +7325,7 @@ fn append_xargs_data_argument(
     source: Option<caushell_types::ImplicitInputSource>,
     domain: Option<&caushell_types::RuntimeArgumentDomain>,
     byte: usize,
+    batch: bool,
 ) {
     candidate.argv.push(caushell_profile::DispatchArgument {
         slot: caushell_profile::SlotName::new("wrapped_args"),
@@ -7174,8 +7338,10 @@ fn append_xargs_data_argument(
         }),
         runtime_data: source.is_none(),
         quoted: true,
-        node_kind: if source.is_some() {
+        node_kind: if source.is_some() && batch {
             "runtime_argument_list"
+        } else if source.is_some() {
+            "runtime_scalar"
         } else {
             "xargs_input_item"
         }
@@ -9993,6 +10159,7 @@ fn script_stream_payload_candidates(
                     false,
                     cwd,
                     home,
+                    Some(bindings),
                 );
                 let evidence = static_io_target_evidence(
                     session,
@@ -10730,6 +10897,86 @@ modifiers:
                 .iter()
                 .zip(arguments)
                 .all(|(token, expected)| token.text == *expected)
+    }
+
+    #[test]
+    fn find_glob_dispatch_preserves_bounds_without_inventing_a_member() {
+        for (command, roots) in [
+            (
+                r"find /usr/share/* -type f -exec touch -- {} \;",
+                vec!["/", "."],
+            ),
+            (
+                r"find ./src/* -type f -exec touch -- {} \;",
+                vec!["./", "."],
+            ),
+            (
+                r"find ../src/* -type f -exec touch -- {} \;",
+                vec!["../", "."],
+            ),
+            (
+                r"find ~/src/* -type f -exec touch -- {} \;",
+                vec!["/home/alice/", "."],
+            ),
+            (
+                r"find ./src/* /opt/exact -type f -exec touch -- {} \;",
+                vec!["./", "/opt/exact"],
+            ),
+            (
+                r"find './src/*' -type f -exec touch -- {} \;",
+                vec!["./src/*"],
+            ),
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            assert!(
+                ctx.execution_unit_resolve_records().iter().any(|record| {
+                    record.origin_kind == ExecutionUnitOriginKind::Dispatch
+                        && execution_record_has_runtime_path(record, "touch", 1, &roots)
+                }),
+                "{command}: {:#?}",
+                ctx.execution_unit_resolve_records()
+            );
+        }
+    }
+
+    #[test]
+    fn find_glob_dispatch_does_not_clear_unknown_or_followed_root_members() {
+        for command in [
+            r#"find ./src/* "$UNKNOWN" -type f -exec touch -- {} \;"#,
+            r"find -L ./src/* -type f -exec touch -- {} \;",
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            assert!(
+                ctx.execution_unit_resolve_records().iter().any(|record| {
+                    let command = &record.parsed_scope.commands[record.command_ref.command_index];
+                    command.command_name.as_deref() == Some("touch")
+                        && command.tokens.iter().any(|token| {
+                            matches!(
+                                &token.runtime_argument_domain,
+                                Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                                    may_escape: true,
+                                    ..
+                                })
+                            )
+                        })
+                }),
+                "{command}: {:#?}",
+                ctx.execution_unit_resolve_records()
+            );
+        }
+        let ctx = run_pass(
+            &SessionSummary::new(),
+            ShellKind::Bash,
+            r#"find "$UNKNOWN" -type f -exec touch -- {} \;"#,
+        );
+        assert!(ctx.execution_unit_resolve_records().iter().any(|record| {
+            let command = &record.parsed_scope.commands[record.command_ref.command_index];
+            command.command_name.as_deref() == Some("touch")
+                && command.tokens.iter().any(|token| matches!(
+                    &token.runtime_argument_domain,
+                    Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape: true }) if roots.is_empty()
+                ))
+        }));
     }
 
     fn execution_record_has_runtime_path(
@@ -12616,6 +12863,118 @@ modifiers:
             "bash",
             &["-lc", "rm -rf \"$0\"", "/"]
         )));
+    }
+
+    #[test]
+    fn xargs_bounded_unknown_batches_preserve_scalar_roles_and_zero_input() {
+        for (flag, expected) in [("-0", vec![0, 1, 2]), ("-r0", vec![1, 2])] {
+            let command = format!("find . -print0 | xargs {flag} -n2 cp -n --");
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, &command);
+            let mut counts = Vec::new();
+            for record in ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .filter(|r| r.origin_kind == ExecutionUnitOriginKind::StaticXargs)
+            {
+                let command = &record.parsed_scope.commands[record.command_ref.command_index];
+                assert!(command.conditional_execution);
+                let runtime = command
+                    .tokens
+                    .iter()
+                    .filter(|t| t.implicit_input_source.is_some())
+                    .collect::<Vec<_>>();
+                assert!(runtime.iter().all(|t| t.node_kind == "runtime_scalar"));
+                assert!(runtime.iter().all(|t| t.implicit_input_source
+                    == Some(caushell_types::ImplicitInputSource::StdinData)));
+                assert!(runtime.iter().all(|t| matches!(
+                    &t.runtime_argument_domain,
+                    Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                        may_escape: false,
+                        ..
+                    })
+                )));
+                let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+                    panic!("{record:#?}")
+                };
+                assert_eq!(
+                    resolved.bound.form_id.as_str(),
+                    if runtime.len() < 2 {
+                        "missing_operands"
+                    } else {
+                        "default_copy"
+                    }
+                );
+                if runtime.len() == 2 {
+                    for slot in ["source_paths", "destination_path"] {
+                        let value = resolved
+                            .bound
+                            .bound_parameters
+                            .iter()
+                            .find(|p| p.name.as_str() == slot)
+                            .unwrap();
+                        assert_eq!(value.values.len(), 1, "{resolved:#?}");
+                        assert!(
+                            matches!(&value.values[0], BoundValue::ImplicitInput { origin: Some(origin), .. } if origin.single_field)
+                        );
+                    }
+                    assert_ne!(runtime[0].span, runtime[1].span);
+                }
+                counts.push(runtime.len());
+            }
+            counts.sort_unstable();
+            assert_eq!(counts, expected, "{command}");
+        }
+    }
+
+    #[test]
+    fn xargs_bounded_arity_budget_keeps_unknown_tail_instead_of_partial_alternatives() {
+        use super::{
+            XargsDispatchMode, XargsItem, XargsItemMode, XargsStaticExpansionConfig,
+            bounded_xargs_unknown_groups,
+        };
+        let mut config = XargsStaticExpansionConfig {
+            item_mode: XargsItemMode::NullSeparated,
+            dispatch_mode: XargsDispatchMode::MaxArgs { max_args: 2 },
+            run_if_empty: true,
+            requires_confirmation: false,
+            eof_marker: None,
+            insert_batch_token: None,
+        };
+        let groups = vec![vec![], vec![XargsItem::UnknownTail]];
+        let mut budget = 1;
+        assert_eq!(
+            bounded_xargs_unknown_groups(&config, groups.clone(), &mut budget),
+            vec![
+                vec![],
+                vec![XargsItem::UnknownScalar],
+                vec![XargsItem::UnknownScalar; 2]
+            ]
+        );
+        assert_eq!(budget, 0);
+        assert_eq!(
+            bounded_xargs_unknown_groups(&config, groups.clone(), &mut budget),
+            groups
+        );
+        budget = 32;
+        config.dispatch_mode = XargsDispatchMode::MaxArgs { max_args: 9 };
+        assert_eq!(
+            bounded_xargs_unknown_groups(&config, groups.clone(), &mut budget),
+            groups
+        );
+        assert_eq!(budget, 32);
+        config.dispatch_mode = XargsDispatchMode::MaxLines { max_lines: 2 };
+        config.item_mode = XargsItemMode::WhitespaceSeparated;
+        assert_eq!(
+            bounded_xargs_unknown_groups(&config, groups.clone(), &mut budget),
+            groups
+        );
+        assert_eq!(budget, 32);
+        config.item_mode = XargsItemMode::NullSeparated;
+        assert_eq!(
+            bounded_xargs_unknown_groups(&config, groups, &mut budget).len(),
+            3
+        );
+        assert_eq!(budget, 31);
     }
 
     #[test]

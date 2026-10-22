@@ -37,6 +37,10 @@ enum SpellingPart {
 }
 
 impl ArgumentStructure {
+    pub(crate) fn has_pathname_generation(&self) -> bool {
+        self.pathname_generation
+    }
+
     pub fn exact_value(&self) -> Option<&str> {
         self.exact.then_some(self.static_prefix.as_str())
     }

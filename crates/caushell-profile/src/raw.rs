@@ -407,6 +407,15 @@ pub enum RawStdoutRecordProjection {
         #[serde(default)]
         escape_modifiers: Vec<String>,
     },
+    FormattedPaths {
+        roots_slot: String,
+        #[serde(default)]
+        default_root: Option<String>,
+        formats_slot: String,
+        syntax: crate::StdoutPathFormatSyntax,
+        #[serde(default)]
+        escape_modifiers: Vec<String>,
+    },
     Stdin,
 }
 

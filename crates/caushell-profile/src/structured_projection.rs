@@ -159,9 +159,11 @@ pub(crate) fn refresh_structured_parameters(invocation: &mut BoundInvocation) {
                     project_item(invocation, grammar, value, "", &mut generated)
                 }
                 _ => {
-                    emit_unknown(invocation, grammar, value, &mut generated);
+                    let guaranteed_match = emit_unknown(invocation, grammar, value, &mut generated);
                     native_unresolved |= grammar.native_syntax.is_some();
-                    true
+                    // A possible match is not a guaranteed first match.
+                    // Retain later operands until a concrete match is found.
+                    guaranteed_match
                 }
             };
             if matched && grammar.first_match_only {
@@ -398,13 +400,22 @@ fn emit_unknown(
     grammar: &StructuredProjection,
     source: &BoundValue,
     generated: &mut BTreeMap<crate::SlotName, BoundParameter>,
-) {
+) -> bool {
     let whole_operand = grammar.separator.is_none() && grammar.native_syntax.is_none();
+    let structure = (whole_operand || grammar.first_match_only && grammar.fallback.is_some())
+        .then(|| source_structure(source))
+        .flatten();
     let mut targets = BTreeMap::new();
     for (target, identity) in grammar
         .branches
         .iter()
         .filter(|b| !branch_disabled(invocation, b))
+        .filter(|b| {
+            !whole_operand
+                || structure
+                    .as_ref()
+                    .is_none_or(|s| branch_may_match(s, &b.matcher))
+        })
         .filter_map(|b| {
             b.target.as_ref().map(|t| {
                 (
@@ -431,6 +442,59 @@ fn emit_unknown(
     }
     for (_, (target, identity)) in targets {
         emit_value(target, source, unknown(), identity, generated);
+    }
+    // A fallback guarantees a match only if an operand actually exists.
+    // Nullglob, unquoted splitting and vectors may produce zero operands.
+    grammar.fallback.is_some()
+        && grammar.native_syntax.is_none()
+        && structure.is_some_and(|s| s.fields == crate::ArgumentFieldCount::ExactlyOne)
+}
+
+fn source_structure(source: &BoundValue) -> Option<crate::ArgumentStructure> {
+    match source {
+        BoundValue::Argument {
+            text,
+            quoted,
+            node_kind,
+            materialization: crate::BoundArgumentMaterialization::Literal,
+            ..
+        } => Some(crate::shell_word_structure(text, *quoted, node_kind)),
+        BoundValue::ImplicitInput {
+            source,
+            domain,
+            origin: Some(origin),
+        } if origin.single_field => Some(crate::argument_structure(&crate::ProjectedArg {
+            word_context: crate::WordContext::ShellArgument,
+            text: String::new(),
+            implicit_input_source: Some(source.to_caushell_types_implicit_input_source()),
+            runtime_argument_domain: domain.clone(),
+            runtime_data: false,
+            substitution_shape: None,
+            lexical_field_prefix: None,
+            kind: crate::ProjectedArgKind::Positional,
+            quoted: true,
+            node_kind: "runtime_scalar".into(),
+            span: origin.span.clone(),
+        })),
+        _ => None,
+    }
+}
+
+fn branch_may_match(
+    structure: &crate::ArgumentStructure,
+    matcher: &StructuredProjectionMatcher,
+) -> bool {
+    match matcher {
+        StructuredProjectionMatcher::Literal(value) => structure.may_equal(value),
+        StructuredProjectionMatcher::Prefix(prefix) => structure.may_start_with(prefix),
+        StructuredProjectionMatcher::RegexCapture { regex, .. } => {
+            crate::runtime_matcher::matches(
+                structure,
+                &crate::ValueMatcher::RegexPattern(regex.regex().as_str().into()),
+            ) != Some(false)
+        }
+        // Tool-specific whitespace/quoting is not shell-word prefix syntax.
+        StructuredProjectionMatcher::KeywordValue { .. } => true,
     }
 }
 
@@ -473,6 +537,42 @@ fn emit_value(
 mod source_preservation_tests {
     use super::*;
     use crate::*;
+
+    #[test]
+    fn runtime_affixes_require_a_single_field_origin_before_excluding_branches() {
+        let parsed =
+            caushell_parse::parse_command("echo item", caushell_types::ShellKind::Bash).unwrap();
+        let span = parsed.commands[0].span.clone();
+        let mut source = BoundValue::ImplicitInput {
+            source: ImplicitInputSource::DispatchOutput,
+            domain: Some(caushell_types::RuntimeArgumentDomain::TextTemplate {
+                prefix: "https://example.test/".into(),
+                suffix: String::new(),
+            }),
+            origin: Some(BoundImplicitArgumentOrigin {
+                span,
+                single_field: true,
+            }),
+        };
+        let matcher = StructuredProjectionMatcher::RegexCapture {
+            regex: CompiledOperandRegex::compile("(?i)^gophers?://.+$").unwrap(),
+            group: 0,
+        };
+        let structure = source_structure(&source).unwrap();
+        assert!(!branch_may_match(&structure, &matcher));
+        assert!(!structure.exact);
+        let BoundValue::ImplicitInput { origin, .. } = &mut source else {
+            unreachable!()
+        };
+        origin.as_mut().unwrap().single_field = false;
+        assert!(source_structure(&source).is_none());
+        let BoundValue::ImplicitInput { origin, .. } = &mut source else {
+            unreachable!()
+        };
+        *origin = None;
+        assert!(source_structure(&source).is_none());
+    }
+
     #[test]
     fn only_whole_unsplit_unmodified_values_retain_source_bounds() {
         for (grammar, expected) in [

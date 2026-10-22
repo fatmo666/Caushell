@@ -1443,6 +1443,20 @@ archive defaults remain conservative because their configured source is
 unknown; read-default forms retain `data_optional` rather than making an
 absence-of-effect claim.
 
+### Bash network redirections
+
+The shared I/O target query models Bash `/dev/tcp/HOST/SERVICE` and
+`/dev/udp/HOST/SERVICE` redirects as network endpoints. Recognition uses decoded
+native redirect spelling before filesystem normalization; ordinary tool path
+operands and other shell kinds retain their filesystem semantics. Numeric ports,
+static service names and IPv6 hosts use the existing endpoint-scope query.
+Unknown socket addresses stay unknown. Descriptor copies and inherited shell
+outputs retain the endpoint and actual output dependency. Socket output reaches
+the existing network-upload and sensitive-data checks rather than filesystem
+mutation checks; overwritten outputs and ignored stdin do not invent content
+transfers. An input-only open contributes its address as request data, separately
+from the bytes the process may later read from the socket.
+
 ### Positive stdout record contracts
 
 `stream_contract.stdout_mode: path_list` describes output type, not a guarantee
@@ -1478,6 +1492,20 @@ bounded stream-record query follows effective pipeline stdin and these explicit
 contracts. Input overrides, unknown tools, rewritten output, stdout redirection,
 stderr merging and exhausted hop budgets stop the proof. Existing provenance
 and independent file effects are never removed by a record proof.
+
+Native formatted path output uses `projection: {kind: formatted_paths,
+roots_slot: search_roots, default_root: '.', formats_slot: output_formats,
+syntax: find_printf}`. The format slot must have `format_string` semantics.
+The selected invocation and every format action must prove complete NUL records.
+The Find printf grammar supports `%p` and directory-prefixed `%P`, literal
+directory prefixes, `%%` and ASCII backslash escapes. `%p` retains the producer's
+root spelling; `newdir/%P` produces paths anchored at `newdir/`. Prefixing `%p`
+concatenates native bytes rather than joining paths. Bare `%P`, suffix rewrites,
+width/precision directives, incomplete records and mixed output retain unknown
+domains. Proof work is bounded to 4096 bytes per format, 64 formats/record roots
+and a 16384-byte cumulative proof budget. The Find Profile excludes other stdout
+actions and named file outputs from this guarantee; dispatching forms do not
+declare it.
 
 The xargs adapter preserves a NUL path domain only when its item parsing is
 also NUL-delimited. Child argv remains typed runtime input, not fabricated

@@ -78,7 +78,21 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
             | EffectiveStdinSource::UnknownDescriptor(redirection_index) = stdin_source
             {
                 let redirection = &parsed_scope.redirections[redirection_index];
+                let stdin_target = execution_content_io_target(
+                    ctx,
+                    record.source_node_id(),
+                    parsed_scope,
+                    record.command_index(),
+                    None,
+                    &caushell_types::PathResolution::Concrete {
+                        path: "/dev/stdin".into(),
+                    },
+                    false,
+                    shell_cwd,
+                    home,
+                );
                 if matches!(stdin_source, EffectiveStdinSource::UnknownDescriptor(_))
+                    || matches!(stdin_target, caushell_query::IoTarget::Network { .. })
                     || path_by_redirection_index
                         .get(&redirection_index)
                         .is_some_and(|path| {
@@ -88,23 +102,7 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
                     // Consumption sees the final stdin snapshot; an alias
                     // opened earlier retains its inherited backing source even
                     // if that original FD was rebound afterwards.
-                    let shell_cwd = ctx
-                        .known_effective_cwd_for_node(record.source_node_id())
-                        .unwrap_or(cwd);
-                    let target = execution_content_io_target(
-                        ctx,
-                        record.source_node_id(),
-                        parsed_scope,
-                        record.command_index(),
-                        None,
-                        &caushell_types::PathResolution::Concrete {
-                            path: "/dev/stdin".into(),
-                        },
-                        false,
-                        shell_cwd,
-                        home,
-                    );
-                    match target {
+                    match stdin_target {
                         caushell_query::IoTarget::Path {
                             resolution,
                             cwd_dependent,
@@ -176,6 +174,25 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
                     continue;
                 }
                 if !redirection_targets_stdin_payload(redirection) {
+                    continue;
+                }
+                if let Some(path) = collect_redirection_path_facts(parsed_command, cwd, home, None)
+                    .into_iter()
+                    .find(|p| p.redirection_index == redirection_index)
+                    && matches!(
+                        crate::support::redirection_io_target(
+                            parsed_command,
+                            None,
+                            redirection_index,
+                            &path.resolution,
+                            path.cwd_dependent,
+                            cwd,
+                            home,
+                            None,
+                        ),
+                        caushell_query::IoTarget::Network { .. }
+                    )
+                {
                     continue;
                 }
 

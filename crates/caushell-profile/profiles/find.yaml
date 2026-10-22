@@ -219,6 +219,16 @@ forms:
         - *formatted_stdout
     parameters: *enumerate_parameters
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+    stdout_records:
+      projection:
+        kind: formatted_paths
+        roots_slot: search_roots
+        default_root: "."
+        formats_slot: output_formats
+        syntax: find_printf
+        escape_modifiers: [follow_symlinks]
+      required_modifiers: [formatted_output]
+      excluded_modifiers: [line_output, nul_output, list_output, information_options, file_output, formatted_file_output, legacy_archive_output]
     effects: *enumerate_effects
 
 modifiers:

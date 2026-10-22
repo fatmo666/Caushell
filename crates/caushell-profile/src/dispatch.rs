@@ -495,7 +495,11 @@ fn single_argument_for_parameter(
         }
     }
 
-    Some(argument_from_semantic_value(slot, value, &mut 1))
+    let argument = argument_from_semantic_value(slot, value, &mut 1);
+    // exec argv[0] is one decoded word, never a shell expression to resolve
+    // later in the child's environment.
+    (argument.runtime_data && argument.implicit_input_source.is_none() && !argument.text.is_empty())
+        .then_some(argument)
 }
 
 #[derive(Default)]
@@ -549,7 +553,23 @@ fn argument_from_semantic_value(
     let mut argument =
         argument_from_bound_value(slot, source, next_synthetic_span_byte, text_override);
     match projected {
-        None => {} // Legacy argv materialization/provenance remains unchanged.
+        None => {
+            // Literal binding provenance does not imply undecoded shell source:
+            // quoted/escaped words can already identify exact native argv.
+            match crate::project_value(&crate::ValueProjection::Identity, source) {
+                Some(crate::SemanticValueResolution::Known(text)) => {
+                    argument.text = text;
+                    argument.runtime_data = true;
+                }
+                Some(crate::SemanticValueResolution::Unknown(
+                    crate::ProjectionUnknownReason::EmptyValue,
+                )) if known_empty_argument(value) => {
+                    argument.text.clear();
+                    argument.runtime_data = true;
+                }
+                _ => {}
+            }
+        }
         Some(crate::SemanticValueResolution::Known(_)) => {
             argument.runtime_data = true;
             argument.implicit_input_source = None;
@@ -886,6 +906,140 @@ mod tests {
             select_invocation(profile, &projection).expect("expected invocation selection");
 
         bind_invocation(profile, &projection, &selection)
+    }
+
+    #[test]
+    fn decoded_literal_executable_words_are_never_shell_materialized_again() {
+        let registry = built_in_registry();
+        let bindings = SessionBindings::new()
+            .with_exact_scalar("CMD", "rm")
+            .with_exact_scalar("IFS", " ")
+            .with_exact_scalar("HOME", "/opt/shared");
+        for (text, quoted, node_kind, expected) in [
+            ("$CMD", true, "raw_string", "$CMD"),
+            ("\\$CMD", false, "word", "$CMD"),
+            ("'$CMD'\".bin\"", false, "concatenation", "$CMD.bin"),
+            ("rm${IFS}", true, "raw_string", "rm${IFS}"),
+            ("\\rm", true, "raw_string", "\\rm"),
+            ("~/hello", true, "raw_string", "~/hello"),
+            ("$(printf rm)", true, "raw_string", "$(printf rm)"),
+            ("a b", true, "raw_string", "a b"),
+        ] {
+            let invocation =
+                BoundInvocation::new(CommandName::new("parent"), FormId::new("dispatch"))
+                    .with_bound_parameter(
+                        BoundParameter::new(SlotName::new("program"), SemanticType::PlainValue)
+                            .with_value(BoundValue::argument_with_node_kind(
+                                text,
+                                quoted,
+                                node_kind,
+                                SourceSpan {
+                                    start_byte: 0,
+                                    end_byte: text.len(),
+                                    start_row: 0,
+                                    end_row: 0,
+                                    start_column: 0,
+                                    end_column: text.len(),
+                                },
+                                ArgumentBindingSource::RemainingArg,
+                            )),
+                    )
+                    .with_effect(dispatch_effect("program", &[], &[]));
+            let before = invocation.clone();
+            let projection = collect_dispatch_command_projection(&invocation);
+            assert_eq!(invocation, before);
+            assert!(projection.unresolved.is_empty(), "{text}: {projection:#?}");
+            assert_eq!(projection.resolved.len(), 1);
+            let candidate = &projection.resolved[0];
+            assert_eq!(candidate.command.text, expected);
+            assert!(candidate.command.runtime_data);
+            let command = candidate.to_command_fact();
+            assert!(command.command_name_runtime_data);
+            let result = crate::resolve_invocation_with_bindings(
+                &registry,
+                &command,
+                InvocationRuntimeContext::new(),
+                &bindings,
+            );
+            assert!(
+                matches!(result, ResolveInvocationResult::NoProfile {
+                normalized_command_name, ..
+            } if normalized_command_name == expected),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_empty_executable_words_remain_unresolved() {
+        for (text, quoted, node_kind) in [
+            ("$CMD", true, "string"),
+            ("$CMD", false, "word"),
+            ("./bin/*", false, "word"),
+            ("~/hello", false, "word"),
+            ("$(producer)", false, "command_substitution"),
+            ("", true, "raw_string"),
+        ] {
+            let invocation =
+                BoundInvocation::new(CommandName::new("parent"), FormId::new("dispatch"))
+                    .with_bound_parameter(
+                        BoundParameter::new(SlotName::new("program"), SemanticType::PlainValue)
+                            .with_value(BoundValue::argument_with_node_kind(
+                                text,
+                                quoted,
+                                node_kind,
+                                SourceSpan {
+                                    start_byte: 0,
+                                    end_byte: text.len(),
+                                    start_row: 0,
+                                    end_row: 0,
+                                    start_column: 0,
+                                    end_column: text.len(),
+                                },
+                                ArgumentBindingSource::RemainingArg,
+                            )),
+                    )
+                    .with_effect(dispatch_effect("program", &[], &[]));
+            let projection = collect_dispatch_command_projection(&invocation);
+            assert!(projection.resolved.is_empty(), "{text}: {projection:#?}");
+            assert_eq!(projection.unresolved.len(), 1);
+        }
+    }
+
+    #[test]
+    fn decoded_empty_and_literal_arguments_preserve_bytes_and_sources() {
+        let invocation =
+            bind_first_command(&built_in_profile("env"), r#"env printf '' '$CMD' '\n'"#);
+        let projection = collect_dispatch_command_projection(&invocation);
+        assert!(projection.unresolved.is_empty());
+        let candidate = &projection.resolved[0];
+        assert!(candidate.command.runtime_data);
+        assert_eq!(
+            candidate
+                .argv
+                .iter()
+                .map(|arg| arg.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["", "$CMD", "\\n"]
+        );
+        assert!(candidate.argv.iter().all(|arg| arg.runtime_data));
+        let source = invocation
+            .bound_parameters
+            .iter()
+            .find(|p| p.name.as_str() == "wrapped_args")
+            .unwrap();
+        for (argument, original) in candidate.argv.iter().zip(&source.values) {
+            let BoundValue::Argument {
+                span,
+                binding_source,
+                ..
+            } = original
+            else {
+                panic!("{original:?}")
+            };
+            assert_eq!(&argument.span, span);
+            assert_eq!(&argument.binding_source, binding_source);
+        }
     }
 
     #[test]

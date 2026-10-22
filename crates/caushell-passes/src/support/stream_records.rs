@@ -95,8 +95,14 @@ pub(crate) fn stdin_path_records(
             StdoutRecordProjection::Paths {
                 roots_slot,
                 default_root,
-                separator,
                 escape_modifiers,
+                ..
+            }
+            | StdoutRecordProjection::FormattedPaths {
+                roots_slot,
+                default_root,
+                escape_modifiers,
+                ..
             } => {
                 let mut roots = Vec::new();
                 for parameter in resolved
@@ -183,6 +189,14 @@ pub(crate) fn stdin_path_records(
                     let root = default_root.as_ref()?;
                     roots.push(root.clone());
                 }
+                let separator = match &records.projection {
+                    StdoutRecordProjection::Paths { separator, .. } => *separator,
+                    StdoutRecordProjection::FormattedPaths { .. } => {
+                        roots = resolved.formatted_stdout_path_roots(&roots)?;
+                        StreamRecordSeparator::Nul
+                    }
+                    StdoutRecordProjection::Stdin => unreachable!(),
+                };
                 return Some(PathRecords {
                     domain: RuntimeArgumentDomain::PathSet {
                         roots,
@@ -190,7 +204,7 @@ pub(crate) fn stdin_path_records(
                             .iter()
                             .any(|m| resolved.bound.applied_modifiers.contains(m)),
                     },
-                    separator: *separator,
+                    separator,
                 });
             }
             StdoutRecordProjection::Stdin => {

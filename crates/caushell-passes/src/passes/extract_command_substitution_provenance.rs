@@ -73,6 +73,20 @@ impl SessionTransformPass for ExtractCommandSubstitutionProvenancePass {
                 },
                 &record.outer_relation,
             );
+            for (consumer, relation) in redirection_content_consumers(ctx, record) {
+                stage_outer_relation(
+                    ctx,
+                    &normalized_command_names,
+                    &consumer,
+                    &artifact_node_id,
+                    ProvenanceArtifact::CommandSubstitutionOutput {
+                        expression: record.expression_text.clone(),
+                        body_text: record.body_text.clone(),
+                        version: ctx.request().sequence_no.0,
+                    },
+                    &relation,
+                );
+            }
         }
     }
 }
@@ -107,6 +121,7 @@ struct CommandSubstitutionProvenanceRecord {
     parent_execution_node_id: NodeId,
     outer_relation: ProcessSubstitutionOuterRelation,
     derived_command_node_ids: Vec<NodeId>,
+    redirection_source: Option<(caushell_runner::ShellSourceCwdAnchor, usize)>,
 }
 
 fn collect_command_substitution_provenance_records(
@@ -170,6 +185,7 @@ fn command_substitution_descriptor_for_record(
             substitution_index,
             expression,
             substitution_body: Some(body),
+            redirection_source,
             ..
         } => Some(CommandSubstitutionProvenanceRecord {
             artifact_key: CommandSubstitutionArtifactKey::ShellEvaluation {
@@ -187,6 +203,7 @@ fn command_substitution_descriptor_for_record(
                 domain_label: None,
             },
             derived_command_node_ids: Vec::new(),
+            redirection_source: redirection_source.clone(),
         }),
         ExecutionUnitOriginLocator::CommandSubstitutionBody {
             token_index,
@@ -254,6 +271,7 @@ fn command_substitution_body_descriptor(
             domain_label: None,
         },
         derived_command_node_ids: Vec::new(),
+        redirection_source: None,
     })
 }
 
@@ -307,7 +325,88 @@ fn command_substitution_assignment_descriptor(
             domain_label: None,
         },
         derived_command_node_ids: Vec::new(),
+        redirection_source: None,
     })
+}
+
+/// Reuse already-projected, effective FD reads and native socket opens. An
+/// expansion always runs, but its returned bytes are data only for the real
+/// consumer, not for an ignored/overwritten FD or an ordinary path operand.
+fn redirection_content_consumers(
+    ctx: &RunnerContext,
+    record: &CommandSubstitutionProvenanceRecord,
+) -> Vec<(NodeId, ProcessSubstitutionOuterRelation)> {
+    use caushell_runner::ShellSourceCwdAnchor as Anchor;
+    let Some((anchor, index)) = &record.redirection_source else {
+        return Vec::new();
+    };
+    let (scope, representative) = match anchor {
+        Anchor::RequestPosition { .. } => (ctx.parsed_command(), None),
+        Anchor::RecordScopePosition { source_node_id, .. } => {
+            let representative = ctx
+                .execution_unit_resolve_records()
+                .iter()
+                .find(|r| &r.source_node_id == source_node_id);
+            (representative.map(|r| &r.parsed_scope), representative)
+        }
+        Anchor::InvocationEntry => return Vec::new(),
+    };
+    let Some(scope) = scope else {
+        return Vec::new();
+    };
+    let consumers: BTreeSet<_> = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .filter(|r| &r.parsed_scope == scope)
+        .filter(|r| match representative {
+            Some(parent) => {
+                r.depth == parent.depth
+                    && r.parent_execution_node_id == parent.parent_execution_node_id
+            }
+            None => r.depth == 0,
+        })
+        .map(|r| r.source_node_id.clone())
+        .collect();
+    let endpoint_slot = format!("redirect_target_{index}");
+    ctx.pending_mutations()
+        .iter()
+        .filter_map(|mutation| {
+            let PendingMutation::AddProvenanceArtifact {
+                source_node_id,
+                node_id,
+                artifact,
+                relation: EdgeKind::Consumes,
+                semantics:
+                    ProvenanceEdgeSemantics::Consume {
+                        consume_kind,
+                        slot_name,
+                        domain_label,
+                        ..
+                    },
+            } = mutation
+            else {
+                return None;
+            };
+            if !consumers.contains(source_node_id) {
+                return None;
+            }
+            let inline = matches!(artifact, ProvenanceArtifact::InlineShellContent { .. })
+                && node_id.0
+                    == format!("artifact:inline-shell-content:{}:{index}", source_node_id.0);
+            let endpoint = matches!(artifact, ProvenanceArtifact::NetworkEndpoint { .. })
+                && slot_name.as_deref() == Some(endpoint_slot.as_str());
+            (inline || endpoint).then(|| {
+                (
+                    source_node_id.clone(),
+                    ProcessSubstitutionOuterRelation::Consume {
+                        consume_kind: *consume_kind,
+                        slot_name: slot_name.clone(),
+                        domain_label: domain_label.clone(),
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 fn stage_outer_relation(

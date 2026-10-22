@@ -38,11 +38,22 @@ impl SessionAnalysisPass for NetworkUploadGuardPass {
         }) {
             return;
         }
-        let nodes: Vec<_> = ctx
+        let mut nodes: std::collections::BTreeSet<_> = ctx
             .execution_unit_resolve_records()
             .iter()
             .map(|record| record.source_node_id.clone())
             .collect();
+        nodes.extend(ctx.pending_mutations().iter().filter_map(|mutation| match mutation {
+            PendingMutation::AddProvenanceArtifact {
+                source_node_id,
+                artifact: ProvenanceArtifact::NetworkEndpoint { .. },
+                semantics: caushell_types::ProvenanceEdgeSemantics::Consume {
+                    consume_kind: caushell_types::ProvenanceConsumeKind::NetworkEndpoint, ..
+                }, ..
+            } => Some(source_node_id.clone()),
+            _ => None,
+        }));
+        let nodes: Vec<_> = nodes.into_iter().collect();
         let mut flagged = std::collections::BTreeSet::new();
         let uploads: Vec<_> = NetworkEndpointQuery::for_execution_units(
             staged.graph(),

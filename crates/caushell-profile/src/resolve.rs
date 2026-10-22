@@ -371,7 +371,13 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
     }
 
     let lookup = module_runtime.map_or_else(
-        || registry.lookup(command_name),
+        || {
+            if command_word_was_materialized {
+                registry.lookup_executable(command_name)
+            } else {
+                registry.lookup(command_name)
+            }
+        },
         |runtime| registry.lookup_module(runtime, command_name),
     );
     let normalized_command_name = lookup.normalized_command_name;
@@ -859,6 +865,9 @@ fn recover_ifs_field_split_command(
     command: &CommandFact,
     bindings: &SessionBindings,
 ) -> Option<CommandFact> {
+    if command.command_name_runtime_data {
+        return None;
+    }
     let trimmed_text = command.text.trim_start();
     if trimmed_text.starts_with('\'') || trimmed_text.starts_with('"') {
         return None;

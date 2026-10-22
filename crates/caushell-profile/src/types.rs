@@ -354,8 +354,22 @@ pub enum StdoutRecordProjection {
         separator: StreamRecordSeparator,
         escape_modifiers: Vec<ModifierId>,
     },
+    /// Complete path records described by the producer's native format grammar.
+    FormattedPaths {
+        roots_slot: SlotName,
+        default_root: Option<String>,
+        formats_slot: SlotName,
+        syntax: StdoutPathFormatSyntax,
+        escape_modifiers: Vec<ModifierId>,
+    },
     /// Byte-preserving forwarding of effective stdin, not a generic transform.
     Stdin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StdoutPathFormatSyntax {
+    FindPrintf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -753,7 +767,8 @@ pub struct StructuredProjection {
     pub last_value_only: bool,
     pub native_syntax: Option<NativeOperandSyntax>,
     pub separator: Option<String>,
-    /// Stop after the first matching operand (including disabled or unknown values).
+    /// Stop after the first proven matching operand (including disabled values).
+    /// Unknown operands retain possible effects without hiding later candidates.
     pub first_match_only: bool,
     pub branches: Vec<StructuredProjectionBranch>,
     pub fallback: Option<StructuredProjectionTarget>,

@@ -13,7 +13,8 @@ mod listener;
 mod loop_overlay;
 pub(crate) use io_provenance::stream_provenance_mutations;
 pub(crate) use io_target::{
-    bound_invocation, content_io_target, execution_content_io_target, slot_uses_content_open,
+    bound_invocation, content_io_target, execution_content_io_target,
+    execution_redirection_io_target, redirection_io_target, slot_uses_content_open,
 };
 pub(crate) use listener::{environment_default, network_listeners, shell_variable_default};
 mod native_template;

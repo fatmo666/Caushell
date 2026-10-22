@@ -186,6 +186,17 @@ impl ProfileRegistry {
     pub fn lookup(&self, command_name: &str) -> RegistryLookupResult<'_> {
         let exact_normalized_command_name =
             super::lookup::normalize_command_name_without_family_coalescing(command_name);
+        self.lookup_normalized(exact_normalized_command_name)
+    }
+
+    /// Shell quote removal has already happened; a remaining backslash is data.
+    pub(crate) fn lookup_executable(&self, command_name: &str) -> RegistryLookupResult<'_> {
+        self.lookup_normalized(
+            super::lookup::normalize_executable_name_without_family_coalescing(command_name),
+        )
+    }
+
+    fn lookup_normalized(&self, exact_normalized_command_name: String) -> RegistryLookupResult<'_> {
         let coalesced_command_name =
             super::lookup::coalesce_command_family_name(&exact_normalized_command_name);
         let exact_profile = self

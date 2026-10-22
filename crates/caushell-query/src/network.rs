@@ -182,7 +182,9 @@ pub fn endpoint_has_loopback_scope(endpoint: &str, kind: ProvenanceEndpointKind)
     }
     match kind {
         ProvenanceEndpointKind::Url => url_host(endpoint).is_some_and(loopback_host),
-        ProvenanceEndpointKind::HostPort => host_port(endpoint).is_some_and(loopback_host),
+        ProvenanceEndpointKind::HostPort => {
+            host_port_with_service(endpoint, valid_service).is_some_and(loopback_host)
+        }
         ProvenanceEndpointKind::RemoteSpec => {
             if endpoint.starts_with("rsync://") {
                 return url_host(endpoint).is_some_and(loopback_host);
@@ -244,18 +246,22 @@ fn url_host(endpoint: &str) -> Option<&str> {
 }
 
 fn host_port(peer: &str) -> Option<&str> {
+    host_port_with_service(peer, valid_port)
+}
+
+fn host_port_with_service(peer: &str, service: impl Fn(&str) -> bool) -> Option<&str> {
     if peer.parse::<std::net::IpAddr>().is_ok() {
         return Some(peer);
     }
     if let Some(rest) = peer.strip_prefix('[') {
         let (host, tail) = rest.split_once(']')?;
-        if !tail.is_empty() && !tail.strip_prefix(':').is_some_and(valid_port) {
+        if !tail.is_empty() && !tail.strip_prefix(':').is_some_and(&service) {
             return None;
         }
         return host.parse::<std::net::Ipv6Addr>().ok().map(|_| host);
     }
     match peer.split_once(':') {
-        Some((host, port)) if valid_port(port) => Some(host),
+        Some((host, port)) if service(port) => Some(host),
         Some(_) => None,
         None => Some(peer),
     }
@@ -263,6 +269,17 @@ fn host_port(peer: &str) -> Option<&str> {
 
 fn valid_port(port: &str) -> bool {
     !port.is_empty() && port.bytes().all(|c| c.is_ascii_digit()) && port.parse::<u16>().is_ok()
+}
+
+fn valid_service(service: &str) -> bool {
+    valid_port(service)
+        || (service
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            && service
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')))
 }
 
 fn loopback_host(host: &str) -> bool {

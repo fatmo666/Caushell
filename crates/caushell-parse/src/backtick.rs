@@ -139,10 +139,26 @@ fn source_span(bytes: &[u8], start: usize, end: usize) -> SourceSpan {
 
 /// Restore expansion facts, not placeholder values. Modern $(...) owns its
 /// nested syntax; do not also attach an inner backquote as a sibling producer.
-pub(crate) fn restore(artifact: &mut ParsedCommandArtifact, facts: &[CommandSubstitutionFact]) {
+pub(crate) fn restore(
+    artifact: &mut ParsedCommandArtifact,
+    facts: &[CommandSubstitutionFact],
+    root: Node<'_>,
+) {
     if facts.is_empty() {
         return;
     }
+    fn nested_process_scopes(node: Node<'_>, scopes: &mut Vec<(usize, usize)>) {
+        if node.kind() == "process_substitution" {
+            scopes.push((node.start_byte(), node.end_byte()));
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            nested_process_scopes(child, scopes);
+        }
+    }
+    let mut process_scopes = Vec::new();
+    nested_process_scopes(root, &mut process_scopes);
     let restore_value = |span: &SourceSpan,
                          node_kind: &mut String,
                          quoted: &mut bool,
@@ -156,6 +172,12 @@ pub(crate) fn restore(artifact: &mut ParsedCommandArtifact, facts: &[CommandSubs
             .filter(|fact| {
                 span.start_byte <= fact.span.start_byte
                     && fact.span.end_byte <= span.end_byte
+                    && !process_scopes.iter().any(|(start, end)| {
+                        span.start_byte <= *start
+                            && *end <= span.end_byte
+                            && *start <= fact.span.start_byte
+                            && fact.span.end_byte <= *end
+                    })
                     && !substitutions.iter().any(|outer| {
                         outer.span.start_byte <= fact.span.start_byte
                             && fact.span.end_byte <= outer.span.end_byte
@@ -210,13 +232,18 @@ pub(crate) fn restore(artifact: &mut ParsedCommandArtifact, facts: &[CommandSubs
         );
     }
     for redirection in &mut artifact.redirections {
+        let literal = redirection.heredoc_start.as_ref().is_some_and(|s| s.quoted);
         for value in [&mut redirection.target, &mut redirection.content]
             .into_iter()
             .flatten()
         {
-            if facts.iter().any(|f| f.span == value.span) {
-                value.node_kind = "command_substitution".into();
-                value.quoted = false;
+            if !literal {
+                restore_value(
+                    &value.span,
+                    &mut value.node_kind,
+                    &mut value.quoted,
+                    &mut value.command_substitutions,
+                );
             }
         }
     }

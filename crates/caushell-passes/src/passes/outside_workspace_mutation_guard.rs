@@ -92,6 +92,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                                     target.cwd_dependent,
                                     entry.resolution_base(&fallback_cwd),
                                     home,
+                                    Some(record.bindings()),
                                 );
                                 if let Some((resolution, dependent)) = mutation_path_for_io(io) {
                                     let resolution =
@@ -227,14 +228,15 @@ fn collect_redirection_mutation_targets(
             })
         })
         .filter_map(|path| {
-            let io = content_io_target(
+            let io = crate::support::redirection_io_target(
                 parsed,
                 command_index,
-                Some(path.redirection_index),
+                path.redirection_index,
                 &path.resolution,
                 path.cwd_dependent,
                 cwd,
                 home,
+                bindings,
             );
             let (resolution, cwd_dependent) = mutation_path_for_io(io)?;
             Some(MutationTargetCandidate {
@@ -271,7 +273,8 @@ fn mutation_path_for_io(target: IoTarget) -> Option<(PathResolution, bool)> {
         IoTarget::InheritedDescriptor { .. }
         | IoTarget::ProcessSubstitution { .. }
         | IoTarget::Closed
-        | IoTarget::Discard => None,
+        | IoTarget::Discard
+        | IoTarget::Network { .. } => None,
     }
 }
 

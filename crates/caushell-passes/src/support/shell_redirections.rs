@@ -42,14 +42,15 @@ pub(crate) fn shell_syntax_redirections(ctx: &RunnerContext) -> Vec<ShellSyntaxR
                     ) else {
                         continue;
                     };
-                    let io = super::content_io_target(
+                    let io = super::redirection_io_target(
                         &parsed,
                         None,
-                        Some(local_index),
+                        local_index,
                         &path.resolution,
                         path.cwd_dependent,
                         case.resolution_base(fallback),
                         home,
+                        Some(&unit.bindings),
                     );
                     let io = match io {
                         IoTarget::Path {
@@ -165,6 +166,7 @@ pub(crate) fn syntax_descriptor_entries(
                 false,
                 cwd.unwrap_or(ctx.request().shell_state_before.cwd()),
                 home,
+                None,
                 &prior,
             );
             if cwd.is_none()

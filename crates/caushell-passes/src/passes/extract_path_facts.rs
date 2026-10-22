@@ -20,7 +20,7 @@ use crate::support::git_hooks::{
 };
 use crate::support::{
     ExecutionResolveRecordRef, StreamSemanticsIndex, annotate_stream_output, bound_invocation,
-    content_io_target, execution_content_io_target, graph_backed_execution_resolve_records,
+    execution_content_io_target, graph_backed_execution_resolve_records,
     redirection_parent_command_index, slot_uses_content_open, source_node_id_for_redirection,
     stream_provenance_mutations,
 };
@@ -387,12 +387,12 @@ fn collect_redirection_path_mutations(
                 {
                     continue;
                 }
-                let target = execution_content_io_target(
+                let target = crate::support::execution_redirection_io_target(
                     ctx,
                     record.source_node_id(),
                     parsed_scope,
                     record.command_index(),
-                    Some(path.redirection_index),
+                    path.redirection_index,
                     &path.resolution,
                     path.cwd_dependent,
                     option.resolution_base(cwd),
@@ -457,15 +457,42 @@ fn collect_redirection_path_mutations(
                     role,
                 ))
             }
-            target => mutations.extend(stream_provenance_mutations(
+            target => {
+                let mut projected = stream_provenance_mutations(
+                    ctx,
+                    None,
+                    &syntax.source,
+                    &target,
+                    role,
+                    &syntax.path.slot_name,
+                    None,
+                );
+                adjust_redirect_provenance(&streams, &syntax.source, &target, &mut projected);
+                mutations.extend(projected);
+            }
+        }
+    }
+
+    // Actual command output can reach a socket through descriptor copies or
+    // an enclosing compound redirect, without a local socket-opening operand.
+    for record in records {
+        for port in ["1", "2"] {
+            let Some(target @ IoTarget::Network { .. }) =
+                streams.output_target(record.source_node_id(), port)
+            else {
+                continue;
+            };
+            let mut projected = stream_provenance_mutations(
                 ctx,
+                Some(*record),
+                record.source_node_id(),
+                target,
+                PathRole::Write,
+                &format!("network_output_fd_{port}"),
                 None,
-                &syntax.source,
-                &target,
-                role,
-                &syntax.path.slot_name,
-                None,
-            )),
+            );
+            adjust_redirect_provenance(&streams, record.source_node_id(), target, &mut projected);
+            mutations.extend(projected);
         }
     }
 
@@ -516,14 +543,15 @@ fn collect_redirection_path_mutations(
 
             let source_node_id =
                 source_node_id_for_redirection(ctx.request(), parsed_command, &path.fact);
-            let target = content_io_target(
+            let target = crate::support::redirection_io_target(
                 parsed_command,
                 None,
-                Some(path.redirection_index),
+                path.redirection_index,
                 &path.resolution,
                 path.cwd_dependent,
                 cwd,
                 home,
+                None,
             );
             let resolution = if let IoTarget::Path { resolution, .. } = target {
                 resolution
@@ -568,9 +596,35 @@ fn adjust_redirect_provenance(
                 relation: EdgeKind::Consumes,
                 ..
             }
+        ) || matches!(
+            mutation,
+            PendingMutation::AddProvenanceArtifact {
+                artifact: caushell_types::ProvenanceArtifact::NetworkEndpoint { .. },
+                ..
+            }
         )
     });
     for mutation in mutations {
+        if let PendingMutation::AddProvenanceArtifact {
+            artifact: caushell_types::ProvenanceArtifact::NetworkEndpoint { .. },
+            semantics:
+                caushell_types::ProvenanceEdgeSemantics::Consume {
+                    domain_label,
+                    slot_name,
+                    ..
+                },
+            ..
+        } = mutation
+        {
+            if streams.dependency(source, target)
+                == caushell_types::StreamDataDependency::Independent
+            {
+                *domain_label = Some(caushell_types::ProvenanceDomainLabel::EndpointInputScope {
+                    slots: slot_name.iter().cloned().collect(),
+                    stdin: false,
+                });
+            }
+        }
         if let PendingMutation::AddProvenanceArtifact {
             relation: EdgeKind::Produces,
             semantics,

@@ -26,6 +26,7 @@ mod resolve;
 mod runtime_matcher;
 mod runtime_variables;
 mod sed_payload;
+mod stdout_records;
 mod stream_growth;
 mod structured_projection;
 mod types;
@@ -132,6 +133,7 @@ pub use types::ModifierEffectCondition;
 pub use types::OptionOperandMatcher;
 pub use types::PathAccessKind;
 pub use types::PathScope;
+pub use types::StdoutPathFormatSyntax;
 pub use types::StdoutScalarShape;
 pub use types::WordContext;
 pub use types::{

@@ -712,7 +712,69 @@ fn artifact_from_tree(
         }
     }
     restore_descriptor_ownership(&mut artifact, source, descriptors);
-    crate::backtick::restore(&mut artifact, backticks);
+    crate::backtick::restore(&mut artifact, backticks, root);
+    for redirect in &mut artifact.redirections {
+        if redirect.operator.as_deref() == Some("<<-")
+            && let Some(content) = &mut redirect.content
+        {
+            for substitution in &mut content.command_substitutions {
+                // Bash strips leading tabs from heredoc input lines before
+                // expansion, including lines inside a substitution's quotes.
+                let expanded_source: String = substitution
+                    .text
+                    .split_inclusive('\n')
+                    .enumerate()
+                    .map(|(line, text)| {
+                        if line == 0 {
+                            text
+                        } else {
+                            text.trim_start_matches('\t')
+                        }
+                    })
+                    .collect();
+                if let Some(body) = command_substitution_body_text(&expanded_source) {
+                    substitution.body_text = body;
+                }
+            }
+        }
+    }
+    // Redirection expansion is a shell evaluation, not an argv operand and
+    // not executable text obtained from a command's output.
+    for (redirection_index, redirect) in artifact.redirections.iter().enumerate() {
+        let Some(value) = redirect.target.as_ref().or(redirect.content.as_ref()) else {
+            continue;
+        };
+        if value.command_substitutions.is_empty() && !value.expansion_unresolved {
+            continue;
+        }
+        artifact.shell_evaluations.push(crate::ShellEvaluationSite {
+            kind: crate::ShellEvaluationKind::RedirectionExpansion {
+                redirection_index,
+                unresolved: value.expansion_unresolved,
+            },
+            input: AssignmentValueFact {
+                text: value.text.clone(),
+                quoted: value.quoted,
+                node_kind: value.node_kind.clone(),
+                span: value.span.clone(),
+                command_substitutions: value.command_substitutions.clone(),
+            },
+            top_level_span: redirect
+                .parent_command_span
+                .as_ref()
+                .and_then(|span| artifact.commands.iter().find(|c| &c.span == span))
+                .map(|c| &c.top_level_span)
+                .unwrap_or(&redirect.top_level_span)
+                .clone(),
+            shell_scope_span: redirect.shell_scope_span.clone(),
+            numeric_locals: Vec::new(),
+            numeric_scope_span: None,
+            conditional_execution: redirect.conditional_execution,
+        });
+    }
+    artifact
+        .shell_evaluations
+        .sort_by_key(|site| site.input.span.start_byte);
     artifact
 }
 
@@ -790,6 +852,9 @@ fn restore_descriptor_ownership(
             .into_owned();
         }
         if let Some(span) = &mut redirection.parent_command_span {
+            restore_start(span);
+        }
+        if let Some(span) = &mut redirection.shell_scope_span {
             restore_start(span);
         }
     }
@@ -2903,6 +2968,8 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
                 quoted,
                 node_kind: child.kind().to_string(),
                 span: span_for(child),
+                command_substitutions: command_substitutions_for_expansion_node(child, source),
+                expansion_unresolved: false,
             });
         } else if !child.is_named() {
             let text = source_text(child, source);
@@ -2935,6 +3002,9 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
                     .into_owned();
             operand.quoted = false;
             operand.node_kind = "concatenation".into();
+            operand
+                .command_substitutions
+                .extend(command_substitutions_for_expansion_node(fragment, source));
         }
     }
 
@@ -3003,6 +3073,8 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         content: None,
         parent_command_name,
         parent_command_span,
+        shell_scope_span: enclosing_shell_scope(node),
+        conditional_execution: conditionally_executed_in_shell(node),
         opening_statement: redirection_opening_statement(node, source),
         top_level_span: top_level_command_span(node),
         span,
@@ -3027,6 +3099,8 @@ fn parse_herestring(node: Node<'_>, source: &[u8]) -> RedirectionFact {
                 quoted,
                 node_kind: child.kind().to_string(),
                 span: span_for(child),
+                command_substitutions: command_substitutions_for_expansion_node(child, source),
+                expansion_unresolved: false,
             });
             break;
         } else if !child.is_named() {
@@ -3046,6 +3120,8 @@ fn parse_herestring(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         content,
         parent_command_name,
         parent_command_span,
+        shell_scope_span: enclosing_shell_scope(node),
+        conditional_execution: conditionally_executed_in_shell(node),
         opening_statement: redirection_opening_statement(node, source),
         top_level_span: top_level_command_span(node),
         span: span_for(node),
@@ -3071,6 +3147,8 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
                 quoted: heredoc_start_is_quoted(child, source),
                 node_kind: child.kind().to_string(),
                 span: span_for(child),
+                command_substitutions: Vec::new(),
+                expansion_unresolved: false,
             });
         } else if child.kind() == "heredoc_body" {
             content = Some(RedirectionOperandFact {
@@ -3078,6 +3156,8 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
                 quoted: false,
                 node_kind: child.kind().to_string(),
                 span: span_for(child),
+                command_substitutions: command_substitutions_for_expansion_node(child, source),
+                expansion_unresolved: false,
             });
         } else if !child.is_named() {
             operator = Some(source_text(child, source));
@@ -3085,6 +3165,25 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
     }
 
     let (parent_command_name, parent_command_span) = parent_command_info(node, source);
+
+    if heredoc_start.as_ref().is_some_and(|start| start.quoted)
+        && let Some(content) = &mut content
+    {
+        content.command_substitutions.clear();
+    } else if let Some(content) = &mut content
+        && (content.text.contains("$(") || content.text.contains('`'))
+        && (content.command_substitutions.is_empty()
+            || content.text.contains('`')
+            || content.text.lines().any(|line| {
+                let trimmed = line.trim_start_matches([' ', '\t']);
+                trimmed.len() < line.len() && trimmed.starts_with('$')
+            }))
+    {
+        match heredoc_substitutions(content, source) {
+            Some(substitutions) => content.command_substitutions = substitutions,
+            None => content.expansion_unresolved = true,
+        }
+    }
 
     RedirectionFact {
         kind: RedirectionKind::HereDoc,
@@ -3096,6 +3195,8 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
         content,
         parent_command_name,
         parent_command_span,
+        shell_scope_span: enclosing_shell_scope(node),
+        conditional_execution: conditionally_executed_in_shell(node),
         opening_statement: redirection_opening_statement(node, source),
         top_level_span: top_level_command_span(node),
         span: span_for(node),
@@ -3109,10 +3210,121 @@ fn heredoc_start_is_quoted(node: Node<'_>, source: &[u8]) -> bool {
         .or_else(|| text.strip_prefix("<<"))
         .unwrap_or(text.as_str())
         .trim();
-    delimiter.starts_with('\'')
-        || delimiter.ends_with('\'')
-        || delimiter.starts_with('"')
-        || delimiter.ends_with('"')
+    delimiter.contains(['\'', '"', '\\'])
+}
+
+/// Reopen only the AST-designated, expandable heredoc body in its own heredoc
+/// grammar context. The external scanner can swallow a leading expansion
+/// after skipping indentation. A same-width literal prefix prevents that;
+/// source spelling and substitution bodies still come from the original bytes.
+fn heredoc_substitutions(
+    content: &RedirectionOperandFact,
+    source: &[u8],
+) -> Option<Vec<CommandSubstitutionFact>> {
+    let source_text = std::str::from_utf8(source).ok()?;
+    let body = source.get(content.span.start_byte..content.span.end_byte)?;
+    let longest_line = body
+        .split(|b| *b == b'\n')
+        .map(<[u8]>::len)
+        .max()
+        .unwrap_or(0);
+    // Longer than every input line, so no body line can terminate this frame.
+    let delimiter = "_".repeat(longest_line.saturating_add(1));
+    let prefix = format!(": <<{delimiter}\n");
+    let original = format!("{prefix}{}\n{delimiter}\n", std::str::from_utf8(body).ok()?);
+    let mut projected = original.as_bytes().to_vec();
+    let mut start = prefix.len();
+    for line in body.split_inclusive(|b| *b == b'\n') {
+        let indent = line
+            .iter()
+            .take_while(|b| matches!(b, b' ' | b'\t'))
+            .count();
+        if indent > 0 && matches!(line.get(indent), Some(b'$' | b'`')) {
+            projected[start] = b'x';
+        }
+        start += line.len();
+    }
+    let projected = std::str::from_utf8(&projected).ok()?;
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = crate::backtick::project(&mut parser, projected).ok()?;
+    if tree.tree.root_node().has_error() {
+        return None;
+    }
+    let mut substitutions =
+        command_substitutions_for_expansion_node(tree.tree.root_node(), original.as_bytes());
+    for fact in tree.facts {
+        if substitutions.iter().any(|s| {
+            s.span.start_byte <= fact.span.start_byte && fact.span.end_byte <= s.span.end_byte
+        }) {
+            continue;
+        }
+        let text = original.get(fact.span.start_byte..fact.span.end_byte)?;
+        substitutions.push(CommandSubstitutionFact {
+            text: text.into(),
+            body_text: crate::backtick::decode_body(&text[1..text.len() - 1]),
+            span: fact.span,
+        });
+    }
+    for substitution in &mut substitutions {
+        if substitution.span.start_byte < prefix.len()
+            || substitution.span.end_byte > prefix.len() + body.len()
+        {
+            return None;
+        }
+        let rebase = |byte: usize| content.span.start_byte + byte - prefix.len();
+        substitution.span = source_span_for_offsets(
+            source_text,
+            rebase(substitution.span.start_byte),
+            rebase(substitution.span.end_byte),
+        );
+    }
+    // The heredoc scanner exposes backquotes as literal content rather than
+    // command_substitution nodes. In this known expansion context, quotes in
+    // the body are ordinary bytes; only a backslash can escape a backquote.
+    let mut offset = 0;
+    let mut backquotes = 0;
+    while offset < body.len() {
+        let absolute = content.span.start_byte + offset;
+        if let Some(outer) = substitutions
+            .iter()
+            .find(|s| s.span.start_byte <= absolute && absolute < s.span.end_byte)
+        {
+            offset = outer.span.end_byte - content.span.start_byte;
+            continue;
+        }
+        match body[offset] {
+            b'\\' => offset = (offset + 2).min(body.len()),
+            b'`' => {
+                backquotes += 1;
+                if backquotes > 32 {
+                    return None;
+                }
+                let start = offset;
+                offset += 1;
+                while offset < body.len() && body[offset] != b'`' {
+                    offset += if body[offset] == b'\\' { 2 } else { 1 };
+                }
+                if offset >= body.len() {
+                    return None;
+                }
+                offset += 1;
+                let text = std::str::from_utf8(&body[start..offset]).ok()?;
+                let absolute_start = content.span.start_byte + start;
+                let absolute_end = content.span.start_byte + offset;
+                substitutions.push(CommandSubstitutionFact {
+                    text: text.into(),
+                    body_text: crate::backtick::decode_body(&text[1..text.len() - 1]),
+                    span: source_span_for_offsets(source_text, absolute_start, absolute_end),
+                });
+            }
+            _ => offset += 1,
+        }
+    }
+    substitutions.sort_by_key(|s| s.span.start_byte);
+    Some(substitutions)
 }
 
 fn parent_command_info(node: Node<'_>, source: &[u8]) -> (Option<String>, Option<SourceSpan>) {
@@ -3242,6 +3454,11 @@ fn collect_command_substitutions_for_expansion_node(
     source: &[u8],
     substitutions: &mut Vec<CommandSubstitutionFact>,
 ) {
+    // A process substitution has its own nested shell. Its argv/redirect
+    // expansions are admitted when that body is analysed, not by its caller.
+    if node.kind() == "process_substitution" {
+        return;
+    }
     if node.kind() == "command_substitution" {
         if let Some(fact) = command_substitution_fact_from_node(node, source) {
             substitutions.push(fact);
