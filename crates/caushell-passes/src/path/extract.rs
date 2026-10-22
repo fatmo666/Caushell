@@ -21,7 +21,7 @@ use super::normalize::{
     join_shell_path, normalize_shell_path, path_is_within_root, resolve_path_operand,
     resolve_path_operand_with_tilde,
 };
-use super::runtime::runtime_path_bounds;
+use super::runtime::{RootMembership, RuntimePathBounds, runtime_path_bounds};
 use crate::support::{ExecutionResolveRecordRef, is_file_write_redirection_operator};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1719,13 +1719,7 @@ fn derive_semantic_slot_path_resolution(
                 slot_name: slot_name.to_string(),
             };
             Some(match domain.as_ref().and_then(runtime_path_bounds) {
-                Some(bounds) => derive_bounded_path_resolution(
-                    &bounds.roots,
-                    bounds.may_escape,
-                    basis,
-                    rule,
-                    cwd,
-                ),
+                Some(bounds) => derive_runtime_path_resolution(&bounds, basis, rule, cwd),
                 _ => PathResolution::DerivedUnresolved {
                     basis,
                     rule: rule.clone(),
@@ -1921,10 +1915,36 @@ fn derive_path_resolution_from_spelling(
     derive_path_resolution_from_concrete_source(source_resolution, basis, rule)
 }
 
-/// A root bounds a set inclusively; it is NOT proof of an exact filename or
-/// a directory-only/strict-descendant set. Preserve the raw root spelling for
-/// append transforms, and widen to its parent when a transformed root or `..`
-/// basename can leave that root. No filename, filesystem or tool-name probes.
+/// Apply a tool transform while the runtime domain's stronger root-membership
+/// proof is still available. Graph/policy containment is normalized afterwards.
+fn derive_runtime_path_resolution(
+    bounds: &RuntimePathBounds<'_>,
+    basis: DerivedPathBasis,
+    rule: &DerivedPathRule,
+    cwd: &str,
+) -> PathResolution {
+    if bounds.root_membership == RootMembership::StrictDescendants
+        && matches!(
+            rule,
+            DerivedPathRule::SiblingFiles | DerivedPathRule::FileNamePrefix
+        )
+    {
+        // The parent of any strict descendant is still in the bounding
+        // directory. Do not take the parent of that directory a second time.
+        return PathResolution::BoundedPathSet {
+            roots: bounds
+                .roots
+                .iter()
+                .map(|root| lexical_path_from_argv(root, cwd))
+                .collect(),
+            may_escape: bounds.may_escape,
+        };
+    }
+    derive_bounded_path_resolution(&bounds.roots, bounds.may_escape, basis, rule, cwd)
+}
+
+/// A plain path bound includes its root; it does not prove strict descendants.
+/// Keep this fallback conservative when a transform can move the root itself.
 fn derive_bounded_path_resolution(
     roots: &[String],
     may_escape: bool,
@@ -3114,6 +3134,114 @@ mod tests {
             resolved_input_path: None,
             slot_name: "inputs".into(),
         }
+    }
+
+    #[test]
+    fn sibling_families_use_directory_bounds_only_when_root_membership_is_proven() {
+        use super::super::runtime::runtime_path_bounds;
+        use caushell_types::DerivedPathRule;
+        for rule in [
+            DerivedPathRule::SiblingFiles,
+            DerivedPathRule::FileNamePrefix,
+        ] {
+            for (domain, expected, escape) in [
+                (
+                    RuntimeArgumentDomain::PathTemplate {
+                        roots: vec![".".into()],
+                        may_escape: false,
+                        prefix: "".into(),
+                        suffix: ".mp4".into(),
+                    },
+                    "/tmp/project",
+                    false,
+                ),
+                (
+                    RuntimeArgumentDomain::PathTemplate {
+                        roots: vec!["/opt/input".into()],
+                        may_escape: false,
+                        prefix: "newdir/".into(),
+                        suffix: ".mp4".into(),
+                    },
+                    "/tmp/project/newdir/opt",
+                    false,
+                ),
+                (
+                    RuntimeArgumentDomain::GeneratedFileName {
+                        prefix: "cache/p_".into(),
+                        suffix: ".bin".into(),
+                    },
+                    "/tmp/project/cache",
+                    false,
+                ),
+                (
+                    RuntimeArgumentDomain::PathTemplate {
+                        roots: vec![".".into()],
+                        may_escape: true,
+                        prefix: "".into(),
+                        suffix: ".mp4".into(),
+                    },
+                    "/tmp/project",
+                    true,
+                ),
+                (
+                    RuntimeArgumentDomain::PathSet {
+                        roots: vec![".".into()],
+                        may_escape: false,
+                    },
+                    "/tmp",
+                    false,
+                ),
+                (
+                    RuntimeArgumentDomain::PathSet {
+                        roots: vec!["/tmp/project/".into()],
+                        may_escape: false,
+                    },
+                    "/tmp",
+                    false,
+                ),
+            ] {
+                let bounds = runtime_path_bounds(&domain).unwrap();
+                assert_eq!(
+                    super::derive_runtime_path_resolution(
+                        &bounds,
+                        derived_basis(),
+                        &rule,
+                        "/tmp/project"
+                    ),
+                    PathResolution::BoundedPathSet {
+                        roots: vec![expected.into()],
+                        may_escape: escape
+                    },
+                    "{domain:?}, {rule:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn directory_membership_does_not_make_parent_producing_transforms_safe() {
+        use caushell_types::DerivedPathRule;
+        let domain = RuntimeArgumentDomain::PathTemplate {
+            roots: vec![".".into()],
+            may_escape: false,
+            prefix: "".into(),
+            suffix: ".pack".into(),
+        };
+        let bounds = super::super::runtime::runtime_path_bounds(&domain).unwrap();
+        assert_eq!(
+            super::derive_runtime_path_resolution(
+                &bounds,
+                derived_basis(),
+                &DerivedPathRule::StripSuffix {
+                    suffix: ".pack".into()
+                },
+                "/tmp/project"
+            ),
+            PathResolution::BoundedPathSet {
+                roots: vec!["/tmp".into()],
+                may_escape: false
+            }
+        );
     }
 
     #[test]

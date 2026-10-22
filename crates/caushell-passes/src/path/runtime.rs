@@ -6,6 +6,15 @@ use caushell_types::RuntimeArgumentDomain;
 pub(crate) struct RuntimePathBounds<'a> {
     pub roots: Cow<'a, [String]>,
     pub may_escape: bool,
+    pub root_membership: RootMembership,
+}
+
+/// Whether a possible argv path can denote the bounding root itself. This is
+/// a proof about the domain, not an inference from a normalized trailing slash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootMembership {
+    Inclusive,
+    StrictDescendants,
 }
 
 /// Retain raw directory anchors for both ordinary path facts and subsequent
@@ -28,11 +37,13 @@ pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<Runt
             Some(RuntimePathBounds {
                 roots: Cow::Owned(vec![directory_anchor(parent.into())]),
                 may_escape: false,
+                root_membership: RootMembership::StrictDescendants,
             })
         }
         RuntimeArgumentDomain::PathSet { roots, may_escape } => Some(RuntimePathBounds {
             roots: Cow::Borrowed(roots),
             may_escape: *may_escape,
+            root_membership: RootMembership::Inclusive,
         }),
         RuntimeArgumentDomain::PathTemplate {
             roots,
@@ -87,6 +98,14 @@ pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<Runt
             Some(RuntimePathBounds {
                 roots: Cow::Owned(bounds),
                 may_escape: *may_escape,
+                // A fixed non-special final component makes every result a
+                // descendant of its directory bound. Empty/`.` suffixes keep
+                // the inclusive contract; no filename or root type is guessed.
+                root_membership: if !matches!(suffix.rsplit('/').next(), Some("" | "." | "..")) {
+                    RootMembership::StrictDescendants
+                } else {
+                    RootMembership::Inclusive
+                },
             })
         }
     }
@@ -110,6 +129,35 @@ mod tests {
             may_escape: false,
             prefix: prefix.into(),
             suffix: suffix.into(),
+        }
+    }
+
+    #[test]
+    fn root_membership_is_semantic_not_a_trailing_slash_guess() {
+        for root in [".", "./", "sub", "sub/", "/tmp/project/"] {
+            let domain = RuntimeArgumentDomain::PathSet {
+                roots: vec![root.into()],
+                may_escape: false,
+            };
+            assert_eq!(
+                runtime_path_bounds(&domain).unwrap().root_membership,
+                RootMembership::Inclusive
+            );
+            for (suffix, membership) in [
+                ("", RootMembership::Inclusive),
+                ("/", RootMembership::Inclusive),
+                ("/.", RootMembership::Inclusive),
+                (".bak", RootMembership::StrictDescendants),
+                ("/index", RootMembership::StrictDescendants),
+                (".bak/child", RootMembership::StrictDescendants),
+            ] {
+                let domain = template(&[root], "", suffix);
+                assert_eq!(
+                    runtime_path_bounds(&domain).unwrap().root_membership,
+                    membership,
+                    "{domain:?}"
+                );
+            }
         }
     }
 
@@ -228,6 +276,12 @@ mod tests {
                                     join_shell_path("/tmp/project", bound)
                                 };
                                 path_is_within_root(&path, &bound)
+                                    && (bounds.root_membership == RootMembership::Inclusive
+                                        || (path != bound
+                                            && path_is_within_root(
+                                                &join_shell_path(&path, ".."),
+                                                &bound,
+                                            )))
                             }),
                             "{domain:?}: {output:?} is not bounded by {:?}",
                             bounds.roots
