@@ -203,16 +203,9 @@ fn runtime_variable_overlay_impl(
         registry,
         request,
         depth: 0,
-        aliases: request
-            .shell_state_before
-            .aliases
-            .iter()
-            .map(|a| {
-                (
-                    a.name.clone(),
-                    SessionAliasBinding::new(&a.name, &a.body, observed_at),
-                )
-            })
+        aliases: bindings
+            .alias_bindings()
+            .map(|binding| (binding.name.clone(), binding.clone()))
             .collect(),
         can_prove_termination: true,
         capture_limits,
@@ -327,8 +320,16 @@ impl RuntimeVariableContext<'_> {
             }
         }
         if visible {
-            for name in self.aliases.keys() {
-                bindings.mark_profile_shadowing_alias(name);
+            let removed = bindings
+                .alias_bindings()
+                .filter(|b| !self.aliases.contains_key(&b.name))
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>();
+            for name in removed {
+                bindings.unset_alias(&name);
+            }
+            for binding in self.aliases.values() {
+                bindings.upsert_alias_binding(binding.clone());
             }
         }
         let name = expanded

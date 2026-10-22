@@ -65,7 +65,8 @@ pub(crate) use runtime_variable_overlay::{
 };
 
 pub(crate) use alias::{
-    AliasExpansionHop, alias_assignments, apply_alias_command, expand_alias_chain, unalias_names,
+    AliasExpansionHop, alias_assignments, apply_alias_command, expand_alias_chain,
+    expand_alias_scope, unalias_names,
 };
 pub(crate) use execution_records::{
     ExecutionResolveRecordRef, graph_backed_execution_resolve_records,

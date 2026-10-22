@@ -16,6 +16,13 @@ pub(crate) struct AliasExpansionHop {
     pub command: CommandFact,
 }
 
+pub(crate) struct AliasExpansion {
+    pub command: CommandFact,
+    pub hops: Vec<AliasExpansionHop>,
+    pub parsed: Option<caushell_parse::ParsedCommandArtifact>,
+    pub incomplete: Option<&'static str>,
+}
+
 pub(crate) fn alias_assignments(command: &CommandFact) -> Vec<AliasAssignment> {
     if command.command_name.as_deref() != Some("alias") || has_option_tokens(command) {
         return Vec::new();
@@ -64,34 +71,119 @@ pub(crate) fn expand_alias_chain(
     aliases: &BTreeMap<String, SessionAliasBinding>,
     max_hops: usize,
 ) -> (CommandFact, Vec<AliasExpansionHop>) {
-    let mut current = command.clone();
-    let mut seen_aliases = BTreeSet::new();
-    let mut hops = Vec::new();
+    let expansion = expand_alias_scope(command, shell_kind, aliases, max_hops);
+    let mut expanded = expansion.command;
+    expanded.in_pipeline = command.in_pipeline;
+    expanded.pipeline_position = command.pipeline_position;
+    expanded.pipeline_span = command.pipeline_span.clone();
+    expanded.terminator = command.terminator;
+    expanded.guarded = command.guarded;
+    expanded.conditional_execution = command.conditional_execution;
+    expanded.shell_scope_span = command.shell_scope_span.clone();
+    expanded.subshell_span = command.subshell_span.clone();
+    expanded.control_flow_span = command.control_flow_span.clone();
+    expanded.span = command.span.clone();
+    (expanded, expansion.hops)
+}
 
-    for _ in 0..max_hops {
+pub(crate) fn expand_alias_scope(
+    command: &CommandFact,
+    shell_kind: ShellKind,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+    max_hops: usize,
+) -> AliasExpansion {
+    let mut expansion = AliasExpansion {
+        command: command.clone(),
+        hops: Vec::new(),
+        parsed: None,
+        incomplete: None,
+    };
+    let mut seen_aliases = BTreeSet::new();
+    let mut text = command.text.clone();
+    loop {
+        let current = &expansion.command;
         let Some(alias_name) = current.command_name.as_deref() else {
             break;
         };
+        if current.command_name_runtime_data {
+            break;
+        }
         let Some(binding) = aliases.get(alias_name) else {
             break;
         };
-
-        if !seen_aliases.insert(alias_name.to_string()) {
-            break;
-        }
-
-        let Some(expanded) = expand_alias_once(&current, binding.body.as_str(), shell_kind) else {
+        // Quoting the command word suppresses alias lookup in the shell.
+        let offset = current.prefix_assignments.last().map_or(0, |assignment| {
+            assignment
+                .span
+                .end_byte
+                .saturating_sub(current.span.start_byte)
+        });
+        let Some(tail) = current.text.get(offset..) else {
+            expansion.incomplete = Some("alias command word has no source location");
             break;
         };
-
-        hops.push(AliasExpansionHop {
-            alias_name: alias_name.to_string(),
+        let word_offset = offset + tail.len() - tail.trim_start().len();
+        if !current.text[word_offset..].starts_with(alias_name) {
+            break;
+        }
+        if !seen_aliases.insert(alias_name.to_string()) {
+            if expansion
+                .hops
+                .last()
+                .is_none_or(|hop| hop.alias_name != alias_name)
+            {
+                expansion.incomplete = Some("alias expansion contains a cycle");
+            }
+            break;
+        }
+        if expansion.hops.len() == max_hops {
+            expansion.incomplete = Some("alias expansion exceeded its hop budget");
+            break;
+        }
+        if binding.body.ends_with([' ', '\t'])
+            && current.tokens.first().is_some_and(|token| {
+                !token.quoted && !token.runtime_data && aliases.contains_key(&token.text)
+            })
+        {
+            expansion.incomplete = Some("alias requires following-word expansion");
+            break;
+        }
+        let start = expansion
+            .parsed
+            .as_ref()
+            .map_or(0, |_| current.span.start_byte)
+            + word_offset;
+        let Some(end) = start
+            .checked_add(alias_name.len())
+            .filter(|end| *end <= text.len())
+        else {
+            expansion.incomplete = Some("alias command word has no source location");
+            break;
+        };
+        text.replace_range(start..end, &binding.body);
+        let Ok(parsed) = parse_command(&text, shell_kind) else {
+            expansion.incomplete = Some("alias body could not be parsed");
+            break;
+        };
+        if parsed.status != ParseStatus::Complete
+            || parsed.commands.len() != 1
+            || !parsed.assignment_commands.is_empty()
+            || !parsed.declaration_commands.is_empty()
+            || !parsed.function_definitions.is_empty()
+            || !parsed.unset_commands.is_empty()
+        {
+            expansion.incomplete = Some("alias body is not a complete single invocation");
+            break;
+        }
+        let expanded = parsed.commands[0].clone();
+        expansion.hops.push(AliasExpansionHop {
+            alias_name: binding.name.clone(),
             command: expanded.clone(),
         });
-        current = expanded;
+        expansion.command = expanded;
+        expansion.parsed = Some(parsed);
     }
-
-    (current, hops)
+    expansion
 }
 
 fn has_option_tokens(command: &CommandFact) -> bool {
@@ -110,7 +202,13 @@ fn parse_alias_assignment(token: &CommandToken) -> Option<AliasAssignment> {
 
     Some(AliasAssignment {
         name: name.to_string(),
-        body: strip_one_outer_quote_layer(body).to_string(),
+        body: caushell_profile::materialize_shell_assignment_value(
+            body,
+            false,
+            "word",
+            &caushell_profile::SessionBindings::default(),
+        )
+        .unwrap_or_else(|| strip_one_outer_quote_layer(body).to_string()),
         source_start: token.span.start_byte,
     })
 }
@@ -131,40 +229,6 @@ fn strip_one_outer_quote_layer(text: &str) -> &str {
     } else {
         text
     }
-}
-
-fn expand_alias_once(
-    command: &CommandFact,
-    alias_body: &str,
-    shell_kind: ShellKind,
-) -> Option<CommandFact> {
-    let command_name = command.command_name.as_deref()?;
-    let remainder = command.text.strip_prefix(command_name)?;
-    let expanded_text = format!("{alias_body}{remainder}");
-    let parsed = parse_command(&expanded_text, shell_kind).ok()?;
-
-    if parsed.status != ParseStatus::Complete
-        || parsed.commands.len() != 1
-        || !parsed.declaration_commands.is_empty()
-        || !parsed.unset_commands.is_empty()
-        || !parsed.redirections.is_empty()
-    {
-        return None;
-    }
-
-    let mut expanded = parsed.commands[0].clone();
-    expanded.text = expanded_text;
-    expanded.in_pipeline = command.in_pipeline;
-    expanded.pipeline_position = command.pipeline_position;
-    expanded.pipeline_span = command.pipeline_span.clone();
-    expanded.terminator = command.terminator;
-    expanded.guarded = command.guarded;
-    expanded.conditional_execution = command.conditional_execution;
-    expanded.shell_scope_span = command.shell_scope_span.clone();
-    expanded.subshell_span = command.subshell_span.clone();
-    expanded.control_flow_span = command.control_flow_span.clone();
-    expanded.span = command.span.clone();
-    Some(expanded)
 }
 
 #[cfg(test)]

@@ -214,6 +214,10 @@ enum FlagTokenMatch<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindError {
+    UnresolvedAliasExpansion {
+        command_name: String,
+        reason: String,
+    },
     IndeterminateDispatch {
         command_name: String,
         reason: String,
@@ -242,6 +246,15 @@ pub enum BindError {
 impl std::fmt::Display for BindError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnresolvedAliasExpansion {
+                command_name,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "alias expansion for {command_name:?} is incomplete: {reason}"
+                )
+            }
             Self::IndeterminateDispatch {
                 command_name,
                 reason,

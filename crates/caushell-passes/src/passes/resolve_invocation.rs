@@ -1424,18 +1424,35 @@ fn collect_top_level_command_resolve_records(
             command.span.start_byte,
             request.sequence_no,
         );
-        let (resolved_command, alias_hops) = expand_alias_chain(
+        let expansion = crate::support::expand_alias_scope(
             command,
             request.shell_kind,
             &alias_overlay,
             MAX_ALIAS_EXPANSION_HOPS,
         );
+        if let Some(reason) = expansion.incomplete {
+            records.push(ResolvedCommandSeed::new(
+                source_node_id,
+                ParsedCommandRef::new(command_index, command.span.clone()),
+                unresolved_alias_result(
+                    command.command_name.as_deref().unwrap_or_default(),
+                    reason,
+                ),
+            ));
+            apply_alias_command(&mut alias_overlay, command, request.sequence_no);
+            continue;
+        }
+        let alias_has_redirections = expansion
+            .parsed
+            .as_ref()
+            .is_some_and(|p| !p.redirections.is_empty());
+        let resolved_command = expansion.command;
 
         alias_derived_commands.extend(project_alias_derived_commands(
             request,
             command_index,
             &source_node_id,
-            alias_hops,
+            expansion.hops,
         ));
 
         if let Some(binding) = resolved_command
@@ -1446,7 +1463,7 @@ fn collect_top_level_command_resolve_records(
             })
             .as_deref()
             .and_then(|command_name| variable_overlay.function_binding(command_name))
-            .filter(|binding| binding.uncertainty.is_none())
+            .filter(|binding| binding.uncertainty.is_none() && !alias_has_redirections)
         {
             let projection = caushell_profile::materialize_projected_invocation(
                 &caushell_profile::project_invocation(
@@ -3457,6 +3474,7 @@ fn collect_execution_unit_resolve_records(
 
     let mut visited = std::collections::BTreeSet::new();
     while let Some(mut entry) = frontier.pop() {
+        expand_execution_alias_scope(registry, &mut entry);
         let program_context = program_contexts
             .remove(&entry.source_node_id)
             .unwrap_or_default();
@@ -3494,7 +3512,9 @@ fn collect_execution_unit_resolve_records(
             continue;
         }
 
-        if entry.origin_kind != ExecutionUnitOriginKind::TopLevel {
+        if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
+            || entry.parsed_scope.raw_command != parsed_request.raw_command
+        {
             register_shell_redirection_scope(
                 registry,
                 request,
@@ -4095,7 +4115,18 @@ fn expanded_function_body_children(
     max_nested_parse_depth: u8,
     syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
 ) -> Option<(String, Vec<ExpandedFrontierEntry>, Option<String>)> {
-    if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
+    if matches!(
+        &entry.result,
+        ResolveInvocationArtifactResult::SelectionError {
+            error: caushell_profile::BindError::UnresolvedAliasExpansion { .. },
+            ..
+        }
+    ) {
+        return None;
+    }
+    if entry.origin_kind == ExecutionUnitOriginKind::TopLevel
+        && entry.parsed_scope.raw_command == request.command
+    {
         return None;
     }
     let command = entry
@@ -4246,6 +4277,85 @@ fn expanded_function_body_children(
     Some((name, children, None))
 }
 
+fn unresolved_alias_result(name: &str, reason: &str) -> ResolveInvocationArtifactResult {
+    ResolveInvocationArtifactResult::SelectionError {
+        normalized_command_name: name.to_owned(),
+        gap_kind: caushell_types::ResolveGapKind::OpaqueInvocation,
+        error: caushell_profile::BindError::UnresolvedAliasExpansion {
+            command_name: name.to_owned(),
+            reason: reason.to_owned(),
+        },
+        partial_bound: None,
+    }
+}
+
+fn expand_execution_alias_scope(registry: &ProfileRegistry, entry: &mut ExpandedFrontierEntry) {
+    if matches!(
+        entry.origin_kind,
+        ExecutionUnitOriginKind::Dispatch | ExecutionUnitOriginKind::StaticXargs
+    ) {
+        return;
+    }
+    let Some(command) = entry
+        .parsed_scope
+        .commands
+        .get(entry.command_ref.command_index)
+    else {
+        return;
+    };
+    let aliases = entry
+        .bindings
+        .alias_bindings()
+        .map(|binding| (binding.name.clone(), binding.clone()))
+        .collect();
+    let expansion = crate::support::expand_alias_scope(
+        command,
+        entry.shell_kind,
+        &aliases,
+        MAX_ALIAS_EXPANSION_HOPS,
+    );
+    let name = command.command_name.as_deref().unwrap_or_default();
+    if let Some(reason) = expansion.incomplete {
+        entry.result = unresolved_alias_result(name, reason);
+        return;
+    }
+    let Some(expanded) = expansion.parsed else {
+        return;
+    };
+    let mut text = entry.parsed_scope.raw_command.clone();
+    let range = command.span.start_byte..command.span.end_byte;
+    if text.get(range.clone()).is_none() {
+        entry.result = unresolved_alias_result(name, "alias invocation has no source scope");
+        return;
+    }
+    text.replace_range(range, &expanded.raw_command);
+    let Ok(parsed) = caushell_parse::parse_command(&text, entry.shell_kind) else {
+        entry.result =
+            unresolved_alias_result(name, "expanded alias source scope could not be parsed");
+        return;
+    };
+    if parsed.status != caushell_parse::ParseStatus::Complete
+        || parsed.commands.len() != entry.parsed_scope.commands.len()
+    {
+        entry.result = unresolved_alias_result(
+            name,
+            "expanded alias changed the enclosing command structure",
+        );
+        return;
+    }
+    let command = &parsed.commands[entry.command_ref.command_index];
+    entry.result = resolve_invocation_artifact_with_bindings(
+        registry,
+        command,
+        runtime_context_for_parsed_command(&parsed, entry.command_ref.command_index, command),
+        &entry.bindings,
+    );
+    entry.command_ref.span = command.span.clone();
+    entry.rendered_command_text = command.text.clone();
+    entry.parsed_scope = parsed.clone();
+    entry.static_payload_scope.parsed_scope = parsed;
+}
+
 fn refresh_substitution_shape_proofs(
     registry: &ProfileRegistry,
     request: &CheckRequest,
@@ -4253,6 +4363,15 @@ fn refresh_substitution_shape_proofs(
     inherited_aliases: &BTreeMap<String, SessionAliasBinding>,
     max_depth: u8,
 ) {
+    if matches!(
+        &entry.result,
+        ResolveInvocationArtifactResult::SelectionError {
+            error: caushell_profile::BindError::UnresolvedAliasExpansion { .. },
+            ..
+        }
+    ) {
+        return;
+    }
     // Top-level records already use their ordered alias overlay. All other
     // execution origins share this query, including shell/dispatch payloads.
     // A dispatcher receives already-expanded argv. Its output-shape proofs

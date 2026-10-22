@@ -2,9 +2,9 @@ use crate::parameter_pattern::{ParameterPattern, PatternUnit, ShellPatternRemova
 use std::collections::BTreeMap;
 
 use caushell_types::{
-    RuntimeInputCapture, RuntimeInputSource, RuntimeProducedValueKind, SessionFunctionBinding,
-    SessionSummary, SessionVariableValue, ShellStateKnowledge, ShellStateSnapshot,
-    ShellValueSnapshot,
+    RuntimeInputCapture, RuntimeInputSource, RuntimeProducedValueKind, SessionAliasBinding,
+    SessionFunctionBinding, SessionSummary, SessionVariableValue, ShellStateKnowledge,
+    ShellStateSnapshot, ShellValueSnapshot,
 };
 
 use crate::{
@@ -120,6 +120,7 @@ pub struct SessionBindings {
     unresolved_runtime_variable_targets: std::collections::BTreeSet<String>,
     session_variables: BTreeMap<String, SessionValue>,
     profile_shadowing_aliases: std::collections::BTreeSet<String>,
+    aliases: BTreeMap<String, SessionAliasBinding>,
     // Local abstract values, not observed bytes and never persisted as a
     // concrete session variable. Scalar writes invalidate this metadata.
     argument_domains: BTreeMap<String, caushell_types::RuntimeArgumentDomain>,
@@ -329,11 +330,25 @@ impl SessionBindings {
         self.profile_shadowing_aliases.contains(name)
     }
 
+    pub fn alias_bindings(&self) -> impl Iterator<Item = &SessionAliasBinding> {
+        self.aliases.values()
+    }
+
+    pub fn upsert_alias_binding(&mut self, binding: SessionAliasBinding) {
+        self.mark_profile_shadowing_alias(&binding.name);
+        self.aliases.insert(binding.name.clone(), binding);
+    }
+
+    pub fn unset_alias(&mut self, name: &str) {
+        self.aliases.remove(name);
+        self.profile_shadowing_aliases.remove(name);
+    }
+
     pub fn from_session_summary(summary: &SessionSummary) -> Self {
         let mut bindings = Self::new();
         bindings.replace_function_bindings(summary.function_bindings().cloned());
         for alias in summary.alias_bindings() {
-            bindings.mark_profile_shadowing_alias(&alias.name);
+            bindings.upsert_alias_binding(alias.clone());
         }
 
         for binding in summary.variable_bindings() {
@@ -374,13 +389,20 @@ impl SessionBindings {
 
         bindings.variables_complete =
             shell_state.observability.variables == ShellStateKnowledge::Complete;
-        if shell_state.observability.aliases != ShellStateKnowledge::Complete {
+        if shell_state.observability.aliases == ShellStateKnowledge::Complete {
+            bindings.aliases.clear();
+            bindings.profile_shadowing_aliases.clear();
+        } else {
             for alias in summary.alias_bindings() {
-                bindings.mark_profile_shadowing_alias(&alias.name);
+                bindings.upsert_alias_binding(alias.clone());
             }
         }
         for alias in &shell_state.aliases {
-            bindings.mark_profile_shadowing_alias(&alias.name);
+            bindings.upsert_alias_binding(SessionAliasBinding::new(
+                &alias.name,
+                &alias.body,
+                caushell_types::CommandSequenceNo::new(0),
+            ));
         }
         if shell_state.observability.functions != ShellStateKnowledge::Complete {
             bindings.replace_function_bindings(summary.function_bindings().cloned());
@@ -695,6 +717,8 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        self.aliases.clear();
+        self.profile_shadowing_aliases.clear();
         self.positional_argument_domains.clear();
         let exported: std::collections::BTreeSet<_> = self
             .argument_domains

@@ -811,9 +811,9 @@ pub fn resolve_invocation_artifact_with_bindings(
 
 fn gap_kind_for_bind_error(error: &BindError) -> ResolveGapKind {
     match error {
-        BindError::UncertainFunctionBinding { .. } | BindError::IndeterminateDispatch { .. } => {
-            ResolveGapKind::OpaqueInvocation
-        }
+        BindError::UncertainFunctionBinding { .. }
+        | BindError::UnresolvedAliasExpansion { .. }
+        | BindError::IndeterminateDispatch { .. } => ResolveGapKind::OpaqueInvocation,
         BindError::UnknownSubcommand { .. } => ResolveGapKind::UnknownSubcommandPath,
         BindError::MultipleFormsMatched { .. } => ResolveGapKind::FormSelectionAmbiguous,
         BindError::NoFormMatched { .. } | BindError::UnsupportedProfileFeature { .. } => {
