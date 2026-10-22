@@ -114,7 +114,12 @@ fn mixed_stdin_files_keep_both_stream_and_file_effects() {
         "gzip -kr input -",
     ] {
         let b = bind(command);
-        assert_eq!(values(&b, "input_paths").len(), 1, "{command}: {b:?}");
+        let slot = if command.contains("-r") || command.contains("-kr") {
+            "recursive_operands"
+        } else {
+            "input_paths"
+        };
+        assert_eq!(values(&b, slot).len(), 1, "{command}: {b:?}");
         assert!(has(&b, EffectKind::WritePath));
         assert_eq!(streams(&b).stdin_mode, StreamInputMode::DataRequired);
         assert_eq!(streams(&b).stdout_mode, StreamOutputMode::Data);
@@ -174,7 +179,6 @@ fn option_values_and_terminator_do_not_become_input_paths_or_modes() {
 #[test]
 fn unsupported_output_choices_remain_explicitly_unknown() {
     for command in [
-        "gzip -r folder",
         "gzip -S .custom input",
         "gzip -dN input.gz",
         "gzip -S.gz -S.custom input",
@@ -197,4 +201,13 @@ fn unsupported_output_choices_remain_explicitly_unknown() {
         assert!(!has(&bind(command), EffectKind::DeletePath), "{command}");
     }
     assert!(profile().opaque_on_unresolved);
+    let recursive = bind("gzip -r folder");
+    assert_eq!(values(&recursive, "recursive_operands"), ["folder"]);
+    assert!(
+        recursive
+            .effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::WritePath
+                && matches!(effect.target, EffectTarget::DerivedPath(_)))
+    );
 }

@@ -108,7 +108,6 @@ fn disabled_and_unknown_first_matches_do_not_fall_through_to_later_values() {
     for c in [
         "keyword-fixture -o 'Runner' -o 'Runner=rm /opt/file'",
         "keyword-fixture -o 'Runner=echo %h' -o 'Runner=rm /opt/file'",
-        "keyword-fixture -o \"$OPTIONS\" -o 'Runner=rm /opt/file'",
         "keyword-fixture -o 'Runner='",
         "keyword-fixture -o",
     ] {
@@ -116,6 +115,13 @@ fn disabled_and_unknown_first_matches_do_not_fall_through_to_later_values() {
         assert!(p.resolved.is_empty(), "{c}: {p:?}");
         assert_eq!(p.unresolved.len(), 1, "{c}: {p:?}");
     }
+    let p = projection(
+        KEYWORDS,
+        "keyword-fixture -o \"$OPTIONS\" -o 'Runner=rm /opt/file'",
+    );
+    assert_eq!(p.unresolved.len(), 1, "{p:?}");
+    assert_eq!(p.resolved.len(), 1, "{p:?}");
+    assert_eq!(p.resolved[0].argv[1].text, "rm /opt/file");
 }
 
 #[test]
@@ -340,7 +346,7 @@ fn script_reference_binds_once_and_retains_a_separate_declared_path_view() {
         assert_eq!(
             b.bound_parameters
                 .iter()
-                .any(|p| p.name.as_str() == "files"),
+                .any(|p| p.name.as_str() == "files" && !p.semantic_values_are_inapplicable()),
             path != "-"
         );
     }

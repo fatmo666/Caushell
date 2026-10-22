@@ -203,7 +203,10 @@ fn split_filters_use_a_shell_child_with_a_tool_generated_file_variable() {
             .collect::<Vec<_>>(),
         ["-c", "cat > /opt/shared/output"]
     );
-    assert_eq!(child.unknown_environment_names, ["FILE"]);
+    assert!(child.unknown_environment_names.is_empty());
+    assert_eq!(child.generated_environment.len(), 1);
+    assert_eq!(child.generated_environment[0].0, "FILE");
+    assert!(child.generated_environment[0].1.is_some());
     assert!(child.stdin_from_tool && child.stdout_to_parent);
     for command in ["split -b 1000 - cache/chunk", "split -n 1/3 - cache/chunk"] {
         let b = resolve(command);

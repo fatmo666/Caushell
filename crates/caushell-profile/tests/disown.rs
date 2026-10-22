@@ -44,7 +44,7 @@ fn disown_declares_job_operations_without_process_control_or_paths() {
 }
 
 #[test]
-fn job_operands_are_plain_values_and_unknown_jobs_are_not_analysis_gaps() {
+fn job_operands_keep_plain_roles_without_certifying_unknown_ownership() {
     for command in [
         "disown -h \"$job\"",
         "disown $job",
@@ -52,8 +52,9 @@ fn job_operands_are_plain_values_and_unknown_jobs_are_not_analysis_gaps() {
         "disown %1 -h",
     ] {
         let b = bound(command);
-        assert!(
-            !b.operation_semantics_unresolved,
+        assert_eq!(
+            b.operation_semantics_unresolved,
+            command.contains("$job"),
             "{command}: {:?}",
             b.residuals
         );

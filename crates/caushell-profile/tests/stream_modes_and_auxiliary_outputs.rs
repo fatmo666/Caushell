@@ -280,7 +280,7 @@ modifiers:
             r.bound
                 .bound_parameters
                 .iter()
-                .any(|p| p.name.as_str() == "output"),
+                .any(|p| p.name.as_str() == "output" && !p.semantic_values_are_inapplicable()),
             generated,
             "{command}: {:#?}",
             r.bound

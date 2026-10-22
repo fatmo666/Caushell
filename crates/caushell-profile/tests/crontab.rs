@@ -143,7 +143,11 @@ fn ambiguous_invalid_and_unknown_forms_do_not_claim_complete_semantics() {
 
 #[test]
 fn unresolved_file_operand_does_not_erase_possible_task_table_write() {
-    let b = bound("crontab \"$file\"");
+    let ResolveInvocationArtifactResult::Resolved(result) = resolve("crontab \"$file\"") else {
+        panic!("expected partial crontab semantics");
+    };
+    let b = result.bound;
+    assert!(b.operation_semantics_unresolved);
     assert!(
         b.effects.iter().any(|e| e.kind == EffectKind::WritePath
             && matches!(e.target, EffectTarget::ConfiguredPath(_)))

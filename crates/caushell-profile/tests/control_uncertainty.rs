@@ -168,7 +168,7 @@ fn concatenated_static_and_quoted_scalar_words_keep_exact_field_proofs() {
 }
 
 #[test]
-fn supplied_home_proves_only_tilde_field_spelling_not_values_or_containment() {
+fn supplied_home_materializes_scalars_and_preserves_glob_field_uncertainty() {
     let mut bindings = SessionBindings::new();
     bindings.insert_inherited_exact_scalar("HOME", "/home/a user/[literal]");
     for (command, fields) in [
@@ -178,11 +178,19 @@ fn supplied_home_proves_only_tilde_field_spelling_not_values_or_containment() {
         let parsed = parse_command(command, ShellKind::Bash).unwrap();
         let projected = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
         let materialized = materialize_projected_invocation(&projected, &bindings);
-        assert_eq!(materialized.invocation.args[0].text, projected.args[0].text);
+        if fields == ArgumentFieldCount::ExactlyOne {
+            assert_eq!(
+                materialized.invocation.args[0].text,
+                "/home/a user/[literal]/files"
+            );
+            assert!(materialized.invocation.args[0].runtime_data);
+        } else {
+            assert_eq!(materialized.invocation.args[0].text, projected.args[0].text);
+        }
         let shape = argument_structure(&materialized.invocation.args[0]);
         assert_eq!(shape.fields, fields);
         assert!(!shape.may_start_with("-"));
-        assert!(!shape.exact);
+        assert_eq!(shape.exact, fields == ArgumentFieldCount::ExactlyOne);
         let mut exact = materialized.invocation.args[0].clone();
         exact.text = "/home/a user/[literal]/known".into();
         exact.runtime_data = true;

@@ -262,7 +262,7 @@ fn position_proven_config_free_information_has_no_database_or_startup_effects() 
     for c in [
         "mysql --no-defaults --no-login-paths --help",
         "mysql --no-defaults --no-login-paths --version",
-        "mysql --no-defaults --no-login-paths -?",
+        "mysql --no-defaults --no-login-paths '-?'",
         "mysql --no-defaults --no-login-paths -I",
         "mysql --no-defaults --no-login-paths -V",
     ] {

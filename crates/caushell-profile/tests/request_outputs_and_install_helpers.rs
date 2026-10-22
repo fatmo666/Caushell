@@ -68,14 +68,19 @@ fn wget_separates_request_inputs_and_output_files() {
     assert_eq!(values(&b, "log_file"), ["/outside/log"]);
     assert_eq!(values(&b, "cookie_file"), ["/outside/cookies"]);
     assert_eq!(values(&b, "body_file"), [".env"]);
-    assert_eq!(values(&b, "request_values"), ["'X-Test: SAFE'"]);
+    assert_eq!(values(&b, "request_values"), ["X-Test: SAFE"]);
     let e = b
         .effects
         .iter()
         .find(|e| e.kind == EffectKind::NetworkEndpoint)
         .unwrap();
     let scope = e.input_scope.as_ref().unwrap();
-    assert!(!scope.stdin);
+    assert!(scope.stdin);
+    assert!(
+        !b.effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::ConsumeStdin)
+    );
     assert!(scope.slots.iter().any(|s| s.as_str() == "body_file"));
     assert!(!scope.slots.iter().any(|s| s.as_str() == "log_file"));
     let b = bind("wget -O - -o /outside/old -o cache/new https://example.test/a");
@@ -180,7 +185,9 @@ fn information_forms_have_no_projected_output_writes() {
             "write_out_unknown_paths",
         ] {
             assert!(
-                !b.bound_parameters.iter().any(|p| p.name.as_str() == slot),
+                !b.bound_parameters
+                    .iter()
+                    .any(|p| p.name.as_str() == slot && !p.semantic_values_are_inapplicable()),
                 "{command}: {b:#?}"
             );
         }

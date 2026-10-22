@@ -1,19 +1,15 @@
 //! Static guard checks only; no sample command is executed.
 use caushell_core::{SessionState, ShellQueryCore};
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, PolicyConfig, RuleAction, RuleId, RulePolicyEntry,
-    RuntimeMetadata, SessionId, ShellKind, ShellRuntimeCapabilities, ShellStateSnapshot,
+    CheckRequest, CommandSequenceNo, Decision, RuleId, RuntimeMetadata, SessionId, ShellKind,
+    ShellRuntimeCapabilities, ShellStateSnapshot,
 };
 
+#[path = "support/network_lineage.rs"]
+mod network_lineage;
+
 fn lineage_core() -> ShellQueryCore {
-    // Isolate content lineage from the independent blanket upload policy.
-    // Sensitive-data exfiltration and every other guard keep their defaults.
-    let mut policy = PolicyConfig::default();
-    policy.rule_policy.rules.insert(
-        RuleId::NetworkUpload,
-        RulePolicyEntry::new(RuleAction::Observe),
-    );
-    ShellQueryCore::with_policy(policy)
+    ShellQueryCore::with_policy(network_lineage::policy())
 }
 
 fn request(command: &str, sequence: u64) -> CheckRequest {

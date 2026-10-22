@@ -220,19 +220,43 @@ fn curl_gopher_selector_is_outbound_data_and_response_still_network_origin() {
 }
 
 #[test]
-fn basename_of_bounded_runtime_paths_creates_a_leaf_in_cwd() {
+fn basename_bounds_do_not_replace_destination_namespace_proofs() {
     for command in [
         "find dir -name '*.jpg' -exec ln -s '{}' \\;",
         "find /opt/input -type f -exec ln -s '{}' \\;",
         "ln -s /opt/input",
     ] {
-        check(command, Decision::Allow);
+        let expected = if command.starts_with("find ") {
+            Decision::NeedApproval
+        } else {
+            Decision::Allow
+        };
+        check(command, expected);
     }
     for command in [
         "find dir -type f -exec ln -s '{}' /opt/link \\;",
         "cd /opt; find /tmp/input -type f -exec ln -s '{}' \\;",
         "find /opt/input -type f -execdir ln -s '{}' \\;",
         "ln -s /opt/input /opt/link",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+}
+
+#[test]
+fn exact_leaf_transforms_do_not_inherit_input_parent_components() {
+    for command in [
+        "ln -s ../config/init",
+        "ln -s /opt/parent/../input",
+        "curl -O https://example.test/parent/../report",
+    ] {
+        check(command, Decision::Allow);
+    }
+    for command in [
+        "ln -s a/..",
+        "ln -s \"$UNKNOWN\"",
+        "cd /opt; ln -s ../config/init",
+        "curl --output-dir link/.. -O https://example.test/report",
     ] {
         check(command, Decision::NeedApproval);
     }

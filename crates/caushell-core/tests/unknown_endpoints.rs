@@ -27,14 +27,11 @@ fn has(result: &CheckResponse, rule: RuleId) -> bool {
         .any(|finding| finding.rule_id == rule)
 }
 
+#[path = "support/network_lineage.rs"]
+mod network_lineage;
+
 fn origin_core() -> ShellQueryCore {
-    // Inspect committed download lineage independently of upload approval.
-    let mut policy = PolicyConfig::default();
-    policy.rule_policy.rules.insert(
-        RuleId::NetworkUpload,
-        RulePolicyEntry::new(RuleAction::Observe),
-    );
-    ShellQueryCore::with_policy(policy)
+    ShellQueryCore::with_policy(network_lineage::policy())
 }
 
 #[test]

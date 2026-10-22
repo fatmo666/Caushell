@@ -162,7 +162,6 @@ fn root_controls_splitting_arrays_and_conditional_delimiters_keep_approval() {
         r#"find . -name "$@" -print"#,
         r#"find . -newer "$@" -delete"#,
         r#"find . -name "./${array[@]}" -print"#,
-        "find {-delete,-print}",
         r#"find . -exec echo "{}$value" + extra \;"#,
     ] {
         let result = ShellQueryCore::new().check(request(command));
@@ -180,6 +179,15 @@ fn root_controls_splitting_arrays_and_conditional_delimiters_keep_approval() {
             "{command}: {result:?}"
         );
     }
+    let response = ShellQueryCore::new().check(request("find {-delete,-print}"));
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(
+        response
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|proposal| { proposal.rule_id == RuleId::FileDeletion })
+    );
 }
 
 #[test]

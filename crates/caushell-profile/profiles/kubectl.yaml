@@ -80,6 +80,8 @@ modifiers:
     matcher: {kind: any_flag, flags: [--image, --restart, --env, --overrides]}
     parameters: [{name: workload_options, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 extensions:
+  caushell.profile/known_limitations:
+    - Kubeconfig credential plugins are retained as opaque executable configuration.
   caushell.profile/sources:
     - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_exec/
     - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_proxy/

@@ -38,7 +38,7 @@ forms:
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
 
   - id: list_engines
-    selector: {kind: all, items: [&unconfigured {kind: not, item: {kind: has_modifier, modifier: config_input}}, {kind: has_modifier_parameter_matching, modifier: engine_library, parameter: engine_operand, matcher: {kind: literal, value: list}}]}
+    selector: {kind: all, items: [&unconfigured {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: config_input}}, {kind: not, item: {kind: has_modifier, modifier: information}}]}, {kind: has_modifier_parameter_matching, modifier: engine_library, parameter: engine_operand, matcher: {kind: literal, value: list}}]}
     parameters: [{name: engine_list_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
 
@@ -609,7 +609,21 @@ modifiers:
       unless_modifiers: [information]
       unless_forms: [list_engines]
       last_parameter_not_matching: {parameter: request_method, matcher: {kind: regex_pattern, pattern: '^(GET|HEAD|OPTIONS|TRACE)$'}}
-    effects: [{kind: state_operation, state_operation: {domain: remote_resource, operation: mutate}, target: {kind: none}}]
+    effects: &remote_mutation [{kind: state_operation, state_operation: {domain: remote_resource, operation: mutate}, target: {kind: none}}]
+
+  - id: implicit_post
+    matcher: {kind: any_flag, flags: [-d, --data, --data-ascii, --json, --data-binary, --data-raw, --data-urlencode, -F, --form, --form-string]}
+    effects_when:
+      unless_modifiers: [information, request_method, upload_file]
+      unless_forms: [list_engines, query_data_explicit_url, query_from_data]
+    effects: *remote_mutation
+
+  - id: implicit_upload
+    matcher: {kind: any_flag, flags: [-T, --upload-file]}
+    effects_when:
+      unless_modifiers: [information, request_method]
+      unless_forms: [list_engines]
+    effects: *remote_mutation
 
   - id: request_values
     matcher: {kind: any_flag, flags: [-u, --user, --oauth2-bearer, -A, --user-agent, -e, --referer, --request-target, -r, --range, --mail-auth, --mail-from, --mail-rcpt, --ftp-account, --login-options, --haproxy-clientip, -Q, --quote, -t, --telnet-option, --ftp-alternative-to-user, --proxy-header, -U, --proxy-user]}

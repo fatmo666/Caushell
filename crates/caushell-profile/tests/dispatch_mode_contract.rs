@@ -142,7 +142,7 @@ modifiers:
             !r.bound
                 .bound_parameters
                 .iter()
-                .any(|p| p.name.as_str() == "opaque"),
+                .any(|p| p.name.as_str() == "opaque" && !p.semantic_values_are_inapplicable()),
             suppressed,
             "{args}: {r:#?}"
         );

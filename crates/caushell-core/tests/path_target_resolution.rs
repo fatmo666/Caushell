@@ -290,6 +290,31 @@ fn tool_directory_parent_components_require_their_own_namespace_proof() {
 }
 
 #[test]
+fn leaf_transforms_still_require_a_proven_execution_directory() {
+    for command in [
+        "env -C link/.. ln -s /opt/input",
+        "env -C link/.. curl -O https://example.test/report",
+    ] {
+        let view = Arc::new(MemoryFilesystem::default());
+        view.link("/workspace/link", "/outside/directory");
+        let response = core(view).check(request(1, command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {response:#?}"
+        );
+        assert!(
+            response.decision_trace.path_targets.iter().any(|fact| {
+                fact.operation == PathTargetOperation::Write
+                    && matches!(&fact.resolution, SemanticResolution::Unresolved { gap }
+                    if gap.kind == SemanticGapKind::UnresolvedOperation)
+            }),
+            "{command}: {response:#?}"
+        );
+    }
+}
+
+#[test]
 fn actions_without_path_targets_or_workspace_do_not_probe_the_filesystem() {
     struct CountingView(Arc<std::sync::atomic::AtomicUsize>);
     impl FilesystemView for CountingView {

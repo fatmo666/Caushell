@@ -15,11 +15,13 @@ fn result(command: &str) -> ResolveInvocationResult<'static> {
     )
 }
 fn operation(command: &str, expected: Op) -> BoundInvocation {
+    let bound = operation_shape(command, expected);
+    assert!(bound.residuals.is_empty(), "{command}: {bound:?}");
+    bound
+}
+fn operation_shape(command: &str, expected: Op) -> BoundInvocation {
     let bound = match result(command) {
-        ResolveInvocationResult::Resolved(r) => {
-            assert!(r.bound.residuals.is_empty(), "{command}: {:?}", r.bound);
-            r.bound
-        }
+        ResolveInvocationResult::Resolved(r) => r.bound,
         other => panic!("{command}: {other:?}"),
     };
     let ops: Vec<_> = bound
@@ -189,7 +191,7 @@ fn inspection_does_not_certify_dynamic_expansion_or_repeated_option_ownership() 
         "screen -S first -S second -Q windows",
         "screen -p 0 -p 1 -Q title",
     ] {
-        operation(command, Op::Opaque);
+        operation_shape(command, Op::Opaque);
     }
     operation("screen -S 1234.build -p 0 -Q windows", Op::Inspect);
     operation("screen -list 1234.build", Op::Inspect);

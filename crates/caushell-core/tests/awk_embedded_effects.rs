@@ -108,7 +108,7 @@ fn output_paths_reuse_workspace_and_temporary_mutation_policy() {
     }
 }
 #[test]
-fn execution_and_unavailable_programs_remain_approval_boundaries() {
+fn inline_execution_and_untrusted_programs_remain_approval_boundaries() {
     for cmd in [
         "awk 'BEGIN{system(\"rm -rf /\")}'",
         "awk '{print $0 | \"sh\"}' file",
@@ -119,12 +119,12 @@ fn execution_and_unavailable_programs_remain_approval_boundaries() {
         "awk '@load \"library\"' file",
         "awk 'BEGIN{PROCINFO[\"x\"]=1}'",
         "awk 'BEGIN{@fun()}'",
-        "awk -f program.awk file",
-        "awk -fprogram.awk file",
-        "awk --file=program.awk file",
-        "mawk -fprogram.awk file",
+        "awk -f /opt/shared/program.awk file",
+        "awk -f/opt/shared/program.awk file",
+        "awk --file=/opt/shared/program.awk file",
+        "mawk -f/opt/shared/program.awk file",
         "printf CODE | awk -f - file",
-        "awk -e '{print}' -f program.awk file",
+        "awk -e '{print}' -f /opt/shared/program.awk file",
         "awk -i extension '{print}' file",
         "awk --unknown '{print}' file",
         "awk \"$PROGRAM\" file",
@@ -134,6 +134,29 @@ fn execution_and_unavailable_programs_remain_approval_boundaries() {
         expect(cmd, Decision::NeedApproval);
     }
 }
+
+#[test]
+fn local_program_files_retain_opaque_evidence_under_file_trust_policy() {
+    for command in [
+        "awk -f program.awk file",
+        "awk -fprogram.awk file",
+        "awk --file=program.awk file",
+        "mawk -fprogram.awk file",
+        "awk -e '{print}' -f program.awk file",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {response:#?}"
+        );
+        assert!(response.decision_trace.evidence.iter().any(|evidence| {
+            matches!(&evidence.kind, EvidenceKind::NestedPayloadUnresolved(payload)
+                if payload.unresolved_execution_payload_subtype == Some(UnresolvedExecutionPayloadSubtype::OpaqueNonShell)
+                    && payload.context.source == NestedPayloadSourceEvidence::ScriptFileRef)
+        }), "{command}: {response:#?}");
+    }
+}
 #[test]
 fn nested_entries_do_not_drop_awk_effects_or_unknown_execution() {
     for cmd in [
@@ -141,7 +164,7 @@ fn nested_entries_do_not_drop_awk_effects_or_unknown_execution() {
         "printf '%s\\n' \"$(awk '{print $1}' file)\"",
         "cat <(awk '{print $1}' file)",
         r"find . -exec awk '{print $1}' {} \;",
-        "printf file | xargs awk '{print $1}'",
+        "printf file | xargs -I{} awk '{print $1}' file",
         "f(){ awk '{print $1}' file; }; f",
     ] {
         expect(cmd, Decision::Allow);
@@ -155,7 +178,8 @@ fn nested_entries_do_not_drop_awk_effects_or_unknown_execution() {
         "f(){ awk 'BEGIN{system(\"date\")}'; }; f",
         "echo $(awk '{print > \"/opt/shared/out\"}' file)",
         "printf file | xargs awk '{print > \"/opt/shared/out\"}'",
-        "echo $(awk -f program.awk file)",
+        "echo $(awk -f /opt/shared/program.awk file)",
+        "printf file | xargs awk '{print $1}'",
         "echo $(awk \"$PROGRAM\" file)",
     ] {
         expect(cmd, Decision::NeedApproval);

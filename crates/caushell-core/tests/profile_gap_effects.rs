@@ -50,8 +50,6 @@ fn local_known_effects_and_read_only_forms_stay_allowed() {
         "ln -s ../config/init",
         "cpio -it < /opt/archive.cpio",
         "cpio -i --to-stdout member < /opt/archive.cpio",
-        "curl --data-raw @/etc/passwd http://127.0.0.1/",
-        "curl --form-string 'field=@/etc/passwd' http://127.0.0.1/",
     ] {
         expect(command, Decision::Allow);
     }
@@ -60,6 +58,31 @@ fn local_known_effects_and_read_only_forms_stay_allowed() {
         "zip -m cache/archive.zip cache/input",
         Decision::NeedApproval,
     );
+}
+
+#[test]
+fn literal_uploads_are_mutations_not_sensitive_file_reads() {
+    for command in [
+        "curl --data-raw @/etc/passwd http://127.0.0.1/",
+        "curl --form-string 'field=@/etc/passwd' http://127.0.0.1/",
+    ] {
+        let response = check(command);
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| { proposal.rule_id == RuleId::StateMutation })
+        );
+        assert!(
+            !response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| { finding.rule_id == RuleId::SensitiveDataExfiltration })
+        );
+    }
 }
 
 #[test]

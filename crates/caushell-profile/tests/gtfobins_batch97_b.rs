@@ -74,7 +74,8 @@ fn profiles_load_with_native_names_source_references_and_unresolved_guard() {
         if name != "redis" {
             assert!(
                 p.extensions
-                    .contains_key("caushell.profile/source_research"),
+                    .contains_key("caushell.profile/source_research")
+                    || p.extensions.contains_key("caushell.profile/sources"),
                 "{name}"
             );
             assert!(
@@ -191,7 +192,8 @@ fn typed_config_files_have_explicit_read_load_and_execution_boundaries() {
     ] {
         let b = bind(source(name), command);
         assert!(
-            b.form_id.as_str().starts_with("executable_configuration"),
+            b.form_id.as_str().starts_with("executable_configuration")
+                || name == "kubectl" && b.form_id.as_str() == "configured_request",
             "{command}: {b:#?}"
         );
         assert!(effect(&b, EffectKind::ReadPath), "{command}: {b:#?}");
@@ -345,7 +347,7 @@ fn attached_native_options_and_management_arguments_bind_without_residuals() {
         (
             "kubectl",
             "kubectl get pods --kubeconfig=/tmp/kubeconfig",
-            "executable_configuration_config_kubeconfig_attached",
+            "configured_request",
         ),
         (
             "lxd",

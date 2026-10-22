@@ -23,6 +23,7 @@ platform:
 forms:
   - id: information
     selector: {kind: has_modifier, modifier: information}
+    extensions: {caushell.form/suppress_modifier_effects: true}
     parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
 

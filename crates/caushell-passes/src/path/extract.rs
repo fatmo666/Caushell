@@ -382,23 +382,6 @@ fn slot_depends_on_cwd(
         || values.any(|value| semantic_path_resolution(value, Some(resolved), cwd, home).1)
 }
 
-fn projected_derived_target_depends_on_cwd(
-    target: &DerivedPathTarget,
-    resolved: &ResolvedInvocationArtifact,
-    cwd: &str,
-    home: Option<&str>,
-) -> bool {
-    match target.root.as_ref().unwrap_or(&target.source) {
-        DerivedPathSource::Slot(slot) => {
-            slot_depends_on_cwd(&resolved.bound, slot, resolved, cwd, home)
-        }
-        DerivedPathSource::ToolConventionRoot { convention } => {
-            tool_convention_roots_for_convention(&resolved.bound, convention)
-                .any(|target| !target.path.starts_with('/'))
-        }
-    }
-}
-
 fn projected_mutation_scope_depends_on_cwd(
     target: &MutationScopeTarget,
     resolved: &ResolvedInvocationArtifact,
@@ -642,11 +625,6 @@ pub(crate) fn collect_invocation_mutation_targets(
                         &mut derived,
                     );
                 }
-                let cwd_dependent = resolved
-                    .map(|resolved| {
-                        projected_derived_target_depends_on_cwd(target, resolved, cwd, home)
-                    })
-                    .unwrap_or(true);
                 targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
                     effect_index,
                     metadata_mutation: metadata_mutation.clone(),
@@ -654,7 +632,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     operation: effect.kind,
                     slot_name: path.slot_name,
                     resolution: path.resolution,
-                    cwd_dependent,
+                    cwd_dependent: path.cwd_dependent,
                 }));
             }
             EffectTarget::MutationScope(scope) => {
@@ -1307,19 +1285,25 @@ fn collect_derived_target_path_facts(
     home: Option<&str>,
     out: &mut Vec<PathFactCandidate>,
 ) {
-    let cwd_dependent = match target.root.as_ref().unwrap_or(&target.source) {
-        DerivedPathSource::Slot(slot) => {
-            bound_parameter(invocation, slot.as_str()).is_none_or(|parameter| {
-                parameter
-                    .semantic_values()
-                    .any(|value| semantic_path_resolution(value, resolved, cwd, home).1)
-            })
-        }
-        DerivedPathSource::ToolConventionRoot { convention } => {
-            tool_convention_roots_for_convention(invocation, convention)
-                .any(|target| !target.path.starts_with('/'))
-        }
-    };
+    let leaf_in_cwd = target.root.is_none()
+        && matches!(
+            target.rule,
+            DerivedPathRule::Basename | DerivedPathRule::UrlBasename
+        );
+    let cwd_dependent = leaf_in_cwd
+        || match target.root.as_ref().unwrap_or(&target.source) {
+            DerivedPathSource::Slot(slot) => {
+                bound_parameter(invocation, slot.as_str()).is_none_or(|parameter| {
+                    parameter
+                        .semantic_values()
+                        .any(|value| semantic_path_resolution(value, resolved, cwd, home).1)
+                })
+            }
+            DerivedPathSource::ToolConventionRoot { convention } => {
+                tool_convention_roots_for_convention(invocation, convention)
+                    .any(|target| !target.path.starts_with('/'))
+            }
+        };
     match (&target.source, &target.root) {
         (DerivedPathSource::Slot(source_slot_name), Some(root_source)) => {
             let Some(parameter) = bound_parameter(invocation, source_slot_name.as_str()) else {

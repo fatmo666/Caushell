@@ -184,20 +184,34 @@ fn mawk_runs_an_opaque_awk_program_and_binds_file_inputs() {
     let read = bind("mawk '//' /tmp/input");
     assert_eq!(read.form_id.as_str(), "execute_inline_program");
     assert_eq!(values(&read, "input_paths"), ["/tmp/input"]);
-    assert!(has_effect(&read, EffectKind::ExecutePayload, "program"));
+    assert!(
+        !read
+            .effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::ExecutePayload)
+    );
     assert!(has_effect(&read, EffectKind::ReadPath, "input_paths"));
 
-    for command in [
-        "mawk 'BEGIN { print \"DATA\" > \"/tmp/output\" }'",
-        "mawk 'BEGIN {system(\"/bin/sh\")}'",
-        "mawk -f /tmp/program.awk /tmp/input",
+    for (command, effect) in [
+        (
+            "mawk 'BEGIN { print \"DATA\" > \"/tmp/output\" }'",
+            EffectKind::WritePath,
+        ),
+        (
+            "mawk 'BEGIN {system(\"/bin/sh\")}'",
+            EffectKind::ExecutePayload,
+        ),
+        (
+            "mawk -f /tmp/program.awk /tmp/input",
+            EffectKind::ExecutePayload,
+        ),
     ] {
         let bound = bind(command);
         assert!(
             bound
                 .effects
                 .iter()
-                .any(|effect| effect.kind == EffectKind::ExecutePayload),
+                .any(|candidate| candidate.kind == effect),
             "{command}: {bound:#?}"
         );
     }

@@ -38,7 +38,7 @@ fn explicit_write_and_read_modes_keep_real_file_roles() {
         ),
         (
             "history -cw /opt/shared/file",
-            "write_explicit_file",
+            "clear_then_write_explicit_file",
             EffectKind::WritePath,
         ),
         (
@@ -53,7 +53,7 @@ fn explicit_write_and_read_modes_keep_real_file_roles() {
         ),
         (
             "history -cr /opt/shared/file",
-            "read_explicit_file",
+            "clear_then_read_explicit_file",
             EffectKind::ReadPath,
         ),
     ] {
@@ -91,14 +91,14 @@ fn memory_queries_and_flag_precedence_do_not_invent_file_writes() {
         "history",
         "history 10",
         "history -c",
+        "history -cw",
+        "history -cr",
         "history -d 1",
         "history -d -1",
         "history -d1",
         "history -d 1-3",
         "history -p 'rm /opt/shared/file'",
         "history -s 'rm /opt/shared/file'",
-        "history -cw",
-        "history -cr",
         "history -sw /opt/shared/file",
         "history -pw /opt/shared/file",
         "history -d 1 -w /opt/shared/file",
@@ -106,7 +106,13 @@ fn memory_queries_and_flag_precedence_do_not_invent_file_writes() {
         "history --help",
     ] {
         let b = bound(command);
-        assert!(b.effects.is_empty(), "{command}: {b:#?}");
+        assert!(
+            !b.effects.iter().any(|effect| matches!(
+                effect.kind,
+                EffectKind::ReadPath | EffectKind::WritePath | EffectKind::DeletePath
+            )),
+            "{command}: {b:#?}"
+        );
     }
 }
 

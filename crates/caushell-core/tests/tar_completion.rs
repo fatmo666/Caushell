@@ -32,11 +32,11 @@ fn ordinary_archive_updates_and_metadata_options_are_allowed() {
         "tar rvf images.tar input.png",
         "tar uf a.tar input",
         "find . -iname '*.png' -exec tar -rf images.tar {} \\;",
-        "find . -type f -name '*.java' | xargs tar rvf myfile.tar",
+        "find . -type f -name '*.java' | xargs tar rvf myfile.tar --",
         "find data -print0 | tar --null -T - --create -f archive.tar",
         "tar cf archive.tar --files-from=- --no-recursion",
         "tar -I pbzip2 -cf OUTPUT.tar.bz2 /DIR_TO_ZIP/",
-        "tar -C my_dir -zcvf my_dir.tar.gz .[^.]* ..?* *",
+        "tar -C my_dir -zcvf my_dir.tar.gz -- .[^.]* ..?* *",
         "tar --mtime='2023-01-01' --owner=0 --group=0 -zcf archive.tgz /etc",
         "tar -N '2014-02-01 18:00:00' -jcvf archive.tar.bz2 files",
         "tar -cf backup.tar -X /etc/exclude.txt /etc",
@@ -50,6 +50,8 @@ fn ordinary_archive_updates_and_metadata_options_are_allowed() {
 #[test]
 fn real_outside_or_unknown_archive_writes_keep_existing_approval() {
     for command in [
+        "find . -type f -name '*.java' | xargs tar rvf myfile.tar",
+        "tar -C my_dir -zcvf my_dir.tar.gz .[^.]* ..?* *",
         "tar -rf /opt/shared/images.tar input",
         "tar rvf /opt/shared/images.tar input",
         "tar --update --file=/opt/shared/images.tar input",

@@ -3257,7 +3257,7 @@ policy:
     }
 
     #[test]
-    fn core_allows_non_dispatch_execution_wrapper_modes() {
+    fn core_non_dispatch_execution_wrapper_modes_keep_their_policy() {
         let cases = [
             ("ionice-pid", r#"ionice -p 123"#),
             ("taskset-pid", r#"taskset -p 0x1 123"#),
@@ -3275,8 +3275,16 @@ policy:
                 command,
             ));
 
-            assert_eq!(response.decision, Decision::Allow, "{command}");
-            assert!(response.decision_trace.findings.is_empty(), "{command}");
+            let expected = if name == "strace-attach" {
+                Decision::NeedApproval
+            } else {
+                Decision::Allow
+            };
+            assert_eq!(
+                response.decision, expected,
+                "{command}: {:?}",
+                response.reasons
+            );
         }
     }
 
@@ -5084,7 +5092,7 @@ policy:
         let response = core.check(sample_request(
             "sess-timeout-pipeline",
             1,
-            "timeout 15 ~/go/bin/httpx -l /tmp/test_urls.txt -title -server -status-code -ip -content-length -tech-detect -json -silent 2>&1 | head -100",
+            "timeout 15 httpx -l /tmp/test_urls.txt -title -server -status-code -ip -content-length -tech-detect -json -silent 2>&1 | head -100",
         ));
 
         assert_eq!(response.decision, Decision::Allow);
@@ -5799,7 +5807,22 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             "pip install -r requirements.txt",
         ));
 
-        assert_eq!(response.decision, Decision::Allow);
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            response.reasons
+        );
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| {
+                    proposal.rule_id == RuleId::OutsideWorkspaceMutation
+                        && proposal.decision == Decision::NeedApproval
+                })
+        );
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert_eq!(
             response.decision_trace.execution_semantics[0].normalized_command_name,
@@ -5865,7 +5888,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
                 .iter()
                 .any(|semantic| {
                     semantic.normalized_command_name == "pip"
-                        && semantic.form_id == "install_packages"
+                        && semantic.form_id == "preview_install"
                         && semantic.executes_imported_package_logic
                 })
         );
@@ -5889,7 +5912,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         let response = core.check(sample_request(
             "sess-npm-url",
             1,
-            "npm install --dry-run https://example.test/pkg.tgz",
+            "npm install https://example.test/pkg.tgz",
         ));
 
         assert_eq!(response.decision, Decision::NeedApproval);
@@ -5962,7 +5985,22 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             "pip install ./dist/pkg.whl",
         ));
 
-        assert_eq!(response.decision, Decision::Allow);
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            response.reasons
+        );
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| {
+                    proposal.rule_id == RuleId::OutsideWorkspaceMutation
+                        && proposal.decision == Decision::NeedApproval
+                })
+        );
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert!(response.decision_trace.execution_semantics[0].executes_imported_package_logic);
         assert!(

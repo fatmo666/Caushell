@@ -110,7 +110,7 @@ fn xargs_j_is_not_substring_replacement_and_missing_marker_appends() {
     );
     let (_, graph) = check(
         "printf 'cache/a cache/b' | xargs -J X -n 1 mv X cache/dest",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
     assert_eq!(
         paths(&graph, ResolvedPathRole::Write)
@@ -124,20 +124,16 @@ fn xargs_j_is_not_substring_replacement_and_missing_marker_appends() {
 }
 #[test]
 fn xargs_empty_input_is_not_erased_or_invented() {
-    for command in [
-        "chmod",
-        "chmod 644",
-        "chmod u+w",
-        "find . -print0 | xargs -0 -n1 chmod 644",
-        "find . -print0 | xargs -r -0 -n1 chmod 644",
-        "find . -print0 | xargs -r -0 -n1 cp cache/source /opt/output",
-    ] {
+    for command in ["chmod", "chmod 644", "chmod u+w"] {
         check(command, Decision::Allow);
     }
     for command in [
         // Without -r the zero-input job writes /opt/output. The nonempty
         // branch's bounded last operand cannot hide that possible mutation.
         "find . -print0 | xargs -0 -n1 cp cache/source /opt/output",
+        "find . -print0 | xargs -0 -n1 chmod 644",
+        "find . -print0 | xargs -r -0 -n1 chmod 644",
+        "find . -print0 | xargs -r -0 -n1 cp cache/source /opt/output",
         "chmod 644 \"$unknown\"",
         "chmod --unsupported 644",
     ] {
@@ -204,15 +200,23 @@ fn parallel_dry_run_empty_and_unresolved_inputs_are_distinct() {
 }
 #[test]
 fn native_shell_jobs_do_not_inherit_unexported_caller_variables() {
-    let (r, _) = check(
+    let (r, graph) = check(
         "target=/etc/file; parallel 'rm -f \"$target\"' ::: item",
         Decision::NeedApproval,
     );
-    // An absent exported value is unknown, not a proven empty environment.
     assert!(
-        r.reasons
+        !paths(&graph, ResolvedPathRole::Target)
             .iter()
-            .any(|reason| reason.contains("MissingBinding")),
+            .any(|path| path == "/etc/file")
+    );
+    assert!(
+        r.decision_trace
+            .execution_semantics
+            .iter()
+            .any(|semantics| {
+                semantics.normalized_command_name == "rm"
+                    && semantics.operation_semantics_unresolved
+            }),
         "{r:#?}"
     );
     check(

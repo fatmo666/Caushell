@@ -679,7 +679,17 @@ fn target_spelling(
         }
         return None;
     }
-    // Derived rules currently expose normalized paths, not an original spelling.
+    // A cwd-relative leaf transform does not carry its input's parent traversal.
+    if matches!(lexical, PathResolution::DerivedConcrete { .. })
+        && bound.effects.iter().enumerate().any(|(index, effect)| {
+            crate::path::derived_path_slot_name(index) == slot
+                && matches!(&effect.target, EffectTarget::DerivedPath(derived) if derived.root.is_none()
+                    && matches!(derived.rule, caushell_types::DerivedPathRule::Basename | caushell_types::DerivedPathRule::UrlBasename))
+        })
+    {
+        return Some(path.into());
+    }
+    // Other derived rules expose normalized paths, not an original spelling.
     if bound.bound_parameters.iter().flat_map(|parameter| parameter.semantic_values()).any(|value|
         matches!(caushell_profile::project_semantic_value(&caushell_profile::ValueProjection::Identity, value),
             Some(SemanticValueResolution::Known(text)) if text.split('/').any(|component| component == ".."))) { return None; }

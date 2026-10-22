@@ -116,6 +116,13 @@ fn creation_attachment_control_and_input_injection_need_approval() {
 #[test]
 fn arbitrary_queries_and_option_gaps_are_opaque_under_default_gap_policy() {
     for c in [
+        "screen -ls $PATTERN",
+        "screen -ls *",
+        "screen -S $SESSION -Q info",
+        "screen -S \"$SESSION\" -Q info",
+        "screen -p $WINDOW -Q title",
+        "screen -S first -S second -Q windows",
+        "screen -p 0 -p 1 -Q title",
         "screen -Q title renamed",
         "screen -Q number 1",
         "screen -Q select 1",

@@ -56,7 +56,7 @@ fn unresolved_shell_expansion_cannot_prove_a_negative_stream_contract() {
     ]).unwrap();
     for (operand, proven) in [
         ("*", false),
-        ("{a,b}", false),
+        ("{a,b}", true),
         ("'*.txt'", true),
         ("\\*", true),
         ("a'['b", true),

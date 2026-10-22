@@ -547,11 +547,11 @@ fn remote_helpers_and_clock_settings_do_not_claim_local_file_effects() {
         "{rsync:#?}"
     );
     assert!(
-        rsync
-            .bound
-            .effects
-            .iter()
-            .any(|e| e.kind == EffectKind::DispatchCommand),
+        rsync.bound.effects.iter().any(|e| e.state_operation
+            == Some(StateOperation {
+                domain: StateOperationDomain::RemoteAccess,
+                operation: StateOperationKind::Opaque,
+            })),
         "{rsync:#?}"
     );
     let rsync_path = resolve("rsync --rsync-path='sudo rsync' local remote:/dest");

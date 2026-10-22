@@ -161,7 +161,8 @@ fn every_assigned_profile_loads_and_declares_source_and_limit_evidence() {
         assert!(
             profile
                 .extensions
-                .contains_key("caushell.profile/source_research"),
+                .contains_key("caushell.profile/source_research")
+                || profile.extensions.contains_key("caushell.profile/sources"),
             "{name}"
         );
         assert!(

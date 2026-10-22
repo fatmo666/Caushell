@@ -130,9 +130,9 @@ fn configuration_and_interpreter_boundaries_remain_distinct() {
             .bound
             .operation_semantics_unresolved
     );
-    for command in ["awk '{print}'", "awk -e '{print}'", "awk -f program.awk"] {
+    for command in ["awk '{print}'", "awk -e '{print}'"] {
         assert!(
-            resolved(command)
+            !resolved(command)
                 .bound
                 .effects
                 .iter()
@@ -140,6 +140,13 @@ fn configuration_and_interpreter_boundaries_remain_distinct() {
             "{command}"
         );
     }
+    assert!(
+        resolved("awk -f program.awk")
+            .bound
+            .effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::ExecutePayload)
+    );
     for tool in ["md5sum", "sha256sum"] {
         assert_eq!(
             resolved(&format!("{tool} --status -c .env"))

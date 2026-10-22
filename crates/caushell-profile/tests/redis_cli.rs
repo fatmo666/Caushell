@@ -119,10 +119,20 @@ fn writes_management_and_opaque_commands_are_distinct() {
         "redis-cli FCALL_RO f 0",
         "redis-cli EXEC",
         "redis-cli CUSTOM.DO value",
-        "redis-cli \"$CMD\" value",
     ] {
         operation(c, Operation::Opaque);
     }
+    let ResolveInvocationResult::Resolved(result) = result("redis-cli \"$CMD\" value") else {
+        panic!("expected retained opaque command semantics");
+    };
+    assert!(!result.bound.residuals.is_empty());
+    assert!(
+        result
+            .bound
+            .effects
+            .iter()
+            .any(|effect| effect.database_operation == Some(Operation::Opaque))
+    );
 }
 #[test]
 fn keys_and_options_after_command_remain_plain_argv() {

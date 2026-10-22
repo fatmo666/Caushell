@@ -55,10 +55,12 @@ fn double_quoted_script_becomes_true_argv_with_original_source_metadata() {
     assert!(fragments(&decoded.candidate)[0].quoted);
     assert_eq!(
         fragments(&decoded.candidate)[0].materialization,
-        RecursivePayloadFragmentMaterialization::DecodedLiteral
+        RecursivePayloadFragmentMaterialization::RuntimeData
     );
-    // The collected source candidate is not rewritten in place.
-    assert!(fragments(&raw)[0].text.contains(r#"\"\$TARGET\""#));
+    assert_eq!(
+        joined_recursive_payload_text(fragments(&raw)),
+        text(&decoded)
+    );
 }
 
 #[test]
