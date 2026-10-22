@@ -1,4 +1,6 @@
 mod context;
+mod filesystem;
+pub use filesystem::{FilesystemView, UnavailableFilesystem};
 mod mutation;
 mod nested;
 mod node_ids;

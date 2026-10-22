@@ -22,6 +22,8 @@ pub struct CheckDecisionProposal {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DecisionTrace {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_targets: Vec<crate::PathTargetFact>,
     pub executed_passes: Vec<String>,
     pub findings: Vec<Finding>,
     pub evidence: Vec<Evidence>,
@@ -86,6 +88,7 @@ mod tests {
             decision: Decision::NeedApproval,
             reasons: vec!["command unknown-tool has no registered profile".to_string()],
             decision_trace: DecisionTrace {
+                path_targets: Vec::new(),
                 executed_passes: vec!["resolve_policy".to_string()],
                 findings: vec![],
                 evidence: vec![],
@@ -148,6 +151,7 @@ mod tests {
             decision: Decision::Deny,
             reasons: vec!["startup config path escaped workspace root".to_string()],
             decision_trace: DecisionTrace {
+                path_targets: Vec::new(),
                 executed_passes: vec![
                     "parse_command".to_string(),
                     "resolve_invocation".to_string(),

@@ -182,6 +182,34 @@ impl PathExemptionPolicy {
             PathScopeProof::Unproven => PathExemption::Unproven,
         }
     }
+
+    pub fn map_roots(&self, mut resolve: impl FnMut(&str) -> Option<String>) -> Self {
+        Self {
+            grants: self
+                .grants
+                .iter()
+                .filter_map(|grant| {
+                    let mut grant = grant.clone();
+                    grant.root = resolve(&grant.root)?;
+                    Some(grant)
+                })
+                .collect(),
+        }
+    }
+
+    pub fn check_target(
+        &self,
+        fact: &caushell_types::PathTargetFact,
+        operation: PathOperation,
+        rule: RuleId,
+    ) -> PathExemption {
+        match &fact.resolution {
+            caushell_types::SemanticResolution::Resolved { value } => {
+                self.check(value, operation, rule)
+            }
+            _ => PathExemption::Unproven,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -168,6 +168,11 @@ fn interactive_escape_defaults_to_ask_but_can_be_overridden() {
 
 #[test]
 fn quoted_iteration_paths_keep_bounds_and_templates() {
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::OutsideWorkspaceMutation,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
     for c in [
         "for filename in ./*.jpg; do mv \"$filename\" \"prefix_$filename\"; done",
         "for f in ./a ./b; do cp \"$f\" \"${f}.bak\"; done",
@@ -178,7 +183,7 @@ fn quoted_iteration_paths_keep_bounds_and_templates() {
         "f=./safe; (for f in /opt/*.txt; do :; done); chmod u+w \"$f\"",
         "f=./safe; for f in /opt/*.txt; do :; done & chmod u+w \"$f\"",
     ] {
-        let r = check(c);
+        let r = ShellQueryCore::with_policy(policy.clone()).check(request(c));
         assert_eq!(r.decision, Decision::Allow, "{c}: {r:#?}");
         assert!(
             !r.decision_trace
@@ -217,7 +222,12 @@ fn uncertain_external_and_overwritten_iterations_do_not_borrow_safe_bounds() {
 #[test]
 fn loop_bounds_enter_graph_without_concrete_filenames_or_final_values() {
     use caushell_graph::NodeKind;
-    let mut core = ShellQueryCore::new();
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::OutsideWorkspaceMutation,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
+    let mut core = ShellQueryCore::with_policy(policy);
     let r = request("for f in ./*.jpg; do cp \"$f\" \"${f}.bak\"; done");
     let id = r.session_id.clone();
     assert_eq!(core.check(r).decision, Decision::Allow);
@@ -227,6 +237,7 @@ fn loop_bounds_enter_graph_without_concrete_filenames_or_final_values() {
         role: ResolvedPathRole::Write, ..
     } if roots == &["/workspace/project".to_string()])));
     let mut next = request("chmod u+w \"$f\"");
+    core.replace_policy(PolicyConfig::default());
     next.sequence_no = CommandSequenceNo::new(2);
     assert_eq!(core.check(next).decision, Decision::NeedApproval);
 }

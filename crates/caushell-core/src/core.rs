@@ -132,6 +132,7 @@ pub struct PreparedRuntimeCheck {
 }
 
 pub struct ShellQueryCore {
+    filesystem: std::sync::Arc<dyn caushell_runner::FilesystemView>,
     policy: PolicyConfig,
     runner: PassRunner,
     sessions: BTreeMap<SessionId, SessionState>,
@@ -163,6 +164,7 @@ impl ShellQueryCore {
 
     pub fn try_with_policy(policy: PolicyConfig) -> Result<Self, ShellQueryCoreInitError> {
         Ok(Self {
+            filesystem: std::sync::Arc::new(crate::LocalFilesystem),
             policy,
             runner: build_default_runner()?,
             sessions: BTreeMap::new(),
@@ -176,6 +178,15 @@ impl ShellQueryCore {
 
     pub fn replace_policy(&mut self, policy: PolicyConfig) {
         self.policy = policy;
+    }
+
+    /// Replace the local-process view when the command uses another namespace.
+    pub fn with_filesystem_view(
+        mut self,
+        view: std::sync::Arc<dyn caushell_runner::FilesystemView>,
+    ) -> Self {
+        self.filesystem = view;
+        self
     }
 
     pub fn check(&mut self, request: CheckRequest) -> CheckResponse {
@@ -206,6 +217,7 @@ impl ShellQueryCore {
         let session = sessions.entry(session_id).or_insert_with(SessionState::new);
 
         let mut ctx = RunnerContext::with_policy(request, self.policy.clone());
+        ctx.set_filesystem_view(self.filesystem.clone());
         let timing_enabled = core_timing_enabled();
         let total_start = Instant::now();
         let runner_start = Instant::now();
@@ -606,6 +618,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingIntentPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
+    runner.register_session_transform_pass(caushell_passes::ResolvePathTargetsPass);
     runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
     runner.register_session_transform_pass(ExtractRedirectProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingsPass);
@@ -776,6 +789,11 @@ fn build_decision_trace(ctx: &RunnerContext, staged_session: &StagedSession<'_>)
     let sequence_no = ctx.request().sequence_no;
 
     DecisionTrace {
+        path_targets: caushell_query::PathTargetQuery::new(sequence_no)
+            .execute(QuerySession::from_session(staged_session))
+            .into_iter()
+            .cloned()
+            .collect(),
         executed_passes: ctx.executed_passes.clone(),
         findings: ctx.findings.clone(),
         evidence: ctx.evidence.clone(),
@@ -1163,26 +1181,21 @@ mod tests {
     #[test]
     fn outside_workspace_mutation_guard_covers_direct_file_effects_and_redirections() {
         let cases = [
-            ("rm /etc/wgetrc", "delete target /etc/wgetrc"),
-            (
-                "cp /tmp/project/input /usr/output",
-                "write target /usr/output",
-            ),
+            ("rm /etc/wgetrc", "delete", "/etc/wgetrc"),
+            ("cp /tmp/project/input /usr/output", "write", "/usr/output"),
             (
                 "mv /etc/source /tmp/project/dest",
-                "move source target /etc/source",
+                "move source",
+                "/etc/source",
             ),
-            (
-                "chmod 600 /etc/wgetrc",
-                "metadata mutation target /etc/wgetrc",
-            ),
-            ("printf hello > /etc/wgetrc", "write target /etc/wgetrc"),
-            ("printf hello >> /etc/wgetrc", "write target /etc/wgetrc"),
-            ("cat <> /etc/wgetrc", "write target /etc/wgetrc"),
-            ("> /etc/wgetrc", "write target /etc/wgetrc"),
+            ("chmod 600 /etc/wgetrc", "metadata mutation", "/etc/wgetrc"),
+            ("printf hello > /etc/wgetrc", "write", "/etc/wgetrc"),
+            ("printf hello >> /etc/wgetrc", "write", "/etc/wgetrc"),
+            ("cat <> /etc/wgetrc", "write", "/etc/wgetrc"),
+            ("> /etc/wgetrc", "write", "/etc/wgetrc"),
         ];
 
-        for (index, (command, expected_reason)) in cases.iter().enumerate() {
+        for (index, (command, operation, target)) in cases.iter().enumerate() {
             let mut core = ShellQueryCore::new();
             let response = core.check(sample_request(
                 &format!("outside-mutation-{index}"),
@@ -1193,7 +1206,8 @@ mod tests {
             assert!(
                 response.decision_trace.findings.iter().any(|finding| {
                     finding.rule_id == RuleId::OutsideWorkspaceMutation
-                        && finding.message.contains(expected_reason)
+                        && finding.message.contains(operation)
+                        && finding.message.contains(target)
                 }),
                 "{command}: {:?}",
                 response.decision_trace.findings
@@ -1238,9 +1252,9 @@ mod tests {
             ("find /var/tmp -type f -exec rm {} +", true),
             ("find /var/tmp -type f -exec chmod 600 {} \\;", true),
             ("find /tmp/project /var/tmp -type f -exec rm {} \\;", true),
-            ("find /tmp/project -type f -exec rm {} \\;", false),
+            ("find /tmp/project -type f -exec rm {} \\;", true),
             ("cd /var/tmp && find . -exec rm {} \\;", true),
-            ("find '/tmp/project' -exec rm '{}' \\;", false),
+            ("find '/tmp/project' -exec rm '{}' \\;", true),
             ("find \"$UNKNOWN_ROOT\" -exec rm {} \\;", true),
             ("find -L /tmp/project -type f -exec rm {} \\;", true),
             ("find /var/tmp -execdir rm target \\;", true),
@@ -1294,15 +1308,15 @@ mod tests {
             ("find /var/tmp -exec sh -c 'rm -- \"$1\"' _ {} \\;", true),
             (
                 "find /tmp/project -exec sh -c 'rm -- \"$1\"' _ {} \\;",
-                false,
+                true,
             ),
             (
                 "find /tmp/project -exec sh -c 'rm \"$2\"' _ fixed {} \\;",
-                false,
+                true,
             ),
             (
                 r#"find /tmp/project -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
-                false,
+                true,
             ),
             (
                 r#"find /var/tmp -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
@@ -1311,7 +1325,7 @@ mod tests {
             ("find /var/tmp -exec env sh -c 'rm \"$1\"' _ {} \\;", true),
             (
                 "find /tmp/project -exec env sh -c 'rm \"$1\"' _ {} \\;",
-                false,
+                true,
             ),
             (
                 "find /var/tmp -exec sh -c 'rm \"$1\"' _ {} /tmp/project/a \\; -exec sh -c 'rm \"$1\"' _ /tmp/project/a {} \\;",
@@ -1606,10 +1620,14 @@ mod tests {
         request.workspace_root = None;
         let response = ShellQueryCore::new().check(request);
         assert_eq!(response.decision, Decision::NeedApproval);
-        assert!(response.decision_trace.findings.iter().any(|finding| {
-            finding.rule_id == RuleId::OutsideWorkspaceMutation
-                && finding.message.contains("workspace root is unavailable")
-        }));
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| { finding.rule_id == RuleId::OutsideWorkspaceMutation })
+        );
+        assert!(!response.decision_trace.path_targets.is_empty());
     }
 
     #[test]
@@ -2138,6 +2156,7 @@ mod tests {
         let session_id = SessionId::new("sess-1");
 
         let mut core = ShellQueryCore {
+            filesystem: std::sync::Arc::new(crate::LocalFilesystem),
             policy: PolicyConfig::default(),
             runner: always_deny_runner(),
             sessions: BTreeMap::new(),
@@ -5163,7 +5182,26 @@ echo "提取公司名和域名:"
 cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitName' 2>/dev/null | sort -u | tee output/bilibili/pipeline_0/company_names.txt
 "#;
 
-        let mut core = ShellQueryCore::new();
+        let response =
+            ShellQueryCore::new().check(sample_request("sess-real-world-icp", 1, command));
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .path_targets
+                .iter()
+                .any(|fact| matches!(
+                    &fact.resolution,
+                    caushell_types::SemanticResolution::Unresolved { gap }
+                        if gap.kind == caushell_types::SemanticGapKind::NamespaceMutation
+                ))
+        );
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            RuleId::OutsideWorkspaceMutation,
+            caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
+        );
+        let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-real-world-icp");
 
         let response = core.check(sample_request("sess-real-world-icp", 1, command));

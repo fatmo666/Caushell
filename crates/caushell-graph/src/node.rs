@@ -17,6 +17,9 @@ impl NodeId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
+    PathTargetFact {
+        fact: caushell_types::PathTargetFact,
+    },
     StateCandidate {
         fact: caushell_types::StateCandidateFact,
     },
@@ -339,6 +342,9 @@ impl From<&GraphNode> for SessionGraphNodeSnapshot {
                 resolution_detail: resolution_detail.clone(),
                 resolution_runtime_input_source: *resolution_runtime_input_source,
             },
+            NodeKind::PathTargetFact { fact } => {
+                SessionGraphNodeKindSnapshot::PathTargetFact { fact: fact.clone() }
+            }
             NodeKind::PathFact {
                 resolution,
                 role,
@@ -546,6 +552,9 @@ impl From<SessionGraphNodeSnapshot> for GraphNode {
                 resolution_detail,
                 resolution_runtime_input_source,
             },
+            SessionGraphNodeKindSnapshot::PathTargetFact { fact } => {
+                NodeKind::PathTargetFact { fact }
+            }
             SessionGraphNodeKindSnapshot::PathFact {
                 resolution,
                 role,

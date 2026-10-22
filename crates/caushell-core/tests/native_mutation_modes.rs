@@ -130,7 +130,6 @@ fn split_filter_does_not_write_the_named_prefix_itself() {
     for command in [
         "split --filter='cat' input /opt/shared/chunk",
         "split --filter='cat > cache/output' input",
-        "split --filter='cat > \"$FILE\"' input",
         "split -n 1/3 input /opt/shared/chunk",
         "split -d -b 1000 - cache/chunk",
         "split --help",
@@ -147,6 +146,13 @@ fn split_filter_does_not_write_the_named_prefix_itself() {
         "split --filter='echo ok' --additional-suffix=../bad input",
         "split --additional-suffix=\"$suffix\" input cache/chunk",
     ] {
+        expect(command, Decision::NeedApproval);
+    }
+}
+
+#[test]
+fn split_filter_generated_filename_requires_namespace_proof() {
+    for command in ["split --filter='cat > \"$FILE\"' input"] {
         expect(command, Decision::NeedApproval);
     }
 }

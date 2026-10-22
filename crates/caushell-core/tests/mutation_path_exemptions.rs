@@ -48,9 +48,7 @@ fn ordinary_writes_and_metadata_use_default_temporary_roots() {
         "chgrp -R staff /private/tmp/output",
         "mktemp /tmp/cache.XXXXXX",
         "curl -o /tmp/download https://example.test/file",
-        "csplit -f /tmp/part input '/x/'",
         "cd /tmp; touch output",
-        "find /tmp -type f -exec chmod 600 {} +",
         "TMPDIR=/tmp/cache mktemp -d",
     ] {
         expect(command, Decision::Allow);
@@ -101,8 +99,6 @@ fn special_and_reference_permission_modes_use_default_temporary_roots() {
         "chmod g+s /tmp/output",
         "chmod --reference=input /tmp/output",
         "chmod --reference=input ./output",
-        "find /tmp -type d -exec chmod 2775 {} +",
-        "find /tmp -type f -print0 | xargs -0 chmod u+s",
         "bash -c 'chmod 4755 /private/tmp/output'",
         "cp -p input /tmp/output",
         "cp --preserve=mode input /private/tmp/output",
@@ -117,6 +113,18 @@ fn special_and_reference_permission_modes_use_default_temporary_roots() {
         "chmod 4755 /tmp/output /opt/output",
         "chmod u+s \"$UNKNOWN\"",
         "chattr +i /private/tmp/output",
+    ] {
+        expect(command, Decision::NeedApproval);
+    }
+}
+
+#[test]
+fn temporary_path_sets_still_require_namespace_proof() {
+    for command in [
+        "csplit -f /tmp/part input '/x/'",
+        "find /tmp -type f -exec chmod 600 {} +",
+        "find /tmp -type d -exec chmod 2775 {} +",
+        "find /tmp -type f -print0 | xargs -0 chmod u+s",
     ] {
         expect(command, Decision::NeedApproval);
     }

@@ -93,6 +93,10 @@ pub enum DerivedInvocationOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMutation {
+    AddPathTargetFact {
+        node_id: String,
+        fact: crate::PathTargetFact,
+    },
     AddStateCandidate {
         node_id: String,
         fact: crate::StateCandidateFact,
@@ -350,6 +354,9 @@ pub struct SessionGraphNodeSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionGraphNodeKindSnapshot {
+    PathTargetFact {
+        fact: crate::PathTargetFact,
+    },
     StateCandidate {
         fact: crate::StateCandidateFact,
     },
@@ -573,6 +580,7 @@ mod tests {
             decision: Decision::Allow,
             reasons: vec![],
             decision_trace: DecisionTrace {
+                path_targets: Vec::new(),
                 findings: vec![
                     Finding::new(
                         RuleId::CatastrophicFileSystemDelete,

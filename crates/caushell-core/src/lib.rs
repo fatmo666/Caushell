@@ -1,4 +1,6 @@
 mod core;
+mod filesystem;
+pub use filesystem::LocalFilesystem;
 mod state;
 
 pub use core::{

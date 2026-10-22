@@ -5,12 +5,12 @@ mod support;
 
 pub use passes::NetworkListenerGuardPass;
 pub use passes::NetworkUploadGuardPass;
+pub use passes::ResolvePathTargetsPass;
 pub use passes::StateOperationGuardPass;
 pub use passes::{
     CatastrophicDeleteGuardPass, CatastrophicShellEffectsPass, CodeLoadPathGuardPass,
     ComputeEffectiveCwdPass, CwdWorkspaceBoundaryPass, DatabaseOperationGuardPass,
-    DecisionAssemblyPass,
-    ExtractAliasBindingsPass, ExtractCommandSubstitutionProvenancePass,
+    DecisionAssemblyPass, ExtractAliasBindingsPass, ExtractCommandSubstitutionProvenancePass,
     ExtractCurrentWorkingDirectoryPass, ExtractEndpointProvenancePass,
     ExtractExecutionSemanticsPass, ExtractFunctionBindingsPass, ExtractImplicitStartupConfigPass,
     ExtractImportedPackageProvenancePass, ExtractPathFactsPass, ExtractPipelineFlowPass,

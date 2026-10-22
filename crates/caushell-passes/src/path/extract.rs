@@ -117,6 +117,7 @@ pub(crate) struct MutationScopeFactCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MutationTargetCandidate {
+    pub effect_index: usize,
     pub operation: EffectKind,
     pub slot_name: String,
     pub resolution: PathResolution,
@@ -554,6 +555,7 @@ pub(crate) fn collect_invocation_mutation_targets(
         if let Some(paths) = path_list_resolutions(bound, effect_index, cwd) {
             targets.extend(paths.into_iter().map(|(resolution, cwd_dependent)| {
                 MutationTargetCandidate {
+                    effect_index,
                     operation: effect.kind,
                     slot_name: format!("stdin_paths_{effect_index}"),
                     resolution: effect_path_scope(effect, bound, resolution),
@@ -568,6 +570,7 @@ pub(crate) fn collect_invocation_mutation_targets(
             EffectTarget::ConfiguredPath(target) => {
                 if let Some(path) = resolve_configured_path(bound, target, cwd, home, record) {
                     targets.push(MutationTargetCandidate {
+                        effect_index,
                         metadata_mutation: metadata_mutation.clone(),
                         operation: effect.kind,
                         slot_name: format!("configured_path_{effect_index}"),
@@ -598,6 +601,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                         let (resolution, cwd_dependent) =
                             semantic_path_resolution(value, resolved, cwd, home);
                         targets.push(MutationTargetCandidate {
+                            effect_index,
                             metadata_mutation: metadata_mutation.clone(),
                             implicit_incidental_cache: false,
                             operation: effect.kind,
@@ -613,6 +617,7 @@ pub(crate) fn collect_invocation_mutation_targets(
             }
             EffectTarget::ToolConventionPath(target) => {
                 targets.push(MutationTargetCandidate {
+                    effect_index,
                     metadata_mutation: metadata_mutation.clone(),
                     implicit_incidental_cache: false,
                     operation: effect.kind,
@@ -643,6 +648,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     })
                     .unwrap_or(true);
                 targets.extend(derived.into_iter().map(|path| MutationTargetCandidate {
+                    effect_index,
                     metadata_mutation: metadata_mutation.clone(),
                     implicit_incidental_cache: false,
                     operation: effect.kind,
@@ -668,6 +674,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     }
                 };
                 targets.push(MutationTargetCandidate {
+                    effect_index,
                     metadata_mutation: metadata_mutation.clone(),
                     implicit_incidental_cache: false,
                     operation: effect.kind,
@@ -689,6 +696,7 @@ pub(crate) fn collect_invocation_mutation_targets(
 
         if targets.len() == start {
             targets.push(MutationTargetCandidate {
+                effect_index,
                 metadata_mutation: metadata_mutation.clone(),
                 implicit_incidental_cache: false,
                 operation: effect.kind,

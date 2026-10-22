@@ -15,6 +15,7 @@ mod response;
 mod rule;
 mod runtime_request;
 mod safety_history;
+mod semantic;
 mod session;
 mod session_summary;
 mod shell_state;
@@ -111,6 +112,10 @@ pub use runtime_request::{
     RuntimeShellStateDeltaResponse, RuntimeTransportRequest, RuntimeTransportResponse,
 };
 pub use safety_history::{SafetyHistory, SafetyStateKind, SafetyStateRecord, SafetyStateValue};
+pub use semantic::{
+    FilesystemEntry, FilesystemObservation, FilesystemObservationSource, PathMutationKind,
+    PathTargetAccess, PathTargetFact, SemanticGap, SemanticGapKind, SemanticResolution,
+};
 pub use session::{CommandSequenceNo, SessionId};
 pub use session_summary::{
     RuntimeProducedValueKind, SessionAliasBinding, SessionCurrentWorkingDirectory,

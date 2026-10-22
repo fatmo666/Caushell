@@ -1,26 +1,11 @@
 use std::collections::BTreeSet;
 
-use caushell_parse::ParsedCommandArtifact;
 use caushell_profile::EffectKind;
-use caushell_query::IoTarget;
-use caushell_runner::{
-    CwdPathContext, PathExemptionPolicy, PathOperation, RunnerContext, SessionAnalysisPass,
-    SessionView,
-};
-#[cfg(test)]
-use caushell_types::MutationPathExemption;
-use caushell_types::{
-    MutationExemptionOperation, PathMetadataMutationKind, PathResolution, RuleId,
-};
+use caushell_runner::{PathOperation, RunnerContext, SessionAnalysisPass, SessionView};
+use caushell_types::{MutationExemptionOperation, PathMetadataMutationKind, RuleId};
 
-use crate::path::{
-    MutationTargetCandidate, collect_effect_mutation_targets, collect_redirection_path_facts,
-    effective_cwd_cases, normalize_shell_path, project_path_at_cwd,
-};
 use crate::support::{
-    bound_invocation, content_io_target, decision_for_rule_action,
-    graph_backed_execution_resolve_records, is_file_write_redirection_operator,
-    redirection_parent_command_index, slot_uses_content_open,
+    bound_invocation, decision_for_rule_action, is_file_write_redirection_operator,
 };
 
 pub struct OutsideWorkspaceMutationGuardPass;
@@ -30,170 +15,94 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
         "outside_workspace_mutation_guard"
     }
 
-    fn run(
-        &self,
-        _session: SessionView<'_>,
-        _staged_session: SessionView<'_>,
-        ctx: &mut RunnerContext,
-    ) {
-        let workspace_root = ctx
-            .request()
-            .workspace_root
-            .as_deref()
-            .filter(|root| root.starts_with('/'))
-            .map(normalize_shell_path);
-        let fallback_cwd = ctx.request().shell_state_before.cwd().to_string();
-        let home = ctx.request().home.clone();
+    fn run(&self, _session: SessionView<'_>, staged: SessionView<'_>, ctx: &mut RunnerContext) {
+        use caushell_types::{PathMutationKind, SemanticResolution};
+        let facts = caushell_query::PathTargetQuery::new(ctx.request().sequence_no)
+            .execute(caushell_query::QuerySession::from_session(&staged));
+        let declared = ctx.execution_unit_resolve_records().iter().any(|record| {
+            bound_invocation(&record.result).is_some_and(|bound| {
+                bound.effects.iter().any(|effect| {
+                    super::resolve_path_targets::path_mutation_kind(effect.kind).is_some()
+                        && !matches!(effect.target, caushell_profile::EffectTarget::None)
+                })
+            })
+        }) || ctx.parsed_command().is_some_and(|parsed| {
+            parsed.redirections.iter().any(|redirect| {
+                redirect
+                    .operator
+                    .as_deref()
+                    .is_some_and(|op| is_file_write_redirection_operator(op) || op == "<>")
+            })
+        });
         let mut reasons = BTreeSet::new();
-        let exemptions = ctx.path_exemption_policy();
-
-        for record in graph_backed_execution_resolve_records(ctx) {
-            let home = record.bindings().tilde_home_with_default(home.as_deref());
-            for (effective_cwd, redirections) in [
-                (ctx.execution_cwd_for_node(record.source_node_id()), false),
-                (ctx.effective_cwd_for_node(record.source_node_id()), true),
-            ] {
-                for case in effective_cwd_cases(effective_cwd, &fallback_cwd) {
-                    let resolution_cwd = case.resolution_base(&fallback_cwd);
-                    let targets = if redirections {
-                        collect_redirection_mutation_targets(
-                            record.parsed_scope(),
-                            Some(record.command_index()),
-                            resolution_cwd,
-                            home,
-                            Some(record.bindings()),
-                        )
-                    } else {
-                        collect_effect_mutation_targets(record, resolution_cwd, home)
-                    };
-                    for target in targets {
-                        let exemption_operation = exemption_operation_for_target(&target);
-                        if !redirections
-                            && target.operation == EffectKind::WritePath
-                            && target.resolution.concrete_path().is_some_and(|path| {
-                                path == "/dev/null"
-                                    || caushell_query::IoTargetQuery::descriptor_alias(path)
-                                        .is_some()
-                            })
-                            && bound_invocation(record.result()).is_some_and(|bound| {
-                                slot_uses_content_open(bound, &target.slot_name, target.operation)
-                            })
-                        {
-                            let shell_cwd = ctx.effective_cwd_for_node(record.source_node_id());
-                            // A tool-local chdir must not change the interpretation
-                            // of a relative file opened earlier by the caller shell.
-                            let entries = effective_cwd_cases(shell_cwd, &fallback_cwd);
-                            for entry in entries {
-                                let io = content_io_target(
-                                    record.parsed_scope(),
-                                    Some(record.command_index()),
-                                    None,
-                                    &target.resolution,
-                                    target.cwd_dependent,
-                                    entry.resolution_base(&fallback_cwd),
-                                    home,
-                                    Some(record.bindings()),
-                                );
-                                if let Some((resolution, dependent)) = mutation_path_for_io(io) {
-                                    let resolution =
-                                        project_path_at_cwd(resolution, dependent, entry);
-                                    add_reason_for_target(
-                                        &mut reasons,
-                                        target.operation,
-                                        &target.slot_name,
-                                        &resolution,
-                                        dependent,
-                                        matches!(entry, CwdPathContext::Unknown),
-                                        workspace_root.as_deref(),
-                                        exemptions,
-                                        exemption_operation,
-                                    );
-                                }
-                            }
-                            continue;
-                        }
-                        // Only a declaratively identified implicit cache fallback
-                        // is exempt. Explicit, unknown argv paths and redirections
-                        // cannot acquire this exemption from their purpose alone.
-                        if target.operation == EffectKind::WritePath
-                            && target.implicit_incidental_cache
-                            && target.resolution.concrete_path().is_none()
-                        {
-                            continue;
-                        }
-                        let resolution =
-                            project_path_at_cwd(target.resolution, target.cwd_dependent, case);
-                        add_reason_for_target(
-                            &mut reasons,
-                            target.operation,
-                            &target.slot_name,
-                            &resolution,
-                            target.cwd_dependent,
-                            matches!(case, CwdPathContext::Unknown),
-                            workspace_root.as_deref(),
-                            exemptions,
-                            exemption_operation,
-                        );
+        let missing_effect = ctx.execution_unit_resolve_records().iter().any(|record| {
+            bound_invocation(&record.result).is_some_and(|bound| {
+                bound.effects.iter().enumerate().any(|(index, effect)| {
+                    super::resolve_path_targets::path_mutation_kind(effect.kind).is_some()
+                        && !(effect.kind == EffectKind::MetadataMutation
+                            && matches!(effect.target, caushell_profile::EffectTarget::None))
+                        && !facts.iter().any(|fact| {
+                            fact.source_node_id == record.source_node_id.0
+                                && fact.effect_key == format!("effect:{index}")
+                        })
+                })
+            })
+        });
+        if missing_effect || (declared && (facts.is_empty() || ctx.target_path_policy().is_none()))
+        {
+            reasons.insert("declared filesystem effects have no target-scope proof".to_string());
+        }
+        if let Some(policy) = ctx.target_path_policy() {
+            for fact in facts {
+                if fact.implicit_incidental_cache && fact.lexical.concrete_path().is_none() {
+                    continue;
+                }
+                let resolution = match &fact.resolution {
+                    SemanticResolution::NotApplicable { .. } => continue,
+                    SemanticResolution::Unresolved { gap } => {
+                        reasons.insert(format!(
+                            "{} target for slot {} is unresolved ({:?}): {}",
+                            mutation_name(fact.operation),
+                            fact.slot_name,
+                            gap.kind,
+                            gap.detail
+                        ));
+                        continue;
                     }
+                    SemanticResolution::Resolved { value } => value,
+                };
+                let operation = match fact.operation {
+                    PathMutationKind::Write => EffectKind::WritePath,
+                    PathMutationKind::Delete => EffectKind::DeletePath,
+                    PathMutationKind::MoveSource => EffectKind::MovePath,
+                    PathMutationKind::Metadata => EffectKind::MetadataMutation,
+                };
+                let operation_scope = match exemption_operation_for_target(
+                    operation,
+                    fact.metadata_mutation.as_ref(),
+                ) {
+                    Some(MutationExemptionOperation::Write) => PathOperation::Write,
+                    Some(MutationExemptionOperation::OrdinaryMetadata) => {
+                        PathOperation::OrdinaryMetadata
+                    }
+                    Some(MutationExemptionOperation::PermissionMetadata) => {
+                        PathOperation::PermissionMetadata
+                    }
+                    None => PathOperation::UnspecifiedMutation,
+                };
+                if !policy
+                    .check_target(fact, operation_scope, RuleId::OutsideWorkspaceMutation)
+                    .is_exempt()
+                {
+                    reasons.insert(format!(
+                        "{} target for slot {} is outside the granted path scope or unproven: {:?}",
+                        mutation_name(fact.operation),
+                        fact.slot_name,
+                        resolution
+                    ));
                 }
             }
         }
-
-        for syntax in crate::support::shell_syntax_redirections(ctx) {
-            if !syntax
-                .path
-                .fact
-                .operator
-                .as_deref()
-                .is_some_and(|op| is_file_write_redirection_operator(op) || op == "<>")
-            {
-                continue;
-            }
-            let Some((resolution, cwd_dependent)) = mutation_path_for_io(syntax.io) else {
-                continue;
-            };
-            add_reason_for_target(
-                &mut reasons,
-                EffectKind::WritePath,
-                &syntax.path.slot_name,
-                &resolution,
-                cwd_dependent,
-                syntax.unknown_cwd,
-                workspace_root.as_deref(),
-                exemptions,
-                Some(MutationExemptionOperation::Write),
-            );
-        }
-
-        // Legacy callers without resolver-owned syntax scopes retain their
-        // top-level parse fallback. Normal runs use the shared scoped query.
-        if !ctx
-            .shell_redirection_scopes()
-            .iter()
-            .any(|s| s.is_request_scope)
-            && let Some(parsed) = ctx.parsed_command()
-        {
-            for target in collect_redirection_mutation_targets(
-                parsed,
-                None,
-                &fallback_cwd,
-                home.as_deref(),
-                None,
-            ) {
-                add_reason_for_target(
-                    &mut reasons,
-                    target.operation,
-                    &target.slot_name,
-                    &target.resolution,
-                    target.cwd_dependent,
-                    false,
-                    workspace_root.as_deref(),
-                    exemptions,
-                    exemption_operation_for_target(&target),
-                );
-            }
-        }
-
         let action = ctx
             .policy()
             .rule_policy
@@ -212,172 +121,23 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
     }
 }
 
-fn collect_redirection_mutation_targets(
-    parsed: &ParsedCommandArtifact,
-    command_index: Option<usize>,
-    cwd: &str,
-    home: Option<&str>,
-    bindings: Option<&caushell_profile::SessionBindings>,
-) -> Vec<MutationTargetCandidate> {
-    collect_redirection_path_facts(parsed, cwd, home, bindings)
-        .into_iter()
-        .filter(|path| redirection_parent_command_index(parsed, &path.fact) == command_index)
-        .filter(|path| {
-            path.fact.operator.as_deref().is_some_and(|operator| {
-                is_file_write_redirection_operator(operator) || operator == "<>"
-            })
-        })
-        .filter_map(|path| {
-            let io = crate::support::redirection_io_target(
-                parsed,
-                command_index,
-                path.redirection_index,
-                &path.resolution,
-                path.cwd_dependent,
-                cwd,
-                home,
-                bindings,
-            );
-            let (resolution, cwd_dependent) = mutation_path_for_io(io)?;
-            Some(MutationTargetCandidate {
-                metadata_mutation: None,
-                implicit_incidental_cache: false,
-                operation: EffectKind::WritePath,
-                slot_name: path.slot_name,
-                resolution,
-                cwd_dependent,
-            })
-        })
-        .collect()
-}
-
-fn mutation_path_for_io(target: IoTarget) -> Option<(PathResolution, bool)> {
-    match target {
-        IoTarget::Path {
-            resolution,
-            cwd_dependent,
-        } => Some((resolution, cwd_dependent)),
-        IoTarget::UnknownDescriptor { descriptor } => Some((
-            PathResolution::UnsupportedDynamicText {
-                text: format!("unknown file descriptor {descriptor} target"),
-            },
-            false,
-        )),
-        IoTarget::InlineContent { .. } => Some((
-            PathResolution::UnsupportedDynamicText {
-                text: "write through an inline-content descriptor has no known filesystem target"
-                    .into(),
-            },
-            false,
-        )),
-        IoTarget::InheritedDescriptor { .. }
-        | IoTarget::ProcessSubstitution { .. }
-        | IoTarget::Closed
-        | IoTarget::Discard
-        | IoTarget::Network { .. } => None,
-    }
-}
-
-fn add_reason_for_target(
-    reasons: &mut BTreeSet<String>,
-    operation: EffectKind,
-    slot_name: &str,
-    resolution: &PathResolution,
-    cwd_dependent: bool,
-    cwd_unknown: bool,
-    workspace_root: Option<&str>,
-    exemptions: &PathExemptionPolicy,
-    exemption_operation: Option<MutationExemptionOperation>,
-) {
-    // Content-open sinks have already been classified by the shared I/O query.
-    // Namespace operations must never inherit a device-path exemption.
-    let operation = operation_name(operation);
-    if cwd_unknown && cwd_dependent {
-        reasons.insert(format!(
-            "{operation} target for slot {slot_name} has an unknown effective working directory"
-        ));
-        return;
-    }
-
-    let path_operation = match exemption_operation {
-        Some(MutationExemptionOperation::Write) => PathOperation::Write,
-        Some(MutationExemptionOperation::OrdinaryMetadata) => PathOperation::OrdinaryMetadata,
-        Some(MutationExemptionOperation::PermissionMetadata) => PathOperation::PermissionMetadata,
-        None => PathOperation::UnspecifiedMutation,
-    };
-    if exemptions
-        .check(resolution, path_operation, RuleId::OutsideWorkspaceMutation)
-        .is_exempt()
-    {
-        return;
-    }
-
-    let Some(root) = workspace_root else {
-        reasons.insert(format!(
-            "{operation} target for slot {slot_name} cannot be checked because workspace root is unavailable"
-        ));
-        return;
-    };
-
-    match resolution.concrete_path() {
-        Some(path) if path.starts_with('/') => {
-            reasons.insert(format!(
-                "{operation} target {path} for slot {slot_name} is outside workspace root {root}"
-            ));
-        }
-        Some(path) => {
-            reasons.insert(format!(
-                "{operation} target {path} for slot {slot_name} is not an absolute resolved path"
-            ));
-        }
-        None => {
-            if let PathResolution::FileNamePrefix { directory, .. } = resolution {
-                reasons.insert(format!("{operation} filename family for slot {slot_name} is outside workspace root {root} or unproven through directory {directory}"));
-                return;
-            }
-            if let PathResolution::BoundedPathSet { roots, may_escape } = resolution {
-                if *may_escape {
-                    reasons.insert(format!(
-                        "{operation} target for slot {slot_name} may escape its bounded path set"
-                    ));
-                    return;
-                }
-                if roots.is_empty() {
-                    reasons.insert(format!(
-                        "{operation} target for slot {slot_name} has an empty or unknown path bound"
-                    ));
-                    return;
-                }
-                for path in roots {
-                    if !exemptions
-                        .check(
-                            &PathResolution::Concrete { path: path.clone() },
-                            path_operation,
-                            RuleId::OutsideWorkspaceMutation,
-                        )
-                        .is_exempt()
-                    {
-                        reasons.insert(format!(
-                            "{operation} target may be outside workspace root {root} through bounded path {path}"
-                        ));
-                    }
-                }
-                return;
-            }
-            reasons.insert(format!(
-                "{operation} target for slot {slot_name} cannot be resolved: {resolution:?}"
-            ));
-        }
+fn mutation_name(kind: caushell_types::PathMutationKind) -> &'static str {
+    match kind {
+        caushell_types::PathMutationKind::Write => "write",
+        caushell_types::PathMutationKind::Delete => "delete",
+        caushell_types::PathMutationKind::MoveSource => "move source",
+        caushell_types::PathMutationKind::Metadata => "metadata mutation",
     }
 }
 
 fn exemption_operation_for_target(
-    target: &MutationTargetCandidate,
+    operation: EffectKind,
+    mutation: Option<&caushell_types::PathMetadataMutation>,
 ) -> Option<MutationExemptionOperation> {
-    if target.operation == EffectKind::WritePath {
+    if operation == EffectKind::WritePath {
         return Some(MutationExemptionOperation::Write);
     }
-    let mutation = target.metadata_mutation.as_ref()?;
+    let mutation = mutation?;
     if mutation.mutation_kinds.is_empty()
         || mutation
             .mutation_kinds
@@ -400,26 +160,6 @@ fn exemption_operation_for_target(
     }
 }
 
-#[cfg(test)]
-fn resolution_is_exempt(
-    resolution: &PathResolution,
-    operation: MutationExemptionOperation,
-    exemptions: &[MutationPathExemption],
-) -> bool {
-    let mut config = caushell_types::PolicyConfig::default();
-    config.mutation_path_exemptions = exemptions.to_vec();
-    let operation = match operation {
-        MutationExemptionOperation::Write => PathOperation::Write,
-        MutationExemptionOperation::OrdinaryMetadata => PathOperation::OrdinaryMetadata,
-        MutationExemptionOperation::PermissionMetadata => PathOperation::PermissionMetadata,
-    };
-    PathExemptionPolicy::new(None, None, &config)
-        .check(resolution, operation, RuleId::OutsideWorkspaceMutation)
-        .is_exempt()
-}
-
-// The existing metadata fact supplies the operand. This is a permission-mode
-// check, not a command-name switch or a new interpretation of Profile syntax.
 fn ordinary_permission_mode(mode: &str) -> bool {
     let numeric = mode.strip_prefix(['+', '-']).unwrap_or(mode);
     if !numeric.is_empty() && numeric.bytes().all(|b| matches!(b, b'0'..=b'7')) {
@@ -455,23 +195,14 @@ fn ordinary_permission_mode(mode: &str) -> bool {
     })
 }
 
-fn operation_name(kind: EffectKind) -> &'static str {
-    match kind {
-        EffectKind::WritePath => "write",
-        EffectKind::DeletePath => "delete",
-        EffectKind::MovePath => "move source",
-        EffectKind::ChangeMode
-        | EffectKind::ChangeOwner
-        | EffectKind::ChangeGroup
-        | EffectKind::MetadataMutation => "metadata mutation",
-        _ => unreachable!("only mutation effects are collected"),
-    }
-}
-
 #[cfg(test)]
 mod exemption_tests {
     use super::*;
-    use caushell_types::default_mutation_path_exemptions;
+    use caushell_runner::PathExemptionPolicy;
+    use caushell_types::{
+        CommandSequenceNo, PathMutationKind, PathResolution, PathTargetAccess, PathTargetFact,
+        PolicyConfig, SemanticGap, SemanticGapKind, SemanticResolution,
+    };
 
     #[test]
     fn permission_modes_preserve_special_and_unknown_boundaries() {
@@ -490,16 +221,39 @@ mod exemption_tests {
 
     #[test]
     fn exemption_requires_every_known_bound_and_no_escape() {
-        let exemptions = default_mutation_path_exemptions();
+        let policy = PathExemptionPolicy::new(Some("/workspace"), None, &PolicyConfig::default());
+        let exempt = |resolution| {
+            let fact = PathTargetFact {
+                sequence_no: CommandSequenceNo::new(1),
+                source_node_id: "command:1".into(),
+                effect_key: "effect:0".into(),
+                slot_name: "output".into(),
+                operation: PathMutationKind::Write,
+                access: PathTargetAccess::Either,
+                lexical: PathResolution::Concrete {
+                    path: "/workspace/output".into(),
+                },
+                spelling: Some("/workspace/output".into()),
+                resolution,
+                observations: Vec::new(),
+                metadata_mutation: None,
+                implicit_incidental_cache: false,
+            };
+            policy
+                .check_target(
+                    &fact,
+                    PathOperation::Write,
+                    RuleId::OutsideWorkspaceMutation,
+                )
+                .is_exempt()
+        };
         let scope = |roots: &[&str], may_escape| PathResolution::BoundedPathSet {
             roots: roots.iter().map(|s| (*s).into()).collect(),
             may_escape,
         };
-        assert!(resolution_is_exempt(
-            &scope(&["/tmp/a", "/private/tmp/b"], false),
-            MutationExemptionOperation::Write,
-            &exemptions
-        ));
+        assert!(exempt(SemanticResolution::Resolved {
+            value: scope(&["/tmp/a", "/private/tmp/b", "/workspace/c"], false)
+        }));
         for resolution in [
             scope(&[], false),
             scope(&["/tmp/a"], true),
@@ -508,28 +262,16 @@ mod exemption_tests {
                 text: "/tmp/$UNKNOWN".into(),
             },
         ] {
-            assert!(!resolution_is_exempt(
-                &resolution,
-                MutationExemptionOperation::Write,
-                &exemptions
-            ));
+            assert!(!exempt(SemanticResolution::Resolved { value: resolution }));
         }
-        let mut reasons = BTreeSet::new();
-        add_reason_for_target(
-            &mut reasons,
-            EffectKind::WritePath,
-            "test",
-            &scope(&["/tmp/a", "/workspace/b"], false),
-            false,
-            false,
-            Some("/workspace"),
-            &PathExemptionPolicy::new(
-                Some("/workspace"),
-                None,
-                &caushell_types::PolicyConfig::default(),
-            ),
-            Some(MutationExemptionOperation::Write),
-        );
-        assert!(reasons.is_empty(), "{reasons:?}");
+        assert!(!exempt(SemanticResolution::Unresolved {
+            gap: SemanticGap {
+                kind: SemanticGapKind::FilesystemUnavailable,
+                detail: "no view".into()
+            }
+        }));
+        assert!(!exempt(SemanticResolution::NotApplicable {
+            reason: "channel".into()
+        }));
     }
 }

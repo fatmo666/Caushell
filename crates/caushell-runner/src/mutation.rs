@@ -13,6 +13,10 @@ use caushell_types::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PendingMutation {
+    AddPathTargetFact {
+        node_id: NodeId,
+        fact: caushell_types::PathTargetFact,
+    },
     AddStateCandidate {
         node_id: NodeId,
         fact: caushell_types::StateCandidateFact,
@@ -367,6 +371,18 @@ impl PendingMutation {
                 )],
                 ..Default::default()
             },
+            Self::AddPathTargetFact { node_id, fact } => GraphMutationProjection {
+                nodes: vec![GraphNode::new(
+                    node_id.clone(),
+                    caushell_graph::NodeKind::PathTargetFact { fact: fact.clone() },
+                )],
+                edges: vec![Edge::new(
+                    NodeId::new(&fact.source_node_id),
+                    node_id.clone(),
+                    EdgeKind::Targets,
+                )],
+                ..Default::default()
+            },
             Self::AddPathFact {
                 source_node_id,
                 node_id,
@@ -712,6 +728,7 @@ impl PendingMutation {
 
     pub fn apply_summary(&self, summary: &mut SessionSummary) {
         match self {
+            Self::AddPathTargetFact { .. } => {}
             Self::AddStateCandidate { .. } => {}
             Self::MarkAnalysisIncomplete { .. } => {}
             Self::AddRequestAnchor { .. }
@@ -873,6 +890,10 @@ impl PendingMutation {
             } => SessionMutation::AddShellStateReconciliationAnchor {
                 node_id: node_id.0.clone(),
                 sequence_no: *sequence_no,
+            },
+            Self::AddPathTargetFact { node_id, fact } => SessionMutation::AddPathTargetFact {
+                node_id: node_id.0.clone(),
+                fact: fact.clone(),
             },
             Self::AddPathFact {
                 source_node_id,
@@ -1134,6 +1155,10 @@ impl PendingMutation {
             } => Self::AddShellStateReconciliationAnchor {
                 node_id: NodeId::new(node_id),
                 sequence_no,
+            },
+            SessionMutation::AddPathTargetFact { node_id, fact } => Self::AddPathTargetFact {
+                node_id: NodeId::new(node_id),
+                fact,
             },
             SessionMutation::AddPathFact {
                 source_node_id,

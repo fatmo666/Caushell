@@ -26,7 +26,7 @@ fn expect(command: &str, decision: Decision) {
 }
 
 #[test]
-fn nul_path_records_reach_known_child_mutation_slots() {
+fn nul_path_records_keep_lexical_bounds_without_claiming_namespace_proof() {
     for command in [
         "find . -type f -print0 | xargs -0 chmod 644",
         "find . -type d -print0 | xargs --null chmod 755",
@@ -42,15 +42,27 @@ fn nul_path_records_reach_known_child_mutation_slots() {
         "find . -print0 | tee cache.paths | xargs -0 chmod 644",
         "find . -print0 2>/dev/null | xargs -0 chmod 644",
     ] {
-        expect(command, Decision::Allow);
+        expect(command, Decision::NeedApproval);
     }
 }
 
 #[test]
 fn bounded_domain_is_retained_in_graph_not_just_the_decision() {
-    let mut core = ShellQueryCore::new();
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::OutsideWorkspaceMutation,
+        RulePolicyEntry::new(RuleAction::Observe),
+    );
+    let mut core = ShellQueryCore::with_policy(policy);
     let response = core.check(request("find . -type f -print0 | xargs -0 chmod 644"));
     assert_eq!(response.decision, Decision::Allow);
+    assert!(
+        response
+            .decision_trace
+            .path_targets
+            .iter()
+            .any(|fact| matches!(fact.resolution, SemanticResolution::Unresolved { .. }))
+    );
     assert!(core.session_graph(&SessionId::new("pipeline-path-records")).unwrap().nodes().any(|node| matches!(&node.kind,
         NodeKind::PathFact { resolution, normalized_command_name: Some(name), .. } if name == "chmod" && matches!(resolution,
             PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &vec!["/workspace/project".to_string()])

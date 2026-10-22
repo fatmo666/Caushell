@@ -12,7 +12,6 @@ pub(crate) struct ShellSyntaxRedirection {
     pub source: NodeId,
     pub path: RedirectionPathFactCandidate,
     pub io: IoTarget,
-    pub unknown_cwd: bool,
     pub exact_cwd: Option<String>,
     pub home: Option<String>,
 }
@@ -70,7 +69,6 @@ pub(crate) fn shell_syntax_redirections(ctx: &RunnerContext) -> Vec<ShellSyntaxR
                         source: unit.source_node_id.clone(),
                         path,
                         io,
-                        unknown_cwd: matches!(case, CwdPathContext::Unknown),
                         exact_cwd: match case {
                             CwdPathContext::Exact(cwd) => Some(cwd.into()),
                             _ => None,

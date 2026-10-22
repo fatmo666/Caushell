@@ -424,6 +424,8 @@ pub enum ShellSourceCwdAnchor {
 // Proposals preserve per-pass judgments; final_decision is set only by the
 // final decision phase after earlier passes have contributed evidence.
 pub struct RunnerContext {
+    filesystem: crate::filesystem::FilesystemViewHandle,
+    target_path_policy: Option<crate::PathExemptionPolicy>,
     request: CheckRequest,
     policy: PolicyConfig,
     path_exemption_policy: std::sync::OnceLock<crate::PathExemptionPolicy>,
@@ -459,6 +461,8 @@ impl RunnerContext {
 
     pub fn with_policy(request: CheckRequest, policy: PolicyConfig) -> Self {
         Self {
+            filesystem: Default::default(),
+            target_path_policy: None,
             request,
             policy,
             path_exemption_policy: std::sync::OnceLock::new(),
@@ -487,6 +491,22 @@ impl RunnerContext {
 
     pub fn request(&self) -> &CheckRequest {
         &self.request
+    }
+
+    pub fn set_filesystem_view(&mut self, view: std::sync::Arc<dyn crate::FilesystemView>) {
+        self.filesystem = crate::filesystem::FilesystemViewHandle::new(view);
+    }
+
+    pub fn filesystem_view(&self) -> std::sync::Arc<dyn crate::FilesystemView> {
+        self.filesystem.view()
+    }
+
+    pub fn set_target_path_policy(&mut self, policy: crate::PathExemptionPolicy) {
+        self.target_path_policy = Some(policy);
+    }
+
+    pub fn target_path_policy(&self) -> Option<&crate::PathExemptionPolicy> {
+        self.target_path_policy.as_ref()
     }
 
     pub fn policy(&self) -> &PolicyConfig {
