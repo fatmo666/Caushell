@@ -344,6 +344,8 @@ pub struct StreamCountSlot {
 /// provenance. `path_list` alone makes no claim about record boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdoutRecordContract {
+    /// Native observation is checked independently of the symbolic projection.
+    pub native: Option<StdoutRecordSyntax>,
     pub projection: StdoutRecordProjection,
     pub required_modifiers: Vec<ModifierId>,
     pub excluded_modifiers: Vec<ModifierId>,
@@ -394,6 +396,12 @@ pub enum StdoutPathFormatSyntax {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamRecordSeparator {
     Nul,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StdoutRecordSyntax {
+    Find,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -33,6 +33,11 @@ mod shell_state;
 mod shell_value;
 pub use shell_value::{ShellReferenceTarget, ShellScalarValue, StructuredShellValue};
 mod state_candidate;
+mod stream_records;
+pub use stream_records::{
+    MAX_OBSERVED_STREAM_BYTES, MAX_OBSERVED_STREAM_RECORDS, ObservedStreamRecord,
+    StdoutRecordsEvidence, StreamRecordEncoding, StreamRecordOrder,
+};
 
 pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy, AnalysisUsage};
 pub use approval::{

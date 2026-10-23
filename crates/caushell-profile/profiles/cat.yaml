@@ -45,6 +45,10 @@ forms:
           kind: slot
           name: source_paths
   - id: concatenate_stdin
+    stdout_records:
+      projection: {kind: stdin}
+      empty_slots: [source_paths]
+      excluded_modifiers: [information, formatting]
     stdout_growth: {kind: preserve_records, empty_slots: [source_paths]}
     selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin]}
     parameters: *inputs

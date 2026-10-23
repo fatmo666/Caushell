@@ -193,6 +193,7 @@ forms:
       stdout_mode: path_list
       stderr_mode: opaque
     stdout_records:
+      native: find
       projection:
         kind: paths
         roots_slot: search_roots
@@ -220,6 +221,7 @@ forms:
     parameters: *enumerate_parameters
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
     stdout_records:
+      native: find
       projection:
         kind: formatted_paths
         roots_slot: search_roots

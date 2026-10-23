@@ -1,5 +1,6 @@
 mod passes;
 pub use passes::DiscoverToolConfigInputsPass;
+pub use passes::ObserveStdoutRecordsPass;
 pub use passes::ResolveArchiveMembersPass;
 pub use passes::ResolveToolConfigurationPass;
 pub use passes::UnboundedFileWriteGuardPass;

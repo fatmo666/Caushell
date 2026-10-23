@@ -455,6 +455,7 @@ impl Evidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    StdoutRecords(crate::StdoutRecordsEvidence),
     ArchiveMembers(ArchiveMembersEvidence),
     ToolConfigInput(ToolConfigInputEvidence),
     ToolConfigParse(ToolConfigParseEvidence),

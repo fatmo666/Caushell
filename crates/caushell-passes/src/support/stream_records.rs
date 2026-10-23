@@ -1,5 +1,4 @@
-//! Positive record-domain proofs. No tool names, filesystem enumeration or
-//! captured command output: the producer's selected Profile supplies semantics.
+//! Record routing and symbolic domains follow selected Profile contracts.
 use caushell_parse::{ParsedCommandArtifact, RedirectionKind};
 use caushell_profile::{
     BoundArgumentMaterialization, BoundValue, ResolvedInvocationArtifact, SemanticValueRef,
@@ -220,7 +219,7 @@ pub(crate) fn stdin_path_records(
     None
 }
 
-fn stdout_route_is_plain(parsed: &ParsedCommandArtifact, index: usize) -> bool {
+pub(crate) fn stdout_route_is_plain(parsed: &ParsedCommandArtifact, index: usize) -> bool {
     parsed
         .redirections
         .iter()
@@ -235,6 +234,59 @@ fn stdout_route_is_plain(parsed: &ParsedCommandArtifact, index: usize) -> bool {
                         .is_some_and(|t| t.node_kind == "process_substitution")
                     && matches!(r.operator.as_deref(), Some(">" | ">>" | ">|")))
         })
+}
+
+pub(crate) fn stdin_observed_records(
+    parsed: &ParsedCommandArtifact,
+    consumer: usize,
+    max_hops: usize,
+    mut resolve: impl FnMut(usize) -> Option<ResolvedInvocationArtifact>,
+    mut observed: impl FnMut(usize) -> Option<caushell_types::StdoutRecordsEvidence>,
+) -> Option<(caushell_types::StdoutRecordsEvidence, Vec<usize>)> {
+    if effective_stdin_source(parsed, consumer) != EffectiveStdinSource::Inherited {
+        return None;
+    }
+    let group = collect_pipeline_groups(parsed)
+        .into_iter()
+        .find(|g| g.commands.iter().any(|c| c.command_index == consumer))?;
+    let mut position = group
+        .commands
+        .iter()
+        .position(|c| c.command_index == consumer)?;
+    let mut forwarded = Vec::new();
+    for _ in 0..max_hops.min(64) {
+        let previous = position.checked_sub(1)?;
+        let upstream = &group.commands[previous];
+        let downstream = &group.commands[position];
+        let between = parsed
+            .raw_command
+            .get(upstream.command.span.end_byte..downstream.command.span.start_byte)?;
+        if between.contains("|&") || !stdout_route_is_plain(parsed, upstream.command_index) {
+            return None;
+        }
+        if parsed.redirections.iter().any(|r| {
+            redirection_parent_command_index(parsed, r) == Some(upstream.command_index)
+                && !redirection_targets_stdin_payload(r)
+        }) {
+            return None;
+        }
+        if let Some(output) = observed(upstream.command_index) {
+            forwarded.reverse();
+            return Some((output, forwarded));
+        }
+        let resolved = resolve(upstream.command_index)?;
+        if !matches!(
+            resolved.proven_stdout_records()?.projection,
+            StdoutRecordProjection::Stdin
+        ) || effective_stdin_source(parsed, upstream.command_index)
+            != EffectiveStdinSource::Inherited
+        {
+            return None;
+        }
+        forwarded.push(upstream.command_index);
+        position = previous;
+    }
+    None
 }
 
 #[cfg(test)]

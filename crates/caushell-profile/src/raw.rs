@@ -391,6 +391,8 @@ pub struct RawStreamContract {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawStdoutRecordContract {
+    #[serde(default)]
+    pub native: Option<crate::StdoutRecordSyntax>,
     pub projection: RawStdoutRecordProjection,
     #[serde(default)]
     pub required_modifiers: Vec<String>,

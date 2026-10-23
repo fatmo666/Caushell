@@ -1388,6 +1388,7 @@ fn normalize_stdout_records(
         crate::RawStdoutRecordProjection::Stdin => crate::StdoutRecordProjection::Stdin,
     };
     Ok(crate::StdoutRecordContract {
+        native: raw.native,
         projection,
         empty_slots: raw.empty_slots.into_iter().map(SlotName::new).collect(),
         required_modifiers: raw

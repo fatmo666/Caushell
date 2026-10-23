@@ -20,6 +20,58 @@ use crate::{
 };
 
 const MAX_LITERAL_CONTENT_TRACE_HOPS: usize = 8;
+
+#[cfg(test)]
+mod observed_record_tests {
+    use super::StaticStreamEvidence;
+    use caushell_types::*;
+    fn output() -> StdoutRecordsEvidence {
+        StdoutRecordsEvidence {
+            node_id: "n".into(),
+            producer_node_id: "p".into(),
+            session_id: "s".into(),
+            sequence_no: CommandSequenceNo(1),
+            cwd: Some("/work".into()),
+            complete: true,
+            order: StreamRecordOrder::Exact,
+            encoding: Some(StreamRecordEncoding::Nul),
+            records: vec![ObservedStreamRecord {
+                path_spelling: "a\nb".into(),
+                bytes: b"a\nb\0".to_vec(),
+            }],
+            namespace_observations: vec![],
+            directory_observations: vec![],
+            environment_observations: vec![],
+            forwarded_by: vec![],
+            gap: None,
+        }
+    }
+    #[test]
+    fn complete_ordered_bytes_enter_static_payload_without_escaping() {
+        let mut p = output();
+        assert_eq!(
+            StaticStreamEvidence::from(&p).complete_text(),
+            Some("a\nb\0".into())
+        );
+        p.records.clear();
+        assert_eq!(
+            StaticStreamEvidence::from(&p).complete_text(),
+            Some(String::new())
+        );
+    }
+    #[test]
+    fn unordered_partial_and_non_utf8_records_never_become_exact_text() {
+        let mut p = output();
+        p.order = StreamRecordOrder::Unspecified;
+        assert!(!StaticStreamEvidence::from(&p).complete);
+        p.order = StreamRecordOrder::Exact;
+        p.complete = false;
+        assert!(StaticStreamEvidence::from(&p).complete_text().is_none());
+        p.complete = true;
+        p.records[0].bytes = vec![255];
+        assert!(StaticStreamEvidence::from(&p).complete_text().is_none());
+    }
+}
 const MAX_STATIC_FILE_EVENTS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +356,18 @@ fn update_static_file_content(
 pub(crate) struct StaticStreamEvidence {
     pub(crate) known_fragments: Vec<String>,
     pub(crate) complete: bool,
+}
+
+impl From<&caushell_types::StdoutRecordsEvidence> for StaticStreamEvidence {
+    fn from(records: &caushell_types::StdoutRecordsEvidence) -> Self {
+        match records
+            .complete_bytes()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        {
+            Some(text) => Self::known(text),
+            None => Self::unknown(),
+        }
+    }
 }
 
 impl StaticStreamEvidence {

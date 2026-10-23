@@ -40,8 +40,13 @@ mod runtime_variables;
 mod shell_read;
 pub use shell_read::{ShellReadResult, decode_shell_read};
 pub use types::RuntimeInputBinding;
+mod native_records;
 mod sed_payload;
 mod stdout_records;
+pub use native_records::{
+    NativeFormatPart, NativePathOutputPlan, NativePathPredicate, NativeRecordFormat,
+};
+pub use types::StdoutRecordSyntax;
 mod stream_growth;
 mod structured_parameters;
 mod structured_projection;
