@@ -2,6 +2,10 @@ mod analysis_budget;
 mod approval;
 mod decision;
 mod evidence;
+mod file_content;
+pub use file_content::{
+    FileContentIdentity, FileContentObservation, FileContentSource, FileContentStatus,
+};
 mod execution;
 mod finding;
 mod path;
@@ -40,7 +44,7 @@ pub use evidence::{
     TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence, TaintedExecutionSinkEvidence,
     TaintedExecutionSourceEvidence, TaintedExecutionUnresolvedOriginEvidence,
     TaintedExecutionUnresolvedReasonEvidence, ToolConfigInputEvidence, ToolConfigInputStatus,
-    UnboundedFileWriteEvidence,
+    ToolConfigOptionEvidence, ToolConfigParseEvidence, UnboundedFileWriteEvidence,
 };
 pub use execution::{
     DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,

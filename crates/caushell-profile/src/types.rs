@@ -1694,6 +1694,7 @@ pub struct SubcommandTree {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResidualKind {
+    ConfigurationInput,
     ParseGap,
     DynamicExpansion,
     AmbiguousBinding,
@@ -2093,6 +2094,7 @@ pub struct CommandProfile {
     pub argument_files: Vec<ArgumentFileRule>,
     pub environment_inputs: Vec<EnvironmentInput>,
     pub implicit_config_files: Vec<ImplicitConfigFile>,
+    pub configuration_files: Option<ConfigurationFileContract>,
     pub argument_regions: Vec<ArgumentRegion>,
     /// Opt-in finite outer control vocabulary. Unknown dash words are invalid
     /// in the tool, not new actions. Valid but unmodeled controls stay opaque.
@@ -2168,6 +2170,7 @@ impl CommandProfile {
             argument_files: Vec::new(),
             environment_inputs: Vec::new(),
             implicit_config_files: Vec::new(),
+            configuration_files: None,
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
@@ -2244,6 +2247,21 @@ pub struct ImplicitConfigFile {
     pub disabled_by_first_argument: FirstArgumentDisable,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurationFileContract {
+    pub syntax: ConfigurationSyntax,
+    pub modifier: String,
+    pub operand: String,
+    pub implicit_search: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigurationSyntax {
+    Curl,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FirstArgumentDisable {
@@ -2260,6 +2278,8 @@ pub enum ImplicitConfigSource {
         suffix: String,
         #[serde(default)]
         unless_environment_set: Option<String>,
+        #[serde(default)]
+        selection_requires_version: bool,
     },
     AccountHome {
         suffix: String,

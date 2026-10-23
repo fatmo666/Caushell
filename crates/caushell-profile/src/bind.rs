@@ -314,6 +314,29 @@ impl std::fmt::Display for BindError {
 
 impl std::error::Error for BindError {}
 
+pub fn root_option_ownership(
+    profile: &CommandProfile,
+    projection: &ProjectedInvocation,
+) -> Option<crate::ScopedOptions> {
+    scoped_options(
+        profile.option_scope,
+        profile.option_matching,
+        profile.option_prefixes,
+        projection,
+        ArgumentScope {
+            start_index: 0,
+            end_index: projection.args.len(),
+        },
+        &profile.modifiers,
+        &profile.forms,
+        &profile.argument_regions,
+        profile.argument_control_vocabulary.as_ref(),
+        profile.option_operand_matcher.as_ref(),
+        &profile.exact_option_words,
+        &profile.trailing_option_words,
+    )
+}
+
 fn scoped_options(
     policy: crate::OptionScopePolicy,
     matching: OptionMatchingPolicy,
@@ -1043,17 +1066,31 @@ pub(crate) fn bind_modifier_only_invocation(
 fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &ProjectedInvocation) {
     for parameter in &mut bound.bound_parameters {
         for value in &mut parameter.values {
-            let BoundValue::Argument { span, .. } = value else {
-                continue;
-            };
-            let Some(argument) = projection
-                .args
-                .iter()
-                .find(|argument| argument.span == *span)
+            let BoundValue::Argument {
+                span,
+                text,
+                node_kind,
+                materialization,
+                ..
+            } = value
             else {
                 continue;
             };
+            let exact = projection.args.iter().find(|argument| {
+                argument.span == *span && argument.text == *text && argument.node_kind == *node_kind
+            });
+            let mut same_span = projection
+                .args
+                .iter()
+                .filter(|argument| argument.span == *span);
+            let only_span = same_span.next().filter(|_| same_span.next().is_none());
+            let Some(argument) = exact.or(only_span) else {
+                continue;
+            };
             let Some(source) = argument.implicit_input_source else {
+                if argument.runtime_data {
+                    *materialization = crate::BoundArgumentMaterialization::RuntimeData;
+                }
                 continue;
             };
             *value = BoundValue::ImplicitInput {

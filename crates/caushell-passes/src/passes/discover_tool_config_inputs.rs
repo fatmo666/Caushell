@@ -3,9 +3,8 @@ use std::collections::BTreeSet;
 use caushell_profile::{
     ArgumentFieldCount, BoundInvocation, ConfiguredPathMissing, ConfiguredPathTarget, Effect,
     EffectKind, EffectTarget, EnvironmentValueRef, ImplicitConfigFile, ImplicitConfigSource,
-    PathPurpose, PathRole, ProfileRegistry, Residual, ResidualKind, ResidualSurface,
-    ResolveInvocationArtifactResult, SessionValue, argument_structure, materialize_command_name,
-    materialize_prefix_environment,
+    PathPurpose, PathRole, ProfileRegistry, ResolveInvocationArtifactResult, SessionValue,
+    argument_structure, materialize_command_name, materialize_prefix_environment,
 };
 use caushell_runner::{RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
@@ -99,6 +98,7 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
                             name,
                             suffix,
                             unless_environment_set,
+                            ..
                         } => {
                             let origin = if prefix.iter().any(|(key, _)| key == name) {
                                 format!("command_prefix:{name}")
@@ -368,15 +368,13 @@ fn attach_input(bound: &mut BoundInvocation, input: &ToolConfigInputEvidence) {
             bound.effects.push(effect);
         }
     }
-    bound.operation_semantics_unresolved = true;
-    bound.residuals.push(Residual::new(
-        ResidualKind::UnboundControlSurface,
-        ResidualSurface::Control,
+    caushell_profile::mark_configuration_pending(
+        bound,
         format!(
             "implicit configuration {} from {} {:?}: {}",
             input.input_id, input.source, input.path, input.detail
         ),
-    ));
+    );
 }
 
 fn overlaps(left: &str, right: &str) -> bool {
@@ -390,10 +388,27 @@ fn ancestor_or_same(parent: &str, path: &str) -> bool {
             .is_some_and(|tail| tail.starts_with('/'))
 }
 
-fn possible_writes(
+pub(super) fn possible_writes(
     ctx: &RunnerContext,
     records: &[ExecutionResolveRecordRef<'_>],
     namespace: &mut NamespaceResolver,
+) -> BTreeSet<Option<String>> {
+    possible_writes_with_redirections(ctx, records, namespace, true)
+}
+
+pub(super) fn possible_namespace_writes(
+    ctx: &RunnerContext,
+    records: &[ExecutionResolveRecordRef<'_>],
+    namespace: &mut NamespaceResolver,
+) -> BTreeSet<Option<String>> {
+    possible_writes_with_redirections(ctx, records, namespace, false)
+}
+
+fn possible_writes_with_redirections(
+    ctx: &RunnerContext,
+    records: &[ExecutionResolveRecordRef<'_>],
+    namespace: &mut NamespaceResolver,
+    redirections: bool,
 ) -> BTreeSet<Option<String>> {
     let mut writes = BTreeSet::new();
     for record in records {
@@ -412,7 +427,7 @@ fn possible_writes(
                     Some(record.bindings()),
                 )
                 .into_iter()
-                .filter(|target| target.role == PathRole::Write)
+                .filter(|target| redirections && target.role == PathRole::Write)
                 .map(|target| (target.resolution, target.cwd_dependent)),
             );
             for (resolution, cwd_dependent) in paths {

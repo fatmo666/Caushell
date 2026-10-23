@@ -487,6 +487,21 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                 bound.operation_semantics_unresolved = true;
             }
 
+            if profile
+                .configuration_files
+                .as_ref()
+                .is_some_and(|contract| {
+                    bound
+                        .applied_modifiers
+                        .iter()
+                        .any(|id| id.as_str() == contract.modifier)
+                })
+            {
+                crate::mark_configuration_pending(
+                    &mut bound,
+                    "explicit configuration contents are pending",
+                );
+            }
             ResolveInvocationResult::Resolved(ResolvedInvocation {
                 normalized_command_name,
                 profile,

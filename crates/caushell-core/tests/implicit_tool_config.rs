@@ -181,7 +181,23 @@ fn config_creation_in_the_same_action_invalidates_snapshot_absence() {
         Filesystem::default(),
         true,
     );
-    assert_opaque_config(&response, Some("/workspace/settings/.curlrc"));
+    assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+    assert!(response.decision_trace.evidence.iter().any(|e| matches!(&e.kind,
+        EvidenceKind::ToolConfigParse(input) if input.complete && input.files.iter().any(|file|
+            file.source == FileContentSource::Graph && file.path == "/workspace/settings/.curlrc"))));
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|semantics| semantics
+                .state_operations
+                .iter()
+                .any(
+                    |operation| operation.domain == StateOperationDomain::ConnectionVerification
+                        && operation.operation == StateOperationKind::Control
+                ))
+    );
 }
 
 #[test]

@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+configuration_files: {syntax: curl, modifier: config_input, operand: config_operand, implicit_search: default_config}
 option_scope: permuted_options
 opaque_on_unresolved: true
 
@@ -27,16 +28,15 @@ implicit_config_files:
       case_insensitive_words: true
     sources:
       - {kind: environment_directory, name: CURL_HOME, suffix: .curlrc}
-      - {kind: environment_directory, name: XDG_CONFIG_HOME, suffix: .curlrc}
-      - {kind: environment_directory, name: XDG_CONFIG_HOME, suffix: curlrc}
+      - {kind: environment_directory, name: XDG_CONFIG_HOME, suffix: .curlrc, selection_requires_version: true}
+      - {kind: environment_directory, name: XDG_CONFIG_HOME, suffix: curlrc, selection_requires_version: true}
       - {kind: environment_directory, name: HOME, suffix: .curlrc}
-      - {kind: environment_directory, name: CURL_HOME, suffix: .config/curlrc, unless_environment_set: XDG_CONFIG_HOME}
-      - {kind: environment_directory, name: HOME, suffix: .config/curlrc, unless_environment_set: XDG_CONFIG_HOME}
+      - {kind: environment_directory, name: CURL_HOME, suffix: .config/curlrc, unless_environment_set: XDG_CONFIG_HOME, selection_requires_version: true}
+      - {kind: environment_directory, name: HOME, suffix: .config/curlrc, unless_environment_set: XDG_CONFIG_HOME, selection_requires_version: true}
       - {kind: account_home, suffix: .curlrc}
 
 forms:
   - id: configured_request
-    operation_semantics_unresolved: true
     selector: {kind: all, items: [{kind: has_modifier, modifier: config_input}, {kind: not, item: {kind: has_modifier, modifier: information}}]}
     parameters: [{name: endpoint, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     effects:

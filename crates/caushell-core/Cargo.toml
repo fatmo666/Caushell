@@ -5,6 +5,7 @@ license.workspace = true
 edition = "2024"
 
 [dependencies]
+libc = "0.2"
 caushell-config = { path = "../caushell-config" }
 caushell-graph = { path = "../caushell-graph" }
 caushell-parse = { path = "../caushell-parse" }

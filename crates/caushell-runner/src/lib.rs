@@ -1,5 +1,7 @@
 mod context;
+mod file_content;
 mod filesystem;
+pub use file_content::{FileContentRead, MAX_FILE_CONTENT_BYTES, content_sha256};
 pub use filesystem::{FilesystemView, UnavailableFilesystem};
 mod mutation;
 mod nested;

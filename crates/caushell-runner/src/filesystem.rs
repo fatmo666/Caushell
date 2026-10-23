@@ -38,6 +38,16 @@ pub trait FilesystemView: Send + Sync {
         caushell_types::FilesystemObservationSource::SuppliedView
     }
     fn entry(&self, path: &str) -> FilesystemEntry;
+    /// Read a namespace-resolved regular file; metadata-only views remain valid.
+    fn read_file(&self, path: &str, byte_limit: usize) -> crate::FileContentRead {
+        crate::FileContentRead::failed(
+            caushell_types::FileContentSource::Unavailable,
+            path,
+            byte_limit,
+            caushell_types::FileContentStatus::Unavailable,
+            "file contents are not supplied by this filesystem view",
+        )
+    }
 }
 
 pub struct UnavailableFilesystem;

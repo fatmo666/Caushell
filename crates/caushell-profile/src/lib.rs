@@ -5,9 +5,15 @@ mod awk_payload;
 mod bind;
 mod brace_expansion;
 mod builtin;
+mod configuration;
 mod dispatch;
 mod dispatch_string;
 mod environment_inputs;
+pub use configuration::{
+    ConfigurationOption, ConfigurationParse, ConfigurationParseError, mark_configuration_pending,
+    parse_configuration,
+};
+pub use types::{ConfigurationFileContract, ConfigurationSyntax};
 mod loader;
 mod lookup;
 mod materialize;
@@ -41,6 +47,7 @@ pub use argument_regions::BoundArgumentRegion;
 pub use argument_structure::{
     ArgumentFieldCount, ArgumentStructure, argument_structure, shell_word_structure,
 };
+pub use bind::root_option_ownership;
 pub use bind::{
     ArgumentScope, BindError, InvocationSelection, InvocationShape, SelectedModifier,
     bind_invocation, match_modifiers, select_form, select_invocation,
@@ -70,6 +77,7 @@ pub use materialize::{
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
+pub use option_scope::declared_options;
 pub use parameter_pattern::ShellPatternRemovalKind;
 pub use payload_projection::refresh_payload_projections;
 pub use projection::{

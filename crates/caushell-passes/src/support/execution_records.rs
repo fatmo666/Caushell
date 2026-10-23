@@ -54,6 +54,10 @@ impl<'a> ExecutionResolveRecordRef<'a> {
         self.0.command_ref.command_index
     }
 
+    pub(crate) fn static_input_cwd_unproven(&self) -> bool {
+        self.0.inherited_scope.static_input_cwd_unproven
+    }
+
     pub(crate) fn parsed_scope(&self) -> &'a caushell_parse::ParsedCommandArtifact {
         &self.0.parsed_scope
     }

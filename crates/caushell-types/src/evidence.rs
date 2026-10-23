@@ -456,6 +456,7 @@ impl Evidence {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
     ToolConfigInput(ToolConfigInputEvidence),
+    ToolConfigParse(ToolConfigParseEvidence),
     UnboundedFileWrite(UnboundedFileWriteEvidence),
     NetworkUpload(NetworkUploadEvidence),
     NetworkListenerExposure(NetworkListenerExposureEvidence),
@@ -472,6 +473,26 @@ pub enum EvidenceKind {
     TaintedExecutionSource(TaintedExecutionSourceEvidence),
     TaintedExecutionUnresolvedOrigin(TaintedExecutionUnresolvedOriginEvidence),
     TaintedExecutionBudgetExceeded(TaintedExecutionBudgetExceededEvidence),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolConfigParseEvidence {
+    pub node_id: String,
+    pub command: String,
+    pub complete: bool,
+    pub files: Vec<crate::FileContentObservation>,
+    pub namespace_observations: Vec<crate::FilesystemObservation>,
+    pub options: Vec<ToolConfigOptionEvidence>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolConfigOptionEvidence {
+    pub path: String,
+    pub line: usize,
+    pub order: usize,
+    pub option: String,
+    pub argument_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -500,6 +521,44 @@ pub enum ToolConfigInputStatus {
 #[cfg(test)]
 mod config_input_tests {
     use super::*;
+
+    #[test]
+    fn config_parse_evidence_roundtrips_without_content_bytes() {
+        let evidence = Evidence {
+            rule_id: RuleId::SelectionError,
+            summary: "configuration options resolved".into(),
+            kind: EvidenceKind::ToolConfigParse(ToolConfigParseEvidence {
+                node_id: "invocation".into(),
+                command: "fixture".into(),
+                complete: true,
+                files: vec![crate::FileContentObservation {
+                    source: crate::FileContentSource::SuppliedView,
+                    path: "/settings/fixture.rc".into(),
+                    status: crate::FileContentStatus::Complete,
+                    byte_limit: 65_536,
+                    bytes_observed: 12,
+                    sha256: Some("digest".into()),
+                    identity: None,
+                    detail: None,
+                }],
+                namespace_observations: Vec::new(),
+                options: vec![ToolConfigOptionEvidence {
+                    path: "/settings/fixture.rc".into(),
+                    line: 1,
+                    order: 0,
+                    option: "--header".into(),
+                    argument_sha256: Some("value-digest".into()),
+                }],
+                errors: Vec::new(),
+            }),
+        };
+        let encoded = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(encoded["kind"]["kind"], "tool_config_parse");
+        assert_eq!(
+            serde_json::from_value::<Evidence>(encoded).unwrap(),
+            evidence
+        );
+    }
 
     #[test]
     fn config_input_evidence_roundtrips_with_its_observation_source() {

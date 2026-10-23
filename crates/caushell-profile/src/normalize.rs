@@ -82,6 +82,7 @@ pub enum NormalizeError {
     InvalidVariableTarget(String),
     InvalidDispatchOverride(String),
     InvalidImplicitConfig(String),
+    InvalidConfigurationFiles(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -499,6 +500,43 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     }
 
     validate_implicit_configs(&raw.implicit_config_files)?;
+    if let Some(contract) = &raw.configuration_files {
+        let invalid = |detail: &str| NormalizeError::InvalidConfigurationFiles(detail.into());
+        let modifier = modifiers
+            .iter()
+            .find(|m| m.id.as_str() == contract.modifier)
+            .ok_or_else(|| invalid("configuration_files.modifier is not declared"))?;
+        if !modifier.parameters.iter().any(|p| {
+            p.name.as_str() == contract.operand
+                && matches!(
+                    p.binding,
+                    BindingSpec::FollowingMatchedFlag {
+                        operand_mode: FlagOperandMode::NextArg
+                    }
+                )
+        }) {
+            return Err(invalid(
+                "configuration_files.operand must name a next_arg parameter of its modifier",
+            ));
+        }
+        if contract.implicit_search.as_ref().is_some_and(|id| {
+            !raw.implicit_config_files
+                .iter()
+                .any(|input| &input.id == id)
+        }) {
+            return Err(invalid(
+                "configuration_files.implicit_search is not declared",
+            ));
+        }
+        if option_scope != OptionScopePolicy::PermutedOptions
+            || subcommands.is_some()
+            || !dispatch_overrides.is_empty()
+        {
+            return Err(invalid(
+                "configuration_files requires a flat permuted_options grammar",
+            ));
+        }
+    }
     Ok(CommandProfile {
         word_context: raw.word_context,
         identity,
@@ -507,6 +545,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         argument_files,
         environment_inputs,
         implicit_config_files: raw.implicit_config_files,
+        configuration_files: raw.configuration_files,
         argument_regions,
         argument_control_vocabulary,
         selection_failure_effects,
@@ -554,6 +593,7 @@ fn validate_implicit_configs(inputs: &[crate::ImplicitConfigFile]) -> Result<(),
                     name,
                     suffix,
                     unless_environment_set,
+                    ..
                 } => {
                     if !env_name(name)
                         || unless_environment_set
@@ -4144,6 +4184,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             implicit_config_files: Vec::new(),
+            configuration_files: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4341,6 +4382,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             implicit_config_files: Vec::new(),
+            configuration_files: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4457,6 +4499,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             implicit_config_files: Vec::new(),
+            configuration_files: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4573,6 +4616,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             implicit_config_files: Vec::new(),
+            configuration_files: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4802,6 +4846,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             implicit_config_files: Vec::new(),
+            configuration_files: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,

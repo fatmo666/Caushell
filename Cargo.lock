@@ -140,6 +140,7 @@ dependencies = [
  "caushell-query",
  "caushell-runner",
  "caushell-types",
+ "libc",
 ]
 
 [[package]]
@@ -203,6 +204,7 @@ dependencies = [
  "caushell-profile",
  "caushell-query",
  "caushell-types",
+ "sha2",
 ]
 
 [[package]]

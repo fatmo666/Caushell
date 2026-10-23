@@ -4,6 +4,9 @@ use caushell_types::FilesystemEntry;
 pub struct LocalFilesystem;
 
 impl FilesystemView for LocalFilesystem {
+    fn read_file(&self, path: &str, byte_limit: usize) -> caushell_runner::FileContentRead {
+        crate::file_content::read(path, byte_limit)
+    }
     fn source(&self) -> caushell_types::FilesystemObservationSource {
         caushell_types::FilesystemObservationSource::CurrentProcess
     }

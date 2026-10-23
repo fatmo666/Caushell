@@ -3647,6 +3647,14 @@ fn collect_execution_unit_resolve_records(
             }))
         {
             resolved.bound.operation_semantics_unresolved = true;
+            resolved
+                .bound
+                .residuals
+                .push(caushell_profile::Residual::new(
+                    caushell_profile::ResidualKind::UnboundData,
+                    caushell_profile::ResidualSurface::Data,
+                    "native input routing is unproven",
+                ));
         }
 
         // Byte recovery is not proof that input provenance survives a shell
@@ -3683,6 +3691,14 @@ fn collect_execution_unit_resolve_records(
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
         {
             resolved.bound.operation_semantics_unresolved = true;
+            resolved
+                .bound
+                .residuals
+                .push(caushell_profile::Residual::new(
+                    caushell_profile::ResidualKind::UnboundData,
+                    caushell_profile::ResidualSurface::Data,
+                    "native replacement assignment provenance is unproven",
+                ));
         }
 
         if let Some(origin) = &entry.inherited_scope.native_template_input
@@ -3697,6 +3713,14 @@ fn collect_execution_unit_resolve_records(
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
         {
             resolved.bound.operation_semantics_unresolved = true;
+            resolved
+                .bound
+                .residuals
+                .push(caushell_profile::Residual::new(
+                    caushell_profile::ResidualKind::UnboundData,
+                    caushell_profile::ResidualSurface::Data,
+                    "native template input provenance is unproven",
+                ));
         }
 
         if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
@@ -3717,6 +3741,14 @@ fn collect_execution_unit_resolve_records(
             // A new interpreter frame needs its own argument/variable lineage;
             // source offsets from the native argv are not payload offsets.
             resolved.bound.operation_semantics_unresolved = true;
+            resolved
+                .bound
+                .residuals
+                .push(caushell_profile::Residual::new(
+                    caushell_profile::ResidualKind::UnboundData,
+                    caushell_profile::ResidualSurface::Data,
+                    "native interpreter argument provenance is unproven",
+                ));
         }
 
         // Known shell functions are execution payloads, not external commands

@@ -615,6 +615,9 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_transform_pass(ExtractCurrentWorkingDirectoryPass);
     runner.register_session_transform_pass(ExtractPipelineFlowPass);
     runner.register_session_transform_pass(caushell_passes::DiscoverToolConfigInputsPass::new(
+        registry.clone(),
+    ));
+    runner.register_session_transform_pass(caushell_passes::ResolveToolConfigurationPass::new(
         registry,
     ));
     runner.register_session_transform_pass(ExtractExecutionSemanticsPass);

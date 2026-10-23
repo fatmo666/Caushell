@@ -32,6 +32,17 @@ pub struct ScopedOptions {
 
 type Declarations = BTreeMap<String, Option<FlagOperandMode>>;
 
+pub fn declared_options(
+    profile: &crate::CommandProfile,
+) -> Result<BTreeMap<String, Option<FlagOperandMode>>, String> {
+    declarations(
+        &profile.modifiers,
+        &profile.forms,
+        profile.option_matching,
+        &profile.exact_option_words,
+    )
+}
+
 impl ScopedOptions {
     pub(crate) fn is_positional(&self, index: usize) -> bool {
         index >= self.scope.end_index
