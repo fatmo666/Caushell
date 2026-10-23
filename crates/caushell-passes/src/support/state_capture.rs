@@ -19,7 +19,8 @@ pub(crate) struct StateCapture {
     pub observations: Vec<StateObservation>,
     pub incomplete: BTreeSet<AnalysisBudgetKind>,
     limits: AnalysisBudgetPolicy,
-    retained: BTreeMap<(K, String), Vec<V>>,
+    // Distinct value and whether a write (rather than only entry state) owns it.
+    retained: BTreeMap<(K, String), Vec<(V, bool)>>,
     bytes: usize,
     work: usize,
 }
@@ -51,11 +52,12 @@ impl StateCapture {
             value = V::Unknown;
         }
         let key = (kind, name.to_owned());
-        if self
+        let prior = self
             .retained
             .get(&key)
-            .is_some_and(|values| values.contains(&value))
-        {
+            .and_then(|values| values.iter().position(|(candidate, _)| candidate == &value));
+        let repeated = prior.is_some();
+        if prior.is_some_and(|index| source_end == 0 || self.retained[&key][index].1) {
             return;
         }
         if !self.retained.contains_key(&key) && self.retained.len() >= self.limits.max_state_objects
@@ -63,7 +65,9 @@ impl StateCapture {
             self.incomplete.insert(AnalysisBudgetKind::StateObjects);
             return;
         }
-        if self.retained.get(&key).map_or(0, Vec::len) >= self.limits.max_candidates_per_object {
+        if !repeated
+            && self.retained.get(&key).map_or(0, Vec::len) >= self.limits.max_candidates_per_object
+        {
             self.incomplete.insert(AnalysisBudgetKind::StateCandidates);
             return;
         }
@@ -78,7 +82,12 @@ impl StateCapture {
             return;
         }
         self.bytes = self.bytes.saturating_add(bytes);
-        self.retained.entry(key).or_default().push(value.clone());
+        let values = self.retained.entry(key).or_default();
+        if let Some(index) = prior {
+            values[index].1 |= source_end > 0;
+        } else {
+            values.push((value.clone(), source_end > 0));
+        }
         self.observations.push(StateObservation {
             kind,
             name: name.to_owned(),
@@ -241,17 +250,31 @@ mod tests {
     #[test]
     fn repeated_values_are_not_copied_again_or_used_to_evict_the_first_value() {
         let mut capture = StateCapture::new(AnalysisBudgetPolicy::default());
-        for n in 0..200 {
+        for n in 1..=200 {
             capture.observe(
                 K::Variable,
                 "DEST",
-                value(if n % 2 == 0 { "/outside" } else { "safe" }),
+                value(if n % 2 == 1 { "/outside" } else { "safe" }),
                 n,
             );
         }
         assert_eq!(capture.observations.len(), 2);
         assert_eq!(capture.observations[0].value, value("/outside"));
+        assert_eq!(capture.observations[0].source_end, 1);
+        assert!(capture.incomplete.is_empty());
+    }
+
+    #[test]
+    fn entry_and_first_write_have_separate_witnesses_but_one_distinct_value() {
+        let mut capture = StateCapture::new(AnalysisBudgetPolicy::default());
+        capture.observe(K::Variable, "DEST", value("/outside"), 0);
+        for end in 1..200 {
+            capture.observe(K::Variable, "DEST", value("/outside"), end);
+        }
+        assert_eq!(capture.observations.len(), 2);
         assert_eq!(capture.observations[0].source_end, 0);
+        assert_eq!(capture.observations[1].source_end, 1);
+        assert_eq!(capture.retained[&(K::Variable, "DEST".into())].len(), 1);
         assert!(capture.incomplete.is_empty());
     }
 

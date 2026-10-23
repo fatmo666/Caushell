@@ -4,6 +4,7 @@ mod argument_regions;
 mod argument_structure;
 mod awk_payload;
 mod bind;
+mod binding_map;
 mod brace_expansion;
 mod builtin;
 mod configuration;

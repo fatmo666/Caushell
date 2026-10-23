@@ -414,6 +414,28 @@ impl SessionTransformPass for ResolveInvocationPass {
                         sequence_no: ctx.request().sequence_no,
                     }
                 };
+                let object = caushell_types::SafetyObject {
+                    scope,
+                    kind: observation.kind,
+                    name: observation.name,
+                };
+                // Reuse entry witnesses already in history. Write candidates
+                // retain their own request and source position.
+                if observation.source_end == 0
+                    && !matches!(observation.value, V::Unknown)
+                    && !observation.value.has_structured_unknown()
+                    && session
+                        .graph()
+                        .state_candidate_nodes(&object)
+                        .take(ctx.policy().analysis_budget.max_history_nodes)
+                        .any(|node| {
+                            matches!(&node.kind, caushell_graph::NodeKind::StateCandidate { fact }
+                            if fact.value == observation.value
+                                && fact.sequence_no < ctx.request().sequence_no)
+                        })
+                {
+                    continue;
+                }
                 ctx.stage_mutation(PendingMutation::AddStateCandidate {
                     // Length-prefix the session ID; no lossy hash is used as
                     // the identity of a security-relevant history fact.
@@ -425,11 +447,7 @@ impl SessionTransformPass for ResolveInvocationPass {
                         index
                     )),
                     fact: caushell_types::StateCandidateFact {
-                        object: caushell_types::SafetyObject {
-                            scope,
-                            kind: observation.kind,
-                            name: observation.name,
-                        },
+                        object,
                         value: observation.value,
                         sequence_no: ctx.request().sequence_no,
                         source_end: observation.source_end,

@@ -28,7 +28,7 @@ mod shell_value;
 pub use shell_value::{ShellReferenceTarget, ShellScalarValue, StructuredShellValue};
 mod state_candidate;
 
-pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy};
+pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy, AnalysisUsage};
 pub use approval::{
     ApprovalAuthority, ApprovalRequest, ApprovalResolution, ApprovalResponse, CheckId, CheckIntent,
     CheckReceipt, PendingApproval, SessionApprovalState,

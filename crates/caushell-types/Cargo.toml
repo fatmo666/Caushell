@@ -5,7 +5,7 @@ license.workspace = true
 edition = "2024"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 
 [dev-dependencies]
 serde_json = "1"

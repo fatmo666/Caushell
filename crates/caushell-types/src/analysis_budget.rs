@@ -58,13 +58,27 @@ impl Default for AnalysisBudgetPolicy {
         Self {
             max_history_nodes: 100_000,
             max_history_edges: 300_000,
-            max_state_objects: 16_384,
+            max_state_objects: 32_768,
             max_candidates_per_object: 256,
             max_state_value_bytes: 65_536,
             max_state_history_bytes: 64 * 1024 * 1024,
             max_request_bytes: 1_048_576,
         }
     }
+}
+
+/// Projected usage before a decision commits. Counts include task and background
+/// state together; candidate payload bytes are not allocator or store size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalysisUsage {
+    pub history_nodes: usize,
+    pub history_edges: usize,
+    pub state_objects: usize,
+    pub state_candidate_facts: usize,
+    pub state_history_bytes: usize,
+    pub request_bytes: usize,
+    pub limits: AnalysisBudgetPolicy,
+    pub incomplete_budgets: Vec<AnalysisBudgetKind>,
 }
 
 impl AnalysisBudgetPolicy {

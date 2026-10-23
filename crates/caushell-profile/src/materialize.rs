@@ -1,3 +1,4 @@
+use crate::binding_map::BindingMap;
 use crate::parameter_pattern::{ParameterPattern, PatternUnit, ShellPatternRemovalKind};
 use std::collections::BTreeMap;
 
@@ -41,8 +42,10 @@ pub struct ShellVariableFacts {
     pub element_shape: Option<crate::StdoutScalarShape>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionBindings {
+    entry_variables: Option<SessionSummary>,
+    entry_environment: Option<SessionSummary>,
     shell_kind: Option<caushell_types::ShellKind>,
     shell_state_uncertainty: Option<String>,
     shell_state_join_only: bool,
@@ -55,19 +58,19 @@ pub struct SessionBindings {
     functions: BTreeMap<String, SessionFunctionBinding>,
     // Variable existence is not child-environment presence: an unexported
     // variable still prevents plain unset from falling back to a function.
-    variable_presence: BTreeMap<String, VariablePresence>,
+    variable_presence: BindingMap<VariablePresence>,
     variables_complete: bool,
     /// Statically encountered indirect/array destinations are outside the
     /// scalar assignment contract. This is analysis metadata, not runtime data.
     unresolved_runtime_variable_targets: std::collections::BTreeSet<String>,
-    session_variables: BTreeMap<String, SessionValue>,
+    session_variables: BindingMap<SessionValue>,
     profile_shadowing_aliases: std::collections::BTreeSet<String>,
     aliases: BTreeMap<String, SessionAliasBinding>,
     // Local abstract values, not observed bytes and never persisted as a
     // concrete session variable. Scalar writes invalidate this metadata.
     argument_domains: BTreeMap<String, caushell_types::RuntimeArgumentDomain>,
     positional_argument_domains: BTreeMap<usize, caushell_types::RuntimeArgumentDomain>,
-    inherited_environment: BTreeMap<String, SessionValue>,
+    inherited_environment: BindingMap<SessionValue>,
     // $0 belongs to the shell frame, not to the list changed by set/shift.
     shell_program_name: Option<SessionValue>,
     positional_parameters: Vec<SessionValue>,
@@ -76,9 +79,49 @@ pub struct SessionBindings {
     positional_parameters_complete: bool,
     // Separate child-environment view: unexported shell locals are not defaults
     // for an external program. None records a proven absence (e.g. unset).
-    child_environment: BTreeMap<String, Option<SessionValue>>,
+    child_environment: BindingMap<Option<SessionValue>>,
     child_environment_complete: bool,
 }
+
+impl PartialEq for SessionBindings {
+    fn eq(&self, other: &Self) -> bool {
+        macro_rules! same {
+            ($($field:ident),* $(,)?) => { true $(&& self.$field == other.$field)* };
+        }
+        same!(
+            shell_kind,
+            shell_state_uncertainty,
+            shell_state_join_only,
+            variable_facts,
+            default_tilde_home,
+            in_function_scope,
+            functions,
+            variable_presence,
+            variables_complete,
+            unresolved_runtime_variable_targets,
+            profile_shadowing_aliases,
+            aliases,
+            argument_domains,
+            positional_argument_domains,
+            inherited_environment,
+            shell_program_name,
+            positional_parameters,
+            positional_parameters_complete,
+            child_environment_complete
+        ) && self
+            .session_variable_names()
+            .filter_map(|name| self.session_value(name).map(|value| (name, value)))
+            .collect::<BTreeMap<_, _>>()
+            == other
+                .session_variable_names()
+                .filter_map(|name| other.session_value(name).map(|value| (name, value)))
+                .collect::<BTreeMap<_, _>>()
+            && self.environment_entries().collect::<BTreeMap<_, _>>()
+                == other.environment_entries().collect::<BTreeMap<_, _>>()
+    }
+}
+
+impl Eq for SessionBindings {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariablePresence {
@@ -296,11 +339,48 @@ impl SessionBindings {
         self.unresolved_runtime_variable_targets.contains(name)
     }
     pub fn variable_names(&self) -> impl Iterator<Item = &str> {
-        self.session_variables
-            .keys()
-            .chain(self.inherited_environment.keys())
-            .chain(self.variable_facts.keys())
-            .map(String::as_str)
+        self.session_variable_names()
+            .chain(self.inherited_environment.keys().map(String::as_str))
+            .chain(self.variable_facts.keys().map(String::as_str))
+    }
+
+    fn session_variable_names(&self) -> impl Iterator<Item = &str> {
+        self.session_variables.keys().map(String::as_str).chain(
+            self.entry_variables
+                .iter()
+                .flat_map(|entry| entry.variable_bindings())
+                .filter(|binding| !self.session_variables.overrides(&binding.name))
+                .map(|binding| binding.name.as_str()),
+        )
+    }
+
+    fn session_value(&self, name: &str) -> Option<&SessionValue> {
+        if self.session_variables.overrides(name) {
+            self.session_variables.get(name)
+        } else {
+            self.entry_variables
+                .as_ref()?
+                .variable_binding(name)
+                .map(|binding| &binding.value)
+        }
+    }
+
+    fn environment_entries(&self) -> impl Iterator<Item = (&str, Option<&SessionValue>)> {
+        self.child_environment
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_ref()))
+            .chain(
+                self.entry_environment
+                    .iter()
+                    .flat_map(|entry| entry.variable_bindings())
+                    .filter(|binding| !self.child_environment.overrides(&binding.name))
+                    .map(|binding| {
+                        (
+                            binding.name.as_str(),
+                            binding.exported.then_some(&binding.value),
+                        )
+                    }),
+            )
     }
     pub fn new() -> Self {
         Self::default()
@@ -335,23 +415,14 @@ impl SessionBindings {
     }
 
     pub fn from_session_summary(summary: &SessionSummary) -> Self {
-        let mut bindings = Self::new();
+        let mut bindings = Self {
+            entry_variables: Some(summary.clone()),
+            entry_environment: Some(summary.clone()),
+            ..Self::default()
+        };
         bindings.replace_function_bindings(summary.function_bindings().cloned());
         for alias in summary.alias_bindings() {
             bindings.upsert_alias_binding(alias.clone());
-        }
-
-        for binding in summary.variable_bindings() {
-            bindings.session_variables.insert(
-                binding.name.clone(),
-                SessionValue::from_session_variable_value(&binding.value),
-            );
-            bindings.child_environment.insert(
-                binding.name.clone(),
-                binding
-                    .exported
-                    .then(|| SessionValue::from_session_variable_value(&binding.value)),
-            );
         }
 
         if let Some(positional_parameters) = summary.positional_parameters() {
@@ -366,7 +437,15 @@ impl SessionBindings {
         if let Some(reason) = summary.shell_state_uncertainty() {
             bindings.mark_shell_state_uncertain(reason);
         }
+        bindings.freeze_entry_frame();
         bindings
+    }
+
+    fn freeze_entry_frame(&mut self) {
+        self.variable_presence.freeze();
+        self.session_variables.freeze();
+        self.inherited_environment.freeze();
+        self.child_environment.freeze();
     }
 
     pub fn from_summary_and_shell_state(
@@ -422,6 +501,7 @@ impl SessionBindings {
 
         if shell_state.observability.variables != ShellStateKnowledge::Unknown {
             bindings.child_environment.clear();
+            bindings.entry_environment = None;
             bindings.child_environment_complete = true;
         }
 
@@ -465,6 +545,7 @@ impl SessionBindings {
             }
         }
 
+        bindings.freeze_entry_frame();
         bindings
     }
 
@@ -663,11 +744,26 @@ impl SessionBindings {
     }
 
     pub fn environment_value(&self, name: &str) -> EnvironmentValueRef<'_> {
-        match self.child_environment.get(name) {
-            Some(Some(value)) => EnvironmentValueRef::Present(value),
-            Some(None) => EnvironmentValueRef::Absent,
-            None if self.child_environment_complete => EnvironmentValueRef::Absent,
-            None => EnvironmentValueRef::Unknown,
+        if let Some(value) = self.child_environment.get(name) {
+            return value
+                .as_ref()
+                .map_or(EnvironmentValueRef::Absent, EnvironmentValueRef::Present);
+        }
+        if let Some(binding) = self
+            .entry_environment
+            .as_ref()
+            .and_then(|entry| entry.variable_binding(name))
+        {
+            return if binding.exported {
+                EnvironmentValueRef::Present(&binding.value)
+            } else {
+                EnvironmentValueRef::Absent
+            };
+        }
+        if self.child_environment_complete {
+            EnvironmentValueRef::Absent
+        } else {
+            EnvironmentValueRef::Unknown
         }
     }
 
@@ -685,6 +781,7 @@ impl SessionBindings {
 
     pub fn forget_environment(&mut self) {
         self.child_environment.clear();
+        self.entry_environment = None;
         self.child_environment_complete = false;
     }
 
@@ -696,8 +793,10 @@ impl SessionBindings {
         self.variable_presence.clear();
         self.variables_complete = complete;
         self.session_variables.clear();
+        self.entry_variables = None;
         self.inherited_environment.clear();
         self.child_environment.clear();
+        self.entry_environment = None;
         self.child_environment_complete = complete;
     }
 
@@ -738,8 +837,7 @@ impl SessionBindings {
             .keys()
             .filter(|name| {
                 self.get(name).is_some_and(|binding| {
-                    self.child_environment.get(*name).and_then(Option::as_ref)
-                        == Some(binding.value)
+                    self.environment_value(name) == EnvironmentValueRef::Present(binding.value)
                 })
             })
             .cloned()
@@ -755,24 +853,32 @@ impl SessionBindings {
         self.unresolved_runtime_variable_targets.clear();
         // Keep the origin of exported session values: converting all of them
         // into anonymous inherited values would sever their Graph provenance.
-        self.session_variables.retain(|name, value| {
-            self.child_environment.get(name).and_then(Option::as_ref) == Some(value)
-        });
+        self.session_variables = self
+            .session_variable_names()
+            .filter_map(|name| {
+                let value = self.session_value(name)?;
+                (self.environment_value(name) == EnvironmentValueRef::Present(value))
+                    .then(|| (name.to_owned(), value.clone()))
+            })
+            .collect();
+        self.entry_variables = None;
         self.inherited_environment = self
-            .child_environment
-            .iter()
-            .filter_map(|(name, value)| value.as_ref().map(|value| (name.clone(), value.clone())))
+            .environment_entries()
+            .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value.clone())))
             .collect();
     }
 
     fn update_exported_value(&mut self, name: &str, value: SessionValue) {
-        if matches!(self.child_environment.get(name), Some(Some(_))) {
+        if matches!(
+            self.environment_value(name),
+            EnvironmentValueRef::Present(_)
+        ) {
             self.child_environment.insert(name.into(), Some(value));
         }
     }
 
     pub fn get(&self, name: &str) -> Option<BindingValueRef<'_>> {
-        if let Some(value) = self.session_variables.get(name) {
+        if let Some(value) = self.session_value(name) {
             return Some(BindingValueRef {
                 origin: BindingOrigin::SessionBinding,
                 value,

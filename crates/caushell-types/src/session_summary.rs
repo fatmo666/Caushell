@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -235,7 +236,7 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shell_state_uncertainty_observed_at: Option<CommandSequenceNo>,
     last_sequence_no: Option<CommandSequenceNo>,
-    variable_bindings: BTreeMap<String, SessionVariableBinding>,
+    variable_bindings: Arc<BTreeMap<String, SessionVariableBinding>>,
     alias_bindings: BTreeMap<String, SessionAliasBinding>,
     function_bindings: BTreeMap<String, SessionFunctionBinding>,
     current_working_directory: Option<SessionCurrentWorkingDirectory>,
@@ -291,7 +292,7 @@ impl SessionSummary {
         };
 
         if should_replace {
-            self.variable_bindings.insert(name, binding);
+            Arc::make_mut(&mut self.variable_bindings).insert(name, binding);
         }
 
         self.observe_sequence(observed_at);
@@ -366,7 +367,7 @@ impl SessionSummary {
         };
 
         if should_remove {
-            self.variable_bindings.remove(name);
+            Arc::make_mut(&mut self.variable_bindings).remove(name);
         }
 
         self.observe_sequence(observed_at);
@@ -555,6 +556,25 @@ impl SessionSummary {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_summary_preserves_wire_format_and_isolates_writes() {
+        let mut summary = SessionSummary::new();
+        summary.set_exact_scalar_variable("DEST", "outside", false, CommandSequenceNo(1));
+        let mut staged = summary.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &summary.variable_bindings,
+            &staged.variable_bindings
+        ));
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert!(wire["variable_bindings"].is_object());
+        staged.set_exact_scalar_variable("DEST", "inside", false, CommandSequenceNo(2));
+        staged.unset_variable("DEST", CommandSequenceNo(3));
+        assert!(staged.variable_binding("DEST").is_none());
+        let restored: SessionSummary = serde_json::from_value(wire).unwrap();
+        assert_eq!(summary, restored);
+        assert!(summary.variable_binding("DEST").is_some());
+    }
+
     use super::{
         RuntimeProducedValueKind, SessionAliasBinding, SessionCurrentWorkingDirectory,
         SessionCurrentWorkingDirectorySource, SessionFunctionBinding, SessionSummary,

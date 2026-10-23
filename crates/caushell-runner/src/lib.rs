@@ -34,7 +34,7 @@ pub use pass::{
     SessionTransformPass, SessionView,
 };
 pub use runner::PassRunner;
-pub use staged::StagedSession;
+pub use staged::{OverlayGraphRead as StagedGraph, StagedSession};
 
 #[cfg(test)]
 mod tests {

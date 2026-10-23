@@ -27,9 +27,8 @@ use caushell_query::{
     ExecutionUnitHistoryQuery, NestedPayloadHistoryQuery, NestedPayloadRef, QuerySession,
 };
 use caushell_runner::{
-    PassRunner, PendingMutation, RunnerContext, SessionView, StagedSession,
-    request_anchor_node_id_for, shell_state_reconciliation_anchor_node_id_for,
-    variable_value_artifact_node_id,
+    PassRunner, PendingMutation, RunnerContext, SessionView, request_anchor_node_id_for,
+    shell_state_reconciliation_anchor_node_id_for, variable_value_artifact_node_id,
 };
 use caushell_types::{
     CheckDecisionProposal, CheckRequest, CheckResponse, CommandSequenceNo, DecisionTrace,
@@ -230,7 +229,7 @@ impl ShellQueryCore {
         }
         let runner_run_ms = elapsed_ms(runner_start);
 
-        enforce_analysis_budgets(session, &mut ctx);
+        let analysis_usage = enforce_analysis_budgets(session, &mut ctx);
         let incomplete_budgets: Vec<_> = ctx
             .pending_mutations()
             .iter()
@@ -251,15 +250,13 @@ impl ShellQueryCore {
             .expect("default runner must always produce a final decision");
         let reasons = collect_reasons(&ctx);
         let staged_session_start = Instant::now();
-        let staged_session = StagedSession::new(
-            session.graph(),
-            ctx.request(),
-            session.summary(),
-            ctx.pending_mutations(),
-        );
+        let staged_graph =
+            caushell_runner::StagedGraph::new(session.graph(), ctx.pending_mutations());
+        let staged_session = SessionView::new(&staged_graph, session.summary());
         let staged_session_ms = elapsed_ms(staged_session_start);
         let decision_trace_start = Instant::now();
-        let decision_trace = build_decision_trace(&ctx, &staged_session);
+        let mut decision_trace = build_decision_trace(&ctx, &staged_session);
+        decision_trace.analysis_usage = Some(analysis_usage);
         let decision_trace_ms = elapsed_ms(decision_trace_start);
 
         let observed_sequence_no = ctx.request().sequence_no;
@@ -534,16 +531,14 @@ impl ShellQueryCore {
     }
 }
 
-fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
+fn enforce_analysis_budgets(
+    session: &SessionState,
+    ctx: &mut RunnerContext,
+) -> caushell_types::AnalysisUsage {
     use caushell_types::{AnalysisBudgetKind as B, Decision, EvidenceKind};
     let mut budgets = session.graph().incomplete_budgets();
-    let staged = StagedSession::new(
-        session.graph(),
-        ctx.request(),
-        session.summary(),
-        ctx.pending_mutations(),
-    );
-    let graph = caushell_graph::SessionRead::graph(&staged);
+    let staged = caushell_runner::StagedGraph::new(session.graph(), ctx.pending_mutations());
+    let graph: &dyn GraphRead = &staged;
     budgets.extend(graph.incomplete_budgets());
     let limits = &ctx.policy().analysis_budget;
     if graph.node_count() >= limits.max_history_nodes {
@@ -589,6 +584,16 @@ fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
     }
     budgets.sort();
     budgets.dedup();
+    let usage = caushell_types::AnalysisUsage {
+        history_nodes: graph.node_count(),
+        history_edges: graph.edge_count(),
+        state_objects: graph.state_object_count(),
+        state_candidate_facts: graph.state_candidate_count(),
+        state_history_bytes: graph.state_history_bytes(),
+        request_bytes: ctx.request().command.len(),
+        limits: limits.clone(),
+        incomplete_budgets: budgets.clone(),
+    };
     for budget in budgets {
         let reason = format!(
             "analysis budget {} exhausted; retained history is incomplete and approval does not reset it",
@@ -600,6 +605,7 @@ fn enforce_analysis_budgets(session: &SessionState, ctx: &mut RunnerContext) {
             ctx.set_final_decision(Decision::NeedApproval);
         }
     }
+    usage
 }
 
 fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
@@ -793,10 +799,14 @@ fn collect_reasons(ctx: &RunnerContext) -> Vec<String> {
     reasons
 }
 
-fn build_decision_trace(ctx: &RunnerContext, staged_session: &StagedSession<'_>) -> DecisionTrace {
+fn build_decision_trace(
+    ctx: &RunnerContext,
+    staged_session: &dyn caushell_graph::SessionRead,
+) -> DecisionTrace {
     let sequence_no = ctx.request().sequence_no;
 
     DecisionTrace {
+        analysis_usage: None,
         path_targets: caushell_query::PathTargetQuery::new(sequence_no)
             .execute(QuerySession::from_session(staged_session))
             .into_iter()
@@ -824,7 +834,7 @@ fn build_decision_trace(ctx: &RunnerContext, staged_session: &StagedSession<'_>)
 }
 
 fn collect_execution_units(
-    session: &StagedSession<'_>,
+    session: &dyn caushell_graph::SessionRead,
     sequence_no: CommandSequenceNo,
 ) -> Vec<ExecutionUnit> {
     ExecutionUnitHistoryQuery::new()
@@ -838,7 +848,7 @@ fn collect_execution_units(
 }
 
 fn collect_derived_invocations(
-    session: &StagedSession<'_>,
+    session: &dyn caushell_graph::SessionRead,
     sequence_no: CommandSequenceNo,
 ) -> Vec<DerivedInvocation> {
     DerivedInvocationHistoryQuery::new()
@@ -852,7 +862,7 @@ fn collect_derived_invocations(
 }
 
 fn collect_execution_unit_flows(
-    session: &StagedSession<'_>,
+    session: &dyn caushell_graph::SessionRead,
     sequence_no: CommandSequenceNo,
 ) -> Vec<ExecutionUnitFlow> {
     ExecutionUnitFlowQuery::new()
@@ -866,7 +876,7 @@ fn collect_execution_unit_flows(
 }
 
 fn collect_nested_payloads(
-    session: &StagedSession<'_>,
+    session: &dyn caushell_graph::SessionRead,
     sequence_no: CommandSequenceNo,
 ) -> Vec<NestedPayload> {
     NestedPayloadHistoryQuery::new()
@@ -880,7 +890,7 @@ fn collect_nested_payloads(
 }
 
 fn collect_execution_semantics(
-    session: &StagedSession<'_>,
+    session: &dyn caushell_graph::SessionRead,
     sequence_no: CommandSequenceNo,
 ) -> Vec<ExecutionSemanticsFact> {
     ExecutionSemanticsQuery::new()

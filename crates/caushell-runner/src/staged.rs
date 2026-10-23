@@ -41,11 +41,13 @@ impl SessionRead for StagedSession<'_> {
     }
 }
 
-struct OverlayGraphRead<'a> {
+pub struct OverlayGraphRead<'a> {
     base: &'a dyn GraphRead,
     overlay_state_candidate_index: BTreeMap<caushell_types::SafetyObject, Vec<NodeId>>,
     total_state_history_bytes: usize,
     total_state_object_count: usize,
+    total_state_candidate_count: usize,
+    removed_state_objects: std::collections::BTreeSet<caushell_types::SafetyObject>,
     overlay_nodes: BTreeMap<NodeId, GraphNode>,
     overlay_edges: Vec<Edge>,
     overlay_outgoing_edge_index: BTreeMap<NodeId, Vec<usize>>,
@@ -62,7 +64,7 @@ struct OverlayGraphRead<'a> {
 }
 
 impl<'a> OverlayGraphRead<'a> {
-    fn new(base: &'a dyn GraphRead, pending_mutations: &[PendingMutation]) -> Self {
+    pub fn new(base: &'a dyn GraphRead, pending_mutations: &[PendingMutation]) -> Self {
         let mut overlay_nodes = BTreeMap::new();
         let mut overlay_edges = Vec::new();
         let mut overlay_outgoing_edge_index: BTreeMap<NodeId, Vec<usize>> = BTreeMap::new();
@@ -98,6 +100,8 @@ impl<'a> OverlayGraphRead<'a> {
             overlay_state_candidate_index: BTreeMap::new(),
             total_state_history_bytes: base.state_history_bytes(),
             total_state_object_count: base.state_object_count(),
+            total_state_candidate_count: base.state_candidate_count(),
+            removed_state_objects: Default::default(),
             overlay_nodes,
             overlay_edges,
             overlay_outgoing_edge_index,
@@ -113,6 +117,24 @@ impl<'a> OverlayGraphRead<'a> {
             overlay_path_family_by_directory_index: BTreeMap::new(),
         };
         graph.rebuild_overlay_indexes();
+        let replaced_objects: std::collections::BTreeSet<_> = graph
+            .overlay_nodes
+            .keys()
+            .filter_map(|id| match &base.get_node(id)?.kind {
+                NodeKind::StateCandidate { fact } => Some(fact.object.clone()),
+                _ => None,
+            })
+            .collect();
+        for object in replaced_objects {
+            if !graph.overlay_state_candidate_index.contains_key(&object)
+                && base
+                    .state_candidate_nodes(&object)
+                    .all(|node| graph.overlay_nodes.contains_key(&node.id))
+            {
+                graph.removed_state_objects.insert(object);
+            }
+        }
+        graph.total_state_object_count -= graph.removed_state_objects.len();
         graph.total_state_object_count += graph
             .overlay_state_candidate_index
             .keys()
@@ -196,6 +218,16 @@ impl<'a> OverlayGraphRead<'a> {
 
     fn rebuild_overlay_indexes(&mut self) {
         for node in self.overlay_nodes.values() {
+            if self
+                .base
+                .get_node(&node.id)
+                .is_some_and(|old| matches!(old.kind, NodeKind::StateCandidate { .. }))
+            {
+                self.total_state_candidate_count -= 1;
+            }
+            if matches!(node.kind, NodeKind::StateCandidate { .. }) {
+                self.total_state_candidate_count += 1;
+            }
             let old = self
                 .base
                 .get_node(&node.id)
@@ -287,6 +319,9 @@ impl<'a> OverlayGraphRead<'a> {
 }
 
 impl GraphRead for OverlayGraphRead<'_> {
+    fn state_candidate_count(&self) -> usize {
+        self.total_state_candidate_count
+    }
     fn state_history_bytes(&self) -> usize {
         self.total_state_history_bytes
     }
@@ -297,6 +332,9 @@ impl GraphRead for OverlayGraphRead<'_> {
 
     fn state_objects(&self) -> std::collections::BTreeSet<caushell_types::SafetyObject> {
         let mut objects = self.base.state_objects();
+        for object in &self.removed_state_objects {
+            objects.remove(object);
+        }
         objects.extend(self.overlay_state_candidate_index.keys().cloned());
         objects
     }
@@ -548,6 +586,89 @@ impl<'a> Iterator for MergedNodeIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn candidate_counters_match_replacement_graph_and_snapshot_indexes() {
+        use caushell_types::{
+            SafetyObject, SafetyScope, SafetyStateKind, SafetyStateValue, StateCandidateFact,
+        };
+        let mut graph = SessionGraph::new();
+        let fact = StateCandidateFact {
+            object: SafetyObject {
+                scope: SafetyScope::Shell,
+                kind: SafetyStateKind::Variable,
+                name: "A".into(),
+            },
+            value: SafetyStateValue::Cwd("payload".into()),
+            sequence_no: CommandSequenceNo(1),
+            source_end: 1,
+        };
+        graph.add_node(GraphNode::new(
+            NodeId::new("a"),
+            NodeKind::StateCandidate { fact: fact.clone() },
+        ));
+        graph.add_node(GraphNode::new(
+            NodeId::new("b"),
+            NodeKind::StateCandidate { fact: fact.clone() },
+        ));
+        let mut replacement = fact.clone();
+        replacement.object.name = "B".into();
+        let mutations = vec![
+            PendingMutation::AddStateCandidate {
+                node_id: NodeId::new("a"),
+                fact: replacement.clone(),
+            },
+            PendingMutation::AddStateCandidate {
+                node_id: NodeId::new("b"),
+                fact: replacement.clone(),
+            },
+        ];
+        let staged = super::OverlayGraphRead::new(&graph, &mutations);
+        assert_eq!(staged.state_object_count(), 1);
+        assert_eq!(
+            staged.state_objects(),
+            [replacement.object.clone()].into_iter().collect()
+        );
+        assert_eq!(staged.state_candidate_count(), 2);
+        assert_eq!(
+            staged.state_history_bytes(),
+            replacement.retained_bytes() * 2
+        );
+        for id in ["a", "b"] {
+            graph.add_node(GraphNode::new(
+                NodeId::new(id),
+                NodeKind::StateCandidate {
+                    fact: replacement.clone(),
+                },
+            ));
+        }
+        graph.add_node(GraphNode::new(
+            NodeId::new("a"),
+            NodeKind::StateCandidate { fact },
+        ));
+        let restored = SessionGraph::from_snapshot(graph.to_snapshot()).unwrap();
+        assert_eq!(restored.state_candidate_count(), 2);
+        assert_eq!(restored.state_object_count(), 2);
+        let scan_bytes = restored
+            .nodes()
+            .map(|n| match &n.kind {
+                NodeKind::StateCandidate { fact } => fact.retained_bytes(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(restored.state_history_bytes(), scan_bytes);
+        graph.add_command_invocation(
+            NodeId::new("a"),
+            SessionId::new("s"),
+            CommandSequenceNo(2),
+            "pwd",
+            "/tmp",
+            ShellKind::Bash,
+        );
+        assert_eq!(graph.state_candidate_count(), 1);
+        assert_eq!(graph.state_object_count(), 1);
+        assert_eq!(graph.state_history_bytes(), replacement.retained_bytes());
+    }
+
     #[test]
     fn candidate_index_includes_staged_facts_without_committing_or_leaking_other_objects() {
         use caushell_graph::{GraphNode, GraphRead, NodeId, NodeKind, SessionGraph, SessionRead};
