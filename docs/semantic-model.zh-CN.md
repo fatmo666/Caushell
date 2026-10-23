@@ -1536,6 +1536,29 @@ gzip 默认后缀的递归压缩对语法明确的目录保留子树范围；无
 只有持有原值保持证明的投影可以沿用地址表达式；未知的非恒等投影不能
 退回使用来源容器的参数文本。
 
+## 隐式配置输入
+
+`implicit_config_files` 声明普通选项解析之前的有序文件搜索。来源支持
+`environment_directory`（环境名、相对后缀、可选 `unless_environment_set`）和
+`account_home`（相对后缀）。环境值来自执行帧的导出环境和命令前缀赋值；
+目录为空或未设置时跳过。抑制条件区分变量未设置与已设置为空。账户 home
+来自请求事实，不使用未导出的 Shell HOME。相对目录沿用执行帧的 cwd 候选。
+
+`disabled_by_first_argument` 的 `words` 和 `prefixes` 只匹配已证明的首个 argv
+字段。`case_insensitive_words` 仅影响完整词。目录项未知不能视为不存在；
+路径解析先跟随符号链接再处理父目录。同一 action 中的重叠写入会使不存在
+观察失效。`tool_config_input` 证据记录来源、路径拼写、解析路径、状态和观察。
+
+存在或未知的候选产生 `tool_config` 用途的读取/配置载入效果，并保留操作
+不完整性，由现有策略要求确认。明确禁用或所有适用来源均已确认不存在时，
+不添加配置效果。元数据不证明文件可读或内容完整，内容解析另行接入。
+
+curl 声明覆盖 [7.88.1 的 POSIX 搜索](https://github.com/curl/curl/blob/curl-7_88_1/src/tool_findfile.c)、
+首参数禁用条件和 `.config` 备用位置，也保留[当前手册](https://curl.se/docs/manpage.html)
+中的 XDG `curlrc` 拼写。元数据发现保留兼容候选，不据此断言实际选中的文件。
+每个 Profile 最多声明 16 个搜索，每个搜索 1–32 个来源，搜索 ID 唯一，
+后缀必须是非空、无父目录跳转的相对路径。
+
 ## 脚本载入后的 Shell 状态
 
 `source_script_into_current_shell` 的完整已知正文进入有序状态回放，函数、别名、

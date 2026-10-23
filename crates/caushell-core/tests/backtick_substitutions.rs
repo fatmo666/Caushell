@@ -261,9 +261,9 @@ fn expansion_limit_remains_enforced_for_escaped_nesting() {
 #[test]
 fn restored_curl_output_is_content_io_not_path_mutation() {
     for command in [
-        "value=$(curl -s -o /dev/null http://127.0.0.1/)",
-        "export value=$(curl -s -o /dev/null http://127.0.0.1/)",
-        "value=$(curl -s -o result http://127.0.0.1/)",
+        "value=$(curl -q -s -o /dev/null http://127.0.0.1/)",
+        "export value=$(curl -q -s -o /dev/null http://127.0.0.1/)",
+        "value=$(curl -q -s -o result http://127.0.0.1/)",
     ] {
         let response = ShellQueryCore::new().check(request(command));
         assert_eq!(
@@ -273,7 +273,7 @@ fn restored_curl_output_is_content_io_not_path_mutation() {
         );
     }
     let response = ShellQueryCore::new().check(request(
-        "value=$(curl -s -o /opt/shared/result http://127.0.0.1/)",
+        "value=$(curl -q -s -o /opt/shared/result http://127.0.0.1/)",
     ));
     assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
     assert!(

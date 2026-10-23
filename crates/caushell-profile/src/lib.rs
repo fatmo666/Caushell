@@ -32,6 +32,7 @@ mod structured_projection;
 mod types;
 pub use raw::RawDispatchOverride;
 pub use types::DispatchOverride;
+pub use types::{FirstArgumentDisable, ImplicitConfigFile, ImplicitConfigSource};
 pub use types::{GeneratedEnvironment, GeneratedEnvironmentValue};
 mod value_projection;
 mod value_shape;

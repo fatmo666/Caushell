@@ -39,7 +39,8 @@ pub use evidence::{
     OutsideWorkspacePathEvidence, PriorPathWriteEvidence, RepositoryOperationEvidence,
     TaintSourceKindEvidence, TaintedExecutionBudgetExceededEvidence, TaintedExecutionSinkEvidence,
     TaintedExecutionSourceEvidence, TaintedExecutionUnresolvedOriginEvidence,
-    TaintedExecutionUnresolvedReasonEvidence, UnboundedFileWriteEvidence,
+    TaintedExecutionUnresolvedReasonEvidence, ToolConfigInputEvidence, ToolConfigInputStatus,
+    UnboundedFileWriteEvidence,
 };
 pub use execution::{
     DatabaseOperationKind, ExecutionPayloadMode, ExecutionSemantics, InProcessCodeLoadKind,

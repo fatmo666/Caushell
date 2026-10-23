@@ -455,6 +455,7 @@ impl Evidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    ToolConfigInput(ToolConfigInputEvidence),
     UnboundedFileWrite(UnboundedFileWriteEvidence),
     NetworkUpload(NetworkUploadEvidence),
     NetworkListenerExposure(NetworkListenerExposureEvidence),
@@ -471,6 +472,64 @@ pub enum EvidenceKind {
     TaintedExecutionSource(TaintedExecutionSourceEvidence),
     TaintedExecutionUnresolvedOrigin(TaintedExecutionUnresolvedOriginEvidence),
     TaintedExecutionBudgetExceeded(TaintedExecutionBudgetExceededEvidence),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolConfigInputEvidence {
+    pub node_id: String,
+    pub command: String,
+    pub input_id: String,
+    pub source_index: usize,
+    pub source: String,
+    pub path: Option<String>,
+    pub resolved_path: Option<String>,
+    pub status: ToolConfigInputStatus,
+    pub observations: Vec<crate::FilesystemObservation>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolConfigInputStatus {
+    Disabled,
+    Absent,
+    Opaque,
+    Unknown,
+}
+
+#[cfg(test)]
+mod config_input_tests {
+    use super::*;
+
+    #[test]
+    fn config_input_evidence_roundtrips_with_its_observation_source() {
+        let evidence = Evidence {
+            rule_id: RuleId::SelectionError,
+            summary: "configuration content is unknown".into(),
+            kind: EvidenceKind::ToolConfigInput(ToolConfigInputEvidence {
+                node_id: "node:1".into(),
+                command: "fixture".into(),
+                input_id: "startup".into(),
+                source_index: 0,
+                source: "command_prefix:FIXTURE_HOME".into(),
+                path: Some("/settings/fixture.rc".into()),
+                resolved_path: Some("/settings/fixture.rc".into()),
+                status: ToolConfigInputStatus::Opaque,
+                detail: "configuration content is unknown".into(),
+                observations: vec![crate::FilesystemObservation {
+                    source: crate::FilesystemObservationSource::SuppliedView,
+                    path: "/settings/fixture.rc".into(),
+                    entry: crate::FilesystemEntry::File,
+                }],
+            }),
+        };
+        let encoded = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(encoded["kind"]["kind"], "tool_config_input");
+        assert_eq!(
+            serde_json::from_value::<Evidence>(encoded).unwrap(),
+            evidence
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

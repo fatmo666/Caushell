@@ -1,4 +1,5 @@
 mod passes;
+pub use passes::DiscoverToolConfigInputsPass;
 pub use passes::UnboundedFileWriteGuardPass;
 mod path;
 mod support;

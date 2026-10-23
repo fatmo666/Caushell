@@ -36,9 +36,9 @@ fn check(command: &str, expected: Decision, code_finding: bool) {
 #[test]
 fn outside_and_unresolved_library_paths_require_approval() {
     for command in [
-        "curl --engine /path/to/lib.so x",
+        "curl -q --engine /path/to/lib.so x",
         "ssh-keygen -D /path/to/lib.so",
-        "curl --engine /bench/workspace-peer/lib.so x",
+        "curl -q --engine /bench/workspace-peer/lib.so x",
         "ssh-keygen -D /tmp-peer/lib.so",
         "ssh-keygen -D /private/tmp-peer/lib.so",
         "ssh-keygen -D ../lib.so",
@@ -56,9 +56,9 @@ fn outside_and_unresolved_library_paths_require_approval() {
 #[test]
 fn workspace_and_temporary_code_paths_are_exempt() {
     for command in [
-        "curl --engine ./plugins/lib.so x",
-        "curl --engine /bench/workspace/lib.so x",
-        "curl --engine /tmp/lib.so x",
+        "curl -q --engine ./plugins/lib.so x",
+        "curl -q --engine /bench/workspace/lib.so x",
+        "curl -q --engine /tmp/lib.so x",
         "ssh-keygen -D ./lib.so",
         "ssh-keygen -D /tmp/lib.so",
         "ssh-keygen -D /private/tmp/lib.so",
@@ -97,8 +97,8 @@ fn nested_and_materialized_invocations_retain_the_code_origin() {
 fn ordinary_reads_information_modes_and_registered_modules_are_unchanged() {
     for command in [
         "cat /opt/lib.so",
-        "curl https://example.test/file",
-        "curl --engine list",
+        "curl -q https://example.test/file",
+        "curl -q --engine list",
         "ssh-keygen -l -f /opt/key.pub",
         "getent --service=dns hosts example.test",
         "python -m json.tool input.json output.json",
@@ -192,7 +192,7 @@ fn missing_workspace_does_not_trust_arbitrary_code_paths() {
 #[test]
 fn local_path_exemption_does_not_override_tainted_code_provenance() {
     let mut core = ShellQueryCore::new();
-    let first = core.check(request("curl https://example.test/code -o ./lib.so", 1));
+    let first = core.check(request("curl -q https://example.test/code -o ./lib.so", 1));
     assert_eq!(first.decision, Decision::Allow, "{first:#?}");
     let second = core.check(request("ssh-keygen -D ./lib.so", 2));
     assert_eq!(second.decision, Decision::NeedApproval, "{second:#?}");

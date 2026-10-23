@@ -2909,6 +2909,48 @@ retains approval. Rsync's exact standard SSH transports use transfer semantics
 without fabricating an incomplete SSH invocation. Nonstandard explicit
 transports declare opaque execution only on remote transfers, not local copies.
 
+## Implicit configuration inputs
+
+`implicit_config_files` declares ordered file-search inputs evaluated before
+ordinary option parsing:
+
+```yaml
+implicit_config_files:
+  - id: startup
+    disabled_by_first_argument: {words: [--clean], prefixes: [-C]}
+    sources:
+      - {kind: environment_directory, name: TOOL_HOME, suffix: config}
+      - {kind: account_home, suffix: .toolrc}
+```
+
+Environment-directory sources use the execution frame's exported environment
+and command-prefix assignments. Empty or unset directory values are skipped.
+`unless_environment_set` suppresses a source when the named environment input
+is present, including an empty value. Account-home sources use the supplied
+account-home fact, not an unexported Shell `HOME` override. Relative directories
+use the execution frame's possible working directories.
+
+The disable matcher applies only to a proven first argv field. Exact words can
+opt into ASCII case-insensitive matching; prefixes remain case-sensitive.
+Missing observations mean unknown, not absent. Namespace resolution preserves
+symbolic-link and parent-component ordering. Writes within the action invalidate
+overlapping absence observations. Each search records `tool_config_input`
+evidence with its source, spelling, resolved path, status and observations.
+
+Metadata does not prove readability or complete contents. A present or unknown
+candidate adds `read_path` / `load_config` effects with `tool_config` purpose and
+an incomplete-operation residual. Existing resolution policy then requests
+approval. Explicit disable or proven absence of every applicable source adds no
+configuration effects. Content parsing is a separate stage.
+
+The curl declaration covers the POSIX search in [curl 7.88.1](https://github.com/curl/curl/blob/curl-7_88_1/src/tool_findfile.c), including its
+first-argument disable rule and `.config` fallbacks, and the XDG `curlrc` spelling
+in the [current manual](https://curl.se/docs/manpage.html). Metadata-only discovery
+retains compatibility candidates; it does not assert which file was selected.
+Search declarations have
+unique identifiers, at most 16 searches and 32 sources per search; suffixes are
+nonempty relative paths without parent traversal.
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

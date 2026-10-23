@@ -19,6 +19,21 @@ platform:
   shell_families: []
   requires_features: []
 
+implicit_config_files:
+  - id: default_config
+    disabled_by_first_argument:
+      words: [--disable]
+      prefixes: [-q]
+      case_insensitive_words: true
+    sources:
+      - {kind: environment_directory, name: CURL_HOME, suffix: .curlrc}
+      - {kind: environment_directory, name: XDG_CONFIG_HOME, suffix: .curlrc}
+      - {kind: environment_directory, name: XDG_CONFIG_HOME, suffix: curlrc}
+      - {kind: environment_directory, name: HOME, suffix: .curlrc}
+      - {kind: environment_directory, name: CURL_HOME, suffix: .config/curlrc, unless_environment_set: XDG_CONFIG_HOME}
+      - {kind: environment_directory, name: HOME, suffix: .config/curlrc, unless_environment_set: XDG_CONFIG_HOME}
+      - {kind: account_home, suffix: .curlrc}
+
 forms:
   - id: configured_request
     operation_semantics_unresolved: true

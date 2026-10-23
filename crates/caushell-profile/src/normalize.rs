@@ -81,6 +81,7 @@ pub enum NormalizeError {
     InvalidStreamGrowth(String),
     InvalidVariableTarget(String),
     InvalidDispatchOverride(String),
+    InvalidImplicitConfig(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
@@ -497,6 +498,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         });
     }
 
+    validate_implicit_configs(&raw.implicit_config_files)?;
     Ok(CommandProfile {
         word_context: raw.word_context,
         identity,
@@ -504,6 +506,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         platform: normalize_platform(raw.platform),
         argument_files,
         environment_inputs,
+        implicit_config_files: raw.implicit_config_files,
         argument_regions,
         argument_control_vocabulary,
         selection_failure_effects,
@@ -521,6 +524,74 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         dispatch_overrides,
         extensions: normalize_extensions(raw.extensions)?,
     })
+}
+
+fn validate_implicit_configs(inputs: &[crate::ImplicitConfigFile]) -> Result<(), NormalizeError> {
+    let invalid = |detail: &str| NormalizeError::InvalidImplicitConfig(detail.into());
+    let mut ids = BTreeSet::new();
+    if inputs.len() > 16 {
+        return Err(invalid("implicit_config_files exceeds 16 searches"));
+    }
+    for input in inputs {
+        if input.id.is_empty() || !ids.insert(&input.id) || input.id.contains('\0') {
+            return Err(invalid(
+                "implicit_config_files requires unique nonempty ids",
+            ));
+        }
+        if input.sources.is_empty() || input.sources.len() > 32 {
+            return Err(invalid(
+                "implicit_config_files requires 1..32 ordered sources",
+            ));
+        }
+        let env_name = |name: &str| {
+            let mut chars = name.chars();
+            matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        for source in &input.sources {
+            let suffix = match source {
+                crate::ImplicitConfigSource::EnvironmentDirectory {
+                    name,
+                    suffix,
+                    unless_environment_set,
+                } => {
+                    if !env_name(name)
+                        || unless_environment_set
+                            .as_deref()
+                            .is_some_and(|name| !env_name(name))
+                    {
+                        return Err(invalid(
+                            "implicit_config_files contains an invalid environment name",
+                        ));
+                    }
+                    suffix
+                }
+                crate::ImplicitConfigSource::AccountHome { suffix } => suffix,
+            };
+            if suffix.is_empty()
+                || suffix.starts_with('/')
+                || suffix.contains('\0')
+                || suffix.split('/').any(|part| part == "..")
+            {
+                return Err(invalid(
+                    "implicit_config_files suffix must be a nonempty relative path without parent traversal",
+                ));
+            }
+        }
+        let disable = &input.disabled_by_first_argument;
+        if disable.words.len() + disable.prefixes.len() > 128
+            || disable
+                .words
+                .iter()
+                .chain(&disable.prefixes)
+                .any(|word| word.is_empty() || word.contains('\0'))
+        {
+            return Err(invalid(
+                "implicit_config_files disable words must be nonempty (at most 128)",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_argument_regions(
@@ -4072,6 +4143,7 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            implicit_config_files: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4268,6 +4340,7 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            implicit_config_files: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4383,6 +4456,7 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            implicit_config_files: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4498,6 +4572,7 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            implicit_config_files: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4726,6 +4801,7 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            implicit_config_files: Vec::new(),
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,

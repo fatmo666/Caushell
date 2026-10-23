@@ -684,6 +684,17 @@ impl RunnerContext {
         &self.effective_cwds
     }
 
+    /// Enrich effects without changing execution identity, argv or cwd facts.
+    pub fn execution_result_mut(
+        &mut self,
+        node_id: &NodeId,
+    ) -> Option<&mut ResolveInvocationArtifactResult> {
+        self.execution_unit_resolve_records
+            .iter_mut()
+            .find(|record| &record.source_node_id == node_id)
+            .map(|record| &mut record.result)
+    }
+
     pub fn effective_cwd_for_node(&self, node_id: &NodeId) -> Option<&EffectiveCwd> {
         self.effective_cwds.get(node_id)
     }

@@ -2092,6 +2092,7 @@ pub struct CommandProfile {
     pub platform: PlatformConstraints,
     pub argument_files: Vec<ArgumentFileRule>,
     pub environment_inputs: Vec<EnvironmentInput>,
+    pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub argument_regions: Vec<ArgumentRegion>,
     /// Opt-in finite outer control vocabulary. Unknown dash words are invalid
     /// in the tool, not new actions. Valid but unmodeled controls stay opaque.
@@ -2166,6 +2167,7 @@ impl CommandProfile {
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
             environment_inputs: Vec::new(),
+            implicit_config_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
@@ -2230,6 +2232,38 @@ impl CommandProfile {
                 .iter()
                 .any(|candidate| candidate.as_str() == name)
     }
+}
+
+/// Ordered first-readable file search performed before ordinary option parsing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImplicitConfigFile {
+    pub id: String,
+    pub sources: Vec<ImplicitConfigSource>,
+    #[serde(default)]
+    pub disabled_by_first_argument: FirstArgumentDisable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FirstArgumentDisable {
+    pub words: Vec<String>,
+    pub prefixes: Vec<String>,
+    pub case_insensitive_words: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImplicitConfigSource {
+    EnvironmentDirectory {
+        name: String,
+        suffix: String,
+        #[serde(default)]
+        unless_environment_set: Option<String>,
+    },
+    AccountHome {
+        suffix: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

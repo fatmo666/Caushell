@@ -14,6 +14,7 @@ pub struct RawCommandProfile {
     pub platform: RawPlatformConstraints,
     pub argument_files: Vec<RawArgumentFileRule>,
     pub environment_inputs: Vec<RawEnvironmentInput>,
+    pub implicit_config_files: Vec<crate::ImplicitConfigFile>,
     pub argument_regions: Vec<RawArgumentRegion>,
     pub argument_control_vocabulary: Option<RawArgumentControlVocabulary>,
     pub selection_failure_effects: Vec<RawEffect>,
