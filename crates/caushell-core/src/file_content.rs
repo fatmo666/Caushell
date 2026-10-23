@@ -88,7 +88,7 @@ pub(crate) fn read(path: &str, limit: usize) -> FileContentRead {
 }
 
 #[cfg(unix)]
-fn identity(metadata: &std::fs::Metadata) -> FileContentIdentity {
+pub(crate) fn identity(metadata: &std::fs::Metadata) -> FileContentIdentity {
     use std::os::unix::fs::MetadataExt;
     FileContentIdentity {
         device: metadata.dev(),
@@ -103,6 +103,16 @@ fn identity(metadata: &std::fs::Metadata) -> FileContentIdentity {
 
 #[cfg(unix)]
 fn open_regular_path(path: &str) -> std::io::Result<std::fs::File> {
+    open_path(path, false)
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_path(path: &str) -> std::io::Result<std::fs::File> {
+    open_path(path, true)
+}
+
+#[cfg(unix)]
+fn open_path(path: &str, is_directory: bool) -> std::io::Result<std::fs::File> {
     use std::{
         ffi::CString,
         fs::File,
@@ -112,7 +122,7 @@ fn open_regular_path(path: &str) -> std::io::Result<std::fs::File> {
     };
     let components = std::path::Path::new(path).components().collect::<Vec<_>>();
     if components.first() != Some(&Component::RootDir)
-        || components.len() < 2
+        || (!is_directory && components.len() < 2)
         || components.len() > 256
     {
         return Err(std::io::Error::new(
@@ -124,6 +134,9 @@ fn open_regular_path(path: &str) -> std::io::Result<std::fs::File> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open("/")?;
+    if components.len() == 1 {
+        return Ok(directory);
+    }
     for (index, component) in components.iter().enumerate().skip(1) {
         let Component::Normal(name) = component else {
             return Err(std::io::Error::new(
@@ -139,7 +152,11 @@ fn open_regular_path(path: &str) -> std::io::Result<std::fs::File> {
             | libc::O_CLOEXEC
             | libc::O_NOFOLLOW
             | libc::O_NONBLOCK
-            | if last { 0 } else { libc::O_DIRECTORY };
+            | if last && !is_directory {
+                0
+            } else {
+                libc::O_DIRECTORY
+            };
         // Each descriptor is owned before the next component is opened.
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {

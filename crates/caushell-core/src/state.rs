@@ -355,6 +355,9 @@ pub(crate) fn reconcile_shell_state_before(
             capabilities,
         );
     }
+    if capabilities.persists_exported_environment {
+        delta = reconcile_environment_observations(delta, summary, shell_state_before, observed_at);
+    }
     if capabilities.persists_positionals {
         delta = reconcile_positional_parameter_state(delta, summary, shell_state_before);
     }
@@ -563,6 +566,46 @@ fn reconcile_variable_state(
         ShellStateKnowledge::Unknown => {}
     }
 
+    delta
+}
+
+fn reconcile_environment_observations(
+    mut delta: ShellStateDelta,
+    summary: &SessionSummary,
+    snapshot: &ShellStateSnapshot,
+    observed_at: CommandSequenceNo,
+) -> ShellStateDelta {
+    for (name, value) in caushell_profile::environment_observations(snapshot) {
+        if delta.unset_variables.contains(&name) {
+            continue;
+        }
+        let existing = delta
+            .upsert_variables
+            .iter()
+            .rev()
+            .find(|v| v.name == name)
+            .or_else(|| summary.variable_binding(&name));
+        let Some(existing) = existing else { continue };
+        let expected = existing.exported.then_some(&existing.value);
+        if value.as_ref() == expected {
+            continue;
+        }
+        // A child-environment observation cannot certify the shell-local value.
+        // Retain the old graph fact, but never resurrect it on a later request.
+        let unknown = SessionVariableValue::opaque_dynamic(
+            "retained shell value conflicts with environment observation",
+        );
+        if existing.exported && existing.value == unknown {
+            continue;
+        }
+        delta.upsert_variables.retain(|v| v.name != name);
+        delta = delta.with_upsert_variable(SessionVariableBinding::new(
+            name,
+            unknown,
+            true,
+            observed_at,
+        ));
+    }
     delta
 }
 

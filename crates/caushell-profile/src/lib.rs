@@ -11,6 +11,8 @@ mod configuration;
 mod dispatch;
 mod dispatch_string;
 mod environment_inputs;
+mod environment_snapshot;
+pub use environment_snapshot::environment_observations;
 mod option_environment;
 pub use archive::{ArchiveInvocation, gnu_tar_extraction};
 pub use configuration::{

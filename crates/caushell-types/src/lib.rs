@@ -1,6 +1,12 @@
 mod analysis_budget;
 mod approval;
 mod decision;
+mod directory;
+pub use directory::{
+    DirectoryEntry, DirectoryEntryKind, DirectoryObservation, DirectoryReadLimits,
+    DirectoryReadStatus, MAX_DIRECTORY_DEPTH, MAX_DIRECTORY_ENTRIES, MAX_DIRECTORY_NAME_BYTES,
+    MAX_DIRECTORY_OBSERVATIONS,
+};
 mod evidence;
 pub use evidence::{ArchiveMemberEvidence, ArchiveMembersEvidence};
 mod file_content;
@@ -131,7 +137,8 @@ pub use session_summary::{
     SessionSummary, SessionVariableBinding, SessionVariableValue,
 };
 pub use shell_state::{
-    ShellAliasSnapshot, ShellFunctionSnapshot, ShellStateDelta, ShellStateKnowledge,
-    ShellStateObservability, ShellStateSnapshot, ShellValueSnapshot, ShellVariableSnapshot,
+    ShellAliasSnapshot, ShellEnvironmentSnapshot, ShellEnvironmentValue, ShellFunctionSnapshot,
+    ShellStateDelta, ShellStateKnowledge, ShellStateObservability, ShellStateSnapshot,
+    ShellValueSnapshot, ShellVariableSnapshot,
 };
 pub use state_candidate::{SafetyObject, SafetyScope, StateCandidateFact};

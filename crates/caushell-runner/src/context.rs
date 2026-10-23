@@ -438,6 +438,7 @@ pub enum ShellSourceCwdAnchor {
 // final decision phase after earlier passes have contributed evidence.
 pub struct RunnerContext {
     filesystem: crate::filesystem::FilesystemViewHandle,
+    directory_budget: crate::DirectoryReadBudget,
     target_path_policy: Option<crate::PathExemptionPolicy>,
     request: CheckRequest,
     policy: PolicyConfig,
@@ -475,6 +476,7 @@ impl RunnerContext {
     pub fn with_policy(request: CheckRequest, policy: PolicyConfig) -> Self {
         Self {
             filesystem: Default::default(),
+            directory_budget: Default::default(),
             target_path_policy: None,
             request,
             policy,
@@ -512,6 +514,11 @@ impl RunnerContext {
 
     pub fn filesystem_view(&self) -> std::sync::Arc<dyn crate::FilesystemView> {
         self.filesystem.view()
+    }
+
+    pub fn read_directory(&mut self, path: &str, depth: usize) -> crate::DirectoryRead {
+        self.directory_budget
+            .read(self.filesystem.view().as_ref(), path, depth)
     }
 
     pub fn set_target_path_policy(&mut self, policy: crate::PathExemptionPolicy) {

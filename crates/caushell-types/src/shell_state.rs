@@ -36,6 +36,38 @@ impl Default for ShellStateObservability {
 
 pub type ShellValueSnapshot = crate::ProvenanceVariableValueState;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ShellEnvironmentValue {
+    Present { value: String },
+    Absent,
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for ShellEnvironmentValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            Present { value: String },
+            Absent {},
+            Unknown {},
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Present { value } => Self::Present { value },
+            Wire::Absent {} => Self::Absent,
+            Wire::Unknown {} => Self::Unknown,
+        })
+    }
+}
+
+/// One name in this execution frame's child environment, not all shell locals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellEnvironmentSnapshot {
+    pub name: String,
+    pub value: ShellEnvironmentValue,
+}
+
 impl ShellStateKnowledge {
     pub fn is_unknown(&self) -> bool {
         *self == Self::Unknown
@@ -92,6 +124,8 @@ impl ShellFunctionSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellStateSnapshot {
     pub cwd: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment: Vec<ShellEnvironmentSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<ShellVariableSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -207,6 +241,7 @@ impl ShellStateSnapshot {
     pub fn new(cwd: impl Into<String>) -> Self {
         Self {
             cwd: cwd.into(),
+            environment: Vec::new(),
             variables: Vec::new(),
             positional_parameters: Vec::new(),
             aliases: Vec::new(),
@@ -217,6 +252,18 @@ impl ShellStateSnapshot {
 
     pub fn cwd(&self) -> &str {
         self.cwd.as_str()
+    }
+
+    pub fn with_environment_observation(
+        mut self,
+        name: impl Into<String>,
+        value: ShellEnvironmentValue,
+    ) -> Self {
+        self.environment.push(ShellEnvironmentSnapshot {
+            name: name.into(),
+            value,
+        });
+        self
     }
 
     pub fn variable(&self, name: &str) -> Option<&ShellVariableSnapshot> {
@@ -425,6 +472,7 @@ mod tests {
     fn shell_state_snapshot_can_hold_runtime_input_derived_variable() {
         let snapshot = ShellStateSnapshot {
             cwd: "/tmp/project".to_string(),
+            environment: Vec::new(),
             variables: vec![ShellVariableSnapshot::new(
                 "USER_CMD",
                 ShellValueSnapshot::RuntimeInput {

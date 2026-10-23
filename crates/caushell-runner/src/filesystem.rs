@@ -38,6 +38,19 @@ pub trait FilesystemView: Send + Sync {
         caushell_types::FilesystemObservationSource::SuppliedView
     }
     fn entry(&self, path: &str) -> FilesystemEntry;
+    fn read_directory(
+        &self,
+        path: &str,
+        limits: caushell_types::DirectoryReadLimits,
+    ) -> crate::DirectoryRead {
+        crate::DirectoryRead::failed(
+            self.source(),
+            path,
+            limits,
+            caushell_types::DirectoryReadStatus::Unavailable,
+            "directory entries are not supplied by this filesystem view",
+        )
+    }
     /// Read a namespace-resolved regular file; metadata-only views remain valid.
     fn read_file(&self, path: &str, byte_limit: usize) -> crate::FileContentRead {
         crate::FileContentRead::failed(

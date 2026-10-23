@@ -1,4 +1,5 @@
 mod core;
+mod directory;
 mod file_content;
 mod filesystem;
 pub use filesystem::LocalFilesystem;

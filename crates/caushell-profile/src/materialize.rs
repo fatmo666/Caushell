@@ -531,6 +531,10 @@ impl SessionBindings {
             }
         }
 
+        for (name, value) in crate::environment_observations(shell_state) {
+            bindings.child_environment.insert(name, value);
+        }
+
         if shell_state.observability.positional_parameters == ShellStateKnowledge::Complete {
             let values = shell_state
                 .positional_parameters

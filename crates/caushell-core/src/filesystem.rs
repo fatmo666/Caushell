@@ -4,6 +4,13 @@ use caushell_types::FilesystemEntry;
 pub struct LocalFilesystem;
 
 impl FilesystemView for LocalFilesystem {
+    fn read_directory(
+        &self,
+        path: &str,
+        limits: caushell_types::DirectoryReadLimits,
+    ) -> caushell_runner::DirectoryRead {
+        crate::directory::read(path, limits)
+    }
     fn read_file(&self, path: &str, byte_limit: usize) -> caushell_runner::FileContentRead {
         crate::file_content::read(path, byte_limit)
     }

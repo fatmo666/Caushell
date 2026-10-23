@@ -1,4 +1,6 @@
 mod context;
+mod directory;
+pub use directory::{DirectoryRead, DirectoryReadBudget, directory_path_is_resolved};
 mod file_content;
 mod filesystem;
 pub use file_content::{FileContentRead, MAX_FILE_CONTENT_BYTES, content_sha256};

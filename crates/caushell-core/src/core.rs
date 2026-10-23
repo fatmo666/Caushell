@@ -209,6 +209,24 @@ impl ShellQueryCore {
         request: CheckRequest,
         intent: caushell_types::CheckIntent,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
+        if !request.shell_state_before.environment.is_empty()
+            && self
+                .sessions
+                .get(&request.session_id)
+                .and_then(|s| s.summary().last_sequence_no())
+                .is_some_and(|n| n < request.sequence_no)
+        {
+            self.reconcile_runtime_shell_state_before(&RuntimeCheckRequest {
+                intent,
+                session_id: request.session_id.clone(),
+                command: request.command.clone(),
+                shell_state_before: request.shell_state_before.clone(),
+                shell_kind: request.shell_kind,
+                runtime: request.runtime.clone(),
+                home: request.home.clone(),
+                workspace_root: request.workspace_root.clone(),
+            })?;
+        }
         let session_id = request.session_id.clone();
         let runner = &self.runner;
         let sessions = &mut self.sessions;

@@ -71,6 +71,8 @@ pub struct RuntimePingResponse {
     /// Missing means an older server; clients must not silently downgrade.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_protocol: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_observation_protocol: Option<u32>,
 }
 
 impl RuntimePingResponse {
@@ -80,6 +82,7 @@ impl RuntimePingResponse {
             runtime_version: runtime_version.into(),
             instance_id: None,
             approval_protocol: Some(1),
+            environment_observation_protocol: Some(1),
         }
     }
 
@@ -410,7 +413,8 @@ mod tests {
                 "payload": {
                     "status": "ok",
                     "runtime_version": "0.1.0",
-                    "approval_protocol": 1
+                    "approval_protocol": 1,
+                    "environment_observation_protocol": 1
                 }
             })
         );
