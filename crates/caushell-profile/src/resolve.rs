@@ -1053,9 +1053,9 @@ fn static_ifs_value(bindings: &SessionBindings) -> Option<String> {
     match binding.value {
         crate::SessionValue::ExactScalar(value) => Some(value.clone()),
         crate::SessionValue::RuntimeProduced { value, .. } => Some(value.clone()),
-        crate::SessionValue::OpaqueDynamic { .. } | crate::SessionValue::RuntimeInput { .. } => {
-            None
-        }
+        crate::SessionValue::OpaqueDynamic { .. }
+        | crate::SessionValue::RuntimeInput { .. }
+        | crate::SessionValue::Structured(_) => None,
     }
 }
 

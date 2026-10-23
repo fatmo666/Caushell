@@ -1055,6 +1055,7 @@ pub(crate) fn classify_assignment_value(
 
 fn apply_binding(bindings: &mut SessionBindings, binding: SessionVariableBinding) {
     match binding.value {
+        SessionVariableValue::Structured(value) => bindings.insert_structured(&binding.name, value),
         SessionVariableValue::ExactScalar(value) => {
             bindings.insert_exact_scalar(&binding.name, value);
         }

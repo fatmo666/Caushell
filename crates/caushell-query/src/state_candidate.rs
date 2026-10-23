@@ -2,7 +2,7 @@
 use caushell_graph::{GraphNode, GraphRead, NodeId, NodeKind};
 use caushell_types::{
     AnalysisBudgetKind as B, AnalysisBudgetPolicy, CommandSequenceNo, ProvenanceArtifact,
-    ProvenanceVariableValueState, SafetyObject, SafetyStateValue, SessionVariableValue,
+    SafetyObject, SafetyStateValue, SessionVariableValue,
 };
 use std::collections::BTreeSet;
 
@@ -113,7 +113,8 @@ impl StateCandidateQuery<'_> {
                 ) => value,
                 _ => SafetyStateValue::Unknown,
             };
-            result.unknown |= matches!(value, SafetyStateValue::Unknown);
+            result.unknown |=
+                matches!(value, SafetyStateValue::Unknown) || value.has_structured_unknown();
             if result
                 .candidates
                 .iter()
@@ -195,20 +196,7 @@ impl StateCandidateQuery<'_> {
                     } => *exported,
                     _ => true,
                 };
-                let value = match state {
-                    ProvenanceVariableValueState::ExactScalar { value } => {
-                        SessionVariableValue::exact_scalar(value)
-                    }
-                    ProvenanceVariableValueState::RuntimeProduced { value, value_kind } => {
-                        SessionVariableValue::runtime_produced(value, *value_kind)
-                    }
-                    ProvenanceVariableValueState::OpaqueDynamic { repr } => {
-                        SessionVariableValue::opaque_dynamic(repr)
-                    }
-                    ProvenanceVariableValueState::RuntimeInput { source, capture } => {
-                        SessionVariableValue::runtime_input(*source, capture.clone())
-                    }
-                };
+                let value = SessionVariableValue::from(state);
                 SafetyStateValue::Variable { value, exported }
             }
             NodeKind::ProvenanceArtifact { .. } => value.clone(),
@@ -228,6 +216,161 @@ mod tests {
     use super::*;
     use caushell_graph::{GraphNode, SessionGraph};
     use caushell_types::{SafetyScope, SafetyStateKind as K, StateCandidateFact};
+
+    #[test]
+    fn structured_references_keep_frame_source_and_unknown_members_after_restore() {
+        use caushell_types::{
+            ProvenanceVariableValueState, ShellScalarValue as S, StructuredShellValue as V,
+        };
+        let mut graph = SessionGraph::new();
+        let mut key = object();
+        key.scope = SafetyScope::Frame {
+            sequence_no: CommandSequenceNo(1),
+            frame_id: "function:first".into(),
+        };
+        let value = SessionVariableValue::structured(V::IndexedArray {
+            elements: [
+                (0, S::exact("/outside")),
+                (
+                    8,
+                    S::Unknown {
+                        reason: "not captured".into(),
+                    },
+                ),
+            ]
+            .into(),
+            complete: false,
+        });
+        graph.add_node(GraphNode::new(
+            NodeId::new("array-source"),
+            NodeKind::ProvenanceArtifact {
+                artifact: ProvenanceArtifact::VariableValue {
+                    name: "DEST".into(),
+                    state: ProvenanceVariableValueState::from(&value),
+                    exported: false,
+                    version: 1,
+                },
+            },
+        ));
+        add(
+            &mut graph,
+            "array-witness",
+            key.clone(),
+            SafetyStateValue::Reference {
+                node_id: "array-source".into(),
+            },
+            1,
+            10,
+        );
+        let graph = SessionGraph::from_snapshot(graph.to_snapshot()).unwrap();
+        let limits = AnalysisBudgetPolicy::default();
+        let query = StateCandidateQuery {
+            object: &key,
+            before_sequence: CommandSequenceNo(1),
+            before_source_start: 11,
+            limits: &limits,
+        };
+        let result = query.execute(&graph);
+        assert!(result.unknown && !result.is_complete());
+        assert_eq!(
+            result.candidates,
+            vec![StateCandidate {
+                value: SafetyStateValue::Variable {
+                    value,
+                    exported: false
+                },
+                witness: NodeId::new("array-witness")
+            }]
+        );
+        assert_eq!(result, query.execute_scanning(&graph));
+        assert!(
+            StateCandidateQuery {
+                before_source_start: 9,
+                ..query
+            }
+            .execute(&graph)
+            .candidates
+            .is_empty()
+        );
+        key.scope = SafetyScope::Frame {
+            sequence_no: CommandSequenceNo(1),
+            frame_id: "function:second".into(),
+        };
+        assert!(
+            StateCandidateQuery {
+                object: &key,
+                before_sequence: CommandSequenceNo(2),
+                before_source_start: 0,
+                limits: &limits
+            }
+            .execute(&graph)
+            .candidates
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn complete_empty_partial_and_reference_values_are_distinct_candidates() {
+        use caushell_types::{ShellReferenceTarget, StructuredShellValue as V};
+        let mut graph = SessionGraph::new();
+        for (index, value) in [
+            V::IndexedArray {
+                elements: Default::default(),
+                complete: true,
+            },
+            V::IndexedArray {
+                elements: Default::default(),
+                complete: false,
+            },
+            V::NameReference {
+                target: ShellReferenceTarget::Variable {
+                    name: "OTHER".into(),
+                },
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            add(
+                &mut graph,
+                &format!("state-{index}"),
+                object(),
+                SafetyStateValue::Variable {
+                    value: SessionVariableValue::structured(value),
+                    exported: false,
+                },
+                1,
+                index,
+            );
+        }
+        let key = object();
+        let limits = AnalysisBudgetPolicy::default();
+        let result = StateCandidateQuery {
+            object: &key,
+            before_sequence: CommandSequenceNo(2),
+            before_source_start: 0,
+            limits: &limits,
+        }
+        .execute(&graph);
+        assert_eq!(result.candidates.len(), 3);
+        assert!(result.unknown);
+        assert!(
+            matches!(&result.candidates[2].value, SafetyStateValue::Variable { value: SessionVariableValue::Structured(V::NameReference { target: ShellReferenceTarget::Variable { name } }), .. } if name == "OTHER")
+        );
+        let limits = AnalysisBudgetPolicy {
+            max_state_value_bytes: 16,
+            ..limits
+        };
+        let result = StateCandidateQuery {
+            object: &key,
+            before_sequence: CommandSequenceNo(2),
+            before_source_start: 0,
+            limits: &limits,
+        }
+        .execute(&graph);
+        assert!(!result.is_complete());
+        assert!(result.incomplete_budgets.contains(&B::StateValueBytes));
+    }
 
     fn object() -> SafetyObject {
         SafetyObject {

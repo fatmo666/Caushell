@@ -13,68 +13,7 @@ use crate::{
     RecursivePayloadFragmentMaterialization, RecursivePayloadInput,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionValue {
-    ExactScalar(String),
-    RuntimeProduced {
-        value: String,
-        kind: RuntimeProducedValueKind,
-    },
-    OpaqueDynamic {
-        repr: String,
-    },
-    RuntimeInput {
-        source: RuntimeInputSource,
-        capture: RuntimeInputCapture,
-    },
-}
-
-impl SessionValue {
-    pub fn exact_scalar(value: impl Into<String>) -> Self {
-        Self::ExactScalar(value.into())
-    }
-
-    pub fn runtime_produced(value: impl Into<String>, kind: RuntimeProducedValueKind) -> Self {
-        Self::RuntimeProduced {
-            value: value.into(),
-            kind,
-        }
-    }
-
-    pub fn opaque_dynamic(repr: impl Into<String>) -> Self {
-        Self::OpaqueDynamic { repr: repr.into() }
-    }
-
-    pub fn runtime_input(source: RuntimeInputSource, capture: RuntimeInputCapture) -> Self {
-        Self::RuntimeInput { source, capture }
-    }
-
-    pub fn from_session_variable_value(value: &SessionVariableValue) -> Self {
-        match value {
-            SessionVariableValue::ExactScalar(value) => Self::exact_scalar(value.clone()),
-            SessionVariableValue::RuntimeProduced { value, kind } => {
-                Self::runtime_produced(value.clone(), *kind)
-            }
-            SessionVariableValue::OpaqueDynamic { repr } => Self::opaque_dynamic(repr.clone()),
-            SessionVariableValue::RuntimeInput { source, capture } => {
-                Self::runtime_input(*source, capture.clone())
-            }
-        }
-    }
-
-    pub fn to_session_variable_value(&self) -> SessionVariableValue {
-        match self {
-            Self::ExactScalar(value) => SessionVariableValue::exact_scalar(value.clone()),
-            Self::RuntimeProduced { value, kind } => {
-                SessionVariableValue::runtime_produced(value.clone(), *kind)
-            }
-            Self::OpaqueDynamic { repr } => SessionVariableValue::opaque_dynamic(repr.clone()),
-            Self::RuntimeInput { source, capture } => {
-                SessionVariableValue::runtime_input(*source, capture.clone())
-            }
-        }
-    }
-}
+pub type SessionValue = SessionVariableValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingOrigin {
@@ -561,6 +500,16 @@ impl SessionBindings {
         self.update_exported_value(name, SessionValue::opaque_dynamic(repr.clone()));
         self.session_variables
             .insert(name.to_string(), SessionValue::opaque_dynamic(repr));
+    }
+
+    pub fn insert_structured(&mut self, name: &str, value: caushell_types::StructuredShellValue) {
+        self.forget_variable_facts(name);
+        self.argument_domains.remove(name);
+        self.variable_presence
+            .insert(name.into(), VariablePresence::Present);
+        let value = SessionValue::structured(value);
+        self.update_exported_value(name, value.clone());
+        self.session_variables.insert(name.into(), value);
     }
 
     pub fn with_runtime_input(
@@ -1312,7 +1261,9 @@ fn exact_scalar_session_value(value: &SessionValue) -> Option<String> {
         SessionValue::ExactScalar(value) | SessionValue::RuntimeProduced { value, .. } => {
             Some(value.clone())
         }
-        SessionValue::OpaqueDynamic { .. } | SessionValue::RuntimeInput { .. } => None,
+        SessionValue::OpaqueDynamic { .. }
+        | SessionValue::RuntimeInput { .. }
+        | SessionValue::Structured(_) => None,
     }
 }
 
@@ -1728,20 +1679,7 @@ fn is_literal_parameter_substitution_word(word: &str) -> bool {
 }
 
 fn shell_value_to_session_value(value: &ShellValueSnapshot) -> Option<SessionValue> {
-    match value {
-        ShellValueSnapshot::ExactScalar { value } => {
-            Some(SessionValue::exact_scalar(value.clone()))
-        }
-        ShellValueSnapshot::RuntimeProduced { value, value_kind } => {
-            Some(SessionValue::runtime_produced(value.clone(), *value_kind))
-        }
-        ShellValueSnapshot::OpaqueDynamic { repr } => {
-            Some(SessionValue::opaque_dynamic(repr.clone()))
-        }
-        ShellValueSnapshot::RuntimeInput { source, capture } => {
-            Some(SessionValue::runtime_input(*source, capture.clone()))
-        }
-    }
+    Some(value.into())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2481,7 +2419,9 @@ fn materialize_session_value_field(
                 },
             })
         }
-        SessionValue::OpaqueDynamic { .. } | SessionValue::RuntimeInput { .. } => None,
+        SessionValue::OpaqueDynamic { .. }
+        | SessionValue::RuntimeInput { .. }
+        | SessionValue::Structured(_) => None,
     }
 }
 
@@ -2612,6 +2552,16 @@ fn materialize_argument_text_in_context(
                     },
                 };
             }
+            SessionValue::Structured(_) => {
+                return MaterializedText {
+                    text: text.to_string(),
+                    resolution: ValueMaterialization::UnsupportedDynamicBinding {
+                        variable_name: variable_name.to_string(),
+                        repr: "structured shell value requires native expansion".into(),
+                        origin: binding.origin,
+                    },
+                };
+            }
             SessionValue::OpaqueDynamic { repr } => {
                 return MaterializedText {
                     text: text.to_string(),
@@ -2692,6 +2642,16 @@ fn materialize_argument_text_in_context(
                         variable_name: position.to_string(),
                         value,
                         kind: *kind,
+                        origin: BindingOrigin::SessionBinding,
+                    },
+                };
+            }
+            SessionValue::Structured(_) => {
+                return MaterializedText {
+                    text: text.to_string(),
+                    resolution: ValueMaterialization::UnsupportedDynamicBinding {
+                        variable_name: position.to_string(),
+                        repr: "structured shell value requires native expansion".into(),
                         origin: BindingOrigin::SessionBinding,
                     },
                 };

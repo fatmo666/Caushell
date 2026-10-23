@@ -26,6 +26,9 @@ pub enum ProvenanceEndpointUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProvenanceVariableValueState {
+    Structured {
+        value: crate::StructuredShellValue,
+    },
     ExactScalar {
         value: String,
     },
@@ -40,6 +43,62 @@ pub enum ProvenanceVariableValueState {
         source: RuntimeInputSource,
         capture: RuntimeInputCapture,
     },
+}
+
+impl ProvenanceVariableValueState {
+    pub fn exact_scalar(value: impl Into<String>) -> Self {
+        Self::ExactScalar {
+            value: value.into(),
+        }
+    }
+
+    pub fn runtime_produced(
+        value: impl Into<String>,
+        value_kind: RuntimeProducedValueKind,
+    ) -> Self {
+        Self::RuntimeProduced {
+            value: value.into(),
+            value_kind,
+        }
+    }
+
+    pub fn opaque_dynamic(repr: impl Into<String>) -> Self {
+        Self::OpaqueDynamic { repr: repr.into() }
+    }
+
+    pub fn runtime_input(source: RuntimeInputSource, capture: RuntimeInputCapture) -> Self {
+        Self::RuntimeInput { source, capture }
+    }
+
+    pub fn structured(value: crate::StructuredShellValue) -> Self {
+        Self::Structured { value }
+    }
+}
+
+impl From<&crate::SessionVariableValue> for ProvenanceVariableValueState {
+    fn from(value: &crate::SessionVariableValue) -> Self {
+        use crate::SessionVariableValue as V;
+        match value {
+            V::ExactScalar(value) => Self::exact_scalar(value),
+            V::RuntimeProduced { value, kind } => Self::runtime_produced(value, *kind),
+            V::OpaqueDynamic { repr } => Self::opaque_dynamic(repr),
+            V::RuntimeInput { source, capture } => Self::runtime_input(*source, capture.clone()),
+            V::Structured(value) => Self::structured(value.clone()),
+        }
+    }
+}
+
+impl From<&ProvenanceVariableValueState> for crate::SessionVariableValue {
+    fn from(value: &ProvenanceVariableValueState) -> Self {
+        use ProvenanceVariableValueState as V;
+        match value {
+            V::ExactScalar { value } => Self::exact_scalar(value),
+            V::RuntimeProduced { value, value_kind } => Self::runtime_produced(value, *value_kind),
+            V::OpaqueDynamic { repr } => Self::opaque_dynamic(repr),
+            V::RuntimeInput { source, capture } => Self::runtime_input(*source, capture.clone()),
+            V::Structured { value } => Self::structured(value.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

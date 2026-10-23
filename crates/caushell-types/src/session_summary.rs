@@ -13,6 +13,7 @@ pub enum RuntimeProducedValueKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionVariableValue {
+    Structured(crate::StructuredShellValue),
     ExactScalar(String),
     RuntimeProduced {
         value: String,
@@ -28,6 +29,31 @@ pub enum SessionVariableValue {
 }
 
 impl SessionVariableValue {
+    pub fn structured(value: crate::StructuredShellValue) -> Self {
+        Self::Structured(value)
+    }
+
+    pub fn from_session_variable_value(value: &Self) -> Self {
+        value.clone()
+    }
+
+    pub fn to_session_variable_value(&self) -> Self {
+        self.clone()
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        match self {
+            Self::ExactScalar(value) | Self::RuntimeProduced { value, .. } => {
+                value.len().saturating_add(64)
+            }
+            Self::OpaqueDynamic { repr } => repr.len().saturating_add(64),
+            Self::RuntimeInput { capture, .. } => {
+                crate::shell_value::capture_bytes(capture).saturating_add(64)
+            }
+            Self::Structured(value) => value.retained_bytes(),
+        }
+    }
+
     pub fn exact_scalar(value: impl Into<String>) -> Self {
         Self::ExactScalar(value.into())
     }

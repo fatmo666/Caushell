@@ -42,19 +42,21 @@ pub enum SafetyStateValue {
 }
 
 impl SafetyStateValue {
+    pub fn has_structured_unknown(&self) -> bool {
+        let incomplete = |value: &SessionVariableValue| {
+            matches!(value,
+            SessionVariableValue::Structured(value) if value.has_unknown_parts())
+        };
+        match self {
+            Self::Variable { value, .. } => incomplete(value),
+            Self::Positionals(values) => values.iter().any(incomplete),
+            _ => false,
+        }
+    }
+
     pub fn retained_bytes(&self) -> usize {
         fn variable_bytes(value: &SessionVariableValue) -> usize {
-            match value {
-                SessionVariableValue::ExactScalar(v)
-                | SessionVariableValue::RuntimeProduced { value: v, .. } => v.len(),
-                SessionVariableValue::OpaqueDynamic { repr } => repr.len(),
-                SessionVariableValue::RuntimeInput { capture, .. } => match capture {
-                    crate::RuntimeInputCapture::NotCaptured => 0,
-                    crate::RuntimeInputCapture::Descriptor { descriptor } => descriptor.len(),
-                    crate::RuntimeInputCapture::ContentRef { content_ref } => content_ref.len(),
-                },
-            }
-            .saturating_add(64)
+            value.retained_bytes()
         }
         match self {
             Self::Reference { node_id } => node_id.len(),
@@ -139,6 +141,10 @@ impl SafetyHistory {
         record.last_observed_at = record.last_observed_at.max(sequence);
         // A value too large to retain cannot become an exact safety proof.
         let size = value.retained_bytes();
+        if value.has_structured_unknown() {
+            record.widened = true;
+            record.replacement_unconfirmed = true;
+        }
         if size > MAX_VALUE_BYTES || matches!(value, SafetyStateValue::Unknown) {
             record.widened = true;
             record.replacement_unconfirmed = true;
@@ -209,6 +215,35 @@ impl SafetyHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structured_unknown_survives_replacement_without_losing_known_members() {
+        let mut history = SafetyHistory::default();
+        let partial = SafetyStateValue::Variable {
+            value: SessionVariableValue::structured(crate::StructuredShellValue::IndexedArray {
+                elements: [(3, crate::ShellScalarValue::exact("/outside"))].into(),
+                complete: false,
+            }),
+            exported: false,
+        };
+        history.observe(
+            SafetyStateKind::Variable,
+            "paths",
+            partial.clone(),
+            CommandSequenceNo(1),
+        );
+        history.observe(
+            SafetyStateKind::Variable,
+            "paths",
+            scalar("/workspace"),
+            CommandSequenceNo(2),
+        );
+        let history: SafetyHistory =
+            serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+        let record = history.record(SafetyStateKind::Variable, "paths").unwrap();
+        assert!(record.widened && record.replacement_unconfirmed);
+        assert!(record.candidates.contains(&partial));
+        assert!(record.candidates.contains(&scalar("/workspace")));
+    }
     fn scalar(value: &str) -> SafetyStateValue {
         SafetyStateValue::Variable {
             value: SessionVariableValue::exact_scalar(value),

@@ -23,6 +23,8 @@ mod semantic;
 mod session;
 mod session_summary;
 mod shell_state;
+mod shell_value;
+pub use shell_value::{ShellReferenceTarget, ShellScalarValue, StructuredShellValue};
 mod state_candidate;
 
 pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy};

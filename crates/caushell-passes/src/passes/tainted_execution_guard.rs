@@ -742,7 +742,8 @@ fn taint_source_artifact(
                 format!("environment variable {name}"),
             )),
             caushell_types::ProvenanceVariableValueState::ExactScalar { .. }
-            | caushell_types::ProvenanceVariableValueState::OpaqueDynamic { .. } => Some((
+            | caushell_types::ProvenanceVariableValueState::OpaqueDynamic { .. }
+            | caushell_types::ProvenanceVariableValueState::Structured { .. } => Some((
                 TaintSourceKindEvidence::InheritedEnvironment,
                 format!("environment variable {name}"),
             )),
@@ -762,7 +763,8 @@ fn taint_source_artifact(
             }
             caushell_types::ProvenanceVariableValueState::RuntimeProduced { .. } => None,
             caushell_types::ProvenanceVariableValueState::ExactScalar { .. }
-            | caushell_types::ProvenanceVariableValueState::OpaqueDynamic { .. } => None,
+            | caushell_types::ProvenanceVariableValueState::OpaqueDynamic { .. }
+            | caushell_types::ProvenanceVariableValueState::Structured { .. } => None,
         },
         ProvenanceArtifact::MaterializedValue { .. }
         | ProvenanceArtifact::PathFamily { .. }

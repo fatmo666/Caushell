@@ -2559,7 +2559,8 @@ fn materialize_environment_assignment_value(
                     Some(value.clone())
                 }
                 caushell_profile::SessionValue::OpaqueDynamic { .. }
-                | caushell_profile::SessionValue::RuntimeInput { .. } => None,
+                | caushell_profile::SessionValue::RuntimeInput { .. }
+                | caushell_profile::SessionValue::Structured(_) => None,
             });
     }
 

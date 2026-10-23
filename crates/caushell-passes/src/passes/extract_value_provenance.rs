@@ -1012,26 +1012,7 @@ fn inherited_env_value_artifact(
 }
 
 fn variable_value_state(value: &SessionVariableValue) -> ProvenanceVariableValueState {
-    match value {
-        SessionVariableValue::ExactScalar(value) => ProvenanceVariableValueState::ExactScalar {
-            value: value.clone(),
-        },
-        SessionVariableValue::RuntimeProduced { value, kind } => {
-            ProvenanceVariableValueState::RuntimeProduced {
-                value: value.clone(),
-                value_kind: *kind,
-            }
-        }
-        SessionVariableValue::OpaqueDynamic { repr } => {
-            ProvenanceVariableValueState::OpaqueDynamic { repr: repr.clone() }
-        }
-        SessionVariableValue::RuntimeInput { source, capture } => {
-            ProvenanceVariableValueState::RuntimeInput {
-                source: *source,
-                capture: capture.clone(),
-            }
-        }
-    }
+    value.into()
 }
 
 fn materialized_value_state(

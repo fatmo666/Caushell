@@ -721,7 +721,9 @@ fn infer_runtime_produced_value_kind(
             }
         }
         ShellValueSnapshot::RuntimeProduced { value_kind, .. } => Some(*value_kind),
-        ShellValueSnapshot::OpaqueDynamic { .. } | ShellValueSnapshot::RuntimeInput { .. } => None,
+        ShellValueSnapshot::OpaqueDynamic { .. }
+        | ShellValueSnapshot::RuntimeInput { .. }
+        | ShellValueSnapshot::Structured { .. } => None,
     }
 }
 
@@ -766,16 +768,7 @@ fn looks_like_shell_path(value: &str) -> bool {
 }
 
 fn shell_value_snapshot_to_session_value(value: &ShellValueSnapshot) -> SessionVariableValue {
-    match value {
-        ShellValueSnapshot::ExactScalar { value } => SessionVariableValue::exact_scalar(value),
-        ShellValueSnapshot::RuntimeProduced { value, value_kind } => {
-            SessionVariableValue::runtime_produced(value, *value_kind)
-        }
-        ShellValueSnapshot::OpaqueDynamic { repr } => SessionVariableValue::opaque_dynamic(repr),
-        ShellValueSnapshot::RuntimeInput { source, capture } => {
-            SessionVariableValue::runtime_input(*source, capture.clone())
-        }
-    }
+    value.into()
 }
 
 fn summary_variable_matches(

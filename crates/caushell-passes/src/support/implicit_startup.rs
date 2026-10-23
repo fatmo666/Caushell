@@ -189,6 +189,9 @@ fn collect_candidates_from_records(
                         capture: capture.clone(),
                     },
                 )),
+                caushell_types::ShellValueSnapshot::Structured { .. } => {
+                    Some((String::new(), binding.value.clone()))
+                }
             })
         else {
             continue;

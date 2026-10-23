@@ -2096,6 +2096,122 @@ mod tests {
     }
 
     #[test]
+    fn structured_values_survive_database_jsonl_and_snapshot_reload() {
+        use caushell_types::{
+            SafetyObject, SafetyScope, SafetyStateKind, SafetyStateValue,
+            SessionGraphNodeKindSnapshot, SessionGraphNodeSnapshot, SessionMutation,
+            SessionVariableBinding, SessionVariableValue, ShellReferenceTarget,
+            ShellScalarValue as S, StateCandidateFact, StructuredShellValue as V,
+        };
+        let values = [
+            V::IndexedArray {
+                elements: [
+                    (2, S::exact("/outside")),
+                    (
+                        9,
+                        S::RuntimeInput {
+                            source: caushell_types::RuntimeInputSource::StdinData,
+                            capture: caushell_types::RuntimeInputCapture::ContentRef {
+                                content_ref: "origin:stdin".into(),
+                            },
+                        },
+                    ),
+                ]
+                .into(),
+                complete: false,
+            },
+            V::AssociativeArray {
+                elements: [(
+                    "selected key".into(),
+                    S::Unknown {
+                        reason: "missing".into(),
+                    },
+                )]
+                .into(),
+                complete: true,
+            },
+            V::NameReference {
+                target: ShellReferenceTarget::IndexedElement {
+                    name: "paths".into(),
+                    index: 2,
+                },
+            },
+        ];
+        let mut summary = SessionSummary::new();
+        let mut graph = SessionGraphSnapshot::default();
+        let mut mutations = Vec::new();
+        for (index, value) in values.into_iter().enumerate() {
+            let name = format!("value_{index}");
+            let binding = SessionVariableBinding::new(
+                &name,
+                SessionVariableValue::structured(value),
+                false,
+                CommandSequenceNo(1),
+            );
+            summary.upsert_variable_binding(binding.clone());
+            let fact = StateCandidateFact {
+                object: SafetyObject {
+                    scope: SafetyScope::Frame {
+                        sequence_no: CommandSequenceNo(1),
+                        frame_id: "function:owner".into(),
+                    },
+                    kind: SafetyStateKind::Variable,
+                    name,
+                },
+                value: SafetyStateValue::Variable {
+                    value: binding.value.clone(),
+                    exported: false,
+                },
+                sequence_no: CommandSequenceNo(1),
+                source_end: 12 + index,
+            };
+            graph.nodes.push(SessionGraphNodeSnapshot {
+                id: format!("source-{index}"),
+                kind: SessionGraphNodeKindSnapshot::StateCandidate { fact: fact.clone() },
+            });
+            mutations.push(SessionMutation::UpsertVariableBinding { binding });
+            mutations.push(SessionMutation::AddStateCandidate {
+                node_id: format!("source-{index}"),
+                fact,
+            });
+        }
+        let snapshot = SessionSnapshot::new(SessionId::new("structured-store"), 1, summary, graph);
+        let event = SessionEvent::new_check(
+            SessionId::new("structured-store"),
+            2,
+            2_000,
+            sample_request("structured-store", 2, "pwd"),
+            sample_response(Decision::Allow),
+            SessionStateEffect::commit(CommandSequenceNo(2), mutations),
+        );
+        let root = temp_store_root("structured-snapshot");
+        let store = initialized_store(&root);
+        store.write_snapshot(&snapshot).unwrap();
+        store.append_event(&event).unwrap();
+        drop(store);
+        let restored = SessionStore::new(&root);
+        assert_eq!(
+            restored.read_snapshot(&snapshot.session_id).unwrap(),
+            Some(snapshot)
+        );
+        assert_eq!(
+            restored.read_events(&event.session_id).unwrap(),
+            vec![event.clone()]
+        );
+        let log_root = temp_store_root("structured-log");
+        let log_store = SessionStore::new(&log_root);
+        log_store.append_log_event(&event).unwrap();
+        drop(log_store);
+        let restored_log = SessionStore::new(&log_root);
+        assert_eq!(
+            restored_log.read_events(&event.session_id).unwrap(),
+            vec![event]
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(log_root).unwrap();
+    }
+
+    #[test]
     fn write_snapshot_replaces_existing_snapshot() {
         let root = temp_store_root("snapshot-replace");
         let store = initialized_store(&root);

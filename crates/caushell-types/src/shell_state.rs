@@ -34,50 +34,7 @@ impl Default for ShellStateObservability {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ShellValueSnapshot {
-    ExactScalar {
-        value: String,
-    },
-    RuntimeProduced {
-        value: String,
-        value_kind: RuntimeProducedValueKind,
-    },
-    OpaqueDynamic {
-        repr: String,
-    },
-    RuntimeInput {
-        source: RuntimeInputSource,
-        capture: RuntimeInputCapture,
-    },
-}
-
-impl ShellValueSnapshot {
-    pub fn exact_scalar(value: impl Into<String>) -> Self {
-        Self::ExactScalar {
-            value: value.into(),
-        }
-    }
-
-    pub fn runtime_produced(
-        value: impl Into<String>,
-        value_kind: RuntimeProducedValueKind,
-    ) -> Self {
-        Self::RuntimeProduced {
-            value: value.into(),
-            value_kind,
-        }
-    }
-
-    pub fn opaque_dynamic(repr: impl Into<String>) -> Self {
-        Self::OpaqueDynamic { repr: repr.into() }
-    }
-
-    pub fn runtime_input(source: RuntimeInputSource, capture: RuntimeInputCapture) -> Self {
-        Self::RuntimeInput { source, capture }
-    }
-}
+pub type ShellValueSnapshot = crate::ProvenanceVariableValueState;
 
 impl ShellStateKnowledge {
     pub fn is_unknown(&self) -> bool {

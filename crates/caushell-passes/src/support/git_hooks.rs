@@ -282,7 +282,9 @@ fn exported_exact_scalar(request: &caushell_types::CheckRequest, name: &str) -> 
     match &binding.value {
         ShellValueSnapshot::ExactScalar { value }
         | ShellValueSnapshot::RuntimeProduced { value, .. } => Some(value.clone()),
-        ShellValueSnapshot::OpaqueDynamic { .. } | ShellValueSnapshot::RuntimeInput { .. } => None,
+        ShellValueSnapshot::OpaqueDynamic { .. }
+        | ShellValueSnapshot::RuntimeInput { .. }
+        | ShellValueSnapshot::Structured { .. } => None,
     }
 }
 
