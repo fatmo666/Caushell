@@ -1506,6 +1506,9 @@ fn collect_top_level_command_resolve_records(
             .as_ref()
             .is_some_and(|p| !p.redirections.is_empty());
         let resolved_command = expansion.command;
+        let resolved_command =
+            caushell_profile::materialize_structured_command(&resolved_command, &variable_overlay)
+                .unwrap_or(resolved_command);
 
         alias_derived_commands.extend(project_alias_derived_commands(
             request,
@@ -1518,7 +1521,11 @@ fn collect_top_level_command_resolve_records(
             .command_name
             .as_deref()
             .and_then(|command_name| {
-                caushell_profile::materialize_command_name(command_name, &variable_overlay)
+                if resolved_command.command_name_runtime_data {
+                    Some(command_name.to_owned())
+                } else {
+                    caushell_profile::materialize_command_name(command_name, &variable_overlay)
+                }
             })
             .as_deref()
             .and_then(|command_name| variable_overlay.function_binding(command_name))
@@ -4292,10 +4299,16 @@ fn expanded_function_body_children(
         .parsed_scope
         .commands
         .get(entry.command_ref.command_index)?;
-    let name = caushell_profile::materialize_command_name(
-        command.command_name.as_deref()?,
-        &entry.bindings,
-    )?;
+    let prepared = caushell_profile::materialize_structured_command(command, &entry.bindings);
+    let command = prepared.as_ref().unwrap_or(command);
+    let name = if command.command_name_runtime_data {
+        command.command_name.clone()?
+    } else {
+        caushell_profile::materialize_command_name(
+            command.command_name.as_deref()?,
+            &entry.bindings,
+        )?
+    };
     let binding = entry.bindings.function_binding(&name)?;
     if binding.uncertainty.is_some() {
         return None; // The ordinary resolver already emits OpaqueInvocation.

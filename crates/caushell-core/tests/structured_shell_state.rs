@@ -155,8 +155,10 @@ fn graph_candidates_and_live_summary_roundtrip_without_copying_reference_targets
 }
 
 #[test]
-fn unsupported_structured_expansions_never_become_safe_scalar_paths_or_payloads() {
-    for value in values() {
+fn unresolved_structured_expansions_never_become_safe_scalar_paths_or_payloads() {
+    for value in values().into_iter().filter(|v| {
+        v.has_unknown_parts() || matches!(v, StructuredShellValue::NameReference { .. })
+    }) {
         for command in [
             "touch \"$paths\"",
             "curl -q -K \"$paths\" https://example.test",

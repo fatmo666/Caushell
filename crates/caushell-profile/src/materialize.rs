@@ -43,6 +43,7 @@ pub struct ShellVariableFacts {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionBindings {
+    shell_kind: Option<caushell_types::ShellKind>,
     shell_state_uncertainty: Option<String>,
     variable_facts: BTreeMap<String, ShellVariableFacts>,
     // Account-home fact supplied by the request, not a shell variable or an
@@ -93,6 +94,12 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn shell_kind(&self) -> caushell_types::ShellKind {
+        self.shell_kind.unwrap_or(caushell_types::ShellKind::Bash)
+    }
+    pub fn set_shell_kind(&mut self, kind: caushell_types::ShellKind) {
+        self.shell_kind = (kind != caushell_types::ShellKind::Bash).then_some(kind);
+    }
     pub fn shell_state_uncertainty(&self) -> Option<&str> {
         self.shell_state_uncertainty.as_deref()
     }
@@ -768,6 +775,16 @@ impl SessionBindings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellParameterReference {
     Variable(String),
+    ArrayElement {
+        name: String,
+        index: String,
+    },
+    ArrayValues {
+        name: String,
+    },
+    Indirect {
+        name: String,
+    },
     Positional(usize),
     AllPositionals(ShellAllPositionalsKind),
     Expansion {
@@ -832,6 +849,25 @@ where
         }
         if is_valid_variable_name(&body) {
             return Some(ShellParameterReference::Variable(body));
+        }
+        if let Some(name) = body
+            .strip_prefix('!')
+            .filter(|name| is_valid_variable_name(name))
+        {
+            return Some(ShellParameterReference::Indirect { name: name.into() });
+        }
+        if let Some((name, index)) = body.split_once('[')
+            && is_valid_variable_name(name)
+            && let Some(index) = index.strip_suffix(']')
+        {
+            return Some(if index == "@" {
+                ShellParameterReference::ArrayValues { name: name.into() }
+            } else {
+                ShellParameterReference::ArrayElement {
+                    name: name.into(),
+                    index: index.into(),
+                }
+            });
         }
         return parse_braced_shell_parameter_expansion(&body)
             .or_else(|| parse_braced_shell_parameter_substitution(&body));
@@ -939,6 +975,111 @@ pub fn exact_scalar_shell_parameter_value(
     exact_scalar_shell_parameter_value_at_depth(bindings, reference, 0)
 }
 
+fn resolved_parameter(
+    bindings: &SessionBindings,
+    reference: &ShellParameterReference,
+) -> Option<crate::ResolvedShellValue> {
+    use caushell_types::{ShellReferenceTarget as T, StructuredShellValue as V};
+    match reference {
+        ShellParameterReference::Variable(name) => {
+            crate::resolve_shell_reference(bindings, T::Variable { name: name.clone() }).ok()
+        }
+        ShellParameterReference::ArrayElement { name, index } => {
+            let target = crate::shell_reference_target(&format!("{name}[{index}]"), bindings)?;
+            crate::resolve_shell_reference(bindings, target).ok()
+        }
+        ShellParameterReference::Indirect { name } => {
+            let first = bindings.get(name)?;
+            if let SessionValue::Structured(V::NameReference { target }) = first.value {
+                let value = match target {
+                    T::Variable { name } => name.clone(),
+                    T::IndexedElement { name, index } => format!("{name}[{index}]"),
+                    T::AssociativeElement { .. } | T::Unknown { .. } => return None,
+                };
+                return Some(crate::ResolvedShellValue {
+                    name: name.clone(),
+                    value: SessionValue::exact_scalar(value),
+                    origin: first.origin,
+                    dependencies: vec![name.clone()],
+                });
+            }
+            let target = exact_scalar_session_value(first.value)?;
+            let mut resolved = crate::resolve_shell_reference(
+                bindings,
+                crate::shell_reference_target(&target, bindings)?,
+            )
+            .ok()?;
+            resolved.dependencies.insert(0, name.clone());
+            Some(resolved)
+        }
+        _ => None,
+    }
+}
+
+pub fn shell_parameter_dependencies(arg: &ProjectedArg, bindings: &SessionBindings) -> Vec<String> {
+    if arg.runtime_data || matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string") {
+        return Vec::new();
+    }
+    let references = exact_shell_parameter_reference(&arg.text)
+        .map(|r| vec![r])
+        .or_else(|| {
+            materialize_shell_word_with_references(
+                &arg.text,
+                bindings,
+                ShellWordMode::Scalar,
+                if arg.quoted && arg.node_kind == "string" {
+                    ShellWordQuote::Double
+                } else {
+                    ShellWordQuote::None
+                },
+                false,
+            )
+            .map(|(_, refs)| refs)
+        })
+        .unwrap_or_default();
+    let mut names = Vec::new();
+    for reference in references {
+        if let ShellParameterReference::Variable(name) = &reference
+            && !matches!(
+                bindings.get(name).map(|b| b.value),
+                Some(SessionValue::Structured(_))
+            )
+        {
+            continue;
+        }
+        let selection = match &reference {
+            ShellParameterReference::ArrayElement { name, index } => {
+                Some(format!("{name}[{index}]"))
+            }
+            ShellParameterReference::Indirect { name } => bindings
+                .get(name)
+                .and_then(|value| exact_scalar_session_value(value.value)),
+            _ => None,
+        };
+        if let Some(selection) = selection {
+            for name in crate::structured_parameters::subscript_dependencies(&selection, bindings) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        let resolved = if let ShellParameterReference::ArrayValues { name } = &reference {
+            crate::resolve_shell_container(bindings, name).ok()
+        } else {
+            resolved_parameter(bindings, &reference)
+        };
+        for name in resolved
+            .map(|v| v.dependencies)
+            .unwrap_or_else(|| vec![shell_parameter_reference_name(&reference)])
+        {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 fn exact_scalar_shell_parameter_value_at_depth(
     bindings: &SessionBindings,
     reference: &ShellParameterReference,
@@ -948,9 +1089,18 @@ fn exact_scalar_shell_parameter_value_at_depth(
         return None;
     }
     match reference {
-        ShellParameterReference::Variable(name) => {
-            exact_scalar_session_value(bindings.get(name)?.value)
+        ShellParameterReference::Variable(name) => exact_scalar_session_value(
+            &crate::resolve_shell_reference(
+                bindings,
+                caushell_types::ShellReferenceTarget::Variable { name: name.clone() },
+            )
+            .ok()?
+            .value,
+        ),
+        ShellParameterReference::ArrayElement { .. } | ShellParameterReference::Indirect { .. } => {
+            exact_scalar_session_value(&resolved_parameter(bindings, reference)?.value)
         }
+        ShellParameterReference::ArrayValues { .. } => None,
         ShellParameterReference::Positional(position) => {
             match bindings.positional_parameter(*position) {
                 Some(value) => exact_scalar_session_value(value),
@@ -1152,6 +1302,8 @@ fn materialize_shell_word_with_resolver(
                         && !matches!(
                             reference,
                             ShellParameterReference::Variable(_)
+                                | ShellParameterReference::ArrayElement { .. }
+                                | ShellParameterReference::Indirect { .. }
                                 | ShellParameterReference::Positional(_)
                                 | ShellParameterReference::PatternRemoval { .. }
                         )
@@ -1181,6 +1333,8 @@ fn materialize_shell_word_with_resolver(
                         && !matches!(
                             reference,
                             ShellParameterReference::Variable(_)
+                                | ShellParameterReference::ArrayElement { .. }
+                                | ShellParameterReference::Indirect { .. }
                                 | ShellParameterReference::Positional(_)
                                 | ShellParameterReference::PatternRemoval { .. }
                         )
@@ -1767,6 +1921,17 @@ pub fn materialize_projected_invocation(
     projection: &ProjectedInvocation,
     bindings: &SessionBindings,
 ) -> MaterializedProjectedInvocation {
+    let dialect;
+    let bindings = if bindings.shell_kind() != projection.shell_kind {
+        dialect = {
+            let mut value = bindings.clone();
+            value.set_shell_kind(projection.shell_kind);
+            value
+        };
+        &dialect
+    } else {
+        bindings
+    };
     let mut args = Vec::with_capacity(projection.args.len());
     let mut arg_resolutions = Vec::with_capacity(projection.args.len());
     let mut brace_budget = crate::brace_expansion::BraceBudget::default();
@@ -2255,10 +2420,7 @@ fn materialize_argument_fields(
     }
     if arg.word_context == crate::WordContext::ShellArgument
         && !matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string")
-        && matches!(
-            exact_shell_parameter_reference(&arg.text),
-            Some(ShellParameterReference::AllPositionals(_))
-        )
+        && exact_shell_parameter_reference(&arg.text).is_some()
     {
         if let Some(fields) =
             materialize_exact_shell_parameter_reference_fields(&arg.text, arg.quoted, bindings)
@@ -2292,6 +2454,69 @@ pub fn materialize_exact_shell_parameter_reference_fields(
     materialize_shell_parameter_reference_fields(&reference, quoted, bindings)
 }
 
+pub fn materialize_shell_array_element(
+    value: &caushell_parse::AssignmentValueFact,
+    bindings: &SessionBindings,
+) -> Option<Vec<SessionValue>> {
+    let literal = matches!(value.node_kind.as_str(), "raw_string" | "ansi_c_string");
+    if !literal {
+        if let Some(fields) =
+            materialize_exact_shell_parameter_reference_fields(&value.text, value.quoted, bindings)
+        {
+            return fields
+                .into_iter()
+                .map(|field| match field.resolution {
+                    ValueMaterialization::ResolvedRuntimeProduced { kind, .. } => {
+                        Some(SessionValue::runtime_produced(field.text, kind))
+                    }
+                    ValueMaterialization::ResolvedExactScalar { .. }
+                    | ValueMaterialization::ResolvedShellWord { .. } => {
+                        Some(SessionValue::exact_scalar(field.text))
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        if matches!(
+            exact_shell_parameter_reference(&value.text),
+            Some(
+                ShellParameterReference::AllPositionals(_)
+                    | ShellParameterReference::ArrayValues { .. }
+            )
+        ) {
+            return None;
+        }
+    }
+    let field = materialize_argument_text_in_context(
+        &value.text,
+        value.quoted,
+        &value.node_kind,
+        bindings,
+        true,
+        crate::WordContext::ShellArgument,
+    );
+    let scalar = match field.resolution {
+        ValueMaterialization::Static
+            if crate::shell_word_structure(&value.text, value.quoted, &value.node_kind).exact =>
+        {
+            SessionValue::exact_scalar(field.text)
+        }
+        ValueMaterialization::ResolvedExactScalar { .. }
+        | ValueMaterialization::ResolvedShellWord { .. } => SessionValue::exact_scalar(field.text),
+        ValueMaterialization::ResolvedRuntimeProduced { kind, .. } => {
+            SessionValue::runtime_produced(field.text, kind)
+        }
+        ValueMaterialization::RequiresRuntimeInput {
+            source,
+            capture: Some(capture),
+            ..
+        } if value.quoted => SessionValue::runtime_input(source, capture),
+        _ if value.quoted || literal => SessionValue::opaque_dynamic(&value.text),
+        _ => return None,
+    };
+    Some(vec![scalar])
+}
+
 fn materialize_shell_parameter_reference_fields(
     reference: &ShellParameterReference,
     quoted: bool,
@@ -2301,10 +2526,47 @@ fn materialize_shell_parameter_reference_fields(
         ShellParameterReference::AllPositionals(kind) => {
             materialize_all_positional_parameter_fields(*kind, quoted, bindings)
         }
-        ShellParameterReference::Variable(name) => {
-            let binding = bindings.get(name)?;
-            materialize_session_value_field(name.clone(), binding.value, binding.origin, quoted)
+        ShellParameterReference::Variable(_) => {
+            let binding = resolved_parameter(bindings, reference)?;
+            materialize_session_value_field(binding.name, &binding.value, binding.origin, quoted)
                 .map(|field| vec![field])
+        }
+        ShellParameterReference::ArrayElement { .. } | ShellParameterReference::Indirect { .. } => {
+            let binding = resolved_parameter(bindings, reference)?;
+            materialize_session_value_field(binding.name, &binding.value, binding.origin, quoted)
+                .map(|field| vec![field])
+        }
+        ShellParameterReference::ArrayValues { name } => {
+            if !quoted {
+                return None;
+            }
+            let binding = crate::resolve_shell_container(bindings, name).ok()?;
+            let SessionValue::Structured(caushell_types::StructuredShellValue::IndexedArray {
+                elements,
+                complete: true,
+            }) = binding.value
+            else {
+                return None;
+            };
+            if elements.len() > crate::structured_parameters::MAX_ARRAY_FIELDS {
+                return None;
+            }
+            let mut bytes = 0usize;
+            elements
+                .values()
+                .map(|value| {
+                    bytes = bytes.saturating_add(value.retained_bytes());
+                    if bytes > crate::structured_parameters::MAX_EXPANDED_BYTES {
+                        return None;
+                    }
+                    materialize_session_value_field(
+                        binding.name.clone(),
+                        &SessionValue::from(value),
+                        binding.origin,
+                        true,
+                    )
+                })
+                .collect()
         }
         ShellParameterReference::Positional(position) => {
             let value = bindings.positional_parameter(*position)?;
@@ -2495,14 +2757,37 @@ fn materialize_argument_text_in_context(
     }
 
     if let Some(variable_name) = exact_variable_reference(text) {
-        let Some(binding) = bindings.get(variable_name) else {
-            return MaterializedText {
-                text: text.to_string(),
-                resolution: ValueMaterialization::MissingBinding {
-                    variable_name: variable_name.to_string(),
-                },
-            };
+        let resolved = match crate::resolve_shell_reference(
+            bindings,
+            caushell_types::ShellReferenceTarget::Variable {
+                name: variable_name.into(),
+            },
+        ) {
+            Ok(value) => value,
+            Err(_) if bindings.get(variable_name).is_none() => {
+                return MaterializedText {
+                    text: text.into(),
+                    resolution: ValueMaterialization::MissingBinding {
+                        variable_name: variable_name.into(),
+                    },
+                };
+            }
+            Err(reason) => {
+                return MaterializedText {
+                    text: text.into(),
+                    resolution: ValueMaterialization::UnsupportedDynamicBinding {
+                        variable_name: variable_name.into(),
+                        repr: reason.into(),
+                        origin: BindingOrigin::SessionBinding,
+                    },
+                };
+            }
         };
+        let binding = BindingValueRef {
+            value: &resolved.value,
+            origin: resolved.origin,
+        };
+        let variable_name = &resolved.name;
 
         match binding.value {
             SessionValue::ExactScalar(value) => {
@@ -2584,6 +2869,56 @@ fn materialize_argument_text_in_context(
                 };
             }
         }
+    }
+
+    if let Some(
+        reference @ (ShellParameterReference::ArrayElement { .. }
+        | ShellParameterReference::Indirect { .. }),
+    ) = exact_shell_parameter_reference(text)
+    {
+        if let Some(binding) = resolved_parameter(bindings, &reference) {
+            let resolution = match &binding.value {
+                SessionValue::RuntimeInput { source, capture } => {
+                    ValueMaterialization::RequiresRuntimeInput {
+                        source: *source,
+                        capture: Some(capture.clone()),
+                        variable_name: Some(binding.name),
+                        origin: Some(binding.origin),
+                    }
+                }
+                value => {
+                    if let Some(field) = materialize_session_value_field(
+                        binding.name.clone(),
+                        value,
+                        binding.origin,
+                        quoted || scalar,
+                    ) {
+                        return MaterializedText {
+                            text: field.text,
+                            resolution: field.resolution,
+                        };
+                    }
+                    ValueMaterialization::UnsupportedDynamicBinding {
+                        variable_name: binding.name,
+                        repr: "shell reference value is unresolved or requires field splitting"
+                            .into(),
+                        origin: binding.origin,
+                    }
+                }
+            };
+            return MaterializedText {
+                text: text.into(),
+                resolution,
+            };
+        }
+        return MaterializedText {
+            text: text.into(),
+            resolution: ValueMaterialization::UnsupportedDynamicBinding {
+                variable_name: shell_parameter_reference_name(&reference),
+                repr: "shell reference target is unresolved".into(),
+                origin: BindingOrigin::SessionBinding,
+            },
+        };
     }
 
     if let Some(ShellParameterReference::Positional(position)) =
@@ -2702,6 +3037,15 @@ fn materialize_argument_text_in_context(
                 text: value.clone(),
                 resolution: if matches!(reference, ShellParameterReference::PatternRemoval { .. }) {
                     resolved_removal(bindings, &reference, value)
+                } else if let Some(binding) = resolved_parameter(bindings, &reference) {
+                    materialize_session_value_field(
+                        binding.name,
+                        &binding.value,
+                        binding.origin,
+                        true,
+                    )
+                    .map(|field| field.resolution)
+                    .unwrap_or(ValueMaterialization::UnsupportedDynamicText { text: text.into() })
                 } else {
                     ValueMaterialization::ResolvedExactScalar {
                         variable_name: shell_parameter_reference_name(&reference),
@@ -2738,14 +3082,17 @@ fn materialize_argument_text_in_context(
             // such as -e"$CODE". Expanded bytes are argv data and must never
             // be decoded/expanded again as outer-shell source.
             let reference_value = |reference: &ShellParameterReference| match reference {
-                ShellParameterReference::Variable(name) => bindings
-                    .get(name)
-                    .map(|binding| (binding.value, binding.origin)),
+                ShellParameterReference::Variable(_)
+                | ShellParameterReference::ArrayElement { .. }
+                | ShellParameterReference::Indirect { .. } => {
+                    resolved_parameter(bindings, reference)
+                        .map(|binding| (binding.value, binding.origin))
+                }
                 ShellParameterReference::Positional(position) => bindings
                     .positional_parameter(*position)
-                    .map(|value| (value, BindingOrigin::SessionBinding)),
+                    .map(|value| (value.clone(), BindingOrigin::SessionBinding)),
                 ShellParameterReference::PatternRemoval { .. } => {
-                    removal_source_binding(bindings, reference).map(|b| (b.value, b.origin))
+                    removal_source_binding(bindings, reference).map(|b| (b.value.clone(), b.origin))
                 }
                 _ => None,
             };
@@ -2771,13 +3118,15 @@ fn materialize_argument_text_in_context(
                     },
                 })
             } else if references.len() == 1 {
-                let variable_name = shell_parameter_reference_name(&references[0]);
+                let variable_name = resolved_parameter(bindings, &references[0])
+                    .map(|v| v.name)
+                    .unwrap_or_else(|| shell_parameter_reference_name(&references[0]));
                 match reference_value(&references[0]) {
                     Some((SessionValue::RuntimeProduced { kind, .. }, origin)) => {
                         Some(ValueMaterialization::ResolvedRuntimeProduced {
                             variable_name,
                             value: value.clone(),
-                            kind: *kind,
+                            kind,
                             origin,
                         })
                     }
@@ -2849,6 +3198,9 @@ fn materialize_argument_text_in_context(
 fn shell_parameter_reference_name(reference: &ShellParameterReference) -> String {
     match reference {
         ShellParameterReference::Variable(name) => name.clone(),
+        ShellParameterReference::ArrayElement { name, .. }
+        | ShellParameterReference::ArrayValues { name }
+        | ShellParameterReference::Indirect { name } => name.clone(),
         ShellParameterReference::Positional(position) => position.to_string(),
         ShellParameterReference::AllPositionals(ShellAllPositionalsKind::At) => "@".to_string(),
         ShellParameterReference::AllPositionals(ShellAllPositionalsKind::Star) => "*".to_string(),

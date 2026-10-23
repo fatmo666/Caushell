@@ -25,6 +25,7 @@ pub(crate) fn request_variable_bindings(
     let mut bindings =
         SessionBindings::from_summary_and_shell_state(summary, &request.shell_state_before);
     bindings.set_request_home_facts(request.home.as_deref());
+    bindings.set_shell_kind(request.shell_kind);
     bindings
 }
 
@@ -63,6 +64,7 @@ pub(super) fn apply_variable_overlay(
     mut runtime: Option<&mut super::runtime_variable_overlay::RuntimeVariableContext<'_>>,
     capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
 ) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
+    bindings.set_shell_kind(parsed.shell_kind);
     let mut events = Vec::new();
     let mut touched = std::collections::BTreeSet::new();
     let mut positional_state = None;
@@ -162,6 +164,19 @@ pub(super) fn apply_variable_overlay(
                 if !state_visible(&iteration.shell_scope_span, span_start_byte) {
                     continue;
                 }
+                if matches!(
+                    bindings.get(&iteration.variable).map(|b| b.value),
+                    Some(SessionValue::Structured(_))
+                ) || bindings.runtime_variable_target_is_unresolved(&iteration.variable)
+                {
+                    invalidate_reference_write(
+                        &mut bindings,
+                        &iteration.variable,
+                        &mut assigned,
+                        "shell iteration reference value unknown",
+                    );
+                    continue;
+                }
                 assigned.insert(iteration.variable.clone());
                 let domain =
                     super::loop_overlay::iteration_domain(iteration, &bindings, parsed.shell_kind);
@@ -176,6 +191,19 @@ pub(super) fn apply_variable_overlay(
             }
             VariableOverlayEvent::ForExit(iteration) => {
                 if !state_visible(&iteration.shell_scope_span, span_start_byte) {
+                    continue;
+                }
+                if matches!(
+                    bindings.get(&iteration.variable).map(|b| b.value),
+                    Some(SessionValue::Structured(_))
+                ) || bindings.runtime_variable_target_is_unresolved(&iteration.variable)
+                {
+                    invalidate_reference_write(
+                        &mut bindings,
+                        &iteration.variable,
+                        &mut assigned,
+                        "shell iteration reference final value unknown",
+                    );
                     continue;
                 }
                 // Zero iterations, break and body writes prevent a final-value
@@ -210,8 +238,33 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 let array_facts = super::variable_facts::declaration_arrays(declaration, &bindings);
+                if super::structured_variables::declaration(
+                    declaration,
+                    &mut bindings,
+                    &mut assigned,
+                    |bindings, name| {
+                        if let (Some(capture), Some(entry)) =
+                            (state_capture.as_mut(), entry.as_ref())
+                        {
+                            capture.variable(entry, bindings, name, event_end);
+                        }
+                    },
+                ) {
+                    for (name, mut facts) in array_facts {
+                        let complete = matches!(bindings.get(&name).map(|b| b.value), Some(SessionValue::Structured(value)) if !value.has_unknown_parts());
+                        if !complete {
+                            facts.element_shape = None;
+                        }
+                        if !bindings.runtime_variable_target_is_unresolved(&name) {
+                            bindings.set_variable_facts(&name, facts);
+                        }
+                    }
+                    continue;
+                }
                 if super::declaration_uses_nameref(declaration) {
                     super::variable_facts::invalidate_all(&mut bindings, &mut touched);
+                    touched.extend(bindings.variable_names().map(str::to_owned));
+                    bindings.mark_shell_state_uncertain("unresolved nameref declaration");
                 }
                 if declaration.kind == caushell_parse::DeclarationCommandKind::Local
                     && bindings.in_function_scope()
@@ -371,6 +424,49 @@ pub(super) fn apply_variable_overlay(
                     })
                     .collect::<Vec<_>>();
                 for (assignment, (value, facts)) in declaration.assignments.iter().zip(values) {
+                    if bindings.runtime_variable_target_is_unresolved(&assignment.name)
+                        || matches!(
+                            bindings.get(&assignment.name).map(|b| b.value),
+                            Some(SessionValue::Structured(_))
+                        )
+                    {
+                        let value =
+                            if assignment.operator == caushell_parse::AssignmentOperator::Assign {
+                                value
+                            } else {
+                                SessionValue::structured(
+                                    caushell_types::StructuredShellValue::Unknown {
+                                        reason: "structured export append".into(),
+                                    },
+                                )
+                            };
+                        match super::structured_variables::write(
+                            &mut bindings,
+                            caushell_types::ShellReferenceTarget::Variable {
+                                name: assignment.name.clone(),
+                            },
+                            value,
+                            false,
+                        ) {
+                            Ok(target) => {
+                                assigned.insert(target.clone());
+                                if declaration.conditional_execution {
+                                    bindings.insert_structured(
+                                        &target,
+                                        caushell_types::StructuredShellValue::Unknown {
+                                            reason: "conditional structured export assignment"
+                                                .into(),
+                                        },
+                                    );
+                                }
+                            }
+                            Err(reason) => {
+                                touched.extend(bindings.variable_names().map(str::to_owned));
+                                bindings.mark_shell_state_uncertain(reason);
+                            }
+                        }
+                        continue;
+                    }
                     assigned.insert(assignment.name.clone());
                     if assignment.operator != caushell_parse::AssignmentOperator::Assign {
                         bindings.insert_opaque_dynamic(
@@ -438,6 +534,78 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 for assignment in &assignment_command.assignments {
+                    let structured = assignment.value.node_kind == "array"
+                        || bindings.runtime_variable_target_is_unresolved(&assignment.name)
+                        || matches!(
+                            bindings.get(&assignment.name).map(|b| b.value),
+                            Some(SessionValue::Structured(_))
+                        );
+                    if structured {
+                        let value = if assignment.operator
+                            != caushell_parse::AssignmentOperator::Assign
+                        {
+                            SessionValue::structured(
+                                caushell_types::StructuredShellValue::Unknown {
+                                    reason: "structured append is unresolved".into(),
+                                },
+                            )
+                        } else if assignment.value.node_kind == "array" {
+                            let associative = matches!(
+                                bindings.get(&assignment.name).map(|b| b.value),
+                                Some(SessionValue::Structured(
+                                    caushell_types::StructuredShellValue::AssociativeArray { .. }
+                                ))
+                            );
+                            match super::structured_variables::array_value(
+                                &assignment.value,
+                                associative,
+                                &bindings,
+                            ) {
+                                Ok(value) => value,
+                                Err(reason) => {
+                                    touched.extend(bindings.variable_names().map(str::to_owned));
+                                    bindings.mark_shell_state_uncertain(reason);
+                                    SessionValue::structured(
+                                        caushell_types::StructuredShellValue::Unknown {
+                                            reason: reason.into(),
+                                        },
+                                    )
+                                }
+                            }
+                        } else {
+                            classify_assignment_value(&assignment.value, &bindings)
+                        };
+                        match super::structured_variables::write(
+                            &mut bindings,
+                            caushell_types::ShellReferenceTarget::Variable {
+                                name: assignment.name.clone(),
+                            },
+                            value,
+                            assignment.value.node_kind == "array",
+                        ) {
+                            Ok(name) => {
+                                assigned.insert(name.clone());
+                                if let (Some(capture), Some(entry)) =
+                                    (state_capture.as_mut(), entry.as_ref())
+                                {
+                                    capture.variable(entry, &bindings, &name, event_end);
+                                }
+                                if assignment_command.conditional_execution {
+                                    bindings.insert_structured(
+                                        &name,
+                                        caushell_types::StructuredShellValue::Unknown {
+                                            reason: "conditional structured assignment".into(),
+                                        },
+                                    );
+                                }
+                            }
+                            Err(reason) => {
+                                touched.extend(bindings.variable_names().map(str::to_owned));
+                                bindings.mark_shell_state_uncertain(reason);
+                            }
+                        }
+                        continue;
+                    }
                     if assignment.operator != caushell_parse::AssignmentOperator::Assign {
                         bindings.forget_variable_facts(&assignment.name);
                         if !matches!(
@@ -514,6 +682,36 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 let mode = unset_mode(&unset.options);
+                let mut structured_unsets = std::collections::BTreeSet::new();
+                if matches!(
+                    mode,
+                    UnsetMode::Default | UnsetMode::Variables | UnsetMode::Nameref
+                ) {
+                    let mut handled = true;
+                    for name in &unset.names {
+                        match super::structured_variables::unset(
+                            &mut bindings,
+                            name,
+                            mode == UnsetMode::Nameref,
+                            unset.conditional_execution,
+                        ) {
+                            Some(Ok(target)) => {
+                                structured_unsets.insert(name.clone());
+                                assigned.insert(target);
+                            }
+                            Some(Err(reason)) => {
+                                touched.extend(bindings.variable_names().map(str::to_owned));
+                                bindings.mark_shell_state_uncertain(reason);
+                            }
+                            None => {
+                                handled = false;
+                            }
+                        }
+                    }
+                    if handled {
+                        continue;
+                    }
+                }
                 if !matches!(mode, UnsetMode::Functions | UnsetMode::Invalid)
                     && unset.names.iter().any(|n| !scalar_identifier(n))
                 {
@@ -546,6 +744,9 @@ pub(super) fn apply_variable_overlay(
                     UnsetMode::Default | UnsetMode::Variables | UnsetMode::Functions => {}
                 }
                 for name in &unset.names {
+                    if structured_unsets.contains(name) {
+                        continue;
+                    }
                     if name.contains('$')
                         || name.contains('`')
                         || (!scalar_identifier(name)
@@ -622,6 +823,19 @@ pub(super) fn apply_variable_overlay(
                     } = &site.kind
                     {
                         if let Some(name) = name.as_deref().filter(|name| scalar_identifier(name)) {
+                            if matches!(
+                                bindings.get(name).map(|b| b.value),
+                                Some(SessionValue::Structured(_))
+                            ) || bindings.runtime_variable_target_is_unresolved(name)
+                            {
+                                invalidate_reference_write(
+                                    &mut bindings,
+                                    name,
+                                    &mut assigned,
+                                    "conditional structured parameter assignment",
+                                );
+                                continue;
+                            }
                             if !array_element
                                 && bindings.variable_presence(name)
                                     == caushell_profile::VariablePresence::Present
@@ -653,16 +867,98 @@ pub(super) fn apply_variable_overlay(
                     }
                     if let caushell_parse::ShellEvaluationKind::ArrayElementAssignment {
                         name,
-                        ..
+                        index,
                     } = &site.kind
                     {
+                        let prefix = &parsed.raw_command[..site.input.span.start_byte];
+                        if prefix.trim_end().ends_with('=') && !prefix.trim_end().ends_with("+=") {
+                            if let Some(target) = caushell_profile::shell_reference_target(
+                                &format!("{name}[{index}]"),
+                                &bindings,
+                            ) {
+                                let value = classify_assignment_value(&site.input, &bindings);
+                                if let Ok(target) = super::structured_variables::write(
+                                    &mut bindings,
+                                    target,
+                                    value,
+                                    false,
+                                ) {
+                                    assigned.insert(target.clone());
+                                    if site.conditional_execution {
+                                        bindings.insert_structured(
+                                            &target,
+                                            caushell_types::StructuredShellValue::Unknown {
+                                                reason: "conditional array element write".into(),
+                                            },
+                                        );
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         touched.insert(name.clone());
+                        bindings.insert_structured(
+                            name,
+                            caushell_types::StructuredShellValue::Unknown {
+                                reason: "unresolved array element write".into(),
+                            },
+                        );
                     }
                     let old: Vec<_> = bindings
                         .variable_fact_entries()
                         .map(|(n, f)| (n.to_owned(), f))
                         .collect();
+                    let arithmetic = matches!(
+                        site.kind,
+                        caushell_parse::ShellEvaluationKind::Arithmetic
+                            | caushell_parse::ShellEvaluationKind::ArithmeticBuiltin
+                            | caushell_parse::ShellEvaluationKind::UnresolvedArithmetic
+                    ) && !(site.kind
+                        == caushell_parse::ShellEvaluationKind::ArithmeticBuiltin
+                        && bindings.function_binding("let").is_some());
+                    let writes = arithmetic.then(|| arithmetic_write_targets(site, &bindings));
                     super::variable_facts::invalidate_evaluation(site, &mut bindings);
+                    match writes {
+                        Some(Some(names)) => {
+                            for name in names {
+                                invalidate_reference_write(
+                                    &mut bindings,
+                                    &name,
+                                    &mut assigned,
+                                    "arithmetic result bytes are not observed",
+                                );
+                                let prior_numeric = old.iter().any(|(old_name, facts)| {
+                                    old_name == &name
+                                        && facts.scalar_shape
+                                            == Some(
+                                                caushell_profile::StdoutScalarShape::ArithmeticText,
+                                            )
+                                });
+                                let scalar = !matches!(
+                                    bindings.get(&name).map(|b| b.value),
+                                    Some(SessionValue::Structured(_))
+                                );
+                                if bindings.shell_state_uncertainty().is_none()
+                                    && prior_numeric
+                                    && scalar
+                                {
+                                    bindings.set_variable_facts(
+                                        &name,
+                                        caushell_profile::ShellVariableFacts {
+                                            scalar_shape: Some(
+                                                caushell_profile::StdoutScalarShape::ArithmeticText,
+                                            ),
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Some(None) => {
+                            invalidate_arithmetic_values(&mut bindings, &mut assigned);
+                        }
+                        None => {}
+                    }
                     touched.extend(
                         old.into_iter()
                             .filter(|(n, f)| bindings.variable_facts(n) != *f)
@@ -780,6 +1076,183 @@ fn invalidate_unknown_scalar_targets(
     }
 }
 
+fn arithmetic_write_targets(
+    site: &caushell_parse::ShellEvaluationSite,
+    bindings: &SessionBindings,
+) -> Option<std::collections::BTreeSet<String>> {
+    use caushell_parse::ArithmeticReference as R;
+    fn walk(
+        refs: &[R],
+        bindings: &SessionBindings,
+        names: &mut std::collections::BTreeSet<String>,
+        depth: usize,
+    ) -> Option<()> {
+        if depth >= 16 || refs.len() > 256 {
+            return None;
+        }
+        for reference in refs {
+            match reference {
+                R::Assignment {
+                    name,
+                    value,
+                    reads_previous,
+                } => {
+                    if !scalar_identifier(name) {
+                        return None;
+                    }
+                    if *reads_previous
+                        && !caushell_profile::exact_scalar_shell_parameter_reference_value(
+                            &format!("${{{name}}}"),
+                            bindings,
+                        )
+                        .is_some_and(|v| super::variable_facts::arithmetic_text(&v))
+                        && bindings.variable_facts(name).scalar_shape
+                            != Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+                    {
+                        return None;
+                    }
+                    names.insert(name.clone());
+                    walk(value, bindings, names, depth + 1)?;
+                }
+                R::Optional(items) => walk(items, bindings, names, depth + 1)?,
+                R::ArithmeticExpansion(text) => walk(
+                    &caushell_parse::parse_arithmetic_references(text)?,
+                    bindings,
+                    names,
+                    depth + 1,
+                )?,
+                R::Variable(name) => {
+                    if bindings.variable_facts(name).scalar_shape
+                        != Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+                        && !caushell_profile::exact_scalar_shell_parameter_reference_value(
+                            &format!("${{{name}}}"),
+                            bindings,
+                        )
+                        .is_some_and(|v| super::variable_facts::arithmetic_text(&v))
+                    {
+                        return None;
+                    }
+                }
+                R::Array {
+                    name,
+                    index,
+                    read_value,
+                } => {
+                    walk(
+                        &caushell_parse::parse_arithmetic_references(index)?,
+                        bindings,
+                        names,
+                        depth + 1,
+                    )?;
+                    if !read_value {
+                        names.insert(name.clone());
+                    } else if !caushell_profile::exact_scalar_shell_parameter_reference_value(
+                        &format!("${{{name}[{index}]}}"),
+                        bindings,
+                    )
+                    .is_some_and(|v| super::variable_facts::arithmetic_text(&v))
+                    {
+                        return None;
+                    }
+                }
+                R::ExpandedWord {
+                    text,
+                    quoted,
+                    node_kind,
+                } if caushell_profile::materialize_shell_assignment_value(
+                    text, *quoted, node_kind, bindings,
+                )
+                .is_some_and(|v| super::variable_facts::arithmetic_text(&v)) => {}
+                _ => return None,
+            }
+        }
+        Some(())
+    }
+    let mut names = std::collections::BTreeSet::new();
+    walk(
+        &caushell_parse::parse_arithmetic_references(&site.input.text)?,
+        bindings,
+        &mut names,
+        0,
+    )?;
+    Some(names)
+}
+
+fn invalidate_arithmetic_values(
+    bindings: &mut SessionBindings,
+    assigned: &mut std::collections::BTreeSet<String>,
+) {
+    let names: Vec<_> = bindings.variable_names().map(str::to_owned).collect();
+    for name in names {
+        let facts = bindings.variable_facts(&name);
+        if matches!(
+            bindings.get(&name).map(|b| b.value),
+            Some(SessionValue::Structured(
+                caushell_types::StructuredShellValue::NameReference { .. }
+            ))
+        ) {
+            continue;
+        }
+        let structured = matches!(
+            bindings.get(&name).map(|b| b.value),
+            Some(SessionValue::Structured(_))
+        );
+        assigned.insert(name.clone());
+        if structured {
+            bindings.insert_structured(
+                &name,
+                caushell_types::StructuredShellValue::Unknown {
+                    reason: "arithmetic state effects are unresolved".into(),
+                },
+            );
+        } else {
+            bindings.insert_opaque_dynamic(&name, "arithmetic result bytes are not observed");
+        }
+        bindings.set_variable_facts(&name, facts);
+    }
+    bindings.forget_variable_presence();
+}
+
+fn invalidate_reference_write(
+    bindings: &mut SessionBindings,
+    name: &str,
+    assigned: &mut std::collections::BTreeSet<String>,
+    reason: &str,
+) {
+    match caushell_profile::shell_write_target(
+        bindings,
+        caushell_types::ShellReferenceTarget::Variable { name: name.into() },
+    ) {
+        Ok(target) => {
+            let name = caushell_profile::reference_name(&target)
+                .unwrap()
+                .to_owned();
+            let structured = !matches!(
+                target,
+                caushell_types::ShellReferenceTarget::Variable { .. }
+            ) || matches!(
+                bindings.get(&name).map(|b| b.value),
+                Some(SessionValue::Structured(_))
+            );
+            assigned.insert(name.clone());
+            if structured {
+                bindings.insert_structured(
+                    &name,
+                    caushell_types::StructuredShellValue::Unknown {
+                        reason: reason.into(),
+                    },
+                );
+            } else {
+                bindings.insert_opaque_dynamic(&name, reason);
+            }
+        }
+        Err(reason) => {
+            assigned.extend(bindings.variable_names().map(str::to_owned));
+            bindings.mark_shell_state_uncertain(reason);
+        }
+    }
+}
+
 enum VariableOverlayEvent<'a> {
     Evaluation(&'a caushell_parse::ShellEvaluationSite),
     ForEnter(&'a caushell_parse::ForLoopFact),
@@ -882,7 +1355,7 @@ fn set_positional_token_values(
     SetPositionalTokenValues::UnknownArity
 }
 
-fn materialized_shell_field_to_session_value(
+pub(super) fn materialized_shell_field_to_session_value(
     field: MaterializedShellField,
 ) -> Option<SessionValue> {
     match field.resolution {

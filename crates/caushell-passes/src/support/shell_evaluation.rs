@@ -279,6 +279,7 @@ impl Evaluator<'_> {
                 && super::state_visible(&s.shell_scope_span, self.site.input.span.start_byte)
         }) || self.bindings.get(name).is_some_and(|b| match b.value {
             SessionValue::ExactScalar(value) | SessionValue::RuntimeProduced { value, .. } => self.literal_array(name, value).is_some(),
+            SessionValue::Structured(caushell_types::StructuredShellValue::IndexedArray { .. }) => true,
             _ => false,
         });
         if indexed {
@@ -458,6 +459,28 @@ impl Evaluator<'_> {
             }
         }
         match self.bindings.get(name).map(|b| b.value) {
+            Some(SessionValue::Structured(
+                caushell_types::StructuredShellValue::IndexedArray { elements, complete },
+            )) => {
+                self.result.unresolved |= !complete;
+                let values: Vec<_> = if let Ok(index) = index.trim().parse::<u64>() {
+                    elements.get(&index).into_iter().cloned().collect()
+                } else {
+                    if elements.len() > self.budget {
+                        self.result.unresolved = true;
+                    }
+                    elements.values().take(self.budget).cloned().collect()
+                };
+                for value in values {
+                    match value {
+                        caushell_types::ShellScalarValue::Exact { value }
+                        | caushell_types::ShellScalarValue::RuntimeProduced { value, .. } => {
+                            self.expression(&value, false, depth + 1)
+                        }
+                        _ => self.result.unresolved = true,
+                    }
+                }
+            }
             Some(SessionValue::OpaqueDynamic { repr }) => {
                 if let Some(values) = caushell_parse::static_array_values(repr) {
                     if let Ok(index) = index.trim().parse::<usize>() {

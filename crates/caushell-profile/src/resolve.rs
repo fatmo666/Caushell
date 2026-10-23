@@ -332,7 +332,19 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
     module_runtime: Option<&str>,
     proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
 ) -> ResolveInvocationResult<'a> {
-    let recovered_command = recover_ifs_field_split_command(command, bindings);
+    let dialect;
+    let bindings = if bindings.shell_kind() != context.shell_kind {
+        dialect = {
+            let mut value = bindings.clone();
+            value.set_shell_kind(context.shell_kind);
+            value
+        };
+        &dialect
+    } else {
+        bindings
+    };
+    let recovered_command = materialize_structured_command(command, bindings)
+        .or_else(|| recover_ifs_field_split_command(command, bindings));
     let command = recovered_command.as_ref().unwrap_or(command);
     let executable_word = || {
         command.command_name.as_ref().map(|text| ExecutableWord {
@@ -947,6 +959,58 @@ fn recover_ifs_field_split_command(
         recovered.tokens.push(token);
     }
 
+    Some(recovered)
+}
+
+pub fn materialize_structured_command(
+    command: &CommandFact,
+    bindings: &SessionBindings,
+) -> Option<CommandFact> {
+    if command.command_name_runtime_data {
+        return None;
+    }
+    let word = command.command_name.as_deref()?;
+    let reference = word.strip_prefix('"')?.strip_suffix('"')?;
+    if !matches!(
+        crate::exact_shell_parameter_reference(reference),
+        Some(crate::ShellParameterReference::ArrayValues { .. })
+    ) {
+        return None;
+    }
+    let fields =
+        crate::materialize_exact_shell_parameter_reference_fields(reference, true, bindings)?;
+    if fields.iter().any(|f| {
+        !matches!(
+            f.resolution,
+            ValueMaterialization::ResolvedExactScalar { .. }
+        )
+    }) {
+        return None;
+    }
+    let (executable, arguments) = fields.split_first()?;
+    if executable.text.is_empty() {
+        return None;
+    }
+    let mut recovered = command.clone();
+    recovered.command_name = Some(executable.text.clone());
+    recovered.command_name_runtime_data = true;
+    let mut dashdash = false;
+    recovered.tokens = arguments
+        .iter()
+        .map(|field| {
+            let mut token = recovered_field_token(field.text.clone(), &command.span, &mut dashdash);
+            token.runtime_data = true;
+            token.quoted = true;
+            token.node_kind = "runtime_scalar".into();
+            token
+        })
+        .collect();
+    recovered
+        .tokens
+        .extend(command.tokens.iter().cloned().map(|mut token| {
+            token.kind = classify_recovered_arg_kind(&token.text, &mut dashdash);
+            token
+        }));
     Some(recovered)
 }
 

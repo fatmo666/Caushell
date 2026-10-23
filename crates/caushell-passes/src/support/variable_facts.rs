@@ -152,7 +152,7 @@ pub(super) fn declaration_arrays(
             let element_shape = declaration
                 .assignments
                 .iter()
-                .find(|a| a.name == *name)
+                .rfind(|a| a.name == *name)
                 .filter(|a| {
                     a.operator == caushell_parse::AssignmentOperator::Assign
                         && a.value.node_kind == "array"

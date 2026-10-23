@@ -522,6 +522,8 @@ impl RuntimeVariableContext<'_> {
         // A (...) write is visible only to later commands inside that scope.
         let visible = runtime_write_visible(command, parsed, target_start);
         let (expanded, _) = expand_alias_chain(command, self.request.shell_kind, &self.aliases, 8);
+        let expanded = caushell_profile::materialize_structured_command(&expanded, bindings)
+            .unwrap_or(expanded);
         let old_aliases = capture.as_ref().map(|_| self.aliases.clone());
         apply_alias_command(&mut self.aliases, command, self.request.sequence_no);
         if visible && let (Some(capture), Some(old)) = (capture.as_mut(), old_aliases) {
@@ -572,7 +574,13 @@ impl RuntimeVariableContext<'_> {
         let name = expanded
             .command_name
             .as_deref()
-            .and_then(|name| materialize_command_name(name, bindings))
+            .and_then(|name| {
+                if expanded.command_name_runtime_data {
+                    Some(name.to_owned())
+                } else {
+                    materialize_command_name(name, bindings)
+                }
+            })
             .or_else(|| expanded.command_name.clone());
         let result = resolve_invocation_artifact_with_bindings(
             self.registry,
@@ -620,6 +628,7 @@ impl RuntimeVariableContext<'_> {
                         bindings
                             .insert_opaque_dynamic(&variable, "uncertain function runtime effects");
                     }
+                    bindings.mark_shell_state_uncertain("uncertain function runtime effects");
                 }
                 return None;
             }
@@ -636,6 +645,7 @@ impl RuntimeVariableContext<'_> {
                     touched.insert(name.clone());
                     bindings.insert_opaque_dynamic(&name, "variable effect replay depth exceeded");
                 }
+                bindings.mark_shell_state_uncertain("variable effect replay depth exceeded");
                 return None;
             }
             let Ok(body) = caushell_parse::parse_command(&function.body, self.request.shell_kind)
@@ -784,7 +794,23 @@ impl RuntimeVariableContext<'_> {
                 }
                 touched.insert(variable.clone());
                 if command.guarded || command.control_flow_span.is_some() {
-                    bindings.insert_opaque_dynamic(&variable, "conditional function runtime write");
+                    if matches!(
+                        bindings.get(&variable).map(|b| b.value),
+                        Some(SessionValue::Structured(_))
+                    ) || matches!(
+                        result.bindings.get(&variable).map(|b| b.value),
+                        Some(SessionValue::Structured(_))
+                    ) {
+                        bindings.insert_structured(
+                            &variable,
+                            caushell_types::StructuredShellValue::Unknown {
+                                reason: "conditional structured function write".into(),
+                            },
+                        );
+                    } else {
+                        bindings
+                            .insert_opaque_dynamic(&variable, "conditional function runtime write");
+                    }
                 } else if result
                     .bindings
                     .runtime_variable_target_is_unresolved(&variable)
@@ -794,6 +820,13 @@ impl RuntimeVariableContext<'_> {
                     match value.value {
                         SessionValue::ExactScalar(value) => {
                             bindings.insert_exact_scalar(&variable, value)
+                        }
+                        SessionValue::Structured(value) => {
+                            super::structured_variables::insert(
+                                bindings,
+                                &variable,
+                                SessionValue::structured(value.clone()),
+                            );
                         }
                         _ => bindings.insert_opaque_dynamic(&variable, "function runtime write"),
                     }
@@ -819,17 +852,6 @@ impl RuntimeVariableContext<'_> {
                     caushell_profile::EnvironmentValueRef::Absent => bindings.unexport(&variable),
                     caushell_profile::EnvironmentValueRef::Unknown => {}
                 }
-            }
-            // Nameref targets are not necessarily present in assignment facts.
-            if visible && has_nameref_declaration(&body) {
-                let names: Vec<_> = bindings.variable_names().map(str::to_owned).collect();
-                for name in names {
-                    if function_variable_escapes_in_frame(&body, &name, Some(bindings)) {
-                        bindings.insert_opaque_dynamic(&name, "function nameref write target");
-                        touched.insert(name);
-                    }
-                }
-                bindings.forget_variable_presence();
             }
             return (self.can_prove_termination && terminates && !command.conditional_execution)
                 .then(|| termination_fence(command, parsed))
@@ -898,8 +920,26 @@ impl RuntimeVariableContext<'_> {
             super::variable_facts::invalidate_all(bindings, touched);
         }
         for variable in writes.names.into_iter().filter(|_| visible) {
-            touched.insert(variable.clone());
-            bindings.insert_opaque_dynamic(&variable, "runtime variable write (possibly unset)");
+            let target = caushell_profile::shell_write_target(
+                bindings,
+                caushell_types::ShellReferenceTarget::Variable {
+                    name: variable.clone(),
+                },
+            );
+            match target {
+                Ok(target) => {
+                    let target = caushell_profile::reference_name(&target)
+                        .unwrap()
+                        .to_owned();
+                    touched.insert(target.clone());
+                    bindings
+                        .insert_opaque_dynamic(&target, "runtime variable write (possibly unset)");
+                }
+                Err(reason) => {
+                    touched.extend(bindings.variable_names().map(str::to_owned));
+                    bindings.mark_shell_state_uncertain(reason);
+                }
+            }
         }
         (terminates && !command.conditional_execution)
             .then(|| termination_fence(command, parsed))
@@ -966,10 +1006,9 @@ pub(crate) fn declaration_uses_nameref(d: &caushell_parse::DeclarationCommandFac
         caushell_parse::DeclarationCommandKind::Declare
             | caushell_parse::DeclarationCommandKind::Typeset
             | caushell_parse::DeclarationCommandKind::Local
-    ) && d
-        .options
-        .iter()
-        .any(|o| o.starts_with('-') && !o.starts_with("--") && o[1..].contains('n'))
+    ) && d.options.iter().any(|o| {
+        (o.starts_with('-') || o.starts_with('+')) && !o.starts_with("--") && o[1..].contains('n')
+    })
 }
 
 pub(crate) fn function_variable_escapes(body: &ParsedCommandArtifact, variable: &str) -> bool {

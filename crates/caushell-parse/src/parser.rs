@@ -1559,6 +1559,21 @@ fn parse_declaration_command(node: Node<'_>, source: &[u8]) -> DeclarationComman
             }
             _ => {
                 if let Some((text, _quoted)) = extract_token_text(child, source) {
+                    if options_open
+                        && text.starts_with('+')
+                        && text.len() > 1
+                        && matches!(
+                            kind,
+                            Some(
+                                DeclarationCommandKind::Declare
+                                    | DeclarationCommandKind::Typeset
+                                    | DeclarationCommandKind::Local
+                            )
+                        )
+                    {
+                        options.push(text);
+                        continue;
+                    }
                     collect_state_builtin_argument(
                         text,
                         &mut options_open,
@@ -2042,6 +2057,32 @@ pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::Arithm
                     }]
                 }
             }
+            "unary_expression" | "postfix_expression"
+                if all_children(node)
+                    .iter()
+                    .any(|n| matches!(source_text(*n, source).as_str(), "++" | "--")) =>
+            {
+                let Some(target) = all_children(node).into_iter().find(|n| n.is_named()) else {
+                    return vec![R::Unsupported(source_text(node, source))];
+                };
+                if target.kind() == "subscript" {
+                    let mut result = collect(target, source, budget);
+                    if let Some(R::Array { name, index, .. }) = result.first() {
+                        result.push(R::Array {
+                            name: name.clone(),
+                            index: index.clone(),
+                            read_value: false,
+                        });
+                    }
+                    result
+                } else {
+                    vec![R::Assignment {
+                        name: source_text(target, source),
+                        reads_previous: true,
+                        value: Vec::new(),
+                    }]
+                }
+            }
             "arithmetic_expansion" => {
                 let text = source_text(node, source);
                 match text.strip_prefix("$((").and_then(|s| s.strip_suffix("))")) {
@@ -2183,6 +2224,75 @@ pub fn static_array_entry_values(text: &str) -> Option<Vec<String>> {
                 .child_by_field_name("value")
                 .map(|v| decode_static_word_node(v, value_source.as_bytes()))
                 .unwrap_or_else(|| Some(String::new()))
+        })
+        .collect()
+}
+
+pub fn array_assignment_entries(text: &str) -> Option<Vec<(Option<String>, AssignmentValueFact)>> {
+    if text.len() > 8192 {
+        return None;
+    }
+    let source = format!("__array__={text}");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(ShellKind::Bash).ok()?)
+        .ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    if root.has_error() || root.named_child_count() != 1 {
+        return None;
+    }
+    let array = root.named_child(0)?.child_by_field_name("value")?;
+    if array.kind() != "array"
+        || array.end_byte() != source.len()
+        || array.named_child_count() > 256
+    {
+        return None;
+    }
+    all_children(array)
+        .into_iter()
+        .filter(|n| n.is_named() && n.kind() != "comment")
+        .map(|element| {
+            let spelling = source_text(element, source.as_bytes());
+            if !spelling.starts_with('[') {
+                return Some((
+                    None,
+                    assignment_value_fact_from_node(element, source.as_bytes()),
+                ));
+            }
+            let children = all_children(element);
+            let close = children
+                .iter()
+                .position(|c| c.kind() == "word" && source_text(*c, source.as_bytes()) == "]")?;
+            let next = children.get(close + 1)?;
+            if next.start_byte() != children[close].end_byte()
+                || !source_text(*next, source.as_bytes()).starts_with('=')
+            {
+                return None;
+            }
+            let key = source[element.start_byte() + 1..children[close].start_byte()].to_owned();
+            let rhs = &source[next.start_byte() + 1..element.end_byte()];
+            let value_source = format!("__value__={rhs}");
+            let value_tree = parser.parse(&value_source, None)?;
+            let r = value_tree.root_node();
+            if r.has_error() || r.named_child_count() != 1 {
+                return None;
+            }
+            let assignment = r.named_child(0)?;
+            if assignment.end_byte() != value_source.len() {
+                return None;
+            }
+            let value = assignment
+                .child_by_field_name("value")
+                .map(|v| assignment_value_fact_from_node(v, value_source.as_bytes()))
+                .unwrap_or(AssignmentValueFact {
+                    text: String::new(),
+                    quoted: false,
+                    node_kind: "empty".into(),
+                    span: span_for(assignment),
+                    command_substitutions: Vec::new(),
+                });
+            Some((Some(key), value))
         })
         .collect()
 }

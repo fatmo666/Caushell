@@ -36,6 +36,7 @@ mod redirection;
 mod runtime_variable_overlay;
 mod source_state;
 mod state_capture;
+mod structured_variables;
 pub(crate) use runtime_variable_overlay::{
     declaration_uses_nameref, function_variable_escapes, function_variable_escapes_in_frame,
     has_nameref_declaration, runtime_source_bindings_before_span, runtime_write_visible,

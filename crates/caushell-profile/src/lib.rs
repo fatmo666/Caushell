@@ -34,7 +34,13 @@ mod runtime_variables;
 mod sed_payload;
 mod stdout_records;
 mod stream_growth;
+mod structured_parameters;
 mod structured_projection;
+pub use structured_parameters::{
+    ResolvedShellValue, reference_name, resolve_shell_container, resolve_shell_reference,
+    shell_array_index, shell_array_key, shell_identifier, shell_nameref_target,
+    shell_reference_target, shell_write_target,
+};
 mod types;
 pub use raw::RawDispatchOverride;
 pub use types::DispatchOverride;
@@ -73,7 +79,8 @@ pub use materialize::{
     exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,
     materialize_projected_invocation, materialize_recursive_payload_candidate,
-    materialize_shell_assignment_value, parse_shell_parameter_reference_after_dollar,
+    materialize_shell_array_element, materialize_shell_assignment_value,
+    parse_shell_parameter_reference_after_dollar, shell_parameter_dependencies,
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
@@ -126,11 +133,11 @@ pub use recursive::{
 pub use registry::{ProfileRegistry, RegistryError, RegistryLookupResult};
 pub use resolve::{
     ExecutableWord, ResolveInvocationArtifactResult, ResolveInvocationResult, ResolvedInvocation,
-    ResolvedInvocationArtifact, resolve_invocation, resolve_invocation_artifact,
-    resolve_invocation_artifact_with_bindings, resolve_invocation_artifact_with_stdout_proofs,
-    resolve_invocation_artifact_with_summary, resolve_invocation_in_namespace,
-    resolve_invocation_in_namespace_with_stdout_proofs, resolve_invocation_with_bindings,
-    resolve_invocation_with_summary,
+    ResolvedInvocationArtifact, materialize_structured_command, resolve_invocation,
+    resolve_invocation_artifact, resolve_invocation_artifact_with_bindings,
+    resolve_invocation_artifact_with_stdout_proofs, resolve_invocation_artifact_with_summary,
+    resolve_invocation_in_namespace, resolve_invocation_in_namespace_with_stdout_proofs,
+    resolve_invocation_with_bindings, resolve_invocation_with_summary,
 };
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
 pub use types::ArgumentControlVocabulary;

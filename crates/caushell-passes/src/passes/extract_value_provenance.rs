@@ -662,6 +662,44 @@ fn collect_variable_expansion_provenance_mutations(
             if arg.implicit_input_source.is_some() {
                 continue;
             }
+            if let Some(original) = resolved
+                .projection
+                .args
+                .iter()
+                .find(|original| original.span == arg.span)
+            {
+                for name in
+                    caushell_profile::shell_parameter_dependencies(original, record.bindings())
+                {
+                    let Some(value) = record.bindings().get(&name) else {
+                        continue;
+                    };
+                    let binding = SessionVariableBinding::new(
+                        &name,
+                        value.value.clone(),
+                        matches!(
+                            record.bindings().environment_value(&name),
+                            caushell_profile::EnvironmentValueRef::Present(_)
+                        ),
+                        sequence_no,
+                    );
+                    mutations.push(PendingMutation::AddProvenanceArtifact {
+                        source_node_id: record.source_node_id().clone(),
+                        node_id: NodeId::new(format!(
+                            "artifact:reference-dependency:{}:{name}",
+                            record.source_node_id().0
+                        )),
+                        artifact: variable_value_artifact(&binding),
+                        relation: EdgeKind::Consumes,
+                        semantics: ProvenanceEdgeSemantics::Consume {
+                            consume_kind: ProvenanceConsumeKind::VariableExpansion,
+                            slot_name: slot_name_for_arg(&resolved.bound, &arg.span),
+                            normalized_command_name: Some(resolved.normalized_command_name.clone()),
+                            domain_label: None,
+                        },
+                    });
+                }
+            }
             let Some(expansion) =
                 variable_expansion(summary, record.bindings(), resolution, sequence_no)
             else {
