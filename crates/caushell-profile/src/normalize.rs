@@ -142,6 +142,26 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         ));
     }
     let modifiers = normalize_modifiers(raw.modifiers)?;
+    if (raw.option_environment.is_some() || raw.archive_extraction.is_some())
+        && (raw.option_scope != crate::RawOptionScopePolicy::PermutedOptions
+            || raw.subcommands.is_some())
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "native archive options require a flat permuted_options grammar".into(),
+        ));
+    }
+    if raw.option_environment.as_ref().is_some_and(|input| {
+        input.name.is_empty()
+            || !input
+                .name
+                .bytes()
+                .enumerate()
+                .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+    }) {
+        return Err(NormalizeError::InvalidOptionScope(
+            "option_environment requires an environment variable name".into(),
+        ));
+    }
     let mut environment_inputs = Vec::new();
     let mut environment_names = BTreeSet::new();
     let declared_names = declared_parameter_names(&forms, &modifiers, &BTreeSet::new());
@@ -330,6 +350,8 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 && effect.host_risk.semantic_class.is_none()
         };
         if subcommands.is_some()
+            || raw.option_environment.is_some()
+            || raw.archive_extraction.is_some()
             || !environment_inputs.is_empty()
             || !raw.argument_regions.is_empty()
             || !argument_files.is_empty()
@@ -544,6 +566,8 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         platform: normalize_platform(raw.platform),
         argument_files,
         environment_inputs,
+        option_environment: raw.option_environment,
+        archive_extraction: raw.archive_extraction,
         implicit_config_files: raw.implicit_config_files,
         configuration_files: raw.configuration_files,
         argument_regions,
@@ -4189,6 +4213,8 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            option_environment: None,
+            archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
             argument_files: Vec::new(),
@@ -4389,6 +4415,8 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            option_environment: None,
+            archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
             argument_files: Vec::new(),
@@ -4507,6 +4535,8 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            option_environment: None,
+            archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
             argument_files: Vec::new(),
@@ -4625,6 +4655,8 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            option_environment: None,
+            archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
             argument_files: Vec::new(),
@@ -4856,6 +4888,8 @@ mod tests {
             word_context: Default::default(),
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
+            option_environment: None,
+            archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
             argument_files: Vec::new(),

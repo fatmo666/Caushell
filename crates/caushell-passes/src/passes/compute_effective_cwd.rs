@@ -1943,6 +1943,14 @@ fn bound_cwd_anchor_override(
     base: &CwdState,
     home: Option<&str>,
 ) -> Option<CwdState> {
+    if bound.archive_extraction.is_some()
+        && bound.effects.iter().any(|effect| {
+            matches!(&effect.target, caushell_profile::EffectTarget::DerivedPath(target)
+            if target.rule == caushell_types::DerivedPathRule::ArchiveMembers)
+        })
+    {
+        return None;
+    }
     let value = bound
         .bound_parameters
         .iter()

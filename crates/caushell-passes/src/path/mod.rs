@@ -3,6 +3,7 @@ mod cwd;
 pub(crate) use configured::resolve_configured_path;
 pub(crate) use cwd::{effective_cwd_cases, project_path_at_cwd};
 pub(crate) use extract::collect_invocation_mutation_targets;
+pub(crate) mod archive;
 mod expression;
 mod extract;
 mod glob;

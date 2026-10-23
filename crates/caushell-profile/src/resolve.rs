@@ -431,6 +431,19 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         }
     }
     let mut materialized_projection = materialize_projected_invocation(&projection, bindings);
+    if let Err(reason) =
+        crate::option_environment::prepend(profile, command, bindings, &mut materialized_projection)
+    {
+        return ResolveInvocationResult::SelectionError {
+            normalized_command_name: normalized_command_name.clone(),
+            gap_kind: ResolveGapKind::OpaqueInvocation,
+            error: BindError::UnsupportedProfileFeature {
+                command_name: normalized_command_name,
+                reason,
+            },
+            partial_bound: None,
+        };
+    }
     materialized_projection
         .invocation
         .apply_option_prefixes(profile.option_prefixes);

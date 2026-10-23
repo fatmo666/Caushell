@@ -455,6 +455,7 @@ impl Evidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    ArchiveMembers(ArchiveMembersEvidence),
     ToolConfigInput(ToolConfigInputEvidence),
     ToolConfigParse(ToolConfigParseEvidence),
     UnboundedFileWrite(UnboundedFileWriteEvidence),
@@ -473,6 +474,27 @@ pub enum EvidenceKind {
     TaintedExecutionSource(TaintedExecutionSourceEvidence),
     TaintedExecutionUnresolvedOrigin(TaintedExecutionUnresolvedOriginEvidence),
     TaintedExecutionBudgetExceeded(TaintedExecutionBudgetExceededEvidence),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveMembersEvidence {
+    pub node_id: String,
+    pub effect_index: usize,
+    pub complete: bool,
+    pub file: Option<crate::FileContentObservation>,
+    pub namespace_observations: Vec<crate::FilesystemObservation>,
+    pub members: Vec<ArchiveMemberEvidence>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveMemberEvidence {
+    pub order: usize,
+    pub name: String,
+    pub typeflag: u8,
+    pub size: u64,
+    pub link_name: String,
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

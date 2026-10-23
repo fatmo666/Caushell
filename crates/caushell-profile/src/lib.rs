@@ -1,3 +1,4 @@
+mod archive;
 mod argument_ownership;
 mod argument_regions;
 mod argument_structure;
@@ -9,6 +10,8 @@ mod configuration;
 mod dispatch;
 mod dispatch_string;
 mod environment_inputs;
+mod option_environment;
+pub use archive::{ArchiveInvocation, gnu_tar_extraction};
 pub use configuration::{
     ConfigurationOption, ConfigurationParse, ConfigurationParseError, mark_configuration_pending,
     parse_configuration,
@@ -155,6 +158,7 @@ pub use types::PathScope;
 pub use types::StdoutPathFormatSyntax;
 pub use types::StdoutScalarShape;
 pub use types::WordContext;
+pub use types::{ArchiveExtraction, OptionEnvironment, OptionEnvironmentSyntax};
 pub use types::{
     ArgumentBindingSource, ArgumentFileRule, ArgumentRegion, ArgumentRegionTerminator, BindingSpec,
     BoundArgumentMaterialization, BoundImplicitArgumentOrigin, BoundImplicitInput, BoundInvocation,

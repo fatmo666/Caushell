@@ -603,7 +603,7 @@ fn attach_file_effects(bound: &mut BoundInvocation, path: Option<String>) {
     }
 }
 
-fn known_content(
+pub(super) fn known_content(
     session: SessionView<'_>,
     ctx: &RunnerContext,
     registry: &ProfileRegistry,

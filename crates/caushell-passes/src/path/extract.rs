@@ -430,11 +430,27 @@ fn effect_path_scope(
     }
 }
 
+fn effect_paths_slot(bound: &BoundInvocation, index: usize) -> String {
+    if bound.bound_archive_members.contains_key(&index) {
+        format!("archive_members_{index}")
+    } else {
+        format!("stdin_paths_{index}")
+    }
+}
+
 fn path_list_resolutions(
     invocation: &BoundInvocation,
     effect_index: usize,
     cwd: &str,
 ) -> Option<Vec<(PathResolution, bool)>> {
+    if let Some(paths) = invocation.bound_archive_members.get(&effect_index) {
+        return Some(
+            paths
+                .iter()
+                .map(|path| (PathResolution::Concrete { path: path.clone() }, false))
+                .collect(),
+        );
+    }
     invocation.effects.get(effect_index)?.path_list.as_ref()?;
     Some(match invocation.bound_path_lists.get(&effect_index) {
         Some(caushell_profile::BoundPathList::Paths(paths)) => paths
@@ -540,7 +556,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                 MutationTargetCandidate {
                     effect_index,
                     operation: effect.kind,
-                    slot_name: format!("stdin_paths_{effect_index}"),
+                    slot_name: effect_paths_slot(bound, effect_index),
                     resolution: effect_path_scope(effect, bound, resolution),
                     cwd_dependent,
                     implicit_incidental_cache: false,
@@ -1141,7 +1157,7 @@ fn collect_effect_target_path_facts(
                     .map(|(resolution, cwd_dependent)| PathFactCandidate {
                         source_node_id: record.source_node_id().clone(),
                         command_index: record.command_index(),
-                        slot_name: format!("stdin_paths_{effect_index}"),
+                        slot_name: effect_paths_slot(invocation, effect_index),
                         semantic_slot: None,
                         normalized_command_name: normalized_command_name.to_string(),
                         resolution: effect_path_scope(effect, invocation, resolution),

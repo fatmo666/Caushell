@@ -266,7 +266,11 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                     }
                     let start = inputs.len();
                     for target in targets.iter().filter(|t| t.effect_index == effect_index) {
-                        let access = if matches!(
+                        let archive_members =
+                            bound.bound_archive_members.contains_key(&effect_index);
+                        let access = if archive_members {
+                            PathTargetAccess::Follow
+                        } else if matches!(
                             operation,
                             PathTargetOperation::Delete | PathTargetOperation::MoveSource
                         ) {
@@ -334,6 +338,11 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             spelling,
                         );
                         input.fact.metadata_mutation = target.metadata_mutation.clone();
+                        if archive_members {
+                            // The complete archive proof excludes link/special
+                            // entries; these writes cannot redirect later members.
+                            input.namespace_write = false;
+                        }
                         input.cwd_dependent = target.cwd_dependent;
                         input.fact.implicit_incidental_cache = target.implicit_incidental_cache;
                         if not_applicable {
@@ -367,6 +376,10 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                         let absent = path_target_is_inapplicable(bound, &effect.target)
                             || matches!(effect.target, EffectTarget::ConfiguredPath(_))
                             || matches!(bound.bound_path_lists.get(&effect_index), Some(caushell_profile::BoundPathList::Paths(paths)) if paths.is_empty())
+                            || bound
+                                .bound_archive_members
+                                .get(&effect_index)
+                                .is_some_and(Vec::is_empty)
                             || (effect.path_access
                                 == Some(caushell_profile::PathAccessKind::ContentOpen)
                                 && matches!(&effect.target, EffectTarget::Slot(slot) if bound.bound_parameters.iter()

@@ -2,6 +2,7 @@ mod analysis_budget;
 mod approval;
 mod decision;
 mod evidence;
+pub use evidence::{ArchiveMemberEvidence, ArchiveMembersEvidence};
 mod file_content;
 pub use file_content::{
     FileContentIdentity, FileContentObservation, FileContentSource, FileContentStatus,

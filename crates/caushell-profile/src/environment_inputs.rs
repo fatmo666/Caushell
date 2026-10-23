@@ -12,6 +12,23 @@ pub(crate) fn attach(
     command: &caushell_parse::CommandFact,
     bindings: &SessionBindings,
 ) -> BoundInvocation {
+    bound.archive_extraction = profile.archive_extraction;
+    if let Some(input) = &profile.option_environment {
+        let prefix = crate::materialize_prefix_environment(command, bindings);
+        if !prefix.iter().any(|(name, _)| name == &input.name)
+            && matches!(
+                bindings.environment_value(&input.name),
+                EnvironmentValueRef::Unknown
+            )
+        {
+            bound.operation_semantics_unresolved = true;
+            bound.residuals.push(crate::Residual::new(
+                crate::ResidualKind::UnboundControlSurface,
+                crate::ResidualSurface::Control,
+                format!("{} option environment is not observed", input.name),
+            ));
+        }
+    }
     if profile.environment_inputs.is_empty() {
         return bound;
     }

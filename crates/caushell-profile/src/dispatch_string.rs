@@ -33,7 +33,10 @@ pub(crate) fn project_command_string(
     }
 }
 
-fn gnu_wordsplit(text: &str) -> Option<Vec<String>> {
+pub(crate) fn gnu_wordsplit(text: &str) -> Option<Vec<String>> {
+    if text.len() > MAX_COMMAND_BYTES || text.contains('\0') {
+        return None;
+    }
     let mut input = text.chars().peekable();
     let mut quote = None;
     let mut word = String::new();

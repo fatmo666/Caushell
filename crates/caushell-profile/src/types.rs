@@ -33,6 +33,25 @@ pub enum ArgumentOwnership {
 
 pub type ExtensionMap = BTreeMap<String, JsonValue>;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionEnvironment {
+    pub name: String,
+    pub syntax: OptionEnvironmentSyntax,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionEnvironmentSyntax {
+    GnuTar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveExtraction {
+    GnuTar,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommandName(String);
 
@@ -1973,6 +1992,7 @@ impl BoundImplicitInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundInvocation {
+    pub archive_extraction: Option<ArchiveExtraction>,
     pub command_name: CommandName,
     pub subcommand_path: Vec<String>,
     pub form_id: FormId,
@@ -1998,6 +2018,8 @@ pub struct BoundInvocation {
     /// Effect-indexed filename records. Absent means unknown; Paths(empty)
     /// means a proven empty list. Raw effect declarations remain intact.
     pub bound_path_lists: std::collections::BTreeMap<usize, BoundPathList>,
+    /// Complete, effect-indexed archive output paths in member order.
+    pub bound_archive_members: BTreeMap<usize, Vec<String>>,
     /// A declared operation may have additional, unmodeled semantics.
     pub operation_semantics_unresolved: bool,
 }
@@ -2030,6 +2052,7 @@ impl BoundInvocation {
     }
     pub fn new(command_name: CommandName, form_id: FormId) -> Self {
         Self {
+            archive_extraction: None,
             command_name,
             subcommand_path: Vec::new(),
             form_id,
@@ -2049,6 +2072,7 @@ impl BoundInvocation {
             effects: Vec::new(),
             residuals: Vec::new(),
             bound_path_lists: std::collections::BTreeMap::new(),
+            bound_archive_members: BTreeMap::new(),
             operation_semantics_unresolved: false,
         }
     }
@@ -2101,6 +2125,8 @@ pub struct CommandProfile {
     pub platform: PlatformConstraints,
     pub argument_files: Vec<ArgumentFileRule>,
     pub environment_inputs: Vec<EnvironmentInput>,
+    pub option_environment: Option<OptionEnvironment>,
+    pub archive_extraction: Option<ArchiveExtraction>,
     pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub configuration_files: Option<ConfigurationFileContract>,
     pub argument_regions: Vec<ArgumentRegion>,
@@ -2177,6 +2203,8 @@ impl CommandProfile {
             platform: PlatformConstraints::default(),
             argument_files: Vec::new(),
             environment_inputs: Vec::new(),
+            option_environment: None,
+            archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
             argument_regions: Vec::new(),

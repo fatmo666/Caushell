@@ -19,6 +19,8 @@ platform:
 
 option_scope: permuted_options
 opaque_on_unresolved: true
+option_environment: {name: TAR_OPTIONS, syntax: gnu_tar}
+archive_extraction: gnu_tar
 
 forms:
   # GNU rmt transport is a remote execution/transfer entrance, not a local
@@ -565,11 +567,11 @@ extensions:
     - https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/src/system.c/
     - https://sources.debian.org/src/tar/1.35%2Bdfsg-3.1/lib/wordsplit.c/
   caushell.profile/known_limitations:
-    - Archive member filters are plain-value selectors, not explicit write paths; extracted member outputs are modeled as unresolved derived archive members without archive content inspection.
+    - Archive member filters are plain-value selectors, not explicit write paths. Complete local uncompressed USTAR/GNU regular-file and directory archives without selection or transforms admit bounded member target proofs; other extraction shapes retain unknown writes.
     - Common old-style create, extract, list, append, update, concatenate and compare words containing only declared flag-only letters and one trailing archive operand are supported. The old word must be the actual first argv item. Other argument-taking old-style letters still require an arity-aware projection; this is not a complete old-option parser.
     - The existing permuted option scanner owns modern short/long operands, including options after filenames and clusters after prior option operands. No tar-name branch is added to the binder. Archive metadata options do not mutate the ownership or mode of host input files.
-    - A literal archive dash or file-list dash is a stream marker, not a file named dash. Missing -f leaves TAPE and the compiled default unknown; a create-default invocation retains an unknown write rather than assuming stdout. Archive extraction keeps unknown member writes unless output is explicitly sent to stdout or a modeled callback.
-    - GNU names.c allows only file-selection directives in non-verbatim filename lists, not checkpoint or compression callbacks. Unknown list names, nested lists and directory changes remain unknown reads; list bytes are not executed, inspected or fabricated as literal paths. --remove-files with a list or directory rebasing retains unknown possible deletion targets. Ordered -C rebasing, list parsing modes and list contents are not statically expanded.
+    - A literal archive dash or file-list dash is a stream marker, not a file named dash. Missing -f leaves TAPE and the compiled default unknown; a create-default invocation retains an unknown write rather than assuming stdout.
+    - GNU names.c allows only file-selection directives in non-verbatim filename lists, not checkpoint or compression callbacks. Unknown list names, nested lists and list directory changes remain unknown reads; list bytes are not executed, inspected or fabricated as literal paths. --remove-files with a list or directory rebasing retains unknown possible deletion targets. File-list parsing modes and list contents are not statically expanded.
     - GNU tar 1.35 source runs compression, checkpoint exec and to-command strings through /bin/sh -c. Decompression uses GNU wordsplit with environment expansion and appends -d. The selected string modes are not interchangeable.
     - GNU wordsplit environment expansions remain explicit analysis gaps. No ambient environment or subprocess is consulted. Tool-generated TAR_* values are opaque only in the callback environment, not the caller shell.
-    - GNU colon archive addressing is remote unless --force-local. Remote rmt transport is an explicit opaque execution/transfer entrance and requires approval; --rsh-command is an executable locator, not shell code. Unused local helpers do not execute. Full rmt protocol, info scripts, implicit compression selection, TAR_OPTIONS, transforms and BSD tar dialect differences remain pending.
+    - GNU colon archive addressing is remote unless --force-local. Remote rmt transport is an explicit opaque execution/transfer entrance and requires approval; --rsh-command is an executable locator, not shell code. Unused local helpers do not execute. Full rmt protocol, info scripts, implicit compression selection, transforms and BSD tar dialect differences remain pending.
