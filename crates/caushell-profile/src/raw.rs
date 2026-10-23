@@ -912,6 +912,8 @@ pub enum RawProcessTargetKind {
 #[serde(deny_unknown_fields)]
 pub struct RawEffect {
     #[serde(default)]
+    pub runtime_input_binding: Option<crate::RuntimeInputBinding>,
+    #[serde(default)]
     pub input_scope: Option<crate::EndpointInputScope>,
     #[serde(default)]
     pub path_list: Option<crate::PathListContract>,

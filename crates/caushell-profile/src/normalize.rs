@@ -3006,6 +3006,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
             "subtree requires a slot/configured filesystem target, not a content open".into(),
         ));
     }
+    if raw.runtime_input_binding.is_some() && kind != EffectKind::BindVariableFromRuntimeInput {
+        return Err(NormalizeError::InvalidVariableTarget(
+            "runtime_input_binding requires bind_variable_from_runtime_input".into(),
+        ));
+    }
     if matches!(target, EffectTarget::VariableName(_))
         && kind != EffectKind::BindVariableFromRuntimeInput
     {
@@ -3106,6 +3111,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     };
 
     Ok(Effect {
+        runtime_input_binding: raw.runtime_input_binding,
         input_scope: raw.input_scope,
         path_list: raw.path_list,
         kind,
@@ -4240,6 +4246,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
                     kind: RawEffectKind::ExecutePayload,
@@ -4288,6 +4295,7 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 effects: vec![RawEffect {
+                    runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
                     kind: RawEffectKind::LoadConfig,
@@ -4430,6 +4438,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
                     kind: RawEffectKind::WritePath,
@@ -4547,6 +4556,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
                     kind: RawEffectKind::WritePath,
@@ -4735,6 +4745,7 @@ mod tests {
                 ],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
                     kind: RawEffectKind::ChangeMode,
@@ -4893,6 +4904,7 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
                     kind: RawEffectKind::LoadInProcessCode,

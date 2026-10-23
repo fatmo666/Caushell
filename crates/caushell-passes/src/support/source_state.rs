@@ -142,6 +142,17 @@ pub(super) fn body(
         )
         .complete_text();
     }
+    path_content(session, registry, request, &path, scope, ancestors)
+}
+
+fn path_content(
+    session: QuerySession<'_>,
+    registry: &caushell_profile::ProfileRegistry,
+    request: &CheckRequest,
+    path: &str,
+    scope: &SourceStateScope,
+    ancestors: &[SourceStateScope],
+) -> Option<String> {
     let mut content = None;
     for scope in ancestors.iter().chain(std::iter::once(scope)) {
         content = Some(super::static_file_content_before_scoped_command(
@@ -150,7 +161,7 @@ pub(super) fn body(
             request,
             &scope.parsed,
             scope.before,
-            &path,
+            path,
             &scope.observations,
             &scope.cwds,
             content,
@@ -160,4 +171,109 @@ pub(super) fn body(
         super::StaticFileContent::Known(text) => Some(text),
         _ => None,
     }
+}
+
+pub(super) fn read_input(
+    session: QuerySession<'_>,
+    registry: &caushell_profile::ProfileRegistry,
+    request: &CheckRequest,
+    bindings: &SessionBindings,
+    scope: &SourceStateScope,
+    ancestors: &[SourceStateScope],
+) -> Option<String> {
+    let parsed = &scope.parsed;
+    let index = scope.before;
+    let super::EffectiveStdinSource::Redirect(redirect) =
+        super::effective_stdin_source(parsed, index)
+    else {
+        return None;
+    };
+    let redirect = parsed.redirections.get(redirect)?;
+    if redirect.parent_command_span.as_ref() != Some(&parsed.commands.get(index)?.span) {
+        return None; // A shared stream may already have been consumed.
+    }
+    let cwd = scope.cwd();
+    let caushell_runner::EffectiveCwd::Known(cwd) = cwd else {
+        return None;
+    };
+    let home = bindings.tilde_home_with_default(request.home.as_deref());
+    if redirect.kind == caushell_parse::RedirectionKind::HereString {
+        let content = redirect.content.as_ref()?;
+        if !content.quoted && content.text.starts_with('~') {
+            return None;
+        }
+        let value = caushell_profile::materialize_shell_assignment_value(
+            &content.text,
+            content.quoted,
+            &content.node_kind,
+            bindings,
+        )?;
+        if value.contains('\0') || value.len() > 65535 {
+            return None;
+        }
+        return Some(format!("{value}\n"));
+    }
+    if redirect.kind == caushell_parse::RedirectionKind::HereDoc
+        && !redirect.heredoc_start.as_ref().is_some_and(|s| s.quoted)
+        && redirect
+            .content
+            .as_ref()
+            .is_some_and(|c| c.text.contains(['$', '`']))
+    {
+        return None;
+    }
+    if redirect.kind == caushell_parse::RedirectionKind::File
+        && redirect
+            .target
+            .as_ref()
+            .is_some_and(|t| t.node_kind != "process_substitution")
+    {
+        if redirect.operator.as_deref() != Some("<") {
+            return None;
+        }
+        let target = redirect.target.as_ref()?;
+        if !target.quoted
+            && (target.text.contains(['*', '?', '[', '{'])
+                || caushell_parse::decode_static_shell_argument(
+                    &target.text,
+                    false,
+                    &target.node_kind,
+                )
+                .is_none())
+        {
+            return None;
+        }
+        let text = caushell_profile::materialize_shell_assignment_value(
+            &target.text,
+            target.quoted,
+            &target.node_kind,
+            bindings,
+        )?;
+        if text.contains('\0') {
+            return None;
+        }
+        let path =
+            crate::path::resolve_path_operand(&text, true, "raw_string", cwd.as_str(), home)?;
+        if caushell_query::IoTargetQuery::descriptor_alias(&path).is_some() {
+            return None;
+        }
+        return if path == "/dev/null" {
+            Some(String::new())
+        } else {
+            path_content(session, registry, request, &path, scope, ancestors)
+        };
+    }
+    super::static_stdin_evidence_for_scoped_command(
+        session,
+        parsed,
+        index,
+        request.sequence_no,
+        bindings,
+        bindings,
+        cwd.as_str(),
+        true,
+        home,
+        8,
+    )
+    .complete_text()
 }

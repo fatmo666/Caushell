@@ -61,6 +61,7 @@ forms:
       - kind: consume_stdin
         target: {kind: implicit_input, source: stdin_data}
       - kind: bind_variable_from_runtime_input
+        runtime_input_binding: shell_read
         target: {kind: slot, name: variable_name}
 
   - id: bind_reply_from_stdin
@@ -78,6 +79,7 @@ forms:
       - kind: consume_stdin
         target: {kind: implicit_input, source: stdin_data}
       - kind: bind_variable_from_runtime_input
+        runtime_input_binding: shell_read
         target: {kind: variable_name, name: REPLY}
 
   - id: bind_array_from_stdin
@@ -101,6 +103,7 @@ forms:
       - kind: consume_stdin
         target: {kind: implicit_input, source: stdin_data}
       - kind: bind_variable_from_runtime_input
+        runtime_input_binding: shell_read
         target: {kind: slot, name: array_name}
 
   # -u can select a descriptor other than stdin. Its contents are not probed
@@ -122,6 +125,7 @@ forms:
     effects:
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: descriptor}}
       - kind: bind_variable_from_runtime_input
+        runtime_input_binding: shell_read
         target: {kind: slot, name: variable_name}
 
   - id: bind_reply_from_descriptor
@@ -137,6 +141,7 @@ forms:
     effects:
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: descriptor}}
       - kind: bind_variable_from_runtime_input
+        runtime_input_binding: shell_read
         target: {kind: variable_name, name: REPLY}
 
   - id: bind_array_from_descriptor
@@ -152,6 +157,7 @@ forms:
     effects:
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: descriptor}}
       - kind: bind_variable_from_runtime_input
+        runtime_input_binding: shell_read
         target: {kind: slot, name: array_name}
 
   # A single statically known zero timeout polls input availability without

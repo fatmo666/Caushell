@@ -2363,6 +2363,117 @@ pub fn exhaustive_case_assignment_values(
 }
 
 /// A direct assignment statement dominates later positions in its own list.
+/// Whether reaching this use requires a successful status from the earlier command.
+pub fn command_success_required_before(source: &str, definition: usize, use_start: usize) -> bool {
+    if source.len() > 65536 || definition >= use_start || use_start >= source.len() {
+        return false;
+    }
+    let mut parser = Parser::new();
+    let Ok(language) = language_for(ShellKind::Bash) else {
+        return false;
+    };
+    if parser.set_language(&language).is_err() {
+        return false;
+    }
+    let Ok(tree) = parse_with_descriptor_ownership(&mut parser, source, &[]) else {
+        return false;
+    };
+    let root = tree.tree.root_node();
+    if root.has_error() {
+        return false;
+    }
+    let Some(mut producer) = root.descendant_for_byte_range(definition, definition) else {
+        return false;
+    };
+    while let Some(parent) = producer.parent() {
+        if matches!(
+            parent.kind(),
+            "while_statement" | "for_statement" | "c_style_for_statement"
+        ) {
+            return false;
+        }
+        producer = parent;
+    }
+    fn implies(node: Node<'_>, definition: usize, success: bool, source: &[u8], depth: u8) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        if node.kind() == "command" {
+            return success && node.start_byte() == definition;
+        }
+        let children = named_children_of_kind(node, None);
+        match node.kind() {
+            "redirected_statement" => children
+                .iter()
+                .find(|c| c.kind() == "command")
+                .is_some_and(|c| implies(*c, definition, success, source, depth - 1)),
+            "negated_command" => children
+                .first()
+                .is_some_and(|c| implies(*c, definition, !success, source, depth - 1)),
+            "list" if children.len() == 2 => {
+                let op = &source[children[0].end_byte()..children[1].start_byte()];
+                let op = std::str::from_utf8(op).unwrap_or("").trim();
+                if (op == "&&" && success) || (op == "||" && !success) {
+                    children
+                        .iter()
+                        .any(|c| implies(*c, definition, success, source, depth - 1))
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+    let mut node = root.descendant_for_byte_range(use_start, use_start);
+    while let Some(current) = node {
+        if let Some(parent) = current.parent() {
+            let children = named_children_of_kind(parent, None);
+            if parent.kind() == "list"
+                && children.len() == 2
+                && use_start >= children[1].start_byte()
+            {
+                let op = source[children[0].end_byte()..children[1].start_byte()].trim();
+                if matches!(op, "&&" | "||")
+                    && implies(children[0], definition, op == "&&", source.as_bytes(), 32)
+                {
+                    return true;
+                }
+            }
+            if matches!(parent.kind(), "if_statement" | "elif_clause") {
+                let all = all_children(parent);
+                if let Some(then) = all.iter().find(|c| c.kind() == "then") {
+                    let condition = children
+                        .iter()
+                        .rev()
+                        .find(|c| c.end_byte() <= then.start_byte() && c.kind() != "comment");
+                    let boundary = all.iter().find(|c| {
+                        matches!(c.kind(), "elif_clause" | "else_clause" | "fi")
+                            && c.start_byte() >= then.end_byte()
+                    });
+                    if use_start >= then.end_byte()
+                        && boundary.is_none_or(|c| use_start < c.start_byte())
+                        && condition
+                            .is_some_and(|c| implies(*c, definition, true, source.as_bytes(), 32))
+                    {
+                        return true;
+                    }
+                }
+            }
+            if matches!(
+                parent.kind(),
+                "subshell"
+                    | "command_substitution"
+                    | "process_substitution"
+                    | "function_definition"
+            ) {
+                break;
+            }
+        }
+        node = current.parent();
+    }
+    false
+}
+
 pub fn assignment_dominates_use(source: &str, definition: usize, use_start: usize) -> bool {
     if source.len() > 65536 || definition >= use_start || use_start >= source.len() {
         return false;

@@ -357,6 +357,21 @@ pub(super) fn apply_variable_overlay(
                         bindings.mark_unresolved_runtime_variable_target(name);
                     }
                 }
+                if declaration.kind != caushell_parse::DeclarationCommandKind::Export
+                    && declaration.options.iter().any(|option| {
+                        option.starts_with('-') && option[1..].contains(['i', 'l', 'u'])
+                    })
+                {
+                    for name in declaration
+                        .names
+                        .iter()
+                        .chain(declaration.assignments.iter().map(|a| &a.name))
+                    {
+                        bindings.mark_unresolved_runtime_variable_target(name);
+                        bindings
+                            .insert_opaque_dynamic(name, "unmodeled variable coercion attributes");
+                    }
+                }
                 if declaration.kind != caushell_parse::DeclarationCommandKind::Export {
                     for name in declaration
                         .names

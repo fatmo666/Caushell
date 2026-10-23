@@ -858,6 +858,7 @@ mod tests {
 
     fn dispatch_effect(command: &str, argv: &[&str], environment: &[&str]) -> Effect {
         Effect {
+            runtime_input_binding: None,
             input_scope: None,
             path_list: None,
             kind: EffectKind::DispatchCommand,

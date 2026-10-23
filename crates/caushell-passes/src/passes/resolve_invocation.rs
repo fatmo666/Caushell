@@ -327,12 +327,14 @@ impl SessionTransformPass for ResolveInvocationPass {
             caushell_query::QuerySession::new(staged_view.graph(), staged_view.summary()),
         );
         if let Some(reason) = final_overlay.bindings.shell_state_uncertainty() {
-            ctx.propose_decision(
-                self.name(),
-                caushell_types::RuleId::SelectionError,
-                caushell_types::Decision::NeedApproval,
-                reason,
-            );
+            if !final_overlay.bindings.shell_state_join_only() {
+                ctx.propose_decision(
+                    self.name(),
+                    caushell_types::RuleId::SelectionError,
+                    caushell_types::Decision::NeedApproval,
+                    reason,
+                );
+            }
             ctx.stage_mutation(PendingMutation::SetShellStateUncertainty {
                 reason: Some(reason.to_owned()),
                 observed_at: ctx.request().sequence_no,

@@ -1436,6 +1436,7 @@ pub struct HostRiskEffectMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Effect {
+    pub runtime_input_binding: Option<RuntimeInputBinding>,
     /// Optional byte-input contract for this network endpoint only.
     pub input_scope: Option<EndpointInputScope>,
     pub path_list: Option<PathListContract>,
@@ -1459,6 +1460,7 @@ impl Effect {
     pub fn new(kind: EffectKind) -> Self {
         Self {
             kind,
+            runtime_input_binding: None,
             input_scope: None,
             path_list: None,
             target: EffectTarget::None,
@@ -1485,6 +1487,12 @@ impl Effect {
         self.interactive_escape_surface = Some(surface);
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInputBinding {
+    ShellRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]

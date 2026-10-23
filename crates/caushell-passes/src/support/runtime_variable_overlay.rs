@@ -271,6 +271,7 @@ impl RuntimeVariableContext<'_> {
         positional_state: &mut Option<super::PositionalParameterMutation>,
         visible: bool,
         resolved: &caushell_profile::ResolvedInvocationArtifact,
+        target_start: usize,
     ) {
         if !visible {
             return;
@@ -380,11 +381,41 @@ impl RuntimeVariableContext<'_> {
         }
         // An unproved branch may execute or retain the entry state. Do not
         // install its definitions as unconditional caller facts.
-        if command.conditional_execution {
+        let successful_branch = caushell_parse::command_success_required_before(
+            &parsed.raw_command,
+            command.span.start_byte,
+            target_start,
+        );
+        if command.conditional_execution && !successful_branch {
+            if let (Some(parent), Some(child)) = (capture.as_mut(), result.state_capture.take()) {
+                parent.incomplete.extend(child.incomplete);
+                parent.merge(
+                    child
+                        .observations
+                        .into_iter()
+                        .filter_map(|mut observation| {
+                            if temporary_args
+                                && observation.kind == caushell_types::SafetyStateKind::Positionals
+                            {
+                                return None;
+                            }
+                            observation.source_end = command.span.end_byte;
+                            Some(observation)
+                        }),
+                );
+            }
             touched.extend(bindings.variable_names().map(str::to_owned));
             touched.extend(result.assigned);
             touched.extend(result.touched);
-            bindings.mark_shell_state_uncertain("conditional sourced shell state");
+            if result.bindings.shell_state_uncertainty().is_some()
+                && !result.bindings.shell_state_join_only()
+            {
+                bindings.mark_shell_state_uncertain(
+                    "conditional source has incomplete shell-state effects",
+                );
+            } else {
+                bindings.mark_shell_state_join("conditional sourced shell state");
+            }
             *positional_state = Some(super::PositionalParameterMutation::Forget);
             return;
         }
@@ -607,6 +638,7 @@ impl RuntimeVariableContext<'_> {
                 positional_state,
                 visible,
                 resolved,
+                target_start,
             );
             self.can_prove_termination = false;
             return None;
@@ -693,7 +725,11 @@ impl RuntimeVariableContext<'_> {
             };
             let mut result = child.replay(local, &body, usize::MAX, self.request.sequence_no);
             if visible && let Some(reason) = result.bindings.shell_state_uncertainty() {
-                bindings.mark_shell_state_uncertain(reason);
+                if result.bindings.shell_state_join_only() {
+                    bindings.mark_shell_state_join(reason);
+                } else {
+                    bindings.mark_shell_state_uncertain(reason);
+                }
             }
             if visible {
                 let before: BTreeMap<_, _> = bindings
@@ -916,6 +952,19 @@ impl RuntimeVariableContext<'_> {
                 .iter()
                 .any(|e| e.kind == caushell_profile::EffectKind::TerminateCurrentShell);
         let writes = runtime_variable_writes(&resolved.bound);
+        if visible
+            && !writes.unresolved
+            && caushell_parse::command_success_required_before(
+                &parsed.raw_command,
+                command.span.start_byte,
+                target_start,
+            )
+            && let Some(next) = self.read_bindings(command, &expanded, parsed, bindings, &resolved)
+        {
+            touched.extend(next.1);
+            *bindings = next.0;
+            return None;
+        }
         if visible && writes.unresolved {
             super::variable_facts::invalidate_all(bindings, touched);
         }
@@ -944,6 +993,129 @@ impl RuntimeVariableContext<'_> {
         (terminates && !command.conditional_execution)
             .then(|| termination_fence(command, parsed))
             .flatten()
+    }
+
+    fn read_bindings(
+        &self,
+        command: &CommandFact,
+        expanded: &CommandFact,
+        parsed: &ParsedCommandArtifact,
+        bindings: &SessionBindings,
+        resolved: &caushell_profile::ResolvedInvocationArtifact,
+    ) -> Option<(SessionBindings, BTreeSet<String>)> {
+        if !resolved.bound.effects.iter().any(|e| {
+            e.runtime_input_binding == Some(caushell_profile::RuntimeInputBinding::ShellRead)
+        }) {
+            return None;
+        }
+        let scope = super::source_state::SourceStateScope::new(
+            parsed,
+            command,
+            self.request,
+            &self.entry_cwd,
+            &self.observations,
+        )?;
+        let graph = caushell_graph::SessionGraph::new();
+        let summary = SessionSummary::new();
+        let session = self
+            .session
+            .unwrap_or_else(|| caushell_query::QuerySession::new(&graph, &summary));
+        let input = super::source_state::read_input(
+            session,
+            self.registry,
+            self.request,
+            bindings,
+            &scope,
+            &self.source_scopes,
+        )?;
+        let environment = super::command_environment_bindings(
+            bindings,
+            parsed,
+            &caushell_runner::ParsedCommandRef::new(usize::MAX, command.span.clone()),
+        );
+        let projection = materialize_projected_invocation(
+            &project_invocation(
+                expanded,
+                InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind),
+            ),
+            &environment,
+        );
+        if projection.shell_expansion_unresolved {
+            return None;
+        }
+        let args = projection
+            .invocation
+            .args
+            .iter()
+            .map(|a| a.text.clone())
+            .collect::<Vec<_>>();
+        let decoded = caushell_profile::decode_shell_read(
+            &resolved.bound,
+            &args,
+            &environment,
+            input.as_bytes(),
+        )?;
+        if !decoded.terminated {
+            return None;
+        }
+        let declared = runtime_variable_writes(&resolved.bound)
+            .names
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if decoded
+            .assignments
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect::<BTreeSet<_>>()
+            != declared
+        {
+            return None;
+        }
+        let mut next = bindings.clone();
+        let mut touched = BTreeSet::new();
+        for (name, value) in decoded.assignments {
+            if command.prefix_assignments.iter().any(|a| a.name == name) {
+                return None;
+            }
+            let target = caushell_profile::shell_write_target(
+                &next,
+                caushell_types::ShellReferenceTarget::Variable { name },
+            )
+            .ok()?;
+            let name = caushell_profile::reference_name(&target)?.to_owned();
+            if matches!(
+                next.get(&name).map(|v| v.value),
+                Some(
+                    SessionValue::OpaqueDynamic { .. }
+                        | SessionValue::RuntimeInput { .. }
+                        | SessionValue::Structured(
+                            caushell_types::StructuredShellValue::Unknown { .. }
+                        )
+                )
+            ) || next.variable_facts(&name).scalar_shape.is_some()
+                || next.variable_facts(&name).element_shape.is_some()
+            {
+                return None;
+            }
+            if matches!(value, SessionValue::Structured(_)) {
+                if !matches!(
+                    target,
+                    caushell_types::ShellReferenceTarget::Variable { .. }
+                ) || matches!(
+                    next.get(&name).map(|b| b.value),
+                    Some(SessionValue::Structured(
+                        caushell_types::StructuredShellValue::AssociativeArray { .. }
+                    ))
+                ) {
+                    return None;
+                }
+                super::structured_variables::insert(&mut next, &name, value);
+            } else {
+                super::structured_variables::write(&mut next, target, value, false).ok()?;
+            }
+            touched.insert(name);
+        }
+        Some((next, touched))
     }
 }
 

@@ -45,6 +45,7 @@ pub struct ShellVariableFacts {
 pub struct SessionBindings {
     shell_kind: Option<caushell_types::ShellKind>,
     shell_state_uncertainty: Option<String>,
+    shell_state_join_only: bool,
     variable_facts: BTreeMap<String, ShellVariableFacts>,
     // Account-home fact supplied by the request, not a shell variable or an
     // exported environment entry. Explicit HOME facts override this default.
@@ -105,6 +106,7 @@ impl SessionBindings {
     }
 
     pub fn mark_shell_state_uncertain(&mut self, reason: &str) {
+        self.shell_state_join_only = false;
         self.shell_state_uncertainty = Some(reason.to_owned());
         let names: Vec<_> = self.variable_names().map(str::to_owned).collect();
         for name in names {
@@ -113,6 +115,20 @@ impl SessionBindings {
         self.forget_variable_presence();
         self.forget_environment();
         self.forget_positional_parameters();
+    }
+
+    pub fn shell_state_join_only(&self) -> bool {
+        self.shell_state_uncertainty.is_some() && self.shell_state_join_only
+    }
+
+    pub fn mark_shell_state_join(&mut self, reason: &str) {
+        let join_only = self.shell_state_uncertainty.is_none() || self.shell_state_join_only;
+        let reason = self
+            .shell_state_uncertainty
+            .clone()
+            .unwrap_or_else(|| reason.into());
+        self.mark_shell_state_uncertain(&reason);
+        self.shell_state_join_only = join_only;
     }
     pub fn variable_facts(&self, name: &str) -> ShellVariableFacts {
         self.variable_facts.get(name).copied().unwrap_or_default()
