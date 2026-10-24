@@ -19,7 +19,9 @@ mod path;
 mod pathname_fields;
 pub use pathname_fields::{PathnameFieldsEvidence, ToolOptionEnvironmentEvidence};
 mod python_payload;
-pub use python_payload::{PythonPayloadEvidence, PythonPayloadInputEvidence};
+pub use python_payload::{
+    PythonPayloadEvidence, PythonPayloadInputEvidence, PythonStdoutFieldEvidence,
+};
 mod persistence;
 mod policy;
 mod provenance;

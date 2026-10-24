@@ -13,13 +13,13 @@ impl FilesystemView for Files {
         }
     }
 }
-fn check(command: &str) -> CheckResponse {
+fn request(command: &str) -> CheckRequest {
     let mut shell = ShellStateSnapshot::new("/workspace")
         .with_environment_observation("TAR_OPTIONS", ShellEnvironmentValue::Absent);
     shell.observability.variables = ShellStateKnowledge::Complete;
     shell.observability.aliases = ShellStateKnowledge::Complete;
     shell.observability.functions = ShellStateKnowledge::Complete;
-    let request = CheckRequest {
+    CheckRequest {
         session_id: SessionId::new("python-program"),
         sequence_no: CommandSequenceNo(1),
         command: command.into(),
@@ -32,10 +32,12 @@ fn check(command: &str) -> CheckResponse {
             tool_name: None,
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
-    };
+    }
+}
+fn check(command: &str) -> CheckResponse {
     ShellQueryCore::new()
         .with_filesystem_view(Arc::new(Files))
-        .check(request)
+        .check(request(command))
 }
 fn proof(response: &CheckResponse) -> &PythonPayloadEvidence {
     response
@@ -161,13 +163,13 @@ fn python_environment_values_and_known_file_content_have_dependencies() {
     assert!(proof(&r).inputs.iter().any(|i| matches!(i, PythonPayloadInputEvidence::File {path,bytes} if path=="data" && bytes==b"hello")));
 }
 #[test]
-fn python_unknown_native_children_and_unmodeled_shell_boundaries_do_not_pass() {
+fn python_unknown_native_children_do_not_pass() {
     let r = check("python3 -I -S -c 'import subprocess; subprocess.run([\"rm\",\"-rf\",\"/\"])'");
     assert!(proof(&r).complete);
     assert_eq!(r.decision, Decision::Deny, "{:?}", r.decision_trace);
     for command in [
         "python3 -I -S -c 'import subprocess; subprocess.run([\"unknown-tool\"])'",
-        "python3 -I -S -c 'import subprocess; subprocess.run(\"touch x\",shell=True)'",
+        "python3 -I -S -c 'import subprocess; subprocess.run(\"unknown-tool\",shell=True)'",
         "python3 -I -S -c 'import subprocess; subprocess.run([\"bash\",\"-c\",\"unknown-tool\"])'",
     ] {
         let r = check(command);
@@ -178,6 +180,221 @@ fn python_unknown_native_children_and_unmodeled_shell_boundaries_do_not_pass() {
             r.decision_trace
         );
     }
+}
+
+#[test]
+fn python_shell_true_uses_the_posix_shell_frontier_and_policy() {
+    for (code, expected) in [
+        ("touch /workspace/a; touch /workspace/b", Decision::Allow),
+        ("touch /outside/a", Decision::NeedApproval),
+        ("rm -rf /", Decision::Deny),
+        ("touch /workspace/a; unknown-tool", Decision::NeedApproval),
+    ] {
+        let command =
+            format!("python3 -I -S -c 'import subprocess; subprocess.run(\"{code}\",shell=True)'");
+        let r = check(&command);
+        assert!(proof(&r).complete, "{code}: {:?}", proof(&r));
+        assert_eq!(r.decision, expected, "{code}: {:?}", r.decision_trace);
+        assert_eq!(proof(&r).shell_commands, [code]);
+        assert!(
+            r.decision_trace
+                .execution_semantics
+                .iter()
+                .any(|s| s.normalized_command_name == "sh")
+        );
+    }
+}
+
+#[test]
+fn python_listener_and_response_use_shared_network_facts() {
+    for (host, expected) in [
+        ("127.0.0.2", Decision::Allow),
+        ("0.0.0.0", Decision::NeedApproval),
+    ] {
+        let source = format!(
+            "import socket\ns=socket.socket()\ns.bind((\"{host}\",19318))\ns.listen(1)\nc,_=s.accept()\nassert c.recv(64)==b\"ping\"\nc.sendall(b\"pong\")\nc.close(); s.close()"
+        );
+        let r = check(&format!("python3 -I -S -c '{source}'"));
+        assert!(proof(&r).complete, "{:?}", proof(&r));
+        assert_eq!(r.decision, expected, "{host}: {:?}", r.decision_trace);
+        assert!(r.decision_trace.execution_semantics.iter().any(|s| {
+            s.network_listeners.iter().any(|l| {
+                matches!(l,
+                NetworkListener::Internet {host:Some(h),port:Some(p),..} if h==host && p=="19318")
+            })
+        }));
+        assert!(!proof(&r).stdout_complete);
+    }
+}
+
+#[test]
+fn python_response_retains_file_origins_and_unmodeled_effects_fail_closed() {
+    let source = "from pathlib import Path\nimport socket\nbody=Path(\"/workspace/data\").read_bytes()\ns=socket.socket(); s.bind((\"127.0.0.1\",19319)); s.listen(1)\nc,_=s.accept(); c.sendall(body); c.close(); s.close()";
+    let r = check(&format!(
+        "printf 'body' > /workspace/data; python3 -I -S -c '{source}'"
+    ));
+    assert!(proof(&r).complete, "{:?}", proof(&r));
+    assert_eq!(r.decision, Decision::Allow, "{:?}", r.decision_trace);
+    assert!(proof(&r).inputs.iter().any(|i| matches!(i, PythonPayloadInputEvidence::File {path,bytes} if path=="/workspace/data" && bytes==b"body")));
+    for suffix in [
+        "\nunknown_call()",
+        "\ns.connect((\"127.0.0.1\",1))",
+        "\nif c.recv(2)==b\"x\":\n    unknown_call()",
+    ] {
+        let r = check(&format!(
+            "printf 'body' > /workspace/data; python3 -I -S -c '{source}{suffix}'"
+        ));
+        assert!(!proof(&r).complete);
+        assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.decision_trace);
+    }
+}
+
+#[test]
+fn python_exact_stdout_reaches_command_substitutions_without_becoming_code() {
+    for (command, expected) in [
+        (
+            "touch -- \"$(python3 -I -S -c 'print(\"/workspace/out\")')\"",
+            Decision::Allow,
+        ),
+        (
+            "touch -- \"$(python3 -I -S -c 'print(\"/outside/out\")')\"",
+            Decision::NeedApproval,
+        ),
+        (
+            "touch -- \"$(python3 -I -S -c 'print(\"$(rm -rf /)\")')\"",
+            Decision::Allow,
+        ),
+        (
+            "touch -- \"$(python3 -I -S -c 'unknown_call(); print(\"/workspace/out\")')\"",
+            Decision::NeedApproval,
+        ),
+        (
+            "touch -- \"$(python3 -c 'print(\"/workspace/out\")')\"",
+            Decision::NeedApproval,
+        ),
+    ] {
+        let r = check(command);
+        assert_eq!(r.decision, expected, "{command}: {:?}", r.decision_trace);
+        assert!(
+            !r.decision_trace
+                .execution_semantics
+                .iter()
+                .any(|s| s.normalized_command_name == "rm")
+        );
+    }
+}
+
+#[test]
+fn python_stdout_uses_current_file_bytes_not_stale_writes() {
+    for (prefix, expected) in [
+        ("printf '/workspace/out' > /workspace/path", Decision::Allow),
+        (
+            "printf '/outside/out' > /workspace/path",
+            Decision::NeedApproval,
+        ),
+        (
+            "printf '/workspace/out' > /workspace/path; cp /workspace/unknown /workspace/path",
+            Decision::NeedApproval,
+        ),
+    ] {
+        let command = format!(
+            "{prefix}; touch -- \"$(python3 -I -S -c 'from pathlib import Path; print(Path(\"/workspace/path\").read_bytes().decode())')\""
+        );
+        let r = check(&command);
+        assert_eq!(r.decision, expected, "{command}: {:?}", r.decision_trace);
+    }
+}
+
+#[test]
+fn python_stdout_fields_preserve_scalar_bytes_and_shell_environment_order() {
+    for (literal, value) in [
+        ("$HOME/out", "$HOME/out"),
+        ("", ""),
+        ("a\\nb", "a\nb"),
+        ("a\\n\\n", "a"),
+    ] {
+        let r = check(&format!(
+            "printf '%s' \"$(python3 -I -S -c 'print(\"{literal}\")')\""
+        ));
+        let field = r
+            .decision_trace
+            .evidence
+            .iter()
+            .find_map(|e| match &e.kind {
+                EvidenceKind::PythonStdoutField(p) => Some(p),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(field.value, value);
+        assert_eq!(r.decision, Decision::Allow, "{:?}", r.decision_trace);
+    }
+    let r = check(
+        "export TARGET=/outside/out; TARGET=/workspace/out touch -- \"$(python3 -I -S -c 'import os; print(os.environ[\"TARGET\"])')\"",
+    );
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.decision_trace);
+    assert!(r.decision_trace.evidence.iter().any(|e| matches!(&e.kind,
+        EvidenceKind::PythonStdoutField(p) if p.value=="/outside/out")));
+    for command in [
+        "touch -- \"$(python3 -I -S -c 'print(\"a\\0b\")')\"",
+        "touch -- $(python3 -I -S -c 'print(\"/workspace/out\")')",
+        "touch -- \"$(unset TARGET; python3 -I -S -c 'print(\"/workspace/out\")')\"",
+        "touch -- \"$(python3 -I -S -c 'print(\"/workspace/out\")')\" \"$(unknown-tool)\"",
+        "python3() { echo /outside/out; }; touch -- \"$(python3 -I -S -c 'print(\"/workspace/out\")')\"",
+    ] {
+        let r = check(command);
+        assert!(
+            !r.decision_trace
+                .evidence
+                .iter()
+                .any(|e| matches!(e.kind, EvidenceKind::PythonStdoutField(_))),
+            "{command}"
+        );
+        assert_ne!(
+            r.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            r.decision_trace
+        );
+    }
+}
+
+#[test]
+fn materialized_stdout_keeps_the_source_to_consumer_provenance_slot() {
+    use caushell_graph::{EdgeKind, NodeKind};
+    let mut core = ShellQueryCore::new().with_filesystem_view(Arc::new(Files));
+    let r=core.check(request("printf 'hello' > /workspace/body; printf '%s' \"$(python3 -I -S -c 'from pathlib import Path; print(Path(\"/workspace/body\").read_bytes().decode())')\""));
+    assert_eq!(r.decision, Decision::Allow, "{:?}", r.decision_trace);
+    let graph = core
+        .session_graph(&SessionId::new("python-program"))
+        .unwrap();
+    let artifact = graph
+        .nodes()
+        .find(|n| {
+            matches!(
+                &n.kind,
+                NodeKind::ProvenanceArtifact {
+                    artifact: ProvenanceArtifact::CommandSubstitutionOutput { .. }
+                }
+            )
+        })
+        .unwrap();
+    assert!(
+        graph
+            .incoming_edges(&artifact.id)
+            .any(|e| e.kind == EdgeKind::Produces)
+    );
+    assert!(
+        graph
+            .incoming_edges(&artifact.id)
+            .any(|e| e.kind == EdgeKind::Consumes
+                && matches!(
+                    &e.semantics,
+                    Some(ProvenanceEdgeSemantics::Consume {
+                        slot_name: Some(_),
+                        ..
+                    })
+                ))
+    );
 }
 
 #[test]

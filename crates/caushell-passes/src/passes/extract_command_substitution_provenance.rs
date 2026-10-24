@@ -246,7 +246,8 @@ fn command_substitution_body_descriptor(
         .get(parent_record.command_ref.command_index)?;
     let token = command.tokens.get(token_index)?;
     let substitution = token.command_substitutions.get(substitution_index)?;
-    let slot_name = command_substitution_parent_slot_name(&parent_record.result, &token.text);
+    let slot_name =
+        command_substitution_parent_slot_name(&parent_record.result, &token.text, &token.span);
     let auxiliary = slot_name.as_ref().is_some_and(|slot| {
         crate::support::bound_invocation(&parent_record.result)
             .is_some_and(|b| b.is_auxiliary_input_slot(slot))
@@ -278,6 +279,7 @@ fn command_substitution_body_descriptor(
 fn command_substitution_parent_slot_name(
     result: &ResolveInvocationArtifactResult,
     token_text: &str,
+    token_span: &caushell_parse::SourceSpan,
 ) -> Option<String> {
     let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
         return None;
@@ -291,7 +293,9 @@ fn command_substitution_parent_slot_name(
             parameter.values.iter().any(|value| {
                 matches!(
                     value,
-                    BoundValue::Argument { text, .. } if text == token_text
+                    BoundValue::Argument { text, span, materialization, .. }
+                        if text == token_text || (span == token_span
+                            && *materialization == caushell_profile::BoundArgumentMaterialization::RuntimeData)
                 )
             })
         })

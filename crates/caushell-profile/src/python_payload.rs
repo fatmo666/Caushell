@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use tree_sitter::{Node, Parser};
 
+mod control;
+mod socket;
+
 const SOURCE_LIMIT: usize = 65_536;
 const VALUE_LIMIT: usize = 262_144;
 const ITEM_LIMIT: usize = 4096;
@@ -11,6 +14,8 @@ pub enum PythonEffect {
     ReadFile(String),
     NativeCommand(Vec<String>),
     ShellCommand(String),
+    ListenNetwork { host: String, port: u16 },
+    RespondNetwork { host: String, port: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,11 +49,57 @@ enum Value {
     None,
     List(Vec<Value>),
     Tuple(Vec<Value>),
+    Range(Vec<Value>),
     Path(String),
     Symbol(String),
+    Dictionary(Vec<(Value, Value)>),
+    Socket(usize),
+    Unknown(UnknownValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnknownValue {
+    Bytes,
+    Integer,
+    Text,
+    Boolean,
 }
 
 type Result<T> = std::result::Result<T, String>;
+
+pub fn python_isolated_startup(resolved: &crate::ResolvedInvocationArtifact) -> bool {
+    let invocation = &resolved.materialized_projection.invocation;
+    let executable = invocation
+        .command_name
+        .as_deref()
+        .and_then(|n| std::path::Path::new(n).file_name())
+        .and_then(|n| n.to_str());
+    if !executable.is_some_and(|n| {
+        n == "python3"
+            || n.strip_prefix("python3.")
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    }) {
+        return false;
+    }
+    let (mut isolated, mut no_site) = (false, false);
+    for arg in &invocation.args {
+        if arg.text == "-c" || arg.text == "--" || !arg.text.starts_with('-') || arg.text == "-" {
+            break;
+        }
+        if arg.text.starts_with("--") {
+            return false;
+        }
+        for flag in arg.text[1..].chars() {
+            match flag {
+                'I' => isolated = true,
+                'S' => no_site = true,
+                'B' | 'u' | 'q' => {}
+                _ => return false,
+            }
+        }
+    }
+    isolated && no_site
+}
 
 pub fn python_source_encoding_supported(source: &str) -> bool {
     if source.starts_with('\u{feff}') {
@@ -79,6 +130,8 @@ pub fn analyze_python(
         names: BTreeMap::new(),
         argv: Value::List(argv.iter().cloned().map(Value::Text).collect()),
         steps: 0,
+        statement_depth: 0,
+        sockets: Vec::new(),
         report: PythonAnalysis {
             stdout_complete: true,
             ..PythonAnalysis::default()
@@ -130,7 +183,9 @@ struct Engine<'a> {
     names: BTreeMap<String, Value>,
     argv: Value,
     steps: usize,
+    statement_depth: usize,
     report: PythonAnalysis,
+    sockets: Vec<socket::Socket>,
 }
 
 fn named(node: Node<'_>) -> Vec<Node<'_>> {
@@ -172,7 +227,12 @@ fn value_size(value: &Value) -> usize {
         match value {
             Value::Text(s) | Value::Path(s) | Value::Symbol(s) => size += s.len(),
             Value::Bytes(b) => size += b.len(),
-            Value::List(v) | Value::Tuple(v) => stack.extend(v.iter().map(|v| (v, depth + 1))),
+            Value::List(v) | Value::Tuple(v) | Value::Range(v) => {
+                stack.extend(v.iter().map(|v| (v, depth + 1)))
+            }
+            Value::Dictionary(v) => {
+                stack.extend(v.iter().flat_map(|(k, v)| [(k, depth + 1), (v, depth + 1)]))
+            }
             _ => {}
         }
         if size > VALUE_LIMIT {
@@ -213,6 +273,18 @@ impl Engine<'_> {
     }
     fn statement(&mut self, node: Node<'_>) -> Result<()> {
         self.step()?;
+        if self.statement_depth >= 48 {
+            return Err("Python statement depth exceeded".into());
+        }
+        self.statement_depth += 1;
+        let result = self.statement_inner(node);
+        self.statement_depth -= 1;
+        if self.report.effects.len() > 128 {
+            return Err("Python effect budget exceeded".into());
+        }
+        result
+    }
+    fn statement_inner(&mut self, node: Node<'_>) -> Result<()> {
         match node.kind() {
             "comment" => Ok(()),
             "import_statement" => {
@@ -270,22 +342,15 @@ impl Engine<'_> {
                         }
                         let left = field(expression, "left")?;
                         let value = self.eval(field(expression, "right")?, 0)?;
-                        if left.kind() == "identifier" {
-                            self.names.insert(self.raw(left).to_owned(), value);
-                            if self.names.values().map(value_size).sum::<usize>() > 1_048_576 {
-                                return Err("Python binding budget exceeded".into());
-                            }
-                        } else if left.kind() == "attribute" && self.symbol(left)? == "sys.argv" {
-                            self.argv = value;
-                        } else {
-                            return Err("unsupported Python assignment target".into());
-                        }
+                        self.assign(left, value, 0)?;
                     } else {
                         self.eval(expression, 0)?;
                     }
                 }
                 Ok(())
             }
+            "pass_statement" => Ok(()),
+            "assert_statement" | "for_statement" | "if_statement" => self.control(node),
             _ => Err(format!(
                 "unsupported Python statement {} at byte {}",
                 node.kind(),
@@ -304,7 +369,7 @@ impl Engine<'_> {
         }
         if !matches!(
             name,
-            "os" | "sys" | "pathlib" | "subprocess" | "urllib.parse"
+            "os" | "sys" | "pathlib" | "subprocess" | "urllib.parse" | "socket" | "json"
         ) {
             return Err(format!("unsupported Python module {name}"));
         }
@@ -326,7 +391,7 @@ impl Engine<'_> {
         let base: Result<String> = match node.kind() {
             "identifier" => match self.names.get(self.raw(node)) {
                 Some(Value::Symbol(name)) => Ok(name.clone()),
-                None if matches!(self.raw(node), "print" | "str" | "len") => {
+                None if matches!(self.raw(node), "print" | "str" | "len" | "list" | "range") => {
                     Ok(self.raw(node).into())
                 }
                 _ => Err("unknown Python callable or attribute base".into()),
@@ -382,6 +447,13 @@ impl Engine<'_> {
                         | "pathlib.Path"
                         | "urllib.parse.quote_from_bytes"
                         | "subprocess.run"
+                        | "socket.socket"
+                        | "socket.AF_INET"
+                        | "socket.SOCK_STREAM"
+                        | "socket.SOL_SOCKET"
+                        | "socket.SO_REUSEADDR"
+                        | "json.dumps"
+                        | "os.getpid"
                 ) {
                     Value::Symbol(symbol)
                 } else {
@@ -397,7 +469,7 @@ impl Engine<'_> {
                             item.named_child(0).ok_or("missing unpack value")?,
                             depth + 1,
                         )? {
-                            Value::List(items) | Value::Tuple(items) => {
+                            Value::List(items) | Value::Tuple(items) | Value::Range(items) => {
                                 bytes += items.iter().map(value_size).sum::<usize>();
                                 values.extend(items);
                             }
@@ -422,6 +494,34 @@ impl Engine<'_> {
                 node.named_child(0).ok_or("empty Python expression")?,
                 depth + 1,
             )?,
+            "dictionary" => {
+                let mut values = Vec::new();
+                for pair in named(node) {
+                    if pair.kind() != "pair" || values.len() >= ITEM_LIMIT {
+                        return Err("unsupported Python dictionary item".into());
+                    }
+                    let key = self.eval(field(pair, "key")?, depth + 1)?;
+                    if !matches!(key, Value::Text(_)) {
+                        return Err("unsupported Python dictionary key".into());
+                    }
+                    let value = self.eval(field(pair, "value")?, depth + 1)?;
+                    if let Some((_, old)) = values.iter_mut().find(|(k, _)| k == &key) {
+                        *old = value;
+                    } else {
+                        values.push((key, value));
+                    }
+                    if values
+                        .iter()
+                        .map(|(k, v)| value_size(k) + value_size(v))
+                        .sum::<usize>()
+                        > VALUE_LIMIT
+                    {
+                        return Err("Python dictionary budget exceeded".into());
+                    }
+                }
+                Value::Dictionary(values)
+            }
+            "comparison_operator" => self.compare(node, depth + 1)?,
             "binary_operator" => {
                 if self.raw(field(node, "operator")?) != "+" {
                     return Err("unsupported Python operator".into());
@@ -484,7 +584,7 @@ impl Engine<'_> {
                 } else {
                     let index = integer(self.eval(subscript, depth + 1)?)?;
                     let items = match value {
-                        Value::List(items) | Value::Tuple(items) => items,
+                        Value::List(items) | Value::Tuple(items) | Value::Range(items) => items,
                         _ => return Err("Python index requires a sequence".into()),
                     };
                     let index = if index < 0 {
@@ -544,6 +644,22 @@ impl Engine<'_> {
             }
         }
         let result = match symbol.as_deref() {
+            Some("socket.socket") => self.new_socket(args, kwargs)?,
+            Some("os.getpid") if args.is_empty() && kwargs.is_empty() => {
+                Value::Unknown(UnknownValue::Integer)
+            }
+            Some("json.dumps") if args.len() == 1 && kwargs.is_empty() => {
+                control::json(args.remove(0))?
+            }
+            Some("list") if args.len() == 1 && kwargs.is_empty() => match args.remove(0) {
+                Value::List(items) | Value::Tuple(items) | Value::Range(items) => {
+                    Value::List(items)
+                }
+                _ => return Err("unsupported Python list conversion".into()),
+            },
+            Some("range") if !args.is_empty() && args.len() <= 3 && kwargs.is_empty() => {
+                control::range(args)?
+            }
             Some("pathlib.Path") if args.len() == 1 && kwargs.is_empty() => {
                 Value::Path(text(args.remove(0))?)
             }
@@ -636,7 +752,14 @@ impl Engine<'_> {
                 if !kwargs.is_empty() {
                     return Err("unsupported Python print destination".into());
                 }
-                let pieces = args.into_iter().map(display).collect::<Result<Vec<_>>>()?;
+                let pieces = args
+                    .into_iter()
+                    .map(control::print_value)
+                    .collect::<Result<Option<Vec<_>>>>()?;
+                let Some(pieces) = pieces else {
+                    self.report.stdout_complete = false;
+                    return Ok(Value::None);
+                };
                 let size = self.report.stdout.len()
                     + pieces.iter().map(String::len).sum::<usize>()
                     + sep.len() * pieces.len().saturating_sub(1)
@@ -660,7 +783,7 @@ impl Engine<'_> {
                 Value::Int(match args.remove(0) {
                     Value::Text(s) => s.chars().count() as i64,
                     Value::Bytes(b) => b.len() as i64,
-                    Value::List(v) | Value::Tuple(v) => v.len() as i64,
+                    Value::List(v) | Value::Tuple(v) | Value::Range(v) => v.len() as i64,
                     _ => return Err("unsupported Python len value".into()),
                 })
             }
@@ -668,6 +791,7 @@ impl Engine<'_> {
                 let object = receiver.ok_or("missing Python method receiver")?;
                 let method = self.raw(field(function, "attribute")?).to_owned();
                 match (object, method.as_str()) {
+                    (Value::Socket(id), method) => self.socket_call(id, method, args, kwargs)?,
                     (Value::Path(path), "read_bytes") if args.is_empty() && kwargs.is_empty() => {
                         self.input_budget()?;
                         if self.report.effects.iter().any(|effect| {

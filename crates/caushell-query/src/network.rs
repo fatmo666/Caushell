@@ -169,8 +169,8 @@ impl NetworkEndpointQuery {
     }
 }
 
-/// Only a statically spelled loopback destination qualifies. A substring,
-/// unresolved expansion, ambiguous authority or recipient domain does not.
+/// Exact destinations and listener-constrained responses retain distinct kinds.
+/// A substring or an unresolved/ambiguous authority cannot establish locality.
 pub fn endpoint_has_loopback_scope(endpoint: &str, kind: ProvenanceEndpointKind) -> bool {
     if endpoint.is_empty()
         || endpoint.len() > 8192
@@ -185,6 +185,9 @@ pub fn endpoint_has_loopback_scope(endpoint: &str, kind: ProvenanceEndpointKind)
         ProvenanceEndpointKind::HostPort => {
             host_port_with_service(endpoint, valid_service).is_some_and(loopback_host)
         }
+        ProvenanceEndpointKind::ListenerResponse => host_port_with_service(endpoint, valid_service)
+            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback() || matches!(ip, std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))),
         ProvenanceEndpointKind::RemoteSpec => {
             if endpoint.starts_with("rsync://") {
                 return url_host(endpoint).is_some_and(loopback_host);
@@ -298,6 +301,28 @@ fn loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accepted_peer_scope_uses_only_a_numeric_listener_constraint() {
+        for endpoint in ["127.0.0.2:0", "[::1]:1234", "[::ffff:127.0.0.2]:1234"] {
+            assert!(endpoint_has_loopback_scope(
+                endpoint,
+                ProvenanceEndpointKind::ListenerResponse
+            ));
+        }
+        for endpoint in [
+            "0.0.0.0:1234",
+            "192.0.2.1:1234",
+            "localhost:1234",
+            "127.0.0.1.evil:1234",
+            "127.0.0.1:99999",
+            "127.0.0.1:$PORT",
+        ] {
+            assert!(!endpoint_has_loopback_scope(
+                endpoint,
+                ProvenanceEndpointKind::ListenerResponse
+            ));
+        }
+    }
     #[test]
     fn scope_depends_on_authority_not_substrings() {
         use ProvenanceEndpointKind::*;

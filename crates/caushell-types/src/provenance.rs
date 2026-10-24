@@ -7,6 +7,8 @@ use crate::{CommandSequenceNo, ResolvedPathPurpose, ResolvedPathRole, RuntimePro
 pub enum ProvenanceEndpointKind {
     Url,
     HostPort,
+    /// Route constrained by the local listener; the remote address is unknown.
+    ListenerResponse,
     SocketPath,
     RemoteSpec,
     EmailAddress,

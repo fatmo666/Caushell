@@ -126,7 +126,7 @@ fn python_partial_program_never_returns_complete_effects_or_stdout() {
         "unknown()",
         "exec('touch x')",
         "import local_module",
-        "if True:\n  print('x')",
+        "if unknown:\n  print('x')",
         "class H: pass",
         "raise Exception()",
         "while True: pass",

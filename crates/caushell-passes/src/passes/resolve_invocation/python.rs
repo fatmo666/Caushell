@@ -57,41 +57,6 @@ impl PythonInputs for Inputs<'_, '_> {
     }
 }
 
-fn isolated_startup(resolved: &caushell_profile::ResolvedInvocationArtifact) -> bool {
-    let invocation = &resolved.materialized_projection.invocation;
-    let executable = invocation
-        .command_name
-        .as_deref()
-        .and_then(|n| Path::new(n).file_name())
-        .and_then(|n| n.to_str());
-    if !executable.is_some_and(|n| {
-        n == "python3"
-            || n.strip_prefix("python3.")
-                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-    }) {
-        return false;
-    }
-    let mut isolated = false;
-    let mut no_site = false;
-    for arg in &invocation.args {
-        if arg.text == "-c" || arg.text == "--" || !arg.text.starts_with('-') || arg.text == "-" {
-            break;
-        }
-        if !arg.text.starts_with('-') || arg.text.starts_with("--") {
-            return false;
-        }
-        for flag in arg.text[1..].chars() {
-            match flag {
-                'I' => isolated = true,
-                'S' => no_site = true,
-                'B' | 'u' | 'q' => {}
-                _ => return false,
-            }
-        }
-    }
-    isolated && no_site
-}
-
 pub(super) fn expand(
     registry: &ProfileRegistry,
     session: SessionView<'_>,
@@ -112,7 +77,7 @@ pub(super) fn expand(
     {
         return Vec::new();
     }
-    let isolated = isolated_startup(&resolved);
+    let isolated = caushell_profile::python_isolated_startup(&resolved);
     let observations = source_scope_observations(
         registry,
         request,
@@ -256,23 +221,42 @@ pub(super) fn expand(
                 _ => None,
             })
             .collect();
-        if !proof.shell_commands.is_empty() {
-            // The adapter distinguishes shell code, but startup/FD semantics of
-            // this boundary are not yet integrated with the shared shell entry.
-            return Err("Python shell=True boundary is not yet modeled".into());
-        }
         for (index, effect) in analysis.effects.iter().enumerate() {
-            if let PythonEffect::NativeCommand(argv) = effect {
-                proof.native_argv.push(argv.clone());
-                children.push(native_child(
-                    registry,
-                    entry,
-                    &inputs.bindings,
-                    index,
-                    argv,
-                )?);
+            match effect {
+                PythonEffect::NativeCommand(argv) => {
+                    proof.native_argv.push(argv.clone());
+                    children.push(native_child(
+                        registry,
+                        entry,
+                        &inputs.bindings,
+                        index,
+                        argv,
+                    )?);
+                }
+                PythonEffect::ShellCommand(code) => {
+                    // POSIX subprocess uses this executable, independently of
+                    // the caller's shell. Its Profile owns parsing and startup.
+                    let argv = ["/bin/sh".into(), "-c".into(), code.clone()];
+                    children.push(native_child(
+                        registry,
+                        entry,
+                        &inputs.bindings,
+                        index,
+                        &argv,
+                    )?);
+                }
+                _ => {}
             }
         }
+        let services = analysis
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                PythonEffect::ListenNetwork { host, port } => Some((false, host.clone(), *port)),
+                PythonEffect::RespondNetwork { host, port } => Some((true, host.clone(), *port)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let reads = analysis
             .effects
             .into_iter()
@@ -317,6 +301,48 @@ pub(super) fn expand(
                 .effects
                 .push(caushell_profile::Effect::new(EffectKind::ReadPath).for_slot("python_reads"));
         }
+        for (index, (response, host, port)) in services.into_iter().enumerate() {
+            if response {
+                let slot = format!("python_response_{index}");
+                let mut parameter = BoundParameter::new(
+                    SlotName::new(&slot),
+                    SemanticType::Endpoint(caushell_profile::EndpointSemantic {
+                        kind: caushell_profile::EndpointKind::ListenerResponse,
+                        usage: caushell_profile::EndpointUsage::UploadTarget,
+                    }),
+                );
+                parameter.payload_generated = true;
+                parameter.values.push(runtime_value(
+                    &format!("{host}:{port}"),
+                    entry.command_ref.span.clone(),
+                ));
+                resolved.bound.bound_parameters.push(parameter);
+                let mut effect =
+                    caushell_profile::Effect::new(EffectKind::NetworkEndpoint).for_slot(&slot);
+                // A response can include any modeled read. Narrower byte-level
+                // lineage must not be inferred from a request/response API.
+                effect.input_scope = Some(caushell_profile::EndpointInputScope {
+                    slots: vec!["python_reads".into()],
+                    stdin: false,
+                });
+                resolved.bound.effects.push(effect);
+            } else {
+                let mut effect = caushell_profile::Effect::new(EffectKind::ListenNetwork);
+                let scalar = |suffix: &str, value: String| caushell_profile::ConfiguredScalar {
+                    slot: SlotName::new(format!("python_listener_{index}_{suffix}")),
+                    environment: None,
+                    default_value: Some(value),
+                };
+                effect.target =
+                    EffectTarget::NetworkListener(caushell_profile::NetworkListenerTarget {
+                        host: scalar("host", host),
+                        port: Some(scalar("port", port.to_string())),
+                        unix_socket: None,
+                        inherited_fd: None,
+                    });
+                resolved.bound.effects.push(effect);
+            }
+        }
         Ok(())
     })();
     match outcome {
@@ -354,6 +380,11 @@ pub(super) fn expand(
     children
 }
 
+fn runtime_value(text: &str, span: caushell_parse::SourceSpan) -> BoundValue {
+    BoundValue::argument(text, true, span, ArgumentBindingSource::RemainingArg)
+        .with_materialization(caushell_profile::BoundArgumentMaterialization::RuntimeData)
+}
+
 fn one_argument(bound: &caushell_profile::BoundInvocation, slot: &str) -> Result<String, String> {
     let values = decoded_task_arguments(bound, slot)
         .ok_or_else(|| format!("Python {slot} is incomplete"))?;
@@ -363,6 +394,8 @@ fn one_argument(bound: &caushell_profile::BoundInvocation, slot: &str) -> Result
     Ok(values[0].clone())
 }
 
+mod output;
+pub(super) use output::materialize_outputs;
 fn native_child(
     registry: &ProfileRegistry,
     entry: &ExpandedFrontierEntry,

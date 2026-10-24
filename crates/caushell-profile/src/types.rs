@@ -515,6 +515,8 @@ pub struct StructuredValueSemantic {
 pub enum EndpointKind {
     Url,
     HostPort,
+    /// Accepted peer response; the value identifies the local listener, not the peer.
+    ListenerResponse,
     SocketPath,
     RemoteSpec,
     EmailAddress,

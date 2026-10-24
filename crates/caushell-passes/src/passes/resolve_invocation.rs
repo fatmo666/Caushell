@@ -190,6 +190,7 @@ impl ResolveInvocationPass {
                 caushell_types::EvidenceKind::PathnameFields(_)
                     | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
                     | caushell_types::EvidenceKind::PythonPayload(_)
+                    | caushell_types::EvidenceKind::PythonStdoutField(_)
             )
         }) {
             ctx.add_evidence(evidence);
@@ -3939,6 +3940,15 @@ fn collect_execution_unit_resolve_records(
             request,
             &mut entry,
             max_nested_parse_depth,
+        );
+        python::materialize_outputs(
+            registry,
+            session,
+            request,
+            &mut entry,
+            &program_context,
+            max_nested_parse_depth,
+            pathname_context,
         );
 
         // Native list input is not proof of the launched program's FD 0.

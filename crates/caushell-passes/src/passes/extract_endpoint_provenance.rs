@@ -176,6 +176,7 @@ fn provenance_endpoint_kind(kind: EndpointKind) -> ProvenanceEndpointKind {
     match kind {
         EndpointKind::Url => ProvenanceEndpointKind::Url,
         EndpointKind::HostPort => ProvenanceEndpointKind::HostPort,
+        EndpointKind::ListenerResponse => ProvenanceEndpointKind::ListenerResponse,
         EndpointKind::SocketPath => ProvenanceEndpointKind::SocketPath,
         EndpointKind::RemoteSpec => ProvenanceEndpointKind::RemoteSpec,
         EndpointKind::EmailAddress => ProvenanceEndpointKind::EmailAddress,
@@ -196,6 +197,7 @@ fn endpoint_kind_slug(kind: ProvenanceEndpointKind) -> &'static str {
     match kind {
         ProvenanceEndpointKind::Url => "url",
         ProvenanceEndpointKind::HostPort => "host_port",
+        ProvenanceEndpointKind::ListenerResponse => "listener_response",
         ProvenanceEndpointKind::SocketPath => "socket_path",
         ProvenanceEndpointKind::RemoteSpec => "remote_spec",
         ProvenanceEndpointKind::EmailAddress => "email_address",

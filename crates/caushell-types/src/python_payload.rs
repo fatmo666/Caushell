@@ -22,3 +22,13 @@ pub struct PythonPayloadEvidence {
     pub stdout_complete: bool,
     pub gap: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PythonStdoutFieldEvidence {
+    pub node_id: String,
+    pub argument_index: usize,
+    pub expression: String,
+    pub stdout: Vec<u8>,
+    pub value: String,
+    pub inputs: Vec<PythonPayloadInputEvidence>,
+}
