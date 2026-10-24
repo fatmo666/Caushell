@@ -1,7 +1,7 @@
 use caushell_types::*;
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::Path,
     process::{Child, Command, Stdio},
 };
@@ -36,7 +36,7 @@ done
 for name in GLOBIGNORE LC_ALL LC_COLLATE LC_CTYPE LANG; do emit_value "$name" shell; done
 for name; do builtin printf '%s\0' "$name"; emit_value "$name" environment; done
 builtin printf 'END\0\n'
-IFS= builtin read -r unused || :
+if IFS= builtin read -r unused; then builtin eval -- "$unused"; fi
 "#;
         let mut child = Command::new("/bin/bash")
             .args(["--noprofile", "--norc", "-c", script, "frame-observer"])
@@ -104,6 +104,14 @@ IFS= builtin read -r unused || :
     }
     pub fn instance_id(&self) -> String {
         format!("owned-bash-{}", self.child.id())
+    }
+    #[allow(dead_code)]
+    pub fn execute(&mut self, command: &str) -> std::process::ExitStatus {
+        assert!(!command.contains('\n'));
+        let mut input = self.child.stdin.take().unwrap();
+        writeln!(input, "{command}").unwrap();
+        drop(input);
+        self.child.wait().unwrap()
     }
 }
 impl ExecutionFrameObserver for OwnedBashFrame {

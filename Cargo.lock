@@ -209,6 +209,7 @@ dependencies = [
  "caushell-profile",
  "caushell-query",
  "caushell-types",
+ "serde",
  "sha2",
 ]
 

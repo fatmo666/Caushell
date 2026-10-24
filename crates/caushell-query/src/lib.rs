@@ -9,7 +9,7 @@ mod io_target;
 mod nested;
 mod network;
 mod resource;
-pub use resource::canonical_resource_endpoint;
+pub use resource::{canonical_resource_endpoint, canonical_resource_origin};
 mod path;
 mod path_target;
 pub use path_target::PathTargetQuery;

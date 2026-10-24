@@ -5,6 +5,7 @@ license.workspace = true
 edition = "2024"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 caushell-query = { path = "../caushell-query" }
 caushell-graph = { path = "../caushell-graph" }

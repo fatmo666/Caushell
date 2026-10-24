@@ -1,7 +1,8 @@
-use caushell_query::canonical_resource_endpoint;
+use caushell_query::{canonical_resource_endpoint, canonical_resource_origin};
 use caushell_types::{
     ExecutionFrameBinding, SessionId, StateOperation, StateOperationDomain, StateOperationKind,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Arc, RwLock},
@@ -11,7 +12,8 @@ use std::{
 const MAX_RECORDS: usize = 128;
 const MAX_LIFETIME: Duration = Duration::from_secs(3600);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceOwner {
     pub session_id: SessionId,
     pub runtime_name: String,
@@ -37,13 +39,30 @@ impl ResourceOwner {
     }
 }
 
-/// Registration asserts identity and an exact, manager-maintained route only.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Registration asserts identity and a manager-maintained route, not permission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManagedResource {
     pub resource_id: String,
     pub instance_id: String,
     pub owner: ResourceOwner,
     pub endpoints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceLocatorScope {
+    ExactEndpoint,
+    HttpOrigin,
+}
+
+impl ResourceLocatorScope {
+    fn contains(self, registered: &str, endpoint: &str) -> bool {
+        match self {
+            Self::ExactEndpoint => registered == endpoint,
+            Self::HttpOrigin => canonical_resource_origin(endpoint).as_deref() == Some(registered),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +98,7 @@ pub struct ResourcePermission {
 #[derive(Debug, Clone)]
 struct Instance {
     fact: ManagedResource,
+    scope: ResourceLocatorScope,
     generation: u64,
     expires: Instant,
 }
@@ -203,7 +223,18 @@ impl ManagedResourceRegistry {
 
     pub fn register(
         &self,
+        fact: ManagedResource,
+        lifetime: Duration,
+    ) -> Result<ResourceRegistration, String> {
+        self.register_scoped(fact, ResourceLocatorScope::ExactEndpoint, lifetime)
+    }
+
+    /// Origin scope is an explicit host contract for the entire owned service.
+    /// Origin registrations must name its root, never an inferred path prefix.
+    pub fn register_scoped(
+        &self,
         mut fact: ManagedResource,
+        scope: ResourceLocatorScope,
         lifetime: Duration,
     ) -> Result<ResourceRegistration, String> {
         let expires = expiry(lifetime)?;
@@ -226,6 +257,14 @@ impl ManagedResourceRegistry {
             .collect::<Result<Vec<_>, _>>()?;
         fact.endpoints.sort();
         fact.endpoints.dedup();
+        if scope == ResourceLocatorScope::HttpOrigin
+            && fact
+                .endpoints
+                .iter()
+                .any(|e| canonical_resource_origin(e).as_ref() != Some(e))
+        {
+            return Err("HTTP origin registration requires a numeric root locator".into());
+        }
         let mut state = self
             .inner
             .write()
@@ -235,7 +274,11 @@ impl ManagedResourceRegistry {
         }
         if state.instances.values().any(|i| {
             i.fact.owner == fact.owner
-                && i.fact.endpoints.iter().any(|e| fact.endpoints.contains(e))
+                && i.fact.endpoints.iter().any(|a| {
+                    fact.endpoints
+                        .iter()
+                        .any(|b| i.scope.contains(a, b) || scope.contains(b, a))
+                })
         }) {
             return Err("resource endpoint has a conflicting instance".into());
         }
@@ -261,6 +304,7 @@ impl ManagedResourceRegistry {
             fact.resource_id.clone(),
             Instance {
                 fact,
+                scope,
                 generation,
                 expires,
             },
@@ -416,7 +460,10 @@ impl ResourceAuthoritySnapshot {
         let instance = self.instances.iter().find(|i| {
             i.expires > now
                 && i.fact.owner.matches(&self.binding)
-                && i.fact.endpoints.contains(&endpoint)
+                && i.fact
+                    .endpoints
+                    .iter()
+                    .any(|e| i.scope.contains(e, &endpoint))
         })?;
         Some(ResourceInstanceRef {
             authority: self.identity.clone(),

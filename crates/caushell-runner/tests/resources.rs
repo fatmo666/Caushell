@@ -50,6 +50,79 @@ fn permission(registration: &ResourceRegistration) -> ResourcePermission {
 }
 
 #[test]
+fn explicit_origin_scope_is_owned_but_still_requires_a_grant() {
+    let registry = ManagedResourceRegistry::default();
+    let _admission = registry
+        .admit_check(binding(), owner(), Duration::from_secs(60))
+        .unwrap();
+    assert!(
+        registry
+            .register_scoped(
+                resource(),
+                ResourceLocatorScope::HttpOrigin,
+                Duration::from_secs(60)
+            )
+            .is_err()
+    );
+    let mut fact = resource();
+    fact.endpoints = vec!["http://127.0.0.1:18891/".into()];
+    let registration = registry
+        .register_scoped(
+            fact,
+            ResourceLocatorScope::HttpOrigin,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let snapshot = registry.snapshot(&binding()).unwrap();
+    let instance = snapshot
+        .resolve("http://127.0.0.1:18891/arbitrary-result")
+        .unwrap();
+    assert!(snapshot.permission(&instance, operation()).is_none());
+    for endpoint in [
+        "http://127.0.0.1:18892/result",
+        "https://127.0.0.1:18891/result",
+        "http://localhost:18891/result",
+    ] {
+        assert!(snapshot.resolve(endpoint).is_none());
+    }
+    let mut overlapping = resource();
+    overlapping.resource_id = "overlap".into();
+    assert!(
+        registry
+            .register(overlapping.clone(), Duration::from_secs(60))
+            .is_err()
+    );
+    let _grant = registry
+        .grant(permission(&registration), Duration::from_secs(60))
+        .unwrap();
+    assert!(
+        registry
+            .snapshot(&binding())
+            .unwrap()
+            .permission(&instance, operation())
+            .is_some()
+    );
+    drop(registration);
+    let exact = registry
+        .register(overlapping, Duration::from_secs(60))
+        .unwrap();
+    let fresh = registry.snapshot(&binding()).unwrap();
+    assert!(
+        fresh
+            .resolve("http://127.0.0.1:18891/arbitrary-result")
+            .is_none()
+    );
+    assert!(fresh.permission(&instance, operation()).is_none());
+    assert_eq!(
+        fresh
+            .resolve("http://127.0.0.1:18891/result")
+            .unwrap()
+            .generation,
+        exact.instance().generation
+    );
+}
+
+#[test]
 fn resource_identity_is_separate_from_permission_and_expires() {
     let registry = ManagedResourceRegistry::default();
     let _admission = registry

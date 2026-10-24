@@ -45,8 +45,10 @@ use caushell_types::{
 };
 use serde::Serialize;
 mod execution_frame;
+pub mod host;
 #[cfg(unix)]
 pub use execution_frame::plan_execution_frame_unix_socket;
+pub use host::serve_host_stdio;
 
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;

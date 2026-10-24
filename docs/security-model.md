@@ -89,14 +89,33 @@ The embedding host installs a `ResourceAuthority` through
 `ManagedResourceRegistry::register` records a resource instance, execution owner,
 network namespace and exact endpoints. `grant` separately issues permission for
 an operation on that instance. Registration and loopback location grant no rights.
-The initial locator contract supports exact numeric HTTP(S) endpoints; it does
-not resolve hostnames, match path prefixes or guess encoded-path semantics.
+Locator scopes support exact numeric HTTP(S) endpoints and an explicit
+`HttpOrigin` contract for an entire owned service. Origin registration names
+only the root locator; it is not inferred from a pending URL. Neither scope
+resolves hostnames, matches path prefixes or guesses encoded-path semantics.
 
 Before checking, the host calls `admit_check` for the exact execution-frame
 binding. Neither a Profile nor a tool-facing stdio/socket request can register a
 resource, grant permission or admit a frame. All selected targets must match a
 live instance and an operation grant. Resource references are authority-local;
 instance replacement cannot inherit a previous instance's permission.
+
+`serve-host-stdio` connects an owning executor over private inherited pipes.
+The host first creates its service, registers its instance and namespace, then
+separately grants operations under its policy. These messages are not available
+on `serve-stdio` or `serve-unix`. The host control descriptors must never be
+passed to a model or tool subprocess; the embedding host is the trusted principal.
+The host must isolate its control process from tools, including process-inspection
+interfaces. A matching user ID or network address is not host authentication.
+
+Each proposed execution holds the resource snapshot until the host reports
+completion. `BeginExecution` requires the exact current checked binding and an
+Allow decision or matching single-call approval. Deny cannot be authorized.
+Resource changes are rejected while an execution is pending. The host executes
+the exact checked action after the begin acknowledgement, waits for it to finish,
+then sends `CompleteExecution`. Judge-only checks never start execution.
+EOF or protocol failure ends the authority; the host must stop its owned work
+and must not resume or recreate authorization from persisted check records.
 
 Registration, grant and admission handles revoke their records on drop and have
 bounded lifetimes. Checks acquire fresh authority snapshots; lifecycle changes

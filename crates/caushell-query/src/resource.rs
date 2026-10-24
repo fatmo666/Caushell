@@ -49,6 +49,14 @@ pub fn canonical_resource_endpoint(value: &str) -> Option<String> {
     Some(format!("{scheme}://{host}:{port}{path}"))
 }
 
+/// Origin of a concrete numeric HTTP(S) locator; this does not assert ownership.
+pub fn canonical_resource_origin(value: &str) -> Option<String> {
+    let endpoint = canonical_resource_endpoint(value)?;
+    let end = endpoint.find("://")? + 3;
+    let path = end + endpoint[end..].find('/')?;
+    Some(endpoint[..=path].to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +82,18 @@ mod tests {
         ] {
             assert_eq!(canonical_resource_endpoint(value), None, "{value}");
         }
+    }
+
+    #[test]
+    fn origins_keep_scheme_address_and_port() {
+        assert_eq!(
+            canonical_resource_origin("HTTP://[::1]/a").as_deref(),
+            Some("http://[::1]:80/")
+        );
+        assert_eq!(canonical_resource_origin("http://localhost/a"), None);
+        assert_eq!(
+            canonical_resource_origin("http://127.0.0.1/a?redirect=x"),
+            None
+        );
     }
 }

@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use caushell::{
     CliError, SessionRepairAction, SessionRepairKeep, create_runtime, ping_unix_socket,
-    repair_session_log, serve_query_stdio, serve_stdio, serve_unix_socket,
+    repair_session_log, serve_host_stdio, serve_query_stdio, serve_stdio, serve_unix_socket,
 };
 use caushell_config::{
     RawAction, RawCodexNeedApprovalMode, RawConfigFile, initialize_config_file,
@@ -51,7 +51,7 @@ fn run_with_args(mut args: impl Iterator<Item = String>) -> Result<(), CliError>
         "doctor" => doctor::run(args),
         "update" | "--update" => update::run(args),
         "build-info" | "--build-info" => update::run_build_info(args),
-        "serve-stdio" => {
+        "serve-stdio" | "serve-host-stdio" => {
             let options = parse_serve_options(args)?;
             let config_path = runtime_config_path(options.config_path)?;
             let mut runtime =
@@ -59,7 +59,16 @@ fn run_with_args(mut args: impl Iterator<Item = String>) -> Result<(), CliError>
             let stdin = io::stdin();
             let mut stdout = io::stdout();
 
-            serve_stdio(&mut runtime, BufReader::new(stdin.lock()), &mut stdout)
+            if command == "serve-host-stdio" {
+                if options.socket_path.is_some() {
+                    return Err(CliError::InvalidArguments(
+                        "serve-host-stdio requires a private pipe, not --socket".into(),
+                    ));
+                }
+                serve_host_stdio(&mut runtime, BufReader::new(stdin.lock()), &mut stdout)
+            } else {
+                serve_stdio(&mut runtime, BufReader::new(stdin.lock()), &mut stdout)
+            }
         }
         "serve-unix" => {
             let options = parse_serve_options(args)?;
@@ -638,7 +647,7 @@ fn current_time_ms() -> Option<u64> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  caushell --version\n  caushell build-info\n  caushell update [--check] [--runtime-only] [--version <release-tag>]\n  caushell --update [--check] [--runtime-only] [--version <release-tag>]\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nupdate downloads and verifies the latest release, refreshes installed Harness plugins, and runs doctor\nbuild-info prints the embedded version, commit, release, and target identity\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and writes JSON health metadata\ndoctor checks an installed Caushell Harness integration; --smoke runs a harmless Bash action through the Harness and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
+        "usage:\n  caushell --version\n  caushell build-info\n  caushell update [--check] [--runtime-only] [--version <release-tag>]\n  caushell --update [--check] [--runtime-only] [--version <release-tag>]\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-host-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nupdate downloads and verifies the latest release, refreshes installed Harness plugins, and runs doctor\nbuild-info prints the embedded version, commit, release, and target identity\nserve-stdio and serve-unix use RuntimeTransportRequest/Response; serve-host-stdio uses the private executor HostRequest/Response protocol\nping-unix probes a running Unix socket runtime and writes JSON health metadata\ndoctor checks an installed Caushell Harness integration; --smoke runs a harmless Bash action through the Harness and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
     );
 }
 
