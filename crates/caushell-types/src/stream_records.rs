@@ -46,13 +46,33 @@ pub struct StdoutRecordsEvidence {
     pub gap: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeInputDecodeEvidence {
+    pub node_id: String,
+    pub producer_node_id: String,
+    pub complete: bool,
+    pub alternative_groups: usize,
+    pub gap: Option<String>,
+}
+
 impl StdoutRecordsEvidence {
     /// Exact bytes require both a complete record set and a proved order.
     pub fn complete_bytes(&self) -> Option<Vec<u8>> {
+        if self.order != StreamRecordOrder::Exact {
+            return None;
+        }
+        Some(
+            self.complete_records()?
+                .iter()
+                .flat_map(|r| r.bytes.clone())
+                .collect(),
+        )
+    }
+
+    pub fn complete_records(&self) -> Option<&[ObservedStreamRecord]> {
         if !self.complete
             || self.gap.is_some()
             || self.encoding.is_none()
-            || self.order != StreamRecordOrder::Exact
             || self.records.len() > MAX_OBSERVED_STREAM_RECORDS
         {
             return None;
@@ -75,8 +95,7 @@ impl StdoutRecordsEvidence {
             .records
             .iter()
             .try_fold(0usize, |n, r| n.checked_add(r.bytes.len()))?;
-        (bytes <= MAX_OBSERVED_STREAM_BYTES)
-            .then(|| self.records.iter().flat_map(|r| r.bytes.clone()).collect())
+        (bytes <= MAX_OBSERVED_STREAM_BYTES).then_some(self.records.as_slice())
     }
 }
 

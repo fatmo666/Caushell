@@ -263,15 +263,166 @@ fn forwarding_requires_a_declared_byte_preserving_contract_and_plain_route() {
 }
 
 #[test]
-fn unknown_consumer_input_is_not_promoted_to_argv_by_the_observation_stage() {
+fn complete_consumer_input_is_bound_by_the_native_argv_stage() {
     let r = check("find input -name a.csv | xargs -n1 cp source", Files::new());
-    assert_eq!(r.decision, Decision::NeedApproval);
+    assert_eq!(r.decision, Decision::Allow, "{r:#?}");
     assert!(
         r.decision_trace
             .execution_semantics
             .iter()
-            .any(|s| s.normalized_command_name == "cp" && s.operation_semantics_unresolved)
+            .any(|s| s.normalized_command_name == "cp" && !s.operation_semantics_unresolved)
     );
+}
+
+fn expect_native(command: &str, files: Files, decision: Decision) -> CheckResponse {
+    let response = check(command, files);
+    assert_eq!(response.decision, decision, "{command}: {response:#?}");
+    response
+}
+
+#[test]
+fn consumer_variants_reuse_binding_and_existing_file_namespace_facts() {
+    for command in [
+        "find input -name a.csv | xargs -n1 cp source",
+        "find input -name a.csv | xargs -n1 env cp source",
+        "find input -name a.csv | cat | xargs -n1 cp source",
+        "find input -name '*.csv' -type f -print0 | xargs -0 -n1 chmod 644",
+        "find input -name a.csv | xargs -I{} cp source {}",
+        "find input -name a.csv -printf '%p|' | xargs -d '|' -n1 cp source",
+    ] {
+        let r = expect_native(command, Files::new(), Decision::Allow);
+        assert!(
+            r.decision_trace
+                .evidence
+                .iter()
+                .any(|e| matches!(&e.kind, EvidenceKind::NativeInputDecode(d) if d.complete)),
+            "{r:#?}"
+        );
+    }
+}
+
+#[test]
+fn native_line_decoding_does_not_inherit_path_containment() {
+    let mut files = Files::new();
+    files.dirs.insert(
+        "/workspace/input".into(),
+        (1, vec![entry("part\n", DirectoryEntryKind::Directory, 10)]),
+    );
+    files.dirs.insert(
+        "/workspace/input/part\n".into(),
+        (10, vec![entry("escape.csv", DirectoryEntryKind::File, 11)]),
+    );
+    // The actual newline splits a pathname into a workspace-relative item and
+    // an absolute destination. Both are fed through ordinary cp binding.
+    expect_native(
+        "find input -name escape.csv | xargs -n1 cp source",
+        files,
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
+fn filename_bytes_are_argv_data_and_may_be_native_control_options() {
+    let response = expect_native(
+        "find input -name a.csv -printf '--target-directory=/outside\\0' | xargs -0 -n1 cp source",
+        Files::new(),
+        Decision::NeedApproval,
+    );
+    assert!(
+        response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind, EvidenceKind::NativeInputDecode(d) if d.complete))
+    );
+    let mut files = Files::new();
+    files.dirs.insert(
+        "/workspace/input".into(),
+        (
+            1,
+            vec![entry("--reference=outside", DirectoryEntryKind::File, 10)],
+        ),
+    );
+    let response = expect_native(
+        "find input -type f -printf '%f\\n' | xargs -n1 chmod 644",
+        files,
+        Decision::NeedApproval,
+    );
+    assert!(
+        response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind, EvidenceKind::NativeInputDecode(d) if !d.complete))
+    );
+    let mut files = Files::new();
+    files.dirs.insert(
+        "/workspace/input".into(),
+        (
+            1,
+            vec![entry(
+                "$(touch marker);echo text",
+                DirectoryEntryKind::File,
+                10,
+            )],
+        ),
+    );
+    let response = expect_native(
+        "find input -type f -print0 | xargs -0 -n1 chmod 644",
+        files,
+        Decision::Allow,
+    );
+    assert!(
+        !response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|e| e.normalized_command_name == "touch")
+    );
+}
+
+#[test]
+fn changing_namespace_incomplete_decoding_and_order_limits_never_pass() {
+    for command in [
+        "find input -name a.csv | xargs -n1 mv source",
+        "find input -name a.csv | xargs -n1 ln -s source",
+        "find input -name a.csv | xargs -n1 cp --remove-destination source",
+        "find input -name a.csv | xargs -s 64 -n1 cp source",
+        "find input -name a.csv -printf '\\377' | xargs -n1 cp source",
+        "find input -name a.csv -printf '\"%p\\n' | xargs -n1 cp source",
+        "find input -type f -print0 | xargs -0 -n1 unknown_consumer",
+        "find input -print0 | xargs -0 -n1 chmod 000",
+    ] {
+        expect_native(command, Files::new(), Decision::NeedApproval);
+    }
+    let mut files = Files::new();
+    files.changed = true;
+    expect_native(
+        "find input -name a.csv | xargs -n1 cp source",
+        files,
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
+fn complete_empty_input_preserves_run_if_empty_and_routing() {
+    expect_native(
+        "find input -name absent | xargs -n1 cp source /outside/dest",
+        Files::new(),
+        Decision::NeedApproval,
+    );
+    expect_native(
+        "find input -name absent | xargs -r -n1 cp source /outside/dest",
+        Files::new(),
+        Decision::Allow,
+    );
+    for command in [
+        "find input -name a.csv |& xargs -n1 cp source",
+        "find input -name a.csv | xargs -n1 cp source < unknown-list",
+        "find input -name a.csv | sed 's/a/b/' | xargs -n1 cp source",
+    ] {
+        expect_native(command, Files::new(), Decision::NeedApproval);
+    }
 }
 
 #[test]

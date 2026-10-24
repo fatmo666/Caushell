@@ -1,6 +1,5 @@
 //! Static checks only: no benchmark command or mutation is executed.
 use caushell_core::ShellQueryCore;
-use caushell_graph::NodeKind;
 use caushell_types::*;
 
 fn request(command: &str) -> CheckRequest {
@@ -47,7 +46,7 @@ fn nul_path_records_keep_lexical_bounds_without_claiming_namespace_proof() {
 }
 
 #[test]
-fn bounded_domain_is_retained_in_graph_not_just_the_decision() {
+fn bounded_domain_remains_in_trace_without_approving_incomplete_inputs() {
     let mut policy = PolicyConfig::default();
     policy.rule_policy.rules.insert(
         RuleId::OutsideWorkspaceMutation,
@@ -55,7 +54,15 @@ fn bounded_domain_is_retained_in_graph_not_just_the_decision() {
     );
     let mut core = ShellQueryCore::with_policy(policy);
     let response = core.check(request("find . -type f -print0 | xargs -0 chmod 644"));
-    assert_eq!(response.decision, Decision::Allow);
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(
+        response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind,
+        EvidenceKind::NativeInputDecode(d) if !d.complete && d.gap.is_some()))
+    );
     assert!(
         response
             .decision_trace
@@ -63,10 +70,8 @@ fn bounded_domain_is_retained_in_graph_not_just_the_decision() {
             .iter()
             .any(|fact| matches!(fact.resolution, SemanticResolution::Unresolved { .. }))
     );
-    assert!(core.session_graph(&SessionId::new("pipeline-path-records")).unwrap().nodes().any(|node| matches!(&node.kind,
-        NodeKind::PathFact { resolution, normalized_command_name: Some(name), .. } if name == "chmod" && matches!(resolution,
-            PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &vec!["/workspace/project".to_string()])
-    )), "{:#?}", response.decision_trace);
+    assert!(response.decision_trace.path_targets.iter().any(|fact| matches!(&fact.lexical,
+        PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &vec!["/workspace/project".to_string()])), "{:#?}", response.decision_trace);
 }
 
 #[test]

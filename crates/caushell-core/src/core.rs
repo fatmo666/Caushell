@@ -1275,6 +1275,15 @@ mod tests {
 
     #[test]
     fn outside_workspace_mutation_guard_covers_indirect_file_mutations() {
+        struct MetadataOnly;
+        impl caushell_runner::FilesystemView for MetadataOnly {
+            fn source(&self) -> caushell_types::FilesystemObservationSource {
+                caushell_runner::FilesystemView::source(&crate::LocalFilesystem)
+            }
+            fn entry(&self, path: &str) -> caushell_types::FilesystemEntry {
+                caushell_runner::FilesystemView::entry(&crate::LocalFilesystem, path)
+            }
+        }
         let cases = [
             ("find /var/tmp -type f -exec rm {} \\;", true),
             ("find /system -type f -exec rm {} +", true),
@@ -1400,11 +1409,13 @@ mod tests {
 
         let mut mismatches = Vec::new();
         for (index, (command, expected_outside)) in cases.iter().enumerate() {
-            let response = ShellQueryCore::new().check(sample_request(
-                &format!("indirect-mutation-{index}"),
-                1,
-                command,
-            ));
+            let response = ShellQueryCore::new()
+                .with_filesystem_view(std::sync::Arc::new(MetadataOnly))
+                .check(sample_request(
+                    &format!("indirect-mutation-{index}"),
+                    1,
+                    command,
+                ));
             let outside = response
                 .decision_trace
                 .findings
@@ -5172,7 +5183,7 @@ policy:
     }
 
     #[test]
-    fn core_default_runner_commits_three_stage_find_xargs_head_pipeline() {
+    fn core_default_runner_traces_incomplete_three_stage_pipeline_without_committing_it() {
         let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-find-xargs-head");
 
@@ -5182,38 +5193,46 @@ policy:
             "find . -name \"*.md\" -o -name \"*.txt\" | xargs grep -l \"site:\\|inurl:\\|intitle:\\|filetype:\" 2>/dev/null | head -10",
         ));
 
-        assert_eq!(response.decision, Decision::Allow);
-
-        let graph = core
-            .session_graph(&session_id)
-            .expect("expected committed session graph");
-
+        assert_eq!(response.decision, Decision::NeedApproval);
         assert!(
-            graph
-                .get_node(&NodeId::new("pipeline-segment:sess-find-xargs-head:1:0"))
-                .is_some()
-        );
-        assert!(
-            graph
-                .get_node(&NodeId::new("pipeline-segment:sess-find-xargs-head:1:1"))
-                .is_some()
-        );
-        assert!(
-            graph
-                .get_node(&NodeId::new("pipeline-segment:sess-find-xargs-head:1:2"))
-                .is_some()
+            response
+                .decision_trace
+                .evidence
+                .iter()
+                .any(|e| matches!(&e.kind,
+            caushell_types::EvidenceKind::NativeInputDecode(d) if !d.complete && d.gap.is_some()))
         );
 
-        assert!(graph.edges().iter().any(|edge| {
-            edge.from == NodeId::new("pipeline-segment:sess-find-xargs-head:1:0")
-                && edge.to == NodeId::new("pipeline-segment:sess-find-xargs-head:1:1")
-                && edge.kind == caushell_graph::EdgeKind::FlowsTo
-        }));
-        assert!(graph.edges().iter().any(|edge| {
-            edge.from == NodeId::new("pipeline-segment:sess-find-xargs-head:1:1")
-                && edge.to == NodeId::new("pipeline-segment:sess-find-xargs-head:1:2")
-                && edge.kind == caushell_graph::EdgeKind::FlowsTo
-        }));
+        for index in 0..3 {
+            let node = format!("pipeline-segment:sess-find-xargs-head:1:{index}");
+            assert!(
+                response
+                    .decision_trace
+                    .execution_units
+                    .iter()
+                    .any(|u| u.node_id == node)
+            );
+            assert!(
+                core.session_graph(&session_id)
+                    .unwrap()
+                    .get_node(&NodeId::new(node))
+                    .is_none()
+            );
+        }
+        for index in 0..2 {
+            assert!(
+                response
+                    .decision_trace
+                    .execution_unit_flows
+                    .iter()
+                    .any(|flow| {
+                        flow.from.node_id
+                            == format!("pipeline-segment:sess-find-xargs-head:1:{index}")
+                            && flow.to.node_id
+                                == format!("pipeline-segment:sess-find-xargs-head:1:{}", index + 1)
+                    })
+            );
+        }
     }
 
     #[test]

@@ -35,8 +35,8 @@ pub use shell_value::{ShellReferenceTarget, ShellScalarValue, StructuredShellVal
 mod state_candidate;
 mod stream_records;
 pub use stream_records::{
-    MAX_OBSERVED_STREAM_BYTES, MAX_OBSERVED_STREAM_RECORDS, ObservedStreamRecord,
-    StdoutRecordsEvidence, StreamRecordEncoding, StreamRecordOrder,
+    MAX_OBSERVED_STREAM_BYTES, MAX_OBSERVED_STREAM_RECORDS, NativeInputDecodeEvidence,
+    ObservedStreamRecord, StdoutRecordsEvidence, StreamRecordEncoding, StreamRecordOrder,
 };
 
 pub use analysis_budget::{AnalysisBudgetKind, AnalysisBudgetPolicy, AnalysisUsage};

@@ -47,6 +47,9 @@ use crate::support::{
 };
 
 const MAX_ALIAS_EXPANSION_HOPS: usize = 8;
+#[cfg(test)]
+#[path = "observed_xargs_tests.rs"]
+mod observed_xargs_tests;
 pub struct ResolveInvocationPass {
     registry: ProfileRegistry,
 }
@@ -63,6 +66,29 @@ impl SessionTransformPass for ResolveInvocationPass {
     }
 
     fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
+        let base = ctx.clone();
+        self.run_once(session, ctx, &mut Default::default());
+        let mut observed = super::observed_native_inputs::prepare(session, ctx);
+        if observed.inputs.is_empty() {
+            return;
+        }
+        let mut candidate = base;
+        self.run_once(session, &mut candidate, &mut observed);
+        if super::observed_native_inputs::accept(session, &mut candidate, &observed) {
+            *ctx = candidate;
+        } else {
+            super::observed_native_inputs::reject(ctx, &observed);
+        }
+    }
+}
+
+impl ResolveInvocationPass {
+    fn run_once(
+        &self,
+        session: SessionView<'_>,
+        ctx: &mut RunnerContext,
+        observed: &mut super::observed_native_inputs::ObservedInputs,
+    ) {
         let Some(parsed) = ctx.parsed_command().cloned() else {
             return;
         };
@@ -154,6 +180,7 @@ impl SessionTransformPass for ResolveInvocationPass {
             &nested_payload_records,
             &payload_source_contexts,
             ctx.policy().semantic_expansion.max_nested_parse_depth,
+            observed,
         );
         // The legacy payload traversal and canonical execution frontier share
         // source positions, not node IDs. Reattach descendant payloads only
@@ -205,6 +232,13 @@ impl SessionTransformPass for ResolveInvocationPass {
             }
         }
         nested_payload_records.extend(derived_payloads);
+        for decode in observed.decoded.values() {
+            ctx.add_evidence(Evidence {
+                rule_id: caushell_types::RuleId::SelectionError,
+                summary: "native input decoding".into(),
+                kind: caushell_types::EvidenceKind::NativeInputDecode(decode.clone()),
+            });
+        }
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
@@ -2108,6 +2142,37 @@ fn registered_dispatch_projection(
     projection
 }
 
+pub(super) fn complete_native_dispatch_nodes(
+    ctx: &RunnerContext,
+) -> std::collections::BTreeSet<String> {
+    ctx.execution_unit_resolve_records()
+        .iter()
+        .filter_map(|record| {
+            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+                return None;
+            };
+            if should_skip_generic_dispatch_projection(resolved) {
+                return None;
+            }
+            let projection = collect_dispatch_command_projection(&resolved.bound);
+            if projection.resolved.is_empty() || !projection.unresolved.is_empty() {
+                return None;
+            }
+            projection
+                .resolved
+                .iter()
+                .all(|candidate| {
+                    ctx.execution_unit_resolve_records().iter().any(|child| {
+                        child.parent_execution_node_id == record.source_node_id
+                            && child.origin_kind == ExecutionUnitOriginKind::Dispatch
+                            && child.origin_index == candidate.dispatch_index
+                    })
+                })
+                .then(|| record.source_node_id.0.clone())
+        })
+        .collect()
+}
+
 fn find_dispatch_candidates(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     cwd: &str,
@@ -3144,6 +3209,7 @@ fn collect_execution_unit_resolve_records(
     nested_payload_records: &[NestedPayloadRecord],
     payload_source_contexts: &BTreeMap<caushell_graph::NodeId, ProgramSourceContext>,
     max_nested_parse_depth: u8,
+    observed: &mut super::observed_native_inputs::ObservedInputs,
 ) -> (
     Vec<ExecutionUnitResolveRecord>,
     Vec<Evidence>,
@@ -4065,6 +4131,7 @@ fn collect_execution_unit_resolve_records(
                 resolved,
                 max_nested_parse_depth,
                 &mut symbolic_xargs_arity_budget,
+                observed,
             ));
             children.extend(expanded_native_parallel_children(
                 registry,
@@ -7018,6 +7085,7 @@ fn expanded_static_xargs_children(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     max_nested_parse_depth: u8,
     arity_budget: &mut usize,
+    observed: &mut super::observed_native_inputs::ObservedInputs,
 ) -> Vec<ExpandedFrontierEntry> {
     if resolved.normalized_command_name.as_str() != "xargs"
         || resolved.bound.form_id.as_str() != "dispatch_from_stdin"
@@ -7064,7 +7132,56 @@ fn expanded_static_xargs_children(
         None
     };
 
-    let evidence = if has_applied_modifier(&resolved.bound, "arg_file") {
+    let native = observed
+        .inputs
+        .get(&entry.source_node_id)
+        .filter(|i| {
+            !has_applied_modifier(&resolved.bound, "arg_file")
+                && !entry.static_payload_scope.stdin_is_parent_output
+                && !entry.inherited_scope.static_input_cwd_unproven
+                && i.scope == entry.static_payload_scope.parsed_scope
+                && i.bindings == entry.bindings
+        })
+        .map(|i| {
+            let groups = observed_xargs_groups(&i.records, &config).and_then(|groups| {
+                if has_applied_modifier(&resolved.bound, "max_chars") {
+                    return Err("native size-limited batching is unresolved".into());
+                }
+                let fixed = std::iter::once(&candidate.command)
+                    .chain(candidate.argv.iter())
+                    .map(|a| a.text.len().saturating_add(1))
+                    .sum::<usize>();
+                let bytes = groups
+                    .iter()
+                    .flatten()
+                    .map(|s| s.len().saturating_add(1))
+                    .sum::<usize>();
+                if fixed.saturating_mul(groups.len()).saturating_add(bytes) > 256 * 1024 {
+                    Err("native argv byte budget exceeded".into())
+                } else {
+                    Ok(groups)
+                }
+            });
+            (i.records.node_id.clone(), groups)
+        });
+    if let Some((producer, groups)) = &native {
+        observed.decoded.insert(
+            entry.source_node_id.clone(),
+            caushell_types::NativeInputDecodeEvidence {
+                node_id: entry.source_node_id.0.clone(),
+                producer_node_id: producer.clone(),
+                complete: groups.is_ok(),
+                alternative_groups: groups.as_ref().map_or(0, Vec::len),
+                gap: groups.as_ref().err().cloned(),
+            },
+        );
+    }
+    let evidence = if native.is_some() {
+        StaticStreamEvidence {
+            known_fragments: Vec::new(),
+            complete: false,
+        }
+    } else if has_applied_modifier(&resolved.bound, "arg_file") {
         static_arg_file_evidence_for_xargs_scope(request, session, entry, &resolved.bound)
     } else {
         static_stdin_evidence_for_scoped_command(
@@ -7086,7 +7203,8 @@ fn expanded_static_xargs_children(
     };
     // A domain proof is useful even when none of the concrete input bytes are
     // known. Never reinterpret it as literal shell text or an exact argv list.
-    let input_domain = (!evidence.complete
+    let input_domain = (native.is_none()
+        && !evidence.complete
         && !has_applied_modifier(&resolved.bound, "arg_file")
         && matches!(config.item_mode, XargsItemMode::NullSeparated))
     .then(|| stdin_path_domain_for_scope(registry, session, request, entry, max_nested_parse_depth))
@@ -7158,6 +7276,17 @@ fn expanded_static_xargs_children(
             groups.push(vec![XargsItem::UnknownTail]);
         }
         groups = bounded_xargs_unknown_groups(&config, groups, arity_budget);
+    }
+    let alternative_order = native.is_some()
+        && observed
+            .inputs
+            .get(&entry.source_node_id)
+            .is_some_and(|i| i.records.order == caushell_types::StreamRecordOrder::Unspecified);
+    if let Some((_, Ok(native_groups))) = native {
+        groups = native_groups
+            .into_iter()
+            .map(|group| group.into_iter().map(XargsItem::Known).collect())
+            .collect();
     }
 
     let replace_token = match config.dispatch_mode {
@@ -7346,7 +7475,8 @@ fn expanded_static_xargs_children(
         let mut command = child_candidate.to_command_fact();
         // A tool-level confirmation is a possible execution branch, not proof
         // that the child has no effects. Preserve its conditional status.
-        command.conditional_execution |= config.requires_confirmation || arity_alternatives;
+        command.conditional_execution |=
+            config.requires_confirmation || arity_alternatives || alternative_order;
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
@@ -8347,6 +8477,130 @@ fn xargs_items_from_payloads(
         }
         XargsItemMode::NullSeparated | XargsItemMode::Delimited { .. } => items,
     })
+}
+
+fn observed_xargs_groups(
+    output: &caushell_types::StdoutRecordsEvidence,
+    config: &XargsStaticExpansionConfig,
+) -> Result<Vec<Vec<String>>, String> {
+    use std::collections::BTreeSet;
+    let records = output.complete_records().ok_or_else(|| {
+        output
+            .gap
+            .clone()
+            .unwrap_or_else(|| "producer records are incomplete".into())
+    })?;
+    if config.eof_marker.is_some() {
+        return Err("native logical EOF handling is unresolved".into());
+    }
+    let blocks = records
+        .iter()
+        .map(|r| String::from_utf8(r.bytes.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "native argv contains unsupported non-UTF-8 bytes")?;
+    let decode = |blocks: &[String]| -> Result<Vec<Vec<String>>, String> {
+        if !matches!(config.item_mode, XargsItemMode::NullSeparated)
+            && blocks.iter().any(|b| b.contains('\0'))
+        {
+            return Err("native text input contains NUL bytes".into());
+        }
+        let items =
+            xargs_items_from_payloads(blocks, &config.item_mode, config.eof_marker.as_deref())
+                .ok_or("native input quoting is incomplete")?;
+        let groups = match config.dispatch_mode {
+            XargsDispatchMode::AppendAll => {
+                if items.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![items]
+                }
+            }
+            XargsDispatchMode::ReplaceToken { .. } => items.into_iter().map(|s| vec![s]).collect(),
+            XargsDispatchMode::MaxArgs { max_args } if max_args > 0 => {
+                items.chunks(max_args).map(<[String]>::to_vec).collect()
+            }
+            XargsDispatchMode::MaxLines { max_lines } if max_lines > 0 => xargs_grouped_lines(
+                blocks,
+                &config.item_mode,
+                max_lines,
+                config.eof_marker.as_deref(),
+            )
+            .ok_or("native logical-line grouping is unresolved")?,
+            _ => return Err("native batch size is unresolved".into()),
+        };
+        Ok(groups)
+    };
+    let independent = config.eof_marker.is_none()
+        && matches!(
+            config.dispatch_mode,
+            XargsDispatchMode::ReplaceToken { .. }
+                | XargsDispatchMode::MaxArgs { max_args: 1 }
+                | XargsDispatchMode::MaxLines { max_lines: 1 }
+        )
+        && blocks.iter().all(|b| match &config.item_mode {
+            XargsItemMode::NullSeparated => b.ends_with('\0'),
+            XargsItemMode::Delimited { delimiter } => b.ends_with(delimiter.as_str()),
+            _ => b.ends_with('\n'),
+        });
+    if output.order == caushell_types::StreamRecordOrder::Exact || blocks.len() <= 1 {
+        let mut groups = decode(&blocks)?;
+        if groups.is_empty()
+            && config.run_if_empty
+            && !matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
+        {
+            groups.push(Vec::new());
+        }
+        if groups.len() > 128 || groups.iter().map(Vec::len).sum::<usize>() > 4096 {
+            return Err("native argv group budget exceeded".into());
+        }
+        return Ok(groups);
+    }
+    let mut groups = BTreeSet::new();
+    let mut add = |decoded: Vec<Vec<String>>| -> Result<(), String> {
+        for group in decoded {
+            groups.insert(group);
+            if groups.len() > 128 || groups.iter().map(Vec::len).sum::<usize>() > 4096 {
+                return Err("native argv group budget exceeded".into());
+            }
+        }
+        Ok(())
+    };
+    if independent {
+        // Each block returns the decoder to its initial state. A malformed
+        // block fails the whole proof; its known neighbours are not a prefix.
+        for block in &blocks {
+            add(decode(std::slice::from_ref(block))?)?;
+        }
+    } else {
+        // A directory set has no native order. Enumerate a bounded superset of
+        // complete block orders, including every possible final short batch.
+        if blocks.len() > 5 {
+            return Err("producer order exceeds native batching budget".into());
+        }
+        fn orders(
+            blocks: &mut [String],
+            at: usize,
+            visit: &mut impl FnMut(&[String]) -> Result<(), String>,
+        ) -> Result<(), String> {
+            if at == blocks.len() {
+                return visit(blocks);
+            }
+            for index in at..blocks.len() {
+                blocks.swap(at, index);
+                orders(blocks, at + 1, visit)?;
+                blocks.swap(at, index);
+            }
+            Ok(())
+        }
+        orders(&mut blocks.clone(), 0, &mut |blocks| add(decode(blocks)?))?;
+    }
+    if groups.is_empty()
+        && config.run_if_empty
+        && !matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
+    {
+        groups.insert(Vec::new());
+    }
+    Ok(groups.into_iter().collect())
 }
 
 fn xargs_grouped_lines(

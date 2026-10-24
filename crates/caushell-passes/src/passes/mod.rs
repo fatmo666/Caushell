@@ -37,6 +37,7 @@ mod imported_package_execution_guard;
 mod interactive_escape_guard;
 mod network_upload_guard;
 mod observe_stdout_records;
+mod observed_native_inputs;
 mod outside_workspace_mutation_guard;
 mod outside_workspace_script_source;
 mod outside_workspace_startup_config;

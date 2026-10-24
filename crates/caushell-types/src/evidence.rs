@@ -456,6 +456,7 @@ impl Evidence {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
     StdoutRecords(crate::StdoutRecordsEvidence),
+    NativeInputDecode(crate::NativeInputDecodeEvidence),
     ArchiveMembers(ArchiveMembersEvidence),
     ToolConfigInput(ToolConfigInputEvidence),
     ToolConfigParse(ToolConfigParseEvidence),
