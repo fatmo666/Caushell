@@ -558,6 +558,12 @@ pub struct CliRuntime {
 }
 
 impl CliRuntime {
+    pub fn register_python_runtime_contract(
+        &mut self,
+        contract: caushell_types::PythonRuntimeContract,
+    ) {
+        self.core.set_python_runtime_contract(contract);
+    }
     pub fn new(config_path: Option<&Path>, store_root: Option<&Path>) -> Result<Self, CliError> {
         let core = match config_path {
             Some(path) => match load_config_file_or_default(path) {

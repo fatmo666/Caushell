@@ -4,6 +4,8 @@ use tree_sitter::{Node, Parser};
 mod control;
 mod http;
 mod socket;
+mod startup;
+pub use startup::python_startup_missing_imports;
 
 const SOURCE_LIMIT: usize = 65_536;
 const VALUE_LIMIT: usize = 262_144;
@@ -114,6 +116,46 @@ pub fn python_isolated_startup(resolved: &crate::ResolvedInvocationArtifact) -> 
         }
     }
     isolated && no_site
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PythonStartupOptions {
+    pub isolated: bool,
+    pub ignore_environment: bool,
+    pub no_site: bool,
+    pub no_user_site: bool,
+    pub safe_path: bool,
+}
+
+pub fn python_startup_options(
+    resolved: &crate::ResolvedInvocationArtifact,
+) -> Result<PythonStartupOptions> {
+    let mut options = PythonStartupOptions::default();
+    for arg in &resolved.materialized_projection.invocation.args {
+        if arg.text == "-c" || arg.text == "--" || arg.text == "-" || !arg.text.starts_with('-') {
+            break;
+        }
+        if arg.text.starts_with("--") {
+            return Err("unsupported Python runtime option".into());
+        }
+        for flag in arg.text[1..].chars() {
+            match flag {
+                'I' => {
+                    options.isolated = true;
+                    options.ignore_environment = true;
+                    options.no_user_site = true;
+                    options.safe_path = true;
+                }
+                'E' => options.ignore_environment = true,
+                'S' => options.no_site = true,
+                's' => options.no_user_site = true,
+                'P' => options.safe_path = true,
+                'B' | 'u' | 'q' => {}
+                _ => return Err("unsupported Python runtime option".into()),
+            }
+        }
+    }
+    Ok(options)
 }
 
 pub fn python_source_encoding_supported(source: &str) -> bool {

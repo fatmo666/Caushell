@@ -191,6 +191,7 @@ impl ResolveInvocationPass {
                     | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
                     | caushell_types::EvidenceKind::PythonPayload(_)
                     | caushell_types::EvidenceKind::PythonStdoutField(_)
+                    | caushell_types::EvidenceKind::PythonStartup(_)
             )
         }) {
             ctx.add_evidence(evidence);
@@ -3948,6 +3949,7 @@ fn collect_execution_unit_resolve_records(
             &mut entry,
             &program_context,
             max_nested_parse_depth,
+            &records,
             pathname_context,
         );
 
@@ -4200,6 +4202,7 @@ fn collect_execution_unit_resolve_records(
             request,
             &mut entry,
             &program_context,
+            &records,
             pathname_context,
         );
         let frontier_depth = entry.depth;

@@ -783,6 +783,22 @@ impl SessionBindings {
         }
     }
 
+    pub fn environment_is_complete(&self) -> bool {
+        self.child_environment_complete
+    }
+
+    pub fn environment_names(&self) -> std::collections::BTreeSet<String> {
+        self.child_environment
+            .keys()
+            .cloned()
+            .chain(
+                self.entry_environment
+                    .iter()
+                    .flat_map(|s| s.variable_bindings().map(|v| v.name.clone())),
+            )
+            .collect()
+    }
+
     pub fn export(&mut self, name: &str) {
         let value = self
             .get(name)

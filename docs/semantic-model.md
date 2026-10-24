@@ -2956,8 +2956,36 @@ nonempty relative paths without parent traversal.
 The Python adapter interprets a bounded AST using supplied argv, environment
 and file bytes. Native child argv re-enters ordinary Profile binding; shell
 children enter the POSIX shell frontier. Unsupported syntax or unknown effect
-targets retain a language gap. Python 3 `-I -S` remains the supported startup
-contract; ordinary startup needs separate runtime and module-origin evidence.
+targets retain a language gap. Without a registered runtime, Python 3 `-I -S`
+retains the existing isolated-startup contract. A registered runtime is checked
+for both ordinary and isolated invocations.
+
+### Python startup origins
+
+The deployment operator registers a `caushell.python-runtime/v1` inventory with
+`ShellQueryCore::with_python_runtime_contract` or the server option
+`--python-runtime-contract`. Check requests cannot register it. The inventory
+pins a trusted Linux CPython 3.11 installation, account, interpreter and standard
+library digests, directory entries, module origins and startup search paths.
+The execution namespace must provide fresh file, directory and account
+observations. Replacing that namespace drops the registered inventory.
+
+Startup analysis follows the invocation flags and supplied exported environment,
+checks runtime files, symlinks, path configuration, user/system site directories,
+customization hooks and module shadowing, and records `PythonStartup` evidence.
+Bare interpreter names additionally require execution-side Shell lookup evidence
+bound to the command, cwd, Shell and PATH, including command-hash state. The local
+filesystem backend does not infer that lookup from the analyzer's PATH.
+
+The checker does not execute Python or import target modules. A customization
+source is accepted only for no-op forms or a handled optional import whose
+absence is independently observed. Unmodeled `.pth` files, virtual environments,
+startup controls, unknown observations and pending namespace mutations retain
+a language gap. Startup evidence discharges only that boundary; AST effects
+still enter the existing path, network and child-invocation policies.
+
+The capture command and deployment procedure are in
+[`tools/python-runtime`](../tools/python-runtime/README.md).
 
 HTTP handlers directly inheriting the declared `BaseHTTPRequestHandler`
 contract are analyzed method by method. `HTTPServer` construction declares a

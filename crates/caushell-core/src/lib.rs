@@ -2,6 +2,7 @@ mod core;
 mod directory;
 mod file_content;
 mod filesystem;
+mod runtime_file;
 pub use filesystem::LocalFilesystem;
 mod state;
 

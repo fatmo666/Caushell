@@ -91,5 +91,5 @@ modifiers:
 extensions:
   caushell.profile/known_limitations:
     - Bounded Python values, control flow, child argv and declared services use the language adapter.
-    - Only isolated Python 3 startup without site loading currently satisfies the body adapter runtime contract.
+    - Ordinary Python startup requires a registered runtime inventory and fresh startup/module-origin observations; unproved startup retains a language gap.
     - Interactive mode and extended runtime configuration remain opaque.

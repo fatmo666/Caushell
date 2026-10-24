@@ -37,8 +37,9 @@ mod python_payload;
 mod raw;
 mod recursive;
 pub use python_payload::{
-    PythonAnalysis, PythonEffect, PythonInput, PythonInputs, analyze_python,
-    python_isolated_startup, python_source_encoding_supported,
+    PythonAnalysis, PythonEffect, PythonInput, PythonInputs, PythonStartupOptions, analyze_python,
+    python_isolated_startup, python_source_encoding_supported, python_startup_missing_imports,
+    python_startup_options,
 };
 mod registry;
 mod rename_payload;

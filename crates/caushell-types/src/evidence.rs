@@ -461,6 +461,7 @@ pub enum EvidenceKind {
     ToolOptionEnvironment(crate::ToolOptionEnvironmentEvidence),
     PythonPayload(crate::PythonPayloadEvidence),
     PythonStdoutField(crate::PythonStdoutFieldEvidence),
+    PythonStartup(crate::PythonStartupEvidence),
     ArchiveMembers(ArchiveMembersEvidence),
     ToolConfigInput(ToolConfigInputEvidence),
     ToolConfigParse(ToolConfigParseEvidence),

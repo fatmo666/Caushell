@@ -4,6 +4,24 @@ use caushell_types::FilesystemEntry;
 pub struct LocalFilesystem;
 
 impl FilesystemView for LocalFilesystem {
+    fn runtime_file(&self, path: &str) -> caushell_types::RuntimeFileObservation {
+        crate::runtime_file::read(path)
+    }
+    fn execution_account(&self) -> Option<caushell_types::RuntimeAccount> {
+        #[cfg(unix)]
+        {
+            Some(caushell_types::RuntimeAccount {
+                uid: unsafe { libc::getuid() },
+                euid: unsafe { libc::geteuid() },
+                gid: unsafe { libc::getgid() },
+                egid: unsafe { libc::getegid() },
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
     fn read_directory(
         &self,
         path: &str,

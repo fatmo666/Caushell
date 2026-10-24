@@ -8,9 +8,19 @@ pub(in crate::passes::resolve_invocation) fn materialize_outputs(
     entry: &mut ExpandedFrontierEntry,
     context: &ProgramSourceContext,
     max_depth: u8,
+    ancestor_records: &[ExecutionUnitResolveRecord],
     ctx: &mut RunnerContext,
 ) {
-    let outcome = output_fields(registry, session, request, entry, context, max_depth);
+    let outcome = output_fields(
+        registry,
+        session,
+        request,
+        entry,
+        context,
+        max_depth,
+        ancestor_records,
+        ctx,
+    );
     if let Some((command, proofs)) = outcome {
         entry.result = resolve_invocation_artifact_with_bindings(
             registry,
@@ -39,6 +49,8 @@ fn output_fields(
     entry: &ExpandedFrontierEntry,
     context: &ProgramSourceContext,
     max_depth: u8,
+    ancestor_records: &[ExecutionUnitResolveRecord],
+    ctx: &mut RunnerContext,
 ) -> Option<(
     caushell_parse::CommandFact,
     Vec<caushell_types::PythonStdoutFieldEvidence>,
@@ -129,8 +141,16 @@ fn output_fields(
                     if substitution.text != text {
                         return None;
                     }
-                    let report =
-                        producer_output(registry, session, request, entry, context, substitution)?;
+                    let report = producer_output(
+                        registry,
+                        session,
+                        request,
+                        entry,
+                        context,
+                        substitution,
+                        ancestor_records,
+                        ctx,
+                    )?;
                     value.push_str(
                         std::str::from_utf8(&report.stdout)
                             .ok()?
@@ -195,6 +215,8 @@ fn producer_output(
     entry: &ExpandedFrontierEntry,
     context: &ProgramSourceContext,
     substitution: &caushell_parse::CommandSubstitutionFact,
+    ancestor_records: &[ExecutionUnitResolveRecord],
+    ctx: &mut RunnerContext,
 ) -> Option<caushell_profile::PythonAnalysis> {
     let body = caushell_parse::parse_command(&substitution.body_text, entry.shell_kind).ok()?;
     if body.status != caushell_parse::ParseStatus::Complete
@@ -249,10 +271,7 @@ fn producer_output(
     else {
         return None;
     };
-    if !caushell_profile::python_isolated_startup(&resolved)
-        || resolved.bound.operation_semantics_unresolved
-        || !resolved.bound.residuals.is_empty()
-    {
+    if resolved.bound.operation_semantics_unresolved || !resolved.bound.residuals.is_empty() {
         return None;
     }
     if !caushell_profile::collect_recursive_payload_candidates(&resolved.bound)
@@ -304,6 +323,25 @@ fn producer_output(
             .any(|e| !matches!(e, PythonEffect::ReadFile(_)))
     {
         return None;
+    }
+    if !caushell_profile::python_isolated_startup(&resolved)
+        || ctx.filesystem_view().python_runtime_contract().is_some()
+    {
+        startup::prove(
+            registry,
+            request,
+            entry,
+            context,
+            &resolved,
+            &inputs.bindings,
+            &inputs.cwd,
+            "-c",
+            &report.imports,
+            Some(&command.text),
+            ancestor_records,
+            ctx,
+        )
+        .ok()?;
     }
     Some(report)
 }

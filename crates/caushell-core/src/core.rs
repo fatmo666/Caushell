@@ -188,6 +188,22 @@ impl ShellQueryCore {
         self
     }
 
+    /// Register a deployment-controlled runtime inventory in the current namespace.
+    pub fn with_python_runtime_contract(
+        mut self,
+        contract: caushell_types::PythonRuntimeContract,
+    ) -> Self {
+        self.set_python_runtime_contract(contract);
+        self
+    }
+
+    pub fn set_python_runtime_contract(&mut self, contract: caushell_types::PythonRuntimeContract) {
+        self.filesystem = std::sync::Arc::new(caushell_runner::PythonRuntimeFilesystem::new(
+            self.filesystem.clone(),
+            contract,
+        ));
+    }
+
     pub fn check(&mut self, request: CheckRequest) -> CheckResponse {
         self.check_with_outcome(request).response
     }

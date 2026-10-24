@@ -1,6 +1,7 @@
 use super::*;
 use caushell_profile::{DispatchArgument, PythonEffect, PythonInput, PythonInputs};
 use caushell_types::{EvidenceKind, PythonPayloadEvidence, PythonPayloadInputEvidence};
+mod startup;
 
 struct Inputs<'a, 's> {
     registry: &'a ProfileRegistry,
@@ -63,6 +64,7 @@ pub(super) fn expand(
     request: &CheckRequest,
     entry: &mut ExpandedFrontierEntry,
     context: &ProgramSourceContext,
+    ancestor_records: &[ExecutionUnitResolveRecord],
     ctx: &mut RunnerContext,
 ) -> Vec<ExpandedFrontierEntry> {
     let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
@@ -207,11 +209,21 @@ pub(super) fn expand(
         if let Some(gap) = analysis.gap {
             return Err(gap);
         }
-        if !isolated {
-            return Err(
-                "Python startup and module resolution are not proven (-I -S contract required)"
-                    .into(),
-            );
+        if !isolated || ctx.filesystem_view().python_runtime_contract().is_some() {
+            startup::prove(
+                registry,
+                request,
+                entry,
+                context,
+                &resolved,
+                &inputs.bindings,
+                &inputs.cwd,
+                &argv[0],
+                &proof.imports,
+                None,
+                ancestor_records,
+                ctx,
+            )?;
         }
         proof.shell_commands = analysis
             .effects

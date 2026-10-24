@@ -141,6 +141,8 @@ dependencies = [
  "caushell-runner",
  "caushell-types",
  "libc",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

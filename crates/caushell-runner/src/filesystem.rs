@@ -33,6 +33,37 @@ impl PartialEq for FilesystemViewHandle {
 impl Eq for FilesystemViewHandle {}
 
 pub trait FilesystemView: Send + Sync {
+    /// A namespace-side Shell lookup, including its command hash state.
+    fn shell_executable(
+        &self,
+        _command: &str,
+        _cwd: &str,
+        _shell: caushell_types::ShellKind,
+        _path: &caushell_types::ShellEnvironmentValue,
+    ) -> Option<caushell_types::ShellExecutableObservation> {
+        None
+    }
+    fn python_runtime_contract(
+        &self,
+    ) -> Option<std::sync::Arc<caushell_types::PythonRuntimeContract>> {
+        None
+    }
+    fn execution_account(&self) -> Option<caushell_types::RuntimeAccount> {
+        None
+    }
+    fn runtime_file(&self, path: &str) -> caushell_types::RuntimeFileObservation {
+        caushell_types::RuntimeFileObservation {
+            content: crate::FileContentRead::failed(
+                caushell_types::FileContentSource::Unavailable,
+                path,
+                crate::MAX_RUNTIME_FILE_BYTES,
+                caushell_types::FileContentStatus::Unavailable,
+                "runtime file digests are not supplied",
+            )
+            .observation,
+            executable: None,
+        }
+    }
     /// Entries must describe the execution namespace; Missing means observed absence.
     fn source(&self) -> caushell_types::FilesystemObservationSource {
         caushell_types::FilesystemObservationSource::SuppliedView

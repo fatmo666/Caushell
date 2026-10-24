@@ -102,7 +102,7 @@ pub(crate) fn identity(metadata: &std::fs::Metadata) -> FileContentIdentity {
 }
 
 #[cfg(unix)]
-fn open_regular_path(path: &str) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_regular_path(path: &str) -> std::io::Result<std::fs::File> {
     open_path(path, false)
 }
 

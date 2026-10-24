@@ -56,6 +56,7 @@ fn run_with_args(mut args: impl Iterator<Item = String>) -> Result<(), CliError>
             let config_path = runtime_config_path(options.config_path)?;
             let mut runtime =
                 create_runtime(Some(config_path.as_path()), options.store_root.as_deref())?;
+            register_python_runtime(&mut runtime, options.python_runtime_contract.as_deref())?;
             let stdin = io::stdin();
             let mut stdout = io::stdout();
 
@@ -95,6 +96,7 @@ fn run_with_args(mut args: impl Iterator<Item = String>) -> Result<(), CliError>
                     return Err(error);
                 }
             };
+            register_python_runtime(&mut runtime, options.python_runtime_contract.as_deref())?;
             if let Some(progress) = &startup_progress {
                 progress.write(
                     "socket_bind_begin",
@@ -353,6 +355,7 @@ struct ServeOptions {
     config_path: Option<PathBuf>,
     socket_path: Option<PathBuf>,
     store_root: Option<PathBuf>,
+    python_runtime_contract: Option<PathBuf>,
 }
 
 struct QueryOptions {
@@ -371,9 +374,18 @@ fn parse_serve_options(mut args: impl Iterator<Item = String>) -> Result<ServeOp
     let mut config_path = None;
     let mut socket_path = None;
     let mut store_root = None;
+    let mut python_runtime_contract = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--python-runtime-contract" => {
+                if python_runtime_contract.is_some() {
+                    return Err(invalid_cli_input("duplicate --python-runtime-contract"));
+                }
+                python_runtime_contract = Some(PathBuf::from(args.next().ok_or_else(|| {
+                    invalid_cli_input("--python-runtime-contract requires a following path")
+                })?));
+            }
             "--config" => {
                 let Some(path) = args.next() else {
                     return Err(CliError::Io(io::Error::new(
@@ -417,7 +429,31 @@ fn parse_serve_options(mut args: impl Iterator<Item = String>) -> Result<ServeOp
         config_path,
         socket_path,
         store_root,
+        python_runtime_contract,
     })
+}
+
+fn register_python_runtime(
+    runtime: &mut caushell::CliRuntime,
+    path: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    use std::io::Read;
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let mut raw = Vec::new();
+    std::fs::File::open(path)?
+        .take(8_388_609)
+        .read_to_end(&mut raw)?;
+    if raw.len() > 8_388_608 {
+        return Err(invalid_cli_input(
+            "Python runtime contract exceeds its byte budget",
+        ));
+    }
+    let contract = serde_json::from_slice(&raw)
+        .map_err(|error| invalid_cli_input(format!("invalid Python runtime contract: {error}")))?;
+    runtime.register_python_runtime_contract(contract);
+    Ok(())
 }
 
 fn runtime_config_path(explicit: Option<PathBuf>) -> Result<PathBuf, CliError> {
@@ -638,7 +674,7 @@ fn current_time_ms() -> Option<u64> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  caushell --version\n  caushell build-info\n  caushell update [--check] [--runtime-only] [--version <release-tag>]\n  caushell --update [--check] [--runtime-only] [--version <release-tag>]\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nupdate downloads and verifies the latest release, refreshes installed Harness plugins, and runs doctor\nbuild-info prints the embedded version, commit, release, and target identity\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and writes JSON health metadata\ndoctor checks an installed Caushell Harness integration; --smoke runs a harmless Bash action through the Harness and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
+        "usage:\n  caushell --version\n  caushell build-info\n  caushell update [--check] [--runtime-only] [--version <release-tag>]\n  caushell --update [--check] [--runtime-only] [--version <release-tag>]\n  caushell config <path|init|validate|show|set>\n  caushell doctor <codex|claude> [--smoke]\n  caushell serve-stdio [--config <path>] [--store <path>] [--python-runtime-contract <path>]\n  caushell serve-unix --socket <path> [--config <path>] [--store <path>] [--python-runtime-contract <path>]\n  caushell ping-unix --socket <path>\n  caushell query-stdio --store <path>\n  caushell repair-session-log --store <path> --session-id <id> (--truncate-after-event-index <n> | --dedupe-event-index <n> --keep <first|last>)\n\nupdate downloads and verifies the latest release, refreshes installed Harness plugins, and runs doctor\nbuild-info prints the embedded version, commit, release, and target identity\nserve commands read JSONL RuntimeTransportRequest messages and write JSON RuntimeTransportResponse messages\nping-unix probes a running Unix socket runtime and writes JSON health metadata\ndoctor checks an installed Caushell Harness integration; --smoke runs a harmless Bash action through the Harness and verifies the hook log\nrepair-session-log rewrites a corrupted session log and rebuilds its materialized snapshot/query state"
     );
 }
 
@@ -651,6 +687,54 @@ fn print_config_usage() {
 #[cfg(test)]
 mod tests {
     use super::{CAUSHELL_VERSION, run_with_args};
+
+    #[test]
+    fn runtime_contract_option_is_explicit_and_unambiguous() {
+        let parse =
+            |values: &[&str]| super::parse_serve_options(values.iter().map(|s| (*s).into()));
+        assert!(parse(&[]).unwrap().python_runtime_contract.is_none());
+        assert_eq!(
+            parse(&["--python-runtime-contract", "/runtime.json"])
+                .unwrap()
+                .python_runtime_contract,
+            Some(std::path::PathBuf::from("/runtime.json"))
+        );
+        assert!(parse(&["--python-runtime-contract"]).is_err());
+        assert!(
+            parse(&[
+                "--python-runtime-contract",
+                "/one",
+                "--python-runtime-contract",
+                "/two"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_runtime_contract_files_are_not_registered() {
+        let path = std::env::temp_dir().join(format!(
+            "caushell-runtime-contract-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut runtime = caushell::CliRuntime::new(None, None).unwrap();
+        assert!(super::register_python_runtime(&mut runtime, None).is_ok());
+        assert!(super::register_python_runtime(&mut runtime, Some(&path)).is_err());
+        std::fs::write(&path, b"{}").unwrap();
+        assert!(super::register_python_runtime(&mut runtime, Some(&path)).is_err());
+        std::fs::write(&path, vec![b' '; 8_388_609]).unwrap();
+        assert!(
+            super::register_python_runtime(&mut runtime, Some(&path))
+                .unwrap_err()
+                .to_string()
+                .contains("byte budget")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn unknown_top_level_command_is_an_error() {
