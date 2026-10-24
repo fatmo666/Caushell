@@ -12652,6 +12652,7 @@ mod tests {
                         == Some(caushell_types::StateOperation {
                             domain: caushell_types::StateOperationDomain::RemoteResource,
                             operation: caushell_types::StateOperationKind::Mutate,
+                            resource: Some(caushell_types::StateResourceSelector::RequestEndpoints),
                         })
                 }));
                 assert!(

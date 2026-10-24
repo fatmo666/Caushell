@@ -437,6 +437,7 @@ pub enum ShellSourceCwdAnchor {
 // Proposals preserve per-pass judgments; final_decision is set only by the
 // final decision phase after earlier passes have contributed evidence.
 pub struct RunnerContext {
+    resource_authority: Option<crate::ResourceAuthoritySnapshot>,
     filesystem: crate::filesystem::FilesystemViewHandle,
     directory_budget: crate::DirectoryReadBudget,
     target_path_policy: Option<crate::PathExemptionPolicy>,
@@ -475,6 +476,7 @@ impl RunnerContext {
 
     pub fn with_policy(request: CheckRequest, policy: PolicyConfig) -> Self {
         Self {
+            resource_authority: None,
             filesystem: Default::default(),
             directory_budget: Default::default(),
             target_path_policy: None,
@@ -506,6 +508,14 @@ impl RunnerContext {
 
     pub fn request(&self) -> &CheckRequest {
         &self.request
+    }
+
+    pub fn set_resource_authority(&mut self, authority: crate::ResourceAuthoritySnapshot) {
+        self.resource_authority = Some(authority);
+    }
+
+    pub fn resource_authority(&self) -> Option<&crate::ResourceAuthoritySnapshot> {
+        self.resource_authority.as_ref()
     }
 
     pub fn set_filesystem_view(&mut self, view: std::sync::Arc<dyn crate::FilesystemView>) {

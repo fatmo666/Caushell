@@ -14,7 +14,7 @@ pub enum ProvenanceEndpointKind {
     EmailAddress,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceEndpointUsage {
     /// A declared possible connection route, not a logical upload/download.

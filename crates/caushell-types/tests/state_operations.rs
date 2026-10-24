@@ -17,6 +17,7 @@ fn state_metadata_roundtrips_and_rejects_misspelled_fields() {
     semantics.state_operations.push(StateOperation {
         domain: StateOperationDomain::CloudResource,
         operation: StateOperationKind::Mutate,
+        resource: None,
     });
     let json = serde_json::to_value(&semantics).unwrap();
     assert_eq!(json["state_operations"][0]["domain"], "cloud_resource");
@@ -37,6 +38,7 @@ fn connection_verification_control_roundtrips_without_filesystem_metadata() {
     let operation = StateOperation {
         domain: StateOperationDomain::ConnectionVerification,
         operation: StateOperationKind::Control,
+        resource: None,
     };
     let json = serde_json::to_string(&operation).unwrap();
     assert_eq!(
@@ -58,6 +60,7 @@ fn display_and_container_domains_roundtrip_as_state_not_paths() {
         let operation = StateOperation {
             domain,
             operation: StateOperationKind::Mutate,
+            resource: None,
         };
         let json = serde_json::to_value(operation).unwrap();
         assert_eq!(

@@ -44,6 +44,7 @@ mod runtime_matcher;
 mod runtime_variables;
 mod shell_read;
 pub use shell_read::{ShellReadResult, decode_shell_read};
+pub use types::ResourceNamespaceTransfer;
 pub use types::RuntimeInputBinding;
 mod native_records;
 mod sed_payload;

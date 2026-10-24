@@ -303,7 +303,7 @@ fn history_removal_is_a_state_effect_not_a_fabricated_file_deletion() {
             )),
             "{command}: {graph:#?}"
         );
-        assert!(graph.iter().any(|n| matches!(&n.kind, NodeKind::ExecutionSemantics { semantics } if semantics.state_operations == vec![StateOperation { domain: StateOperationDomain::ShellHistory, operation: StateOperationKind::Mutate }])), "{command}: {graph:#?}");
+        assert!(graph.iter().any(|n| matches!(&n.kind, NodeKind::ExecutionSemantics { semantics } if semantics.state_operations == vec![StateOperation { domain: StateOperationDomain::ShellHistory, operation: StateOperationKind::Mutate, resource: None }])), "{command}: {graph:#?}");
     }
 }
 

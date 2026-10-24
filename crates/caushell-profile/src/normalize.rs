@@ -3101,6 +3101,55 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     }
     let surface = normalize_effect_surface(kind, raw.surface)?;
     let repository_operation = normalize_repository_operation(kind, raw.repository_operation)?;
+    if (!raw.resource_unless_modifiers.is_empty() || !raw.resource_environment_absent.is_empty())
+        && raw
+            .state_operation
+            .is_none_or(|operation| operation.resource.is_none())
+    {
+        return Err(NormalizeError::InvalidStateOperation(
+            "resource prerequisites require a resource selector".into(),
+        ));
+    }
+    if let Some(operation) = &raw.state_operation {
+        if operation.resource.is_some()
+            && operation.domain != caushell_types::StateOperationDomain::RemoteResource
+        {
+            return Err(NormalizeError::InvalidStateOperation(
+                "network resource selectors require remote_resource".into(),
+            ));
+        }
+        if let Some(caushell_types::StateResourceSelector::Endpoint { usage }) = operation.resource
+        {
+            if operation.domain != caushell_types::StateOperationDomain::RemoteResource
+                || !matches!(
+                    usage,
+                    caushell_types::ProvenanceEndpointUsage::UploadTarget
+                        | caushell_types::ProvenanceEndpointUsage::FetchSource
+                        | caushell_types::ProvenanceEndpointUsage::ControlPlane
+                )
+            {
+                return Err(NormalizeError::InvalidStateOperation("endpoint resource selectors require remote_resource and a logical endpoint usage".into()));
+            }
+        }
+    }
+    for name in &raw.resource_environment_absent {
+        if name.is_empty()
+            || name.len() > 256
+            || !name
+                .bytes()
+                .enumerate()
+                .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || i > 0 && b.is_ascii_digit())
+        {
+            return Err(NormalizeError::InvalidStateOperation(
+                "invalid resource environment prerequisite".into(),
+            ));
+        }
+    }
+    if raw.resource_namespace.is_some() && kind != EffectKind::DispatchCommand {
+        return Err(NormalizeError::InvalidStateOperation(
+            "resource_namespace requires a dispatch_command effect".into(),
+        ));
+    }
     let state_operation = match (kind, raw.state_operation) {
         (EffectKind::StateOperation, Some(operation)) if matches!(target, EffectTarget::None) => Some(operation),
         (EffectKind::StateOperation, _) => return Err(NormalizeError::InvalidStateOperation(
@@ -3136,6 +3185,9 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     };
 
     Ok(Effect {
+        resource_namespace: raw.resource_namespace,
+        resource_unless_modifiers: raw.resource_unless_modifiers,
+        resource_environment_absent: raw.resource_environment_absent,
         runtime_input_binding: raw.runtime_input_binding,
         input_scope: raw.input_scope,
         path_list: raw.path_list,
@@ -3191,6 +3243,13 @@ fn validate_effect_input_contracts(
     let modifier_slots = slots(modifiers.iter().flat_map(|m| &m.parameters));
     let validate = |effects: &[Effect], available: &BTreeSet<String>| {
         for effect in effects {
+            for name in &effect.resource_unless_modifiers {
+                if !modifiers.iter().any(|m| m.id.as_str() == name) {
+                    return Err(NormalizeError::InvalidStateOperation(format!(
+                        "undeclared resource prerequisite modifier {name:?}"
+                    )));
+                }
+            }
             if let EffectTarget::Dispatch(target) = &effect.target {
                 for entry in &target.generated_environment {
                     let crate::GeneratedEnvironmentValue::AlphanumericFileName {
@@ -4273,6 +4332,9 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    resource_namespace: None,
+                    resource_unless_modifiers: Vec::new(),
+                    resource_environment_absent: Vec::new(),
                     runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
@@ -4322,6 +4384,9 @@ mod tests {
                     extensions: BTreeMap::new(),
                 }],
                 effects: vec![RawEffect {
+                    resource_namespace: None,
+                    resource_unless_modifiers: Vec::new(),
+                    resource_environment_absent: Vec::new(),
                     runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
@@ -4467,6 +4532,9 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    resource_namespace: None,
+                    resource_unless_modifiers: Vec::new(),
+                    resource_environment_absent: Vec::new(),
                     runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
@@ -4587,6 +4655,9 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    resource_namespace: None,
+                    resource_unless_modifiers: Vec::new(),
+                    resource_environment_absent: Vec::new(),
                     runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
@@ -4778,6 +4849,9 @@ mod tests {
                 ],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    resource_namespace: None,
+                    resource_unless_modifiers: Vec::new(),
+                    resource_environment_absent: Vec::new(),
                     runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,
@@ -4939,6 +5013,9 @@ mod tests {
                 }],
                 implicit_inputs: Vec::new(),
                 effects: vec![RawEffect {
+                    resource_namespace: None,
+                    resource_unless_modifiers: Vec::new(),
+                    resource_environment_absent: Vec::new(),
                     runtime_input_binding: None,
                     input_scope: None,
                     path_list: None,

@@ -5,6 +5,7 @@ use caushell_types::{
 };
 
 pub struct NetworkEndpointRef<'a> {
+    pub slot_name: Option<&'a str>,
     pub execution_node_id: &'a NodeId,
     pub command: &'a str,
     pub endpoint: Option<&'a str>,
@@ -27,6 +28,29 @@ impl NetworkEndpointRef<'_> {
 pub struct NetworkEndpointQuery;
 
 impl NetworkEndpointQuery {
+    pub fn has_transport_target(graph: &dyn GraphRead, execution: &NodeId) -> bool {
+        graph.outgoing_edges(execution).any(|edge| {
+            edge.kind == EdgeKind::Consumes
+                && matches!(
+                    &edge.semantics,
+                    Some(caushell_types::ProvenanceEdgeSemantics::Consume {
+                        consume_kind: caushell_types::ProvenanceConsumeKind::NetworkEndpoint,
+                        ..
+                    })
+                )
+                && graph.get_node(&edge.to).is_some_and(|node| {
+                    matches!(
+                        &node.kind,
+                        NodeKind::ProvenanceArtifact {
+                            artifact: ProvenanceArtifact::NetworkEndpoint {
+                                usage: ProvenanceEndpointUsage::TransportTarget,
+                                ..
+                            }
+                        }
+                    )
+                })
+        })
+    }
     /// A loopback URL is not a local-route proof when the same execution has
     /// a declared nonlocal or unresolved transport override.
     pub fn has_nonlocal_transport_target(graph: &dyn GraphRead, execution: &NodeId) -> bool {
@@ -80,6 +104,13 @@ impl NetworkEndpointQuery {
                     continue;
                 };
                 result.push(NetworkEndpointRef {
+                    slot_name: match &edge.semantics {
+                        Some(caushell_types::ProvenanceEdgeSemantics::Consume {
+                            slot_name,
+                            ..
+                        }) => slot_name.as_deref(),
+                        _ => None,
+                    },
                     execution_node_id: &node.id,
                     command,
                     endpoint: endpoint.as_deref(),

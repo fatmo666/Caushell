@@ -282,6 +282,7 @@ mod tests {
                 "request_header_operand",
                 "request_header_file",
                 "request_value",
+                "request_target_operand",
                 "request_method",
                 "query_operand",
                 "query_file",

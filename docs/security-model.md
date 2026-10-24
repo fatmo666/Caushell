@@ -73,6 +73,51 @@ so an existing denial is not replaced by script approval. Python bodies are not
 evaluated to derive child commands, stdout or completeness proofs. Interpreter
 Profiles still describe source inputs, dispatch and declared CLI effects.
 
+## Managed Resource Authorization
+
+State operations may select declared endpoints on the same execution unit.
+`resource: {kind: endpoint, usage: upload_target}` selects one endpoint role;
+`resource: {kind: request_endpoints}` selects logical fetch/upload targets.
+Targets remain network resources, not filesystem paths. Missing or incomplete
+bindings retain approval.
+Derived calls retain the owning namespace only through proved local execution
+edges. Native dispatch effects opt in with `resource_namespace: same_executor`;
+remote execution and undeclared namespace transfers retain approval.
+
+The embedding host installs a `ResourceAuthority` through
+`ShellQueryCore::set_resource_authority` or `CliRuntime::set_resource_authority`.
+`ManagedResourceRegistry::register` records a resource instance, execution owner,
+network namespace and exact endpoints. `grant` separately issues permission for
+an operation on that instance. Registration and loopback location grant no rights.
+The initial locator contract supports exact numeric HTTP(S) endpoints; it does
+not resolve hostnames, match path prefixes or guess encoded-path semantics.
+
+Before checking, the host calls `admit_check` for the exact execution-frame
+binding. Neither a Profile nor a tool-facing stdio/socket request can register a
+resource, grant permission or admit a frame. All selected targets must match a
+live instance and an operation grant. Resource references are authority-local;
+instance replacement cannot inherit a previous instance's permission.
+
+Registration, grant and admission handles revoke their records on drop and have
+bounded lifetimes. Checks acquire fresh authority snapshots; lifecycle changes
+during analysis invalidate positive proofs. A host executing an allowed request
+uses `with_current_snapshot` with the same binding and holds the lifecycle guard
+through execution and completion. Resource retirement must precede removal or
+replacement of the managed route. Persisted check evidence does not restore
+live authority after restart.
+
+`resource_unless_modifiers` and `resource_environment_absent` declare route
+prerequisites. Curl requires current proxy-environment observations; redirects,
+request-target/header overrides and alternate transports do not gain permission
+from the original endpoint. These declarations describe scope, not authorization.
+
+Resource authorization removes only the covered state-operation approval.
+Explicit policy denials, other guards and the non-Shell script approval floor
+remain independent. Single-call approval does not create a resource grant.
+Permissions cover an operation class at the registered endpoints; a `mutate`
+grant is not a POST-only contract. Policies requiring narrower method or body
+constraints retain approval until those constraints have a declared contract.
+
 ## Decision Assembly
 
 After all analysis modules complete, Decision Assembly produces one final decision according to the following priority:

@@ -57,7 +57,9 @@ fn has_state_operation(
 ) -> bool {
     resolve(command).bound.effects.iter().any(|effect| {
         effect.kind == EffectKind::StateOperation
-            && effect.state_operation == Some(StateOperation { domain, operation })
+            && effect
+                .state_operation
+                .is_some_and(|s| s.domain == domain && s.operation == operation)
             && effect.target == EffectTarget::None
     })
 }
@@ -551,6 +553,7 @@ fn remote_helpers_and_clock_settings_do_not_claim_local_file_effects() {
             == Some(StateOperation {
                 domain: StateOperationDomain::RemoteAccess,
                 operation: StateOperationKind::Opaque,
+                resource: None,
             })),
         "{rsync:#?}"
     );

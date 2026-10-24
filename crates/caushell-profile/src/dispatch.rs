@@ -858,6 +858,9 @@ mod tests {
 
     fn dispatch_effect(command: &str, argv: &[&str], environment: &[&str]) -> Effect {
         Effect {
+            resource_namespace: None,
+            resource_unless_modifiers: Vec::new(),
+            resource_environment_absent: Vec::new(),
             runtime_input_binding: None,
             input_scope: None,
             path_list: None,

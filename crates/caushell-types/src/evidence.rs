@@ -463,6 +463,7 @@ pub struct NonShellScriptExecutionEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    ResourceAuthorization(crate::ResourceAuthorizationEvidence),
     ExecutionFrame(crate::ExecutionFrameEvidence),
     NonShellScriptExecution(NonShellScriptExecutionEvidence),
     StdoutRecords(crate::StdoutRecordsEvidence),

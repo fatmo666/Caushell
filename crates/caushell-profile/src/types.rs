@@ -1495,6 +1495,9 @@ pub struct HostRiskEffectMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Effect {
+    pub resource_namespace: Option<ResourceNamespaceTransfer>,
+    pub resource_unless_modifiers: Vec<String>,
+    pub resource_environment_absent: Vec<String>,
     pub runtime_input_binding: Option<RuntimeInputBinding>,
     /// Optional byte-input contract for this network endpoint only.
     pub input_scope: Option<EndpointInputScope>,
@@ -1518,6 +1521,9 @@ pub struct Effect {
 impl Effect {
     pub fn new(kind: EffectKind) -> Self {
         Self {
+            resource_namespace: None,
+            resource_unless_modifiers: Vec::new(),
+            resource_environment_absent: Vec::new(),
             kind,
             runtime_input_binding: None,
             input_scope: None,
@@ -1546,6 +1552,12 @@ impl Effect {
         self.interactive_escape_surface = Some(surface);
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceNamespaceTransfer {
+    SameExecutor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]

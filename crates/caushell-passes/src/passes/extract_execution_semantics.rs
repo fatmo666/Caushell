@@ -36,6 +36,12 @@ fn collect_execution_semantics_mutations(ctx: &RunnerContext) -> Vec<PendingMuta
             project_execution_semantics_mutation(
                 record,
                 implicit_startup_sources.contains(record.source_node_id()),
+                ctx.request()
+                    .shell_state_before
+                    .execution_frame
+                    .as_ref()
+                    .map(|frame| frame.environment.as_slice())
+                    .unwrap_or(&[]),
             )
         })
         .collect()
@@ -44,6 +50,7 @@ fn collect_execution_semantics_mutations(ctx: &RunnerContext) -> Vec<PendingMuta
 fn project_execution_semantics_mutation(
     record: crate::support::ExecutionResolveRecordRef<'_>,
     has_implicit_startup_config: bool,
+    current_environment: &[caushell_types::ShellEnvironmentSnapshot],
 ) -> Option<PendingMutation> {
     let (name, bound) = match record.result() {
         ResolveInvocationArtifactResult::Resolved(resolved) => {
@@ -70,6 +77,39 @@ fn project_execution_semantics_mutation(
     };
 
     let mut semantics = execution_semantics_for_bound(name, bound, has_implicit_startup_config);
+    if bound.effects.iter().any(|e| {
+        !e.resource_unless_modifiers.is_empty() || !e.resource_environment_absent.is_empty()
+    }) {
+        let prefix = record
+            .command()
+            .map(|command| {
+                caushell_profile::materialize_prefix_environment(command, record.bindings())
+            })
+            .unwrap_or_default();
+        semantics.state_operations.clear();
+        for effect in &bound.effects {
+            let Some(mut operation) = effect.state_operation else {
+                continue;
+            };
+            let blocked = effect.resource_unless_modifiers.iter().any(|name| bound.applied_modifiers.iter().any(|m| m.as_str() == name))
+                || effect.resource_environment_absent.iter().any(|name| {
+                    if !prefix.iter().any(|(n, _)| n == name) && !current_environment.iter().any(|entry| entry.name == *name) {
+                        return true;
+                    }
+                    let value = prefix.iter().rev().find(|(n, _)| n == name)
+                        .map(|(_, v)| caushell_profile::EnvironmentValueRef::Present(v))
+                        .unwrap_or_else(|| record.bindings().environment_value(name));
+                    !matches!(value, caushell_profile::EnvironmentValueRef::Absent)
+                        && !matches!(value, caushell_profile::EnvironmentValueRef::Present(caushell_profile::SessionValue::ExactScalar(s)) if s.is_empty())
+                });
+            if blocked {
+                operation.resource = None;
+            }
+            if !semantics.state_operations.contains(&operation) {
+                semantics.state_operations.push(operation);
+            }
+        }
+    }
     semantics.network_listeners = crate::support::network_listeners(record);
     Some(PendingMutation::AddExecutionSemantics {
         source_node_id: record.source_node_id().clone(),

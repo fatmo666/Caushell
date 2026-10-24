@@ -131,6 +131,7 @@ pub struct PreparedRuntimeCheck {
 }
 
 pub struct ShellQueryCore {
+    resource_authority: Option<std::sync::Arc<dyn caushell_runner::ResourceAuthority>>,
     filesystem: std::sync::Arc<dyn caushell_runner::FilesystemView>,
     policy: PolicyConfig,
     runner: PassRunner,
@@ -163,6 +164,7 @@ impl ShellQueryCore {
 
     pub fn try_with_policy(policy: PolicyConfig) -> Result<Self, ShellQueryCoreInitError> {
         Ok(Self {
+            resource_authority: None,
             filesystem: std::sync::Arc::new(crate::LocalFilesystem),
             policy,
             runner: build_default_runner()?,
@@ -177,6 +179,14 @@ impl ShellQueryCore {
 
     pub fn replace_policy(&mut self, policy: PolicyConfig) {
         self.policy = policy;
+    }
+
+    /// Host-side resource lifecycle and authorization; never supplied by a tool.
+    pub fn set_resource_authority(
+        &mut self,
+        authority: std::sync::Arc<dyn caushell_runner::ResourceAuthority>,
+    ) {
+        self.resource_authority = Some(authority);
     }
 
     /// Replace the local-process view when the command uses another namespace.
@@ -215,6 +225,10 @@ impl ShellQueryCore {
             .as_ref()
             .map(|_| request.clone());
         let frame_evidence = self.validate_execution_frame(&mut request);
+        let resource_snapshot = frame_evidence
+            .as_ref()
+            .filter(|e| e.accepted)
+            .and_then(|e| self.resource_authority.as_ref()?.snapshot(&e.binding).ok());
         if (!request.shell_state_before.environment.is_empty()
             || request.shell_state_before.execution_frame.is_some())
             && self
@@ -242,6 +256,9 @@ impl ShellQueryCore {
 
         let mut ctx = RunnerContext::with_policy(request, self.policy.clone());
         ctx.set_filesystem_view(self.filesystem.clone());
+        if let Some(snapshot) = resource_snapshot {
+            ctx.set_resource_authority(snapshot);
+        }
         if let Some(evidence) = frame_evidence {
             let summary = evidence
                 .gap
@@ -272,6 +289,36 @@ impl ShellQueryCore {
             ctx.set_final_decision(caushell_types::Decision::NeedApproval);
         }
         let runner_run_ms = elapsed_ms(runner_start);
+
+        if let Some(snapshot) = ctx.resource_authority() {
+            let used = ctx.evidence.iter().any(|e| matches!(&e.kind, caushell_types::EvidenceKind::ResourceAuthorization(proof) if proof.authorized));
+            if used
+                && !self
+                    .resource_authority
+                    .as_ref()
+                    .is_some_and(|authority| authority.is_current(snapshot))
+            {
+                for evidence in &mut ctx.evidence {
+                    if let caushell_types::EvidenceKind::ResourceAuthorization(proof) =
+                        &mut evidence.kind
+                    {
+                        proof.authorized = false;
+                        proof.gap = Some(
+                            "resource authorization changed or expired during analysis".into(),
+                        );
+                        evidence.summary = proof.gap.clone().unwrap();
+                    }
+                }
+                ctx.propose_decision(
+                    "resource_authority_lifecycle",
+                    caushell_types::RuleId::StateMutation,
+                    caushell_types::Decision::NeedApproval,
+                    "resource authorization changed or expired during analysis",
+                );
+                use caushell_runner::FinalDecisionPass;
+                DecisionAssemblyPass.run(&mut ctx);
+            }
+        }
 
         let analysis_usage = enforce_analysis_budgets(session, &mut ctx);
         let incomplete_budgets: Vec<_> = ctx
@@ -2280,6 +2327,7 @@ mod tests {
         let session_id = SessionId::new("sess-1");
 
         let mut core = ShellQueryCore {
+            resource_authority: None,
             filesystem: std::sync::Arc::new(crate::LocalFilesystem),
             policy: PolicyConfig::default(),
             runner: always_deny_runner(),

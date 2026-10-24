@@ -35,6 +35,8 @@ pub enum StateOperationKind {
 pub struct StateOperation {
     pub domain: StateOperationDomain,
     pub operation: StateOperationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<crate::StateResourceSelector>,
 }
 
 /// Database state is not a filesystem path or evidence of workspace ownership.
@@ -345,6 +347,7 @@ mod tests {
         let operation = StateOperation {
             domain: StateOperationDomain::ShellHistory,
             operation: StateOperationKind::Mutate,
+            resource: None,
         };
         let wire = serde_json::to_value(operation).unwrap();
         assert_eq!(

@@ -916,6 +916,12 @@ pub enum RawProcessTargetKind {
 #[serde(deny_unknown_fields)]
 pub struct RawEffect {
     #[serde(default)]
+    pub resource_namespace: Option<crate::ResourceNamespaceTransfer>,
+    #[serde(default)]
+    pub resource_unless_modifiers: Vec<String>,
+    #[serde(default)]
+    pub resource_environment_absent: Vec<String>,
+    #[serde(default)]
     pub runtime_input_binding: Option<crate::RuntimeInputBinding>,
     #[serde(default)]
     pub input_scope: Option<crate::EndpointInputScope>,

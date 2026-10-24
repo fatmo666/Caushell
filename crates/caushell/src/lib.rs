@@ -561,6 +561,14 @@ pub struct CliRuntime {
 }
 
 impl CliRuntime {
+    /// The embedding host owns this control channel; stdio/socket requests do
+    /// not register resources or issue grants.
+    pub fn set_resource_authority(
+        &mut self,
+        authority: std::sync::Arc<dyn caushell_runner::ResourceAuthority>,
+    ) {
+        self.core.set_resource_authority(authority);
+    }
     pub fn new(config_path: Option<&Path>, store_root: Option<&Path>) -> Result<Self, CliError> {
         let core = match config_path {
             Some(path) => match load_config_file_or_default(path) {

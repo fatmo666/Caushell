@@ -43,7 +43,7 @@ forms:
       - kind: network_endpoint
         target: {kind: slot, name: endpoint}
         input_scope: &request_inputs
-          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, request_method, query_operand, query_file, netrc_file]
+          slots: [data_operand, data_file, literal_data, urlencoded_operand, urlencode_file, form_operand, form_file, upload_payload, binary_file_source, upload_literal, upload_file_operand, upload_file_source, cookie_operand, cookie_file, cookie_value, request_header_operand, request_header_file, request_value, request_target_operand, request_method, query_operand, query_file, netrc_file]
           stdin: true
     stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque}
 
@@ -321,7 +321,10 @@ modifiers:
   # Flag-only declarations are required by scoped ownership: do not infer
   # arity or discard unknown flags merely to make a download match.
   - id: common_flag_option
-    matcher: {kind: any_flag, flags: [-f, --fail, --fail-with-body, -s, --silent, -S, --show-error, -L, --location, -I, --head, -i, --show-headers, --include, -v, --verbose, -g, --globoff, -N, --no-buffer, '-4', --ipv4, '-6', --ipv6, --compressed, --compressed-ssh, --path-as-is, --http1.0, --http1.1, --http2, --http2-prior-knowledge, --http3, --http3-only, --retry-all-errors, --retry-connrefused, --no-progress-meter, --tcp-nodelay, --tcp-fastopen, --netrc, -n, --netrc-optional, --anyauth, --basic, --digest, --ntlm, --negotiate, --sasl-ir, --tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3]}
+    matcher: {kind: any_flag, flags: [-f, --fail, --fail-with-body, -s, --silent, -S, --show-error, -I, --head, -i, --show-headers, --include, -v, --verbose, -g, --globoff, -N, --no-buffer, '-4', --ipv4, '-6', --ipv6, --compressed, --compressed-ssh, --path-as-is, --http1.0, --http1.1, --http2, --http2-prior-knowledge, --http3, --http3-only, --retry-all-errors, --retry-connrefused, --no-progress-meter, --tcp-nodelay, --tcp-fastopen, --netrc, -n, --netrc-optional, --anyauth, --basic, --digest, --ntlm, --negotiate, --sasl-ir, --tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3]}
+
+  - id: follow_redirects
+    matcher: {kind: any_flag, flags: [-L, --location, --location-trusted]}
 
   - id: output
     matcher:
@@ -624,7 +627,12 @@ modifiers:
       unless_modifiers: [information]
       unless_forms: [list_engines]
       last_parameter_not_matching: {parameter: request_method, matcher: {kind: regex_pattern, pattern: '^(GET|HEAD|OPTIONS|TRACE)$'}}
-    effects: &remote_mutation [{kind: state_operation, state_operation: {domain: remote_resource, operation: mutate}, target: {kind: none}}]
+    effects: &remote_mutation
+      - kind: state_operation
+        state_operation: {domain: remote_resource, operation: mutate, resource: {kind: request_endpoints}}
+        resource_unless_modifiers: [follow_redirects, request_headers, request_target, socket_route, explicit_transport, explicit_route_override, url_query]
+        resource_environment_absent: [http_proxy, HTTP_PROXY, https_proxy, HTTPS_PROXY, all_proxy, ALL_PROXY]
+        target: {kind: none}
 
   - id: implicit_post
     matcher: {kind: any_flag, flags: [-d, --data, --data-ascii, --json, --data-binary, --data-raw, --data-urlencode, -F, --form, --form-string]}
@@ -641,8 +649,16 @@ modifiers:
     effects: *remote_mutation
 
   - id: request_values
-    matcher: {kind: any_flag, flags: [-u, --user, --oauth2-bearer, -A, --user-agent, -e, --referer, --request-target, -r, --range, --mail-auth, --mail-from, --mail-rcpt, --ftp-account, --login-options, --haproxy-clientip, -Q, --quote, -t, --telnet-option, --ftp-alternative-to-user, --proxy-header, -U, --proxy-user]}
+    matcher: {kind: any_flag, flags: [-u, --user, --oauth2-bearer, -A, --user-agent, -e, --referer, -r, --range, --mail-auth, --mail-from, --mail-rcpt, --ftp-account, --login-options, --haproxy-clientip, -Q, --quote, -t, --telnet-option, --ftp-alternative-to-user, --proxy-header, -U, --proxy-user]}
     parameters: [{name: request_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+  - id: request_target
+    matcher: {kind: any_flag, flags: [--request-target]}
+    parameters: [{name: request_target_operand, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+  - id: socket_route
+    matcher: {kind: any_flag, flags: [--unix-socket, --abstract-unix-socket]}
+    parameters: [{name: socket_route, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 
   - id: url_query
     matcher: {kind: any_flag, flags: [--url-query]}
@@ -717,7 +733,6 @@ modifiers:
     matcher:
       kind: any_flag
       flags:
-        - "--abstract-unix-socket"
         - "--aws-sigv4"
         - "--cert-type"
         - "--ciphers"
@@ -788,7 +803,6 @@ modifiers:
         - "--tlspassword"
         - "--tlsuser"
         - "--trace-config"
-        - "--unix-socket"
         - "--variable"
     parameters:
       - name: option_value

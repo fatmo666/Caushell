@@ -16,11 +16,13 @@ pub use file_content::{
 };
 mod execution;
 mod execution_frame;
+mod resource;
 pub use execution_frame::{
     ExecutionFrameBinding, ExecutionFrameEvidence, ExecutionFrameObservation,
     ExecutionFrameObserver, ExecutionFramePlan, ExecutionFramePlanRequest,
     ExecutionFrameRequirements,
 };
+pub use resource::{ResourceAuthorizationEvidence, ResourceTargetEvidence, StateResourceSelector};
 mod finding;
 mod path;
 mod pathname_fields;

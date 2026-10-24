@@ -3,9 +3,15 @@ mod directory;
 pub use directory::{DirectoryRead, DirectoryReadBudget, directory_path_is_resolved};
 mod file_content;
 mod filesystem;
+mod resources;
 mod runtime_file;
 pub use file_content::{FileContentRead, MAX_FILE_CONTENT_BYTES, content_sha256};
 pub use filesystem::{FilesystemView, UnavailableFilesystem};
+pub use resources::{
+    ManagedResource, ManagedResourceRegistry, ResourceAuthority, ResourceAuthoritySnapshot,
+    ResourceCheckAdmission, ResourceGrant, ResourceInstanceRef, ResourceOwner, ResourcePermission,
+    ResourceRegistration,
+};
 pub use runtime_file::{MAX_RUNTIME_FILE_BYTES, runtime_file_matches};
 mod mutation;
 mod nested;
