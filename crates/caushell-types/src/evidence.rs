@@ -457,6 +457,8 @@ impl Evidence {
 pub enum EvidenceKind {
     StdoutRecords(crate::StdoutRecordsEvidence),
     NativeInputDecode(crate::NativeInputDecodeEvidence),
+    PathnameFields(crate::PathnameFieldsEvidence),
+    ToolOptionEnvironment(crate::ToolOptionEnvironmentEvidence),
     ArchiveMembers(ArchiveMembersEvidence),
     ToolConfigInput(ToolConfigInputEvidence),
     ToolConfigParse(ToolConfigParseEvidence),

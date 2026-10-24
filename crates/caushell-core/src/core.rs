@@ -650,6 +650,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner
         .register_session_transform_pass(caushell_passes::ResolveArchiveMembersPass::new(registry));
     runner.register_session_transform_pass(caushell_passes::ObserveStdoutRecordsPass);
+    runner.register_session_transform_pass(caushell_passes::ValidatePathnameFieldsPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
     runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
     runner.register_session_transform_pass(caushell_passes::ResolvePathTargetsPass);

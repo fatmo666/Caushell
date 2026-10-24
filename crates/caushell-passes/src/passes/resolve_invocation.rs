@@ -160,8 +160,9 @@ impl ResolveInvocationPass {
         let mut derived_records = dispatch_derived_records.clone();
         derived_records.extend(function_derived_records.clone());
         derived_records.extend(nested_derived_records);
+        let mut pathname_context = ctx.clone();
         let (
-            execution_unit_resolve_records,
+            mut execution_unit_resolve_records,
             expansion_limit_evidence,
             derived_payloads,
             shell_redirection_scopes,
@@ -181,7 +182,17 @@ impl ResolveInvocationPass {
             &payload_source_contexts,
             ctx.policy().semantic_expansion.max_nested_parse_depth,
             observed,
+            &mut pathname_context,
         );
+        for evidence in pathname_context.evidence.into_iter().filter(|e| {
+            matches!(
+                e.kind,
+                caushell_types::EvidenceKind::PathnameFields(_)
+                    | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
+            )
+        }) {
+            ctx.add_evidence(evidence);
+        }
         // The legacy payload traversal and canonical execution frontier share
         // source positions, not node IDs. Reattach descendant payloads only
         // after their parsed parent has a proven canonical execution unit.
@@ -232,6 +243,10 @@ impl ResolveInvocationPass {
             }
         }
         nested_payload_records.extend(derived_payloads);
+        super::callback_completeness::validate(
+            &mut execution_unit_resolve_records,
+            &nested_payload_records,
+        );
         for decode in observed.decoded.values() {
             ctx.add_evidence(Evidence {
                 rule_id: caushell_types::RuleId::SelectionError,
@@ -2848,6 +2863,195 @@ fn program_scope_bindings(entry: &ExpandedFrontierEntry) -> &SessionBindings {
     }
 }
 
+fn pathname_scope_is_stable(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    index: usize,
+    bindings: &SessionBindings,
+) -> Result<(), String> {
+    let observations = source_scope_observations(
+        registry,
+        request,
+        parsed,
+        parsed.commands.len().saturating_sub(1),
+        bindings,
+    );
+    if observations.len() != parsed.commands.len() {
+        return Err("pathname source scope exceeds its analysis budget".into());
+    }
+    if !parsed.redirections.is_empty()
+        || !caushell_parse::parse_command_substitutions(&parsed.raw_command, parsed.shell_kind)
+            .is_ok_and(|s| s.is_empty())
+        || !caushell_parse::parse_process_substitutions(&parsed.raw_command, parsed.shell_kind)
+            .is_ok_and(|s| s.is_empty())
+    {
+        return Err("pathname source scope contains unproved I/O or substitutions".into());
+    }
+    let relevant = |name: &str| {
+        matches!(
+            name,
+            "GLOBIGNORE" | "LC_ALL" | "LC_COLLATE" | "LC_CTYPE" | "LANG" | "BASHOPTS" | "SHELLOPTS"
+        )
+    };
+    if parsed
+        .assignment_commands
+        .iter()
+        .flat_map(|c| &c.assignments)
+        .chain(
+            parsed
+                .declaration_commands
+                .iter()
+                .flat_map(|c| &c.assignments),
+        )
+        .any(|a| relevant(&a.name))
+        || parsed
+            .unset_commands
+            .iter()
+            .flat_map(|c| &c.names)
+            .any(|n| relevant(n))
+    {
+        return Err("pathname shell variables change within this action".into());
+    }
+    for (i, (result, _)) in observations.iter().enumerate() {
+        if i == index {
+            continue;
+        }
+        let ResolveInvocationArtifactResult::Resolved(r) = result else {
+            return Err("pathname source scope has unproved command effects".into());
+        };
+        if r.bound
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::SetCurrentWorkingDirectory)
+            && r.bound.bound_parameters.iter().any(|p| {
+                p.values.iter().any(|v| {
+                    matches!(v,
+                BoundValue::Argument { text, .. } if !text.starts_with('/'))
+                })
+            })
+        {
+            return Err("pathname source cwd update is not independently anchored".into());
+        }
+        if r.bound.operation_semantics_unresolved
+            || !r.bound.residuals.is_empty()
+            || r.bound.effects.iter().any(|e| {
+                !matches!(
+                    e.kind,
+                    EffectKind::ReadPath
+                        | EffectKind::TargetPath
+                        | EffectKind::ConsumeStdin
+                        | EffectKind::TransformData
+                        | EffectKind::ConsumeAuxiliaryValue
+                        | EffectKind::ConsumeAuxiliaryEnvironment
+                        | EffectKind::NetworkEndpoint
+                        | EffectKind::SetCurrentWorkingDirectory
+                        | EffectKind::SetExecutionWorkingDirectory
+                )
+            })
+        {
+            return Err("pathname source effects may change names or shell options".into());
+        }
+    }
+    Ok(())
+}
+
+fn materialize_pathname_fields(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    entry: &mut ExpandedFrontierEntry,
+    context: &ProgramSourceContext,
+    ctx: &mut RunnerContext,
+) {
+    entry.bindings.set_pathname_fields(Vec::new());
+    let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
+        return;
+    };
+    if !resolved.projection.args.iter().any(|arg| {
+        !matches!(
+            caushell_profile::PathnamePattern::from_argument(arg),
+            Ok(None)
+        )
+    }) {
+        return;
+    }
+    let index = program_command_index(entry);
+    let observations = source_scope_observations(
+        registry,
+        request,
+        &entry.parsed_scope,
+        index,
+        program_scope_bindings(entry),
+    );
+    let cwd = super::compute_effective_cwd::source_scope_execution_cwds(
+        &entry.parsed_scope,
+        request,
+        &context.entry_cwd,
+        &observations,
+    )
+    .0
+    .get(index)
+    .cloned()
+    .unwrap_or(caushell_runner::EffectiveCwd::Unknown);
+    let mut frame = pathname_scope_is_stable(
+        registry,
+        request,
+        &entry.parsed_scope,
+        index,
+        program_scope_bindings(entry),
+    );
+    for scope in &context.source_scopes {
+        frame = frame.and_then(|_| {
+            pathname_scope_is_stable(
+                registry,
+                request,
+                &scope.parsed,
+                scope.before_command_index,
+                &scope.bindings,
+            )
+        });
+    }
+    if entry.inherited_scope.static_input_cwd_unproven
+        || entry.bindings.shell_state_uncertainty().is_some()
+    {
+        frame = Err("pathname execution frame is incomplete".into());
+    }
+    let proofs = super::pathname_fields::observe(
+        ctx,
+        &entry.source_node_id.0,
+        &resolved.projection.args,
+        &entry.bindings,
+        entry.shell_kind,
+        &cwd,
+        frame,
+        resolved.bound.operation_semantics_unresolved || !resolved.bound.residuals.is_empty(),
+    );
+    if proofs.is_empty() {
+        return;
+    }
+    for proof in &proofs {
+        ctx.add_evidence(super::pathname_fields::evidence(proof.clone()));
+    }
+    entry.bindings.set_pathname_fields(proofs);
+    let Some(command) = entry
+        .parsed_scope
+        .commands
+        .get(entry.command_ref.command_index)
+    else {
+        return;
+    };
+    entry.result = resolve_invocation_artifact_with_bindings(
+        registry,
+        command,
+        runtime_context_for_parsed_command(
+            &entry.parsed_scope,
+            entry.command_ref.command_index,
+            command,
+        ),
+        &entry.bindings,
+    );
+}
+
 fn program_command_index(entry: &ExpandedFrontierEntry) -> usize {
     if entry.origin_kind == ExecutionUnitOriginKind::Dispatch {
         0
@@ -3210,6 +3414,7 @@ fn collect_execution_unit_resolve_records(
     payload_source_contexts: &BTreeMap<caushell_graph::NodeId, ProgramSourceContext>,
     max_nested_parse_depth: u8,
     observed: &mut super::observed_native_inputs::ObservedInputs,
+    pathname_context: &mut RunnerContext,
 ) -> (
     Vec<ExecutionUnitResolveRecord>,
     Vec<Evidence>,
@@ -3630,6 +3835,35 @@ fn collect_execution_unit_resolve_records(
         let program_context = program_contexts
             .remove(&entry.source_node_id)
             .unwrap_or_default();
+        materialize_pathname_fields(
+            registry,
+            request,
+            &mut entry,
+            &program_context,
+            pathname_context,
+        );
+        if let Some(command) = entry
+            .parsed_scope
+            .commands
+            .get(entry.command_ref.command_index)
+            && let Some(name) = command.command_name.as_deref()
+            && let Some(profile) = registry.lookup(name).profile
+            && let Some((observation, from_prefix_assignment)) =
+                caushell_profile::option_environment_observation(profile, command, &entry.bindings)
+        {
+            pathname_context.add_evidence(Evidence {
+                rule_id: caushell_types::RuleId::SelectionError,
+                summary: "tool option environment input".into(),
+                kind: caushell_types::EvidenceKind::ToolOptionEnvironment(
+                    caushell_types::ToolOptionEnvironmentEvidence {
+                        node_id: entry.source_node_id.0.clone(),
+                        name: observation.name,
+                        value: observation.value,
+                        from_prefix_assignment,
+                    },
+                ),
+            });
+        }
         refresh_substitution_shape_proofs(
             registry,
             request,

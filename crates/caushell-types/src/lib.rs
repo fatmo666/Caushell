@@ -16,6 +16,8 @@ pub use file_content::{
 mod execution;
 mod finding;
 mod path;
+mod pathname_fields;
+pub use pathname_fields::{PathnameFieldsEvidence, ToolOptionEnvironmentEvidence};
 mod persistence;
 mod policy;
 mod provenance;
@@ -143,7 +145,7 @@ pub use session_summary::{
 };
 pub use shell_state::{
     ShellAliasSnapshot, ShellEnvironmentSnapshot, ShellEnvironmentValue, ShellFunctionSnapshot,
-    ShellStateDelta, ShellStateKnowledge, ShellStateObservability, ShellStateSnapshot,
-    ShellValueSnapshot, ShellVariableSnapshot,
+    ShellPathnameSnapshot, ShellStateDelta, ShellStateKnowledge, ShellStateObservability,
+    ShellStateSnapshot, ShellValueSnapshot, ShellVariableSnapshot,
 };
 pub use state_candidate::{SafetyObject, SafetyScope, StateCandidateFact};

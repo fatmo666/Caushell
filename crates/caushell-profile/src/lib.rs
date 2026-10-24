@@ -19,10 +19,13 @@ pub use configuration::{
     ConfigurationOption, ConfigurationParse, ConfigurationParseError, mark_configuration_pending,
     parse_configuration,
 };
+pub use option_environment::option_environment_observation;
 pub use types::{ConfigurationFileContract, ConfigurationSyntax};
 mod loader;
 mod lookup;
 mod materialize;
+mod pathname;
+pub use pathname::{PathnameComponent, PathnamePattern};
 mod native_operand;
 mod normalize;
 mod option_scope;

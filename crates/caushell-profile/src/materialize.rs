@@ -44,6 +44,8 @@ pub struct ShellVariableFacts {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionBindings {
+    pathname_options: Option<caushell_types::ShellPathnameSnapshot>,
+    pathname_fields: Vec<caushell_types::PathnameFieldsEvidence>,
     entry_variables: Option<SessionSummary>,
     entry_environment: Option<SessionSummary>,
     shell_kind: Option<caushell_types::ShellKind>,
@@ -89,6 +91,8 @@ impl PartialEq for SessionBindings {
             ($($field:ident),* $(,)?) => { true $(&& self.$field == other.$field)* };
         }
         same!(
+            pathname_options,
+            pathname_fields,
             shell_kind,
             shell_state_uncertainty,
             shell_state_join_only,
@@ -138,6 +142,13 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn pathname_options(&self) -> Option<&caushell_types::ShellPathnameSnapshot> {
+        self.pathname_options.as_ref()
+    }
+
+    pub fn set_pathname_fields(&mut self, fields: Vec<caushell_types::PathnameFieldsEvidence>) {
+        self.pathname_fields = fields;
+    }
     pub fn shell_kind(&self) -> caushell_types::ShellKind {
         self.shell_kind.unwrap_or(caushell_types::ShellKind::Bash)
     }
@@ -534,6 +545,7 @@ impl SessionBindings {
         for (name, value) in crate::environment_observations(shell_state) {
             bindings.child_environment.insert(name, value);
         }
+        bindings.pathname_options = crate::pathname::snapshot(shell_state);
 
         if shell_state.observability.positional_parameters == ShellStateKnowledge::Complete {
             let values = shell_state
@@ -833,6 +845,8 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        self.pathname_options = None;
+        self.pathname_fields.clear();
         self.aliases.clear();
         self.profile_shadowing_aliases.clear();
         self.positional_argument_domains.clear();
@@ -2064,6 +2078,33 @@ pub fn materialize_projected_invocation(
     let mut shell_expansion_unresolved = false;
 
     for original in &projection.args {
+        if !original.runtime_data
+            && original.word_context == crate::WordContext::ShellArgument
+            && let Some(proof) = bindings.pathname_fields.iter().find(|proof| {
+                proof.start_byte == original.span.start_byte
+                    && proof.end_byte == original.span.end_byte
+                    && proof.source_word == original.text
+            })
+        {
+            if proof.complete && proof.gap.is_none() {
+                for text in &proof.fields {
+                    let mut field = original.clone();
+                    field.text = text.clone();
+                    field.runtime_data = true;
+                    field.quoted = true;
+                    field.node_kind = "pathname_field".into();
+                    field.implicit_input_source = None;
+                    field.runtime_argument_domain = None;
+                    field.lexical_field_prefix = None;
+                    args.push(field);
+                    arg_resolutions.push(ValueMaterialization::ResolvedShellWord {
+                        value: text.clone(),
+                    });
+                }
+                continue;
+            }
+            shell_expansion_unresolved |= proof.exact_fields_required;
+        }
         let expanded = if projection.shell_kind == caushell_types::ShellKind::Bash
             && original.word_context == crate::WordContext::ShellArgument
             && !original.runtime_data

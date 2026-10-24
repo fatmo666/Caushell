@@ -1,3 +1,4 @@
+mod callback_completeness;
 mod catastrophic_delete_guard;
 mod unbounded_file_write_guard;
 pub use unbounded_file_write_guard::UnboundedFileWriteGuardPass;
@@ -38,6 +39,8 @@ mod interactive_escape_guard;
 mod network_upload_guard;
 mod observe_stdout_records;
 mod observed_native_inputs;
+mod pathname_fields;
+pub use pathname_fields::ValidatePathnameFieldsPass;
 mod outside_workspace_mutation_guard;
 mod outside_workspace_script_source;
 mod outside_workspace_startup_config;

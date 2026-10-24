@@ -3,6 +3,36 @@ use crate::{
     ProjectedArgKind, SessionBindings, SessionValue, ValueMaterialization, argument_structure,
 };
 
+pub fn option_environment_observation(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    bindings: &SessionBindings,
+) -> Option<(caushell_types::ShellEnvironmentSnapshot, bool)> {
+    let input = profile.option_environment.as_ref()?;
+    let prefix = crate::materialize_prefix_environment(command, bindings);
+    let from_prefix = prefix.iter().rev().find(|(name, _)| name == &input.name);
+    let value = from_prefix
+        .map(|(_, v)| EnvironmentValueRef::Present(v))
+        .unwrap_or_else(|| bindings.environment_value(&input.name));
+    let value = match value {
+        EnvironmentValueRef::Absent => caushell_types::ShellEnvironmentValue::Absent,
+        EnvironmentValueRef::Present(SessionValue::ExactScalar(value))
+        | EnvironmentValueRef::Present(SessionValue::RuntimeProduced { value, .. }) => {
+            caushell_types::ShellEnvironmentValue::Present {
+                value: value.clone(),
+            }
+        }
+        _ => caushell_types::ShellEnvironmentValue::Unknown,
+    };
+    Some((
+        caushell_types::ShellEnvironmentSnapshot {
+            name: input.name.clone(),
+            value,
+        },
+        from_prefix.is_some(),
+    ))
+}
+
 pub(crate) fn prepend(
     profile: &CommandProfile,
     command: &caushell_parse::CommandFact,

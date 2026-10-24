@@ -68,6 +68,24 @@ pub struct ShellEnvironmentSnapshot {
     pub value: ShellEnvironmentValue,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellPathnameSnapshot {
+    pub noglob: bool,
+    pub nullglob: bool,
+    pub failglob: bool,
+    pub dotglob: bool,
+    pub nocaseglob: bool,
+    pub globstar: bool,
+    pub extglob: bool,
+    pub globskipdots: bool,
+    pub globignore: ShellEnvironmentValue,
+    pub lc_all: ShellEnvironmentValue,
+    pub lc_collate: ShellEnvironmentValue,
+    pub lc_ctype: ShellEnvironmentValue,
+    pub lang: ShellEnvironmentValue,
+}
+
 impl ShellStateKnowledge {
     pub fn is_unknown(&self) -> bool {
         *self == Self::Unknown
@@ -124,6 +142,8 @@ impl ShellFunctionSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellStateSnapshot {
     pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pathname: Option<ShellPathnameSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<ShellEnvironmentSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -241,6 +261,7 @@ impl ShellStateSnapshot {
     pub fn new(cwd: impl Into<String>) -> Self {
         Self {
             cwd: cwd.into(),
+            pathname: None,
             environment: Vec::new(),
             variables: Vec::new(),
             positional_parameters: Vec::new(),
@@ -472,6 +493,7 @@ mod tests {
     fn shell_state_snapshot_can_hold_runtime_input_derived_variable() {
         let snapshot = ShellStateSnapshot {
             cwd: "/tmp/project".to_string(),
+            pathname: None,
             environment: Vec::new(),
             variables: vec![ShellVariableSnapshot::new(
                 "USER_CMD",

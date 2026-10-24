@@ -4,6 +4,7 @@ pub use passes::ObserveStdoutRecordsPass;
 pub use passes::ResolveArchiveMembersPass;
 pub use passes::ResolveToolConfigurationPass;
 pub use passes::UnboundedFileWriteGuardPass;
+pub use passes::ValidatePathnameFieldsPass;
 mod path;
 mod support;
 
