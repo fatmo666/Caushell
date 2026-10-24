@@ -66,12 +66,16 @@ forms:
     parameters:
       - name: script_path
         semantic:
-          kind: path
-          role: read
-          purpose: script_source
+          kind: payload
+          language: perl
+          source: script_file_ref
+          recursive: true
         binding:
           kind: next_positional
         cardinality: required_one
+        structured_projection:
+          branches: []
+          fallback: {name: script_reads, semantic: {kind: path, role: read, purpose: script_source}}
       - name: script_args
         semantic:
           kind: plain_value
@@ -82,7 +86,7 @@ forms:
       - kind: read_path
         target:
           kind: slot
-          name: script_path
+          name: script_reads
       - kind: execute_payload
         target:
           kind: slot
@@ -91,10 +95,10 @@ forms:
   - id: script_file_in_place
     selector: {kind: all, items: [{kind: has_positional_at, index: 0}, *not_inline, *running, *safe_in_place]}
     parameters:
-      - {name: script_path, semantic: {kind: path, role: read, purpose: script_source}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: script_path, semantic: {kind: payload, language: perl, source: script_file_ref, recursive: true}, binding: {kind: next_positional}, cardinality: required_one, structured_projection: {branches: [], fallback: {name: script_reads, semantic: {kind: path, role: read, purpose: script_source}}}}
       - {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     effects:
-      - {kind: read_path, target: {kind: slot, name: script_path}}
+      - {kind: read_path, target: {kind: slot, name: script_reads}}
       - {kind: execute_payload, target: {kind: slot, name: script_path}}
       - {kind: read_path, target: {kind: slot, name: input_paths}}
       - {kind: write_path, target: {kind: slot, name: input_paths}}

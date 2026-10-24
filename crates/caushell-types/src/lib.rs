@@ -8,6 +8,7 @@ pub use directory::{
     MAX_DIRECTORY_OBSERVATIONS,
 };
 mod evidence;
+pub use evidence::NonShellScriptExecutionEvidence;
 pub use evidence::{ArchiveMemberEvidence, ArchiveMembersEvidence};
 mod file_content;
 pub use file_content::{

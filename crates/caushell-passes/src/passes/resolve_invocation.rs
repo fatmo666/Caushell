@@ -189,9 +189,6 @@ impl ResolveInvocationPass {
                 e.kind,
                 caushell_types::EvidenceKind::PathnameFields(_)
                     | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
-                    | caushell_types::EvidenceKind::PythonPayload(_)
-                    | caushell_types::EvidenceKind::PythonStdoutField(_)
-                    | caushell_types::EvidenceKind::PythonStartup(_)
             )
         }) {
             ctx.add_evidence(evidence);
@@ -246,11 +243,6 @@ impl ResolveInvocationPass {
             }
         }
         nested_payload_records.extend(derived_payloads);
-        python::reconcile_payloads(
-            &execution_unit_resolve_records,
-            &mut nested_payload_records,
-            &ctx.evidence,
-        );
         super::callback_completeness::validate(
             &mut execution_unit_resolve_records,
             &nested_payload_records,
@@ -2848,8 +2840,6 @@ struct ExpandedFrontierEntry {
     inherited_scope: ExecutionUnitInheritedScope,
 }
 
-mod python;
-
 #[derive(Clone)]
 struct ProgramSourceContext {
     entry_cwd: caushell_runner::EffectiveCwd,
@@ -3942,16 +3932,6 @@ fn collect_execution_unit_resolve_records(
             &mut entry,
             max_nested_parse_depth,
         );
-        python::materialize_outputs(
-            registry,
-            session,
-            request,
-            &mut entry,
-            &program_context,
-            max_nested_parse_depth,
-            &records,
-            pathname_context,
-        );
 
         // Native list input is not proof of the launched program's FD 0.
         // Until that routing is declared, keep an inherited stdin consumer
@@ -4196,15 +4176,6 @@ fn collect_execution_unit_resolve_records(
             };
         }
 
-        let python_children = python::expand(
-            registry,
-            session,
-            request,
-            &mut entry,
-            &program_context,
-            &records,
-            pathname_context,
-        );
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();
         let child_inherited_scope = entry.inherited_scope.clone();
@@ -4271,7 +4242,6 @@ fn collect_execution_unit_resolve_records(
             &entry,
             max_nested_parse_depth,
         );
-        children.extend(python_children);
         let resolved = match &entry.result {
             ResolveInvocationArtifactResult::Resolved(resolved) => Some(resolved),
             _ => None,
@@ -13174,8 +13144,12 @@ modifiers:
             }
         );
 
-        assert!(ctx.evidence.iter().any(|e| matches!(&e.kind,
-            EvidenceKind::PythonPayload(p) if !p.complete && !p.isolated_startup && p.source.as_deref() == Some("print(1)\n"))));
+        assert!(!ctx.evidence.iter().any(|e| matches!(
+            &e.kind,
+            EvidenceKind::PythonPayload(_)
+                | EvidenceKind::PythonStdoutField(_)
+                | EvidenceKind::PythonStartup(_)
+        )));
         let evidence = ctx
             .evidence
             .iter()

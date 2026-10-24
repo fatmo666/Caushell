@@ -188,22 +188,6 @@ impl ShellQueryCore {
         self
     }
 
-    /// Register a deployment-controlled runtime inventory in the current namespace.
-    pub fn with_python_runtime_contract(
-        mut self,
-        contract: caushell_types::PythonRuntimeContract,
-    ) -> Self {
-        self.set_python_runtime_contract(contract);
-        self
-    }
-
-    pub fn set_python_runtime_contract(&mut self, contract: caushell_types::PythonRuntimeContract) {
-        self.filesystem = std::sync::Arc::new(caushell_runner::PythonRuntimeFilesystem::new(
-            self.filesystem.clone(),
-            contract,
-        ));
-    }
-
     pub fn check(&mut self, request: CheckRequest) -> CheckResponse {
         self.check_with_outcome(request).response
     }
@@ -680,6 +664,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_transform_pass(ExtractValueProvenancePass);
     runner.register_session_transform_pass(ExtractPipelineStreamProvenancePass);
     runner.register_session_analysis_pass(ResolvePolicyPass);
+    runner.register_session_analysis_pass(caushell_passes::NonShellScriptGuardPass);
     runner.register_session_analysis_pass(CwdWorkspaceBoundaryPass);
     runner.register_session_analysis_pass(CatastrophicDeleteGuardPass);
     runner.register_session_analysis_pass(FileDeletionGuardPass);
@@ -5385,26 +5370,13 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
             caushell_types::RuleId::FileDeletion,
             caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
         );
-        policy
-            .rule_policy
-            .resolve_gap
-            .unresolved_execution_payload_subtypes
-            .insert(
-                caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
-                caushell_types::RuleAction::Observe,
-            );
-        // This fixture inspects committed AST shape, not language coverage.
-        policy.rule_policy.resolve_gap.defaults.insert(
-            caushell_types::ResolveGapKind::OpaqueInvocation,
-            caushell_types::RuleAction::Observe,
-        );
         let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-heredoc-no-pipeline");
 
         let response = core.check(sample_request(
             "sess-heredoc-no-pipeline",
             1,
-            "ls -la && rm -rf ehole EHole_linux_amd64 && python3 << 'EOF'\nimport zipfile\nwith zipfile.ZipFile('ehole.zip', 'r') as zip_ref:\n    zip_ref.extractall('.')\nprint(\"ok\")\nEOF\n\nls -la EHole_linux_amd64/\n",
+            "ls -la && rm -rf ehole EHole_linux_amd64 && cat << 'EOF'\nimport zipfile\nwith zipfile.ZipFile('ehole.zip', 'r') as zip_ref:\n    zip_ref.extractall('.')\nprint(\"ok\")\nEOF\n\nls -la EHole_linux_amd64/\n",
         ));
 
         assert_eq!(response.decision, Decision::Allow);
@@ -6554,27 +6526,13 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
     #[test]
     fn multi_top_level_commands_in_single_request_do_not_conflict() {
-        let mut policy = PolicyConfig::default();
-        policy
-            .rule_policy
-            .resolve_gap
-            .unresolved_execution_payload_subtypes
-            .insert(
-                caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
-                caushell_types::RuleAction::Observe,
-            );
-        // This fixture inspects committed AST shape, not language coverage.
-        policy.rule_policy.resolve_gap.defaults.insert(
-            caushell_types::ResolveGapKind::OpaqueInvocation,
-            caushell_types::RuleAction::Observe,
-        );
-        let mut core = ShellQueryCore::with_policy(policy);
+        let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-multi-top-level");
 
         let response = core.check(sample_request(
             "sess-multi-top-level",
             1,
-            "echo ok; python3 - <<'PY'\nprint(1)\nPY",
+            "echo ok; cat - <<'PY'\nprint(1)\nPY",
         ));
         assert_eq!(response.decision, Decision::Allow);
 

@@ -377,6 +377,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::SelectionError => RuleAction::NeedApproval,
         RuleId::NoProfile => RuleAction::Observe,
         RuleId::NestedPayloadExpansion => RuleAction::Observe,
+        RuleId::NonShellScriptExecution => RuleAction::NeedApproval,
         RuleId::ExecutionExpansionLimit => RuleAction::NeedApproval,
         RuleId::NonMonotonicSequence => RuleAction::Deny,
         RuleId::CatastrophicFileSystemDelete => RuleAction::Deny,

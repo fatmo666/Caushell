@@ -43,11 +43,6 @@ pub trait FilesystemView: Send + Sync {
     ) -> Option<caushell_types::ShellExecutableObservation> {
         None
     }
-    fn python_runtime_contract(
-        &self,
-    ) -> Option<std::sync::Arc<caushell_types::PythonRuntimeContract>> {
-        None
-    }
     fn execution_account(&self) -> Option<caushell_types::RuntimeAccount> {
         None
     }

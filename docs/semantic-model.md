@@ -2951,60 +2951,25 @@ Search declarations have
 unique identifiers, at most 16 searches and 32 sources per search; suffixes are
 nonempty relative paths without parent traversal.
 
-## Bounded Python programs and scalar output routes
+## Script execution boundaries
 
-The Python adapter interprets a bounded AST using supplied argv, environment
-and file bytes. Native child argv re-enters ordinary Profile binding; shell
-children enter the POSIX shell frontier. Unsupported syntax or unknown effect
-targets retain a language gap. Without a registered runtime, Python 3 `-I -S`
-retains the existing isolated-startup contract. A registered runtime is checked
-for both ordinary and isolated invocations.
+Non-Shell executable payloads and interpreter module dispatch contribute a
+`non_shell_script_execution` approval floor. The rule follows declared effects
+and their payload semantics, not executable-name or source-text matching.
+Local paths, known program bytes and registered module CLI contracts do not
+remove this approval requirement. Shell payloads continue through the existing
+recursive analysis, and all sibling execution units continue through risk checks.
 
-### Python startup origins
+Python has no in-tree program evaluator or output materializer. Its Profile
+still owns interpreter arguments, code sources and module dispatch; registered
+module Profiles retain their CLI path and endpoint effects. No Python-body
+result marks a callback complete or supplies exact consumer argv. The previous
+runtime inventory registration option is no longer available.
 
-The deployment operator registers a `caushell.python-runtime/v1` inventory with
-`ShellQueryCore::with_python_runtime_contract` or the server option
-`--python-runtime-contract`. Check requests cannot register it. The inventory
-pins a trusted Linux CPython 3.11 installation, account, interpreter and standard
-library digests, directory entries, module origins and startup search paths.
-The execution namespace must provide fresh file, directory and account
-observations. Replacing that namespace drops the registered inventory.
-
-Startup analysis follows the invocation flags and supplied exported environment,
-checks runtime files, symlinks, path configuration, user/system site directories,
-customization hooks and module shadowing, and records `PythonStartup` evidence.
-Bare interpreter names additionally require execution-side Shell lookup evidence
-bound to the command, cwd, Shell and PATH, including command-hash state. The local
-filesystem backend does not infer that lookup from the analyzer's PATH.
-
-The checker does not execute Python or import target modules. A customization
-source is accepted only for no-op forms or a handled optional import whose
-absence is independently observed. Unmodeled `.pth` files, virtual environments,
-startup controls, unknown observations and pending namespace mutations retain
-a language gap. Startup evidence discharges only that boundary; AST effects
-still enter the existing path, network and child-invocation policies.
-
-The capture command and deployment procedure are in
-[`tools/python-runtime`](../tools/python-runtime/README.md).
-
-HTTP handlers directly inheriting the declared `BaseHTTPRequestHandler`
-contract are analyzed method by method. `HTTPServer` construction declares a
-listener, `handle_request` checks every possible request method and logging
-hook, and `server_close` updates shared handle state. Request fields remain
-unknown. Conditional branches join values and possible effects; returns end
-the corresponding path. Framework overrides, dynamic signatures, and handler
-changes to shared process/service state retain gaps. File inputs and listener
-responses enter the existing provenance and network policies.
-
-Scalar Bash words are decomposed by the shell grammar into literal text,
-quoted scalar parameters and quoted command substitutions. At most eight
-complete, read-only Python producers can supply a command's scalar fields.
-Prefixes, suffixes, empty fields and internal newlines survive; only trailing
-newlines from each producer are removed. Output is spliced as argv data, never
-parsed or expanded again. Every sibling producer must satisfy the contract;
-unknown output, NUL, unquoted splitting, process substitutions and side-effecting
-parameter operators do not receive an exact-field proof. Original source spans
-and producer input evidence remain available to provenance consumers.
+The Shell parser retains scalar-word decomposition and the shared argument,
+record, namespace, provenance and callback-completeness machinery. Removing
+Python output evaluation does not infer values for unknown substitutions.
+Historical Python evidence types remain readable for saved records.
 
 ## Further Reading
 

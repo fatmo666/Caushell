@@ -453,8 +453,17 @@ impl Evidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NonShellScriptExecutionEvidence {
+    pub node_id: String,
+    pub command: String,
+    pub language: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    NonShellScriptExecution(NonShellScriptExecutionEvidence),
     StdoutRecords(crate::StdoutRecordsEvidence),
     NativeInputDecode(crate::NativeInputDecodeEvidence),
     PathnameFields(crate::PathnameFieldsEvidence),

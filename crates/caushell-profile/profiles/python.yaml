@@ -90,6 +90,6 @@ modifiers:
     parameters: [{name: xoption, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-X', operand_mode: next_arg}, cardinality: optional_many}]
 extensions:
   caushell.profile/known_limitations:
-    - Bounded Python values, control flow, child argv and declared services use the language adapter.
-    - Ordinary Python startup requires a registered runtime inventory and fresh startup/module-origin observations; unproved startup retains a language gap.
+    - Python bodies and stdout are not evaluated; script and module execution require approval.
+    - Interpreter options, source paths and registered module CLI effects remain modeled.
     - Interactive mode and extended runtime configuration remain opaque.

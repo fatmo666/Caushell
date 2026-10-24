@@ -37,6 +37,8 @@ mod git_destructive_operation_guard;
 mod imported_package_execution_guard;
 mod interactive_escape_guard;
 mod network_upload_guard;
+mod non_shell_script_guard;
+pub use non_shell_script_guard::NonShellScriptGuardPass;
 mod observe_stdout_records;
 mod observed_native_inputs;
 mod pathname_fields;

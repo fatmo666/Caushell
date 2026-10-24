@@ -60,6 +60,19 @@ paths retain the existing file-source policy. Payload resolution is scoped to it
 execution unit, and descriptor copies retain their selected stream even if the
 original descriptor is subsequently redirected.
 
+## Non-Shell Script Execution
+
+Declared non-Shell payload execution and interpreter module dispatch require
+approval under `non_shell_script_execution`. This applies to inline programs,
+script files, stdin and nested calls, including local files. Interpreter
+information modes and literal data are not script execution.
+
+The rule contributes at least `NeedApproval`; `Observe` does not lower this
+floor, and `Deny` can strengthen it. Other analysis continues across the action,
+so an existing denial is not replaced by script approval. Python bodies are not
+evaluated to derive child commands, stdout or completeness proofs. Interpreter
+Profiles still describe source inputs, dispatch and declared CLI effects.
+
 ## Decision Assembly
 
 After all analysis modules complete, Decision Assembly produces one final decision according to the following priority:

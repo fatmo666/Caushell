@@ -63,7 +63,10 @@ fn inspect(command: &str, verify: impl FnOnce(&dyn GraphRead)) {
 #[test]
 fn json_outputs_are_checked_at_the_module_target() {
     for (c, d) in [
-        ("python -m json.tool in.json out.json", Decision::Allow),
+        (
+            "python -m json.tool in.json out.json",
+            Decision::NeedApproval,
+        ),
         (
             "python -m json.tool in.json /opt/output.json",
             Decision::NeedApproval,
@@ -72,11 +75,14 @@ fn json_outputs_are_checked_at_the_module_target() {
             "python -m json.tool in.json \"$OUTPUT\"",
             Decision::NeedApproval,
         ),
-        ("python -m json.tool --compact in.json -", Decision::Allow),
-        ("python -m json.tool --help", Decision::Allow),
+        (
+            "python -m json.tool --compact in.json -",
+            Decision::NeedApproval,
+        ),
+        ("python -m json.tool --help", Decision::NeedApproval),
         (
             "python -m json.tool in.json /opt/out.json --help --unknown",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         ("python -m json.tool --unrecognized", Decision::NeedApproval),
         (
@@ -107,16 +113,19 @@ fn http_default_wildcard_and_only_numeric_loopback_exemption() {
             "python -m http.server --bind \"$HOST\"",
             Decision::NeedApproval,
         ),
-        ("python -m http.server --bind 127.0.0.1", Decision::Allow),
-        ("python -m http.server --bind ::1", Decision::Allow),
+        (
+            "python -m http.server --bind 127.0.0.1",
+            Decision::NeedApproval,
+        ),
+        ("python -m http.server --bind ::1", Decision::NeedApproval),
         (
             "python -m http.server --bind 127.0.0.1 --directory /opt/public",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
-        ("python -m http.server --help", Decision::Allow),
+        ("python -m http.server --help", Decision::NeedApproval),
         (
             "python -m http.server 8123 --help --cgi --unknown",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "python -m http.server --bind 127.0.0.1 --cgi",
@@ -135,7 +144,7 @@ fn registered_existing_modules_reuse_their_effects() {
     for (c, d) in [
         (
             "python -m pytest tests/test_api.py::test_login",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "python -m pytest -o cache_dir=/opt/pytest-cache tests",
@@ -147,13 +156,13 @@ fn registered_existing_modules_reuse_their_effects() {
         ),
         (
             "python -m uvicorn app:app --host 127.0.0.1",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "python -m pip install --target /opt/packages pkg",
             Decision::NeedApproval,
         ),
-        ("python -m pip --help", Decision::Allow),
+        ("python -m pip --help", Decision::NeedApproval),
     ] {
         check(c, d);
     }
@@ -246,10 +255,11 @@ fn python_opaque_modes_and_bad_entries_require_approval() {
         "python --help -m http.server",
         "python -hZ",
         "python -V -m http.server",
-        "python -m pytest --help",
-        "python -m pytest -m slow --help",
     ] {
         check(c, Decision::Allow);
+    }
+    for c in ["python -m pytest --help", "python -m pytest -m slow --help"] {
+        check(c, Decision::NeedApproval);
     }
 }
 #[test]
@@ -283,7 +293,7 @@ fn explicit_compilation_checks_known_outputs_without_executing_sources() {
         "python -m py_compile a.py --help --unknown",
         "python -m compileall src --help --unknown",
     ] {
-        check(c, Decision::Allow);
+        check(c, Decision::NeedApproval);
     }
     for c in [
         "python -m py_compile /opt/source.py",
@@ -319,27 +329,27 @@ fn compilation_environment_distinguishes_unset_empty_unknown_and_ignored() {
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -m py_compile /opt/a.py",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -m compileall /opt/src",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -m compileall -i paths.txt",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -m compileall",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -m py_compile -",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX= python -m py_compile a.py",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX= python -m py_compile /opt/a.py",
@@ -351,11 +361,11 @@ fn compilation_environment_distinguishes_unset_empty_unknown_and_ignored() {
         ),
         (
             "PYTHONPYCACHEPREFIX=/opt/cache python -E -m py_compile a.py",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=/opt/cache python -I -m compileall src",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -E -m py_compile /opt/a.py",
@@ -363,20 +373,20 @@ fn compilation_environment_distinguishes_unset_empty_unknown_and_ignored() {
         ),
         (
             "PYTHONPYCACHEPREFIX=/opt/cache python -m compileall -b src",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "PYTHONPYCACHEPREFIX=cache python -m compileall -b /opt/src",
             Decision::NeedApproval,
         ),
-        ("env -i python -m py_compile a.py", Decision::Allow),
+        ("env -i python -m py_compile a.py", Decision::NeedApproval),
         (
             "env PYTHONPYCACHEPREFIX=/opt/cache python -E -m py_compile a.py",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "bash -c 'PYTHONPYCACHEPREFIX=/opt/cache python -E -m py_compile a.py'",
-            Decision::Allow,
+            Decision::NeedApproval,
         ),
         (
             "env --chdir=/opt python -E -m py_compile a.py",
@@ -395,9 +405,9 @@ fn compilation_environment_distinguishes_unset_empty_unknown_and_ignored() {
     }
     for (c, d) in [
         ("python -m py_compile a.py", Decision::NeedApproval),
-        ("python -E -m py_compile a.py", Decision::Allow),
-        ("python -I -m compileall src", Decision::Allow),
-        ("python -m compileall -b src", Decision::Allow),
+        ("python -E -m py_compile a.py", Decision::NeedApproval),
+        ("python -I -m compileall src", Decision::NeedApproval),
+        ("python -m compileall -b src", Decision::NeedApproval),
     ] {
         let mut req = request(c);
         req.shell_state_before.observability.variables = ShellStateKnowledge::Unknown;
@@ -419,7 +429,7 @@ fn compilation_environment_distinguishes_unset_empty_unknown_and_ignored() {
             if exported {
                 Decision::NeedApproval
             } else {
-                Decision::Allow
+                Decision::NeedApproval
             }
         );
     }

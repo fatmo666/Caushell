@@ -39,6 +39,7 @@ pub enum RuleId {
     SelectionError,
     NoProfile,
     NestedPayloadExpansion,
+    NonShellScriptExecution,
     ExecutionExpansionLimit,
     NonMonotonicSequence,
     CatastrophicFileSystemDelete,
@@ -90,6 +91,7 @@ impl RuleId {
             Self::SelectionError => RuleFamily::ResolveGap,
             Self::NoProfile => RuleFamily::ResolveGap,
             Self::NestedPayloadExpansion => RuleFamily::SemanticExpansion,
+            Self::NonShellScriptExecution => RuleFamily::SemanticExpansion,
             Self::ExecutionExpansionLimit => RuleFamily::SemanticExpansion,
             Self::NonMonotonicSequence => RuleFamily::SessionIntegrity,
             Self::CatastrophicFileSystemDelete => RuleFamily::HostSafety,
@@ -148,6 +150,10 @@ mod tests {
         assert_eq!(RuleId::NoProfile.family(), RuleFamily::ResolveGap);
         assert_eq!(
             RuleId::NestedPayloadExpansion.family(),
+            RuleFamily::SemanticExpansion
+        );
+        assert_eq!(
+            RuleId::NonShellScriptExecution.family(),
             RuleFamily::SemanticExpansion
         );
         assert_eq!(

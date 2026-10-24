@@ -10,6 +10,7 @@ mod support;
 
 pub use passes::NetworkListenerGuardPass;
 pub use passes::NetworkUploadGuardPass;
+pub use passes::NonShellScriptGuardPass;
 pub use passes::ResolvePathTargetsPass;
 pub use passes::StateOperationGuardPass;
 pub use passes::{

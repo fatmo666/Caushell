@@ -453,6 +453,24 @@ pub enum PayloadLanguage {
 }
 
 impl PayloadLanguage {
+    pub const fn is_shell(self) -> bool {
+        matches!(self, Self::Bash | Self::Sh | Self::Dash)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Opaque => "opaque",
+            Self::Bash => "bash",
+            Self::Sh => "sh",
+            Self::Dash => "dash",
+            Self::Python => "python",
+            Self::Perl => "perl",
+            Self::Javascript => "javascript",
+            Self::SqliteCli => "sqlite_cli",
+            Self::MysqlCli => "mysql_cli",
+        }
+    }
+
     /// Named general-purpose code with no decoder has the same policy boundary
     /// as explicit opaque code. Modeled shell/SQL contracts remain separate.
     pub fn requires_opaque_execution_boundary(self) -> bool {
@@ -470,6 +488,18 @@ pub enum PayloadSource {
     Stdin,
     Interactive,
     DynamicReference,
+}
+
+impl PayloadSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InlineString => "inline_string",
+            Self::ScriptFileRef => "script_file_ref",
+            Self::Stdin => "stdin",
+            Self::Interactive => "interactive",
+            Self::DynamicReference => "dynamic_reference",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
