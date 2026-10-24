@@ -232,6 +232,8 @@ impl SessionPositionalParameters {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_frame_executor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     shell_state_uncertainty: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shell_state_uncertainty_observed_at: Option<CommandSequenceNo>,
@@ -247,6 +249,13 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
+    pub fn execution_frame_executor(&self) -> Option<&str> {
+        self.execution_frame_executor.as_deref()
+    }
+
+    pub fn observe_execution_frame_executor(&mut self, executor: &str) {
+        self.execution_frame_executor = Some(executor.to_owned());
+    }
     pub fn shell_state_uncertainty(&self) -> Option<&str> {
         self.shell_state_uncertainty.as_deref()
     }

@@ -16,3 +16,6 @@ caushell-runtime-security = { path = "../caushell-runtime-security" }
 caushell-runner = { path = "../caushell-runner" }
 caushell-store = { path = "../caushell-store" }
 caushell-types = { path = "../caushell-types" }
+
+[dev-dependencies]
+caushell-profile = { path = "../caushell-profile" }

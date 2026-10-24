@@ -75,6 +75,8 @@ pub struct RuntimePingResponse {
     pub environment_observation_protocol: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pathname_observation_protocol: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_frame_protocol: Option<u32>,
 }
 
 impl RuntimePingResponse {
@@ -86,6 +88,7 @@ impl RuntimePingResponse {
             approval_protocol: Some(1),
             environment_observation_protocol: Some(1),
             pathname_observation_protocol: Some(1),
+            execution_frame_protocol: Some(1),
         }
     }
 
@@ -98,6 +101,7 @@ impl RuntimePingResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum RuntimeTransportRequest {
+    ExecutionFramePlan(crate::ExecutionFramePlanRequest),
     Check(RuntimeCheckRequest),
     Authorize(ApprovalRequest),
     ShellStateDelta(RuntimeShellStateDeltaRequest),
@@ -121,6 +125,7 @@ impl RuntimeTransportRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum RuntimeTransportResponse {
+    ExecutionFramePlan(crate::ExecutionFramePlan),
     Check(RuntimeCheckResponse),
     Authorize(ApprovalResponse),
     ShellStateDelta(RuntimeShellStateDeltaResponse),
@@ -418,7 +423,8 @@ mod tests {
                     "runtime_version": "0.1.0",
                     "approval_protocol": 1,
                     "environment_observation_protocol": 1,
-                    "pathname_observation_protocol": 1
+                    "pathname_observation_protocol": 1,
+                    "execution_frame_protocol": 1
                 }
             })
         );

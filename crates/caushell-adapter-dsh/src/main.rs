@@ -21,6 +21,8 @@ const PROTOCOL_SCHEMA_VERSION: u32 = 1;
 #[serde(deny_unknown_fields)]
 struct DshCheckRequest {
     schema_version: u32,
+    #[serde(default)]
+    execution_frame: Option<caushell_types::ExecutionFrameObservation>,
     request_id: String,
     session_id: String,
     cwd: String,
@@ -186,6 +188,7 @@ fn validate_request(request: &DshCheckRequest) -> Result<(), String> {
 fn build_runtime_request(request: DshCheckRequest) -> RuntimeCheckRequest {
     let DshCheckRequest {
         schema_version: _,
+        execution_frame,
         request_id: _,
         session_id,
         cwd,
@@ -197,7 +200,11 @@ fn build_runtime_request(request: DshCheckRequest) -> RuntimeCheckRequest {
         intent: caushell_types::CheckIntent::ProposeForExecution,
         session_id: SessionId::new(session_id),
         command,
-        shell_state_before: ShellStateSnapshot::new(cwd),
+        shell_state_before: {
+            let mut state = ShellStateSnapshot::new(cwd);
+            state.execution_frame = execution_frame;
+            state
+        },
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: RUNTIME_NAME.to_string(),
@@ -346,6 +353,7 @@ mod tests {
     fn builds_request_only_bash_context_with_explicit_workspace_root() {
         let request = build_runtime_request(DshCheckRequest {
             schema_version: PROTOCOL_SCHEMA_VERSION,
+            execution_frame: None,
             request_id: "call-4".to_string(),
             session_id: "session-4".to_string(),
             cwd: "/workspace/project".to_string(),
@@ -370,6 +378,7 @@ mod tests {
     fn rejects_unknown_protocol_version_and_relative_paths() {
         let mut request = DshCheckRequest {
             schema_version: PROTOCOL_SCHEMA_VERSION + 1,
+            execution_frame: None,
             request_id: "call-5".to_string(),
             session_id: "session-5".to_string(),
             cwd: "/workspace/project".to_string(),
@@ -388,5 +397,36 @@ mod tests {
             validate_request(&request).unwrap_err(),
             "cwd must be an absolute path"
         );
+    }
+
+    #[test]
+    fn forwards_only_explicit_executor_observations() {
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "request_id": "frame-call",
+            "session_id": "frame-session",
+            "cwd": "/workspace",
+            "command": "printf hello",
+            "workspace_root": "/workspace"
+        });
+        let base = build_runtime_request(serde_json::from_value(payload.clone()).unwrap());
+        assert!(base.shell_state_before.execution_frame.is_none());
+        assert!(base.shell_state_before.environment.is_empty());
+        assert!(base.shell_state_before.pathname.is_none());
+        let frame = caushell_types::ExecutionFrameObservation {
+            binding: caushell_types::ExecutionFrameBinding::for_request(
+                &base.into_check_request(caushell_types::CommandSequenceNo(1)),
+                "owned-executor",
+            ),
+            environment: vec![caushell_types::ShellEnvironmentSnapshot {
+                name: "LC_ALL".into(),
+                value: caushell_types::ShellEnvironmentValue::Unknown,
+            }],
+            pathname: None,
+        };
+        let mut payload = payload;
+        payload["execution_frame"] = serde_json::to_value(&frame).unwrap();
+        let request = build_runtime_request(serde_json::from_value(payload).unwrap());
+        assert_eq!(request.shell_state_before.execution_frame, Some(frame));
     }
 }

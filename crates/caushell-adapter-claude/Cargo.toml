@@ -10,3 +10,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 caushell = { path = "../caushell" }
 caushell-types = { path = "../caushell-types" }
+
+[dev-dependencies]
+caushell-profile = { path = "../caushell-profile" }

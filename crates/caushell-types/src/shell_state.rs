@@ -143,6 +143,8 @@ impl ShellFunctionSnapshot {
 pub struct ShellStateSnapshot {
     pub cwd: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_frame: Option<crate::ExecutionFrameObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pathname: Option<ShellPathnameSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<ShellEnvironmentSnapshot>,
@@ -261,6 +263,7 @@ impl ShellStateSnapshot {
     pub fn new(cwd: impl Into<String>) -> Self {
         Self {
             cwd: cwd.into(),
+            execution_frame: None,
             pathname: None,
             environment: Vec::new(),
             variables: Vec::new(),
@@ -493,6 +496,7 @@ mod tests {
     fn shell_state_snapshot_can_hold_runtime_input_derived_variable() {
         let snapshot = ShellStateSnapshot {
             cwd: "/tmp/project".to_string(),
+            execution_frame: None,
             pathname: None,
             environment: Vec::new(),
             variables: vec![ShellVariableSnapshot::new(

@@ -110,6 +110,8 @@ impl From<ConfigFileError> for HookError {
 #[derive(Debug, Deserialize)]
 struct ClaudeHookRequest {
     session_id: String,
+    #[serde(default)]
+    execution_frame: Option<caushell_types::ExecutionFrameObservation>,
     cwd: String,
     hook_event_name: String,
     tool_name: String,
@@ -764,7 +766,11 @@ fn build_runtime_request(
         intent: caushell_types::CheckIntent::ProposeForExecution,
         session_id: SessionId::new(hook_request.session_id.clone()),
         command,
-        shell_state_before: caushell_types::ShellStateSnapshot::new(hook_request.cwd.clone()),
+        shell_state_before: {
+            let mut state = caushell_types::ShellStateSnapshot::new(hook_request.cwd.clone());
+            state.execution_frame = hook_request.execution_frame.clone();
+            state
+        },
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "claude_code".to_string(),
@@ -1976,6 +1982,7 @@ mod tests {
     fn runtime_request_uses_resolved_hook_workspace_root() {
         let hook_request = ClaudeHookRequest {
             session_id: "sess-workspace".to_string(),
+            execution_frame: None,
             cwd: "/lab/workspace/subdir".to_string(),
             hook_event_name: "PreToolUse".to_string(),
             tool_name: "Bash".to_string(),
@@ -1989,6 +1996,47 @@ mod tests {
 
         assert_eq!(request.workspace_root.as_deref(), Some("/lab/workspace"));
         assert_eq!(request.shell_state_before.cwd(), "/lab/workspace/subdir");
+    }
+
+    #[test]
+    fn runtime_request_forwards_only_executor_owned_frame() {
+        let mut payload = serde_json::json!({
+            "session_id": "frame-session",
+            "cwd": "/workspace",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "printf hello"}
+        });
+        let base = build_runtime_request(
+            &serde_json::from_value(payload.clone()).unwrap(),
+            Path::new("/workspace"),
+        )
+        .unwrap();
+        assert!(base.shell_state_before.execution_frame.is_none());
+        assert!(base.shell_state_before.environment.is_empty());
+        assert!(base.shell_state_before.pathname.is_none());
+        let frame = caushell_types::ExecutionFrameObservation {
+            binding: caushell_types::ExecutionFrameBinding::for_request(
+                &base.into_check_request(caushell_types::CommandSequenceNo(1)),
+                "owned-executor",
+            ),
+            environment: vec![],
+            pathname: None,
+        };
+        payload["tool_input"]["execution_frame"] = serde_json::to_value(&frame).unwrap();
+        let tool_only = build_runtime_request(
+            &serde_json::from_value(payload.clone()).unwrap(),
+            Path::new("/workspace"),
+        )
+        .unwrap();
+        assert!(tool_only.shell_state_before.execution_frame.is_none());
+        payload["execution_frame"] = serde_json::to_value(&frame).unwrap();
+        let with_frame = build_runtime_request(
+            &serde_json::from_value(payload).unwrap(),
+            Path::new("/workspace"),
+        )
+        .unwrap();
+        assert_eq!(with_frame.shell_state_before.execution_frame, Some(frame));
     }
 
     #[test]

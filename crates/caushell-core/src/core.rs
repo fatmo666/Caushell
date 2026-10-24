@@ -206,10 +206,17 @@ impl ShellQueryCore {
 
     pub fn try_check_with_intent(
         &mut self,
-        request: CheckRequest,
+        mut request: CheckRequest,
         intent: caushell_types::CheckIntent,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
-        if !request.shell_state_before.environment.is_empty()
+        let original_request = request
+            .shell_state_before
+            .execution_frame
+            .as_ref()
+            .map(|_| request.clone());
+        let frame_evidence = self.validate_execution_frame(&mut request);
+        if (!request.shell_state_before.environment.is_empty()
+            || request.shell_state_before.execution_frame.is_some())
             && self
                 .sessions
                 .get(&request.session_id)
@@ -235,6 +242,25 @@ impl ShellQueryCore {
 
         let mut ctx = RunnerContext::with_policy(request, self.policy.clone());
         ctx.set_filesystem_view(self.filesystem.clone());
+        if let Some(evidence) = frame_evidence {
+            let summary = evidence
+                .gap
+                .clone()
+                .unwrap_or_else(|| "request-bound execution frame accepted".into());
+            if !evidence.accepted {
+                ctx.propose_decision(
+                    "validate_execution_frame",
+                    caushell_types::RuleId::SelectionError,
+                    caushell_types::Decision::NeedApproval,
+                    summary.clone(),
+                );
+            }
+            ctx.add_evidence(caushell_types::Evidence {
+                rule_id: caushell_types::RuleId::SelectionError,
+                summary,
+                kind: caushell_types::EvidenceKind::ExecutionFrame(evidence),
+            });
+        }
         let timing_enabled = core_timing_enabled();
         let total_start = Instant::now();
         let runner_start = Instant::now();
@@ -295,13 +321,14 @@ impl ShellQueryCore {
             if decision == caushell_types::Decision::NeedApproval
                 && intent != caushell_types::CheckIntent::JudgeOnly
             {
+                let proposal_request = original_request.as_ref().unwrap_or(ctx.request());
                 let receipt = caushell_types::CheckReceipt {
-                    check_id: caushell_types::CheckId::for_request(ctx.request()),
+                    check_id: caushell_types::CheckId::for_request(proposal_request),
                     state_revision: session.approval_state().revision,
                 };
                 let plan = caushell_types::PendingApproval {
                     receipt: receipt.clone(),
-                    request: ctx.request().clone(),
+                    request: proposal_request.clone(),
                     mutations: ctx
                         .pending_mutations()
                         .iter()
@@ -377,8 +404,13 @@ impl ShellQueryCore {
         &mut self,
         request: RuntimeCheckRequest,
     ) -> Result<PreparedRuntimeCheck, ShellQueryCoreError> {
-        let applied_shell_state_delta = self.reconcile_runtime_shell_state_before(&request)?;
         let sequence_no = self.next_sequence_no(&request.session_id);
+        let mut observed = request.clone().into_check_request(sequence_no);
+        self.validate_execution_frame(&mut observed);
+        let mut reconciliation = request.clone();
+        reconciliation.shell_state_before = observed.shell_state_before;
+        let applied_shell_state_delta =
+            self.reconcile_runtime_shell_state_before(&reconciliation)?;
         let request = request.into_check_request(sequence_no);
 
         Ok(PreparedRuntimeCheck {
@@ -450,6 +482,48 @@ impl ShellQueryCore {
     pub fn materialize_runtime_request(&self, request: RuntimeCheckRequest) -> CheckRequest {
         let sequence_no = self.next_sequence_no(&request.session_id);
         request.into_check_request(sequence_no)
+    }
+
+    pub fn execution_frame_plan(
+        &self,
+        request: caushell_types::ExecutionFramePlanRequest,
+    ) -> Result<caushell_types::ExecutionFramePlan, ShellQueryCoreInitError> {
+        let registry = ProfileRegistry::built_in()?;
+        let request_context = self.materialize_runtime_request(request.request);
+        Ok(caushell_types::ExecutionFramePlan {
+            binding: caushell_types::ExecutionFrameBinding::for_request(
+                &request_context,
+                request.executor_instance_id,
+            ),
+            requirements: caushell_profile::execution_frame_requirements(registry.profiles()),
+        })
+    }
+
+    fn validate_execution_frame(
+        &self,
+        request: &mut CheckRequest,
+    ) -> Option<caushell_types::ExecutionFrameEvidence> {
+        let frame = request.shell_state_before.execution_frame.as_ref()?;
+        let previous = self
+            .sessions
+            .get(&request.session_id)
+            .and_then(|session| session.summary().execution_frame_executor());
+        let gap = frame.validate(request, previous).err().or_else(|| {
+            self.sessions
+                .get(&request.session_id)
+                .and_then(|session| session.summary().last_sequence_no())
+                .filter(|last| *last >= request.sequence_no)
+                .map(|_| "execution frame check sequence is not newer than the session".into())
+        });
+        let evidence = caushell_types::ExecutionFrameEvidence {
+            binding: frame.binding.clone(),
+            accepted: gap.is_none(),
+            gap,
+        };
+        if !evidence.accepted {
+            request.shell_state_before.execution_frame = None;
+        }
+        Some(evidence)
     }
 
     fn next_sequence_no(&self, session_id: &SessionId) -> CommandSequenceNo {

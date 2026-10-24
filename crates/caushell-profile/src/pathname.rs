@@ -4,7 +4,11 @@ pub(crate) fn snapshot(
     state: &caushell_types::ShellStateSnapshot,
 ) -> Option<caushell_types::ShellPathnameSnapshot> {
     use caushell_types::{ShellEnvironmentValue as V, ShellStateKnowledge, ShellValueSnapshot};
-    let value = state.pathname.as_ref()?;
+    let value = state
+        .execution_frame
+        .as_ref()
+        .and_then(|frame| frame.pathname.as_ref())
+        .or(state.pathname.as_ref())?;
     for (name, observation) in [
         ("GLOBIGNORE", &value.globignore),
         ("LC_ALL", &value.lc_all),

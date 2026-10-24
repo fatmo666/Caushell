@@ -100,11 +100,22 @@ impl SessionState {
     }
 
     pub fn observe_request(&mut self, request: &CheckRequest) {
-        if self
+        let newer = self
             .summary
             .last_sequence_no()
-            .is_none_or(|n| n < request.sequence_no)
-        {
+            .is_none_or(|n| n < request.sequence_no);
+        if newer {
+            if let Some(frame) = &request.shell_state_before.execution_frame {
+                if frame
+                    .validate(request, self.summary.execution_frame_executor())
+                    .is_ok()
+                {
+                    self.summary
+                        .observe_execution_frame_executor(&frame.binding.executor_instance_id);
+                }
+            }
+        }
+        if newer {
             self.approval_state.revision += 1;
             self.approval_state
                 .pending

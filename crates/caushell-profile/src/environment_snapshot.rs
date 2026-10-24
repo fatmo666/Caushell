@@ -8,7 +8,12 @@ pub fn environment_observations(
     snapshot: &ShellStateSnapshot,
 ) -> BTreeMap<String, Option<SessionValue>> {
     let mut observations = BTreeMap::new();
-    for observation in &snapshot.environment {
+    for observation in snapshot.environment.iter().chain(
+        snapshot
+            .execution_frame
+            .iter()
+            .flat_map(|frame| &frame.environment),
+    ) {
         let name = &observation.name;
         if name.is_empty() || name.contains(['=', '\0']) {
             continue;

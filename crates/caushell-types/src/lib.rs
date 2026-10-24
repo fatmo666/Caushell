@@ -15,6 +15,12 @@ pub use file_content::{
     FileContentIdentity, FileContentObservation, FileContentSource, FileContentStatus,
 };
 mod execution;
+mod execution_frame;
+pub use execution_frame::{
+    ExecutionFrameBinding, ExecutionFrameEvidence, ExecutionFrameObservation,
+    ExecutionFrameObserver, ExecutionFramePlan, ExecutionFramePlanRequest,
+    ExecutionFrameRequirements,
+};
 mod finding;
 mod path;
 mod pathname_fields;

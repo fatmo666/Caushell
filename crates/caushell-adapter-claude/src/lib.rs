@@ -72,6 +72,8 @@ impl From<CliError> for AdapterError {
 #[derive(Debug, Deserialize)]
 struct ClaudeHookRequest {
     session_id: String,
+    #[serde(default)]
+    execution_frame: Option<caushell_types::ExecutionFrameObservation>,
     cwd: String,
     hook_event_name: String,
     tool_name: String,
@@ -212,7 +214,11 @@ fn build_runtime_request(
         intent: caushell_types::CheckIntent::ProposeForExecution,
         session_id: SessionId::new(hook_request.session_id.clone()),
         command,
-        shell_state_before: caushell_types::ShellStateSnapshot::new(hook_request.cwd.clone()),
+        shell_state_before: {
+            let mut state = caushell_types::ShellStateSnapshot::new(hook_request.cwd.clone());
+            state.execution_frame = hook_request.execution_frame.clone();
+            state
+        },
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "claude_code".to_string(),

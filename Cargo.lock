@@ -45,6 +45,7 @@ dependencies = [
  "caushell-config",
  "caushell-core",
  "caushell-graph",
+ "caushell-profile",
  "caushell-query",
  "caushell-runner",
  "caushell-runtime-security",
@@ -60,6 +61,7 @@ name = "caushell-adapter-claude"
 version = "0.0.9"
 dependencies = [
  "caushell",
+ "caushell-profile",
  "caushell-types",
  "libc",
  "serde",
@@ -71,6 +73,7 @@ name = "caushell-adapter-codex"
 version = "0.0.9"
 dependencies = [
  "caushell",
+ "caushell-profile",
  "caushell-types",
  "libc",
  "serde",
@@ -231,6 +234,7 @@ version = "0.0.9"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

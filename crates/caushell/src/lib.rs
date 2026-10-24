@@ -44,6 +44,9 @@ use caushell_types::{
     VariableBindingIntentsQueryResponse,
 };
 use serde::Serialize;
+mod execution_frame;
+#[cfg(unix)]
+pub use execution_frame::plan_execution_frame_unix_socket;
 
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
@@ -756,6 +759,16 @@ impl CliRuntime {
     ) -> Result<RuntimeTransportResponse, CliError> {
         self.require_healthy_persistence()?;
         match request {
+            RuntimeTransportRequest::ExecutionFramePlan(request) => {
+                if self.store.is_some() {
+                    self.ensure_session_loaded(&request.request.session_id)?;
+                }
+                let plan = self
+                    .core
+                    .execution_frame_plan(request)
+                    .map_err(CliError::InitCore)?;
+                Ok(RuntimeTransportResponse::ExecutionFramePlan(plan))
+            }
             RuntimeTransportRequest::Check(request) => {
                 let response = self.handle_runtime_request_with_receipt(request)?;
                 Ok(RuntimeTransportResponse::Check(response))
@@ -2335,6 +2348,9 @@ pub fn check_unix_socket(
     if request.intent == caushell_types::CheckIntent::JudgeOnly {
         return Ok(check_with_receipt_unix_socket(socket_path, request)?.response);
     }
+    if request.shell_state_before.execution_frame.is_some() {
+        require_execution_frame_protocol(&ping_unix_socket(socket_path)?)?;
+    }
     Ok(check_transport_unix_socket(socket_path, request)?.response)
 }
 
@@ -2343,13 +2359,27 @@ pub fn check_with_receipt_unix_socket(
     socket_path: &Path,
     request: &RuntimeCheckRequest,
 ) -> Result<caushell_types::RuntimeCheckResponse, CliError> {
-    if ping_unix_socket(socket_path)?.approval_protocol != Some(1) {
+    let ping = ping_unix_socket(socket_path)?;
+    if request.shell_state_before.execution_frame.is_some() {
+        require_execution_frame_protocol(&ping)?;
+    }
+    if ping.approval_protocol != Some(1) {
         return Err(CliError::Io(io::Error::new(
             io::ErrorKind::Unsupported,
             "runtime does not support single-check authorization/judge-only; no check sent",
         )));
     }
     check_transport_unix_socket(socket_path, request)
+}
+
+fn require_execution_frame_protocol(ping: &RuntimePingResponse) -> Result<(), CliError> {
+    if ping.execution_frame_protocol != Some(1) {
+        return Err(CliError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "runtime does not support request-bound execution frames; no check sent",
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -2372,6 +2402,12 @@ fn check_transport_unix_socket(
             expected: "check",
             actual: "shell_state_delta",
         }),
+        RuntimeTransportResponse::ExecutionFramePlan(_) => {
+            Err(CliError::UnexpectedRuntimeResponse {
+                expected: "check",
+                actual: "execution_frame_plan",
+            })
+        }
         RuntimeTransportResponse::Ping(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "check",
             actual: "ping",
@@ -2398,6 +2434,12 @@ pub fn authorize_unix_socket(
             expected: "authorize",
             actual: "shell_state_delta",
         }),
+        RuntimeTransportResponse::ExecutionFramePlan(_) => {
+            Err(CliError::UnexpectedRuntimeResponse {
+                expected: "authorize",
+                actual: "execution_frame_plan",
+            })
+        }
         RuntimeTransportResponse::Ping(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "authorize",
             actual: "ping",
@@ -2412,6 +2454,12 @@ pub fn ping_unix_socket(socket_path: &Path) -> Result<RuntimePingResponse, CliEr
 
     match response {
         RuntimeTransportResponse::Ping(response) => Ok(response),
+        RuntimeTransportResponse::ExecutionFramePlan(_) => {
+            Err(CliError::UnexpectedRuntimeResponse {
+                expected: "ping",
+                actual: "execution_frame_plan",
+            })
+        }
         RuntimeTransportResponse::Authorize(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "ping",
             actual: "authorize",
@@ -2452,6 +2500,12 @@ pub fn apply_shell_state_delta_unix_socket(
             expected: "shell_state_delta",
             actual: "check",
         }),
+        RuntimeTransportResponse::ExecutionFramePlan(_) => {
+            Err(CliError::UnexpectedRuntimeResponse {
+                expected: "shell_state_delta",
+                actual: "execution_frame_plan",
+            })
+        }
         RuntimeTransportResponse::Ping(_) => Err(CliError::UnexpectedRuntimeResponse {
             expected: "shell_state_delta",
             actual: "ping",
@@ -6675,6 +6729,41 @@ policy:
             vec!["command unknown-tool has no registered profile".to_string()]
         );
         assert_eq!(response.decision_trace.decision_proposals.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn frame_client_refuses_legacy_runtime_before_sending_check() {
+        let socket_path = temp_socket_path("no-silent-frame-downgrade");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        caushell_runtime_security::secure_unix_socket(&socket_path).unwrap();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut runtime = create_runtime(None, None).unwrap();
+            serve_unix_socket_connection(&mut runtime, stream, |_, request| {
+                assert!(matches!(request, RuntimeTransportRequest::Ping));
+                let mut old = caushell_types::RuntimePingResponse::ok("old");
+                old.execution_frame_protocol = None;
+                Ok(RuntimeTransportResponse::Ping(old))
+            })
+            .unwrap();
+        });
+        let mut request = sample_request("printf hello");
+        request.shell_state_before.execution_frame =
+            Some(caushell_types::ExecutionFrameObservation {
+                binding: caushell_types::ExecutionFrameBinding::for_request(
+                    &request
+                        .clone()
+                        .into_check_request(caushell_types::CommandSequenceNo(1)),
+                    "executor",
+                ),
+                environment: Vec::new(),
+                pathname: None,
+            });
+        let error = check_unix_socket(&socket_path, &request).unwrap_err();
+        assert!(error.to_string().contains("no check sent"));
+        handle.join().unwrap();
+        remove_temp_socket_path(&socket_path);
     }
 
     #[cfg(unix)]
