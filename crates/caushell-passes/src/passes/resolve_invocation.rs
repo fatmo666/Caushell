@@ -189,6 +189,7 @@ impl ResolveInvocationPass {
                 e.kind,
                 caushell_types::EvidenceKind::PathnameFields(_)
                     | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
+                    | caushell_types::EvidenceKind::PythonPayload(_)
             )
         }) {
             ctx.add_evidence(evidence);
@@ -243,6 +244,11 @@ impl ResolveInvocationPass {
             }
         }
         nested_payload_records.extend(derived_payloads);
+        python::reconcile_payloads(
+            &execution_unit_resolve_records,
+            &mut nested_payload_records,
+            &ctx.evidence,
+        );
         super::callback_completeness::validate(
             &mut execution_unit_resolve_records,
             &nested_payload_records,
@@ -2840,6 +2846,8 @@ struct ExpandedFrontierEntry {
     inherited_scope: ExecutionUnitInheritedScope,
 }
 
+mod python;
+
 #[derive(Clone)]
 struct ProgramSourceContext {
     entry_cwd: caushell_runner::EffectiveCwd,
@@ -4176,6 +4184,14 @@ fn collect_execution_unit_resolve_records(
             };
         }
 
+        let python_children = python::expand(
+            registry,
+            session,
+            request,
+            &mut entry,
+            &program_context,
+            pathname_context,
+        );
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();
         let child_inherited_scope = entry.inherited_scope.clone();
@@ -4242,6 +4258,7 @@ fn collect_execution_unit_resolve_records(
             &entry,
             max_nested_parse_depth,
         );
+        children.extend(python_children);
         let resolved = match &entry.result {
             ResolveInvocationArtifactResult::Resolved(resolved) => Some(resolved),
             _ => None,
@@ -9571,6 +9588,7 @@ fn project_nested_payload_evidence_inner(
     };
 
     match &record.resolution {
+        NestedPayloadResolution::ModeledLanguage => None,
         NestedPayloadResolution::Parsed { shell_kind, parsed } => Some(
             Evidence::nested_payload_parsed(context, *shell_kind, parsed.commands.len()),
         ),
@@ -10006,6 +10024,7 @@ fn nested_input_source(
 
 fn nested_resolution_kind_string(resolution: &NestedPayloadResolution) -> String {
     match resolution {
+        NestedPayloadResolution::ModeledLanguage => "modeled_language",
         NestedPayloadResolution::Parsed { .. } => "parsed",
         NestedPayloadResolution::TruncatedByDepthBudget { .. } => "truncated_by_depth_budget",
         NestedPayloadResolution::RequiresRuntimeInput { .. } => "requires_runtime_input",
@@ -10019,6 +10038,7 @@ fn nested_resolution_kind_string(resolution: &NestedPayloadResolution) -> String
 
 fn nested_resolution_detail(resolution: &NestedPayloadResolution) -> Option<String> {
     match resolution {
+        NestedPayloadResolution::ModeledLanguage => None,
         NestedPayloadResolution::Parsed { shell_kind, parsed } => Some(format!(
             "shell_kind={shell_kind:?};command_count={}",
             parsed.commands.len()
@@ -10046,7 +10066,8 @@ fn nested_resolution_runtime_input_source(
 ) -> Option<RuntimeInputSource> {
     match resolution {
         NestedPayloadResolution::RequiresRuntimeInput { source } => Some(*source),
-        NestedPayloadResolution::Parsed { .. }
+        NestedPayloadResolution::ModeledLanguage
+        | NestedPayloadResolution::Parsed { .. }
         | NestedPayloadResolution::TruncatedByDepthBudget { .. }
         | NestedPayloadResolution::RequiresImplicitInput { .. }
         | NestedPayloadResolution::UnsupportedLanguage
@@ -13140,7 +13161,14 @@ modifiers:
             }
         );
 
-        match &ctx.evidence[0].kind {
+        assert!(ctx.evidence.iter().any(|e| matches!(&e.kind,
+            EvidenceKind::PythonPayload(p) if !p.complete && !p.isolated_startup && p.source.as_deref() == Some("print(1)\n"))));
+        let evidence = ctx
+            .evidence
+            .iter()
+            .find(|e| matches!(e.kind, EvidenceKind::NestedPayloadUnresolved(_)))
+            .expect("unresolved payload evidence");
+        match &evidence.kind {
             EvidenceKind::NestedPayloadUnresolved(unresolved) => {
                 assert_eq!(
                     unresolved.unresolved_execution_payload_subtype,

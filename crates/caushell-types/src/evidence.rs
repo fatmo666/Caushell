@@ -459,6 +459,7 @@ pub enum EvidenceKind {
     NativeInputDecode(crate::NativeInputDecodeEvidence),
     PathnameFields(crate::PathnameFieldsEvidence),
     ToolOptionEnvironment(crate::ToolOptionEnvironmentEvidence),
+    PythonPayload(crate::PythonPayloadEvidence),
     ArchiveMembers(ArchiveMembersEvidence),
     ToolConfigInput(ToolConfigInputEvidence),
     ToolConfigParse(ToolConfigParseEvidence),

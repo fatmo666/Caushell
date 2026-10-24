@@ -90,5 +90,6 @@ modifiers:
     parameters: [{name: xoption, semantic: {kind: plain_value}, binding: {kind: following_flag, flag: '-X', operand_mode: next_arg}, cardinality: optional_many}]
 extensions:
   caushell.profile/known_limitations:
-    - Python bodies and module resolution are not analyzed; only declared module CLI contracts are expanded.
+    - Bounded straight-line Python bodies use the language adapter; unsupported syntax and unproven startup or imports remain unresolved.
+    - Only isolated Python 3 startup without site loading currently satisfies the body adapter runtime contract.
     - Interactive mode and extended runtime configuration remain opaque.

@@ -12,7 +12,21 @@ pub(super) fn validate(
     records: &mut [ExecutionUnitResolveRecord],
     payloads: &[NestedPayloadRecord],
 ) {
-    if !records.iter().any(|record| matches!(&record.result,
+    let modeled = payloads
+        .iter()
+        .filter(|p| matches!(p.resolution, NestedPayloadResolution::ModeledLanguage))
+        .filter_map(|p| match &p.parent_ref {
+            NestedPayloadParentRef::DerivedInvocation { node_id } => Some(node_id.clone()),
+            NestedPayloadParentRef::RootCommand { command_index } => records
+                .iter()
+                .find(|r| {
+                    r.origin_kind == ExecutionUnitOriginKind::TopLevel
+                        && r.command_ref.command_index == *command_index
+                })
+                .map(|r| r.source_node_id.clone()),
+        })
+        .collect::<BTreeSet<_>>();
+    if modeled.is_empty() && !records.iter().any(|record| matches!(&record.result,
         ResolveInvocationArtifactResult::Resolved(r) if r.bound.effects.iter().any(|e|
             e.kind == EffectKind::DispatchCommand && matches!(&e.target,
                 EffectTarget::Dispatch(t) if matches!(t.command, DispatchCommandSource::CommandString { .. }))))) {
@@ -49,7 +63,10 @@ pub(super) fn validate(
         }
     }
     for payload in payloads {
-        if matches!(payload.resolution, NestedPayloadResolution::Parsed { .. }) {
+        if matches!(
+            payload.resolution,
+            NestedPayloadResolution::Parsed { .. } | NestedPayloadResolution::ModeledLanguage
+        ) {
             continue;
         }
         let owner = match &payload.parent_ref {
@@ -83,11 +100,11 @@ pub(super) fn validate(
         let ResolveInvocationArtifactResult::Resolved(r) = &mut record.result else {
             continue;
         };
-        if r.bound.effects.iter().any(|e| e.kind == EffectKind::DispatchCommand && matches!(&e.target,
+        if modeled.contains(&record.source_node_id) || r.bound.effects.iter().any(|e| e.kind == EffectKind::DispatchCommand && matches!(&e.target,
             EffectTarget::Dispatch(t) if matches!(t.command, DispatchCommandSource::CommandString { .. }))) {
             r.bound.operation_semantics_unresolved = true;
             r.bound.residuals.push(Residual::new(ResidualKind::UnboundPayload, ResidualSurface::Payload,
-                "native callback analysis is incomplete"));
+                "native child analysis is incomplete"));
         }
     }
 }

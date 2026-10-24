@@ -5377,6 +5377,11 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
                 caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
                 caushell_types::RuleAction::Observe,
             );
+        // This fixture inspects committed AST shape, not language coverage.
+        policy.rule_policy.resolve_gap.defaults.insert(
+            caushell_types::ResolveGapKind::OpaqueInvocation,
+            caushell_types::RuleAction::Observe,
+        );
         let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-heredoc-no-pipeline");
 
@@ -6542,6 +6547,11 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
                 caushell_types::UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
                 caushell_types::RuleAction::Observe,
             );
+        // This fixture inspects committed AST shape, not language coverage.
+        policy.rule_policy.resolve_gap.defaults.insert(
+            caushell_types::ResolveGapKind::OpaqueInvocation,
+            caushell_types::RuleAction::Observe,
+        );
         let mut core = ShellQueryCore::with_policy(policy);
         let session_id = SessionId::new("sess-multi-top-level");
 

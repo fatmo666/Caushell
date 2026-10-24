@@ -1033,6 +1033,7 @@ pub struct NestedPayloadResolution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NestedPayloadResolutionKind {
+    ModeledLanguage,
     Parsed,
     TruncatedByDepthBudget,
     RequiresRuntimeInput,
@@ -1045,6 +1046,7 @@ pub enum NestedPayloadResolutionKind {
 impl NestedPayloadResolutionKind {
     pub fn from_storage(value: &str) -> Result<Self, NestedPayloadDecodeError> {
         match value {
+            "modeled_language" => Ok(Self::ModeledLanguage),
             "parsed" => Ok(Self::Parsed),
             "truncated_by_depth_budget" => Ok(Self::TruncatedByDepthBudget),
             "requires_runtime_input" => Ok(Self::RequiresRuntimeInput),

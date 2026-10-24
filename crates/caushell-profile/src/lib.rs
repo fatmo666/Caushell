@@ -33,8 +33,13 @@ mod parameter_pattern;
 mod patch_payload;
 mod payload_projection;
 mod projection;
+mod python_payload;
 mod raw;
 mod recursive;
+pub use python_payload::{
+    PythonAnalysis, PythonEffect, PythonInput, PythonInputs, analyze_python,
+    python_source_encoding_supported,
+};
 mod registry;
 mod rename_payload;
 mod resolve;

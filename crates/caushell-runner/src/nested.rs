@@ -30,6 +30,8 @@ pub enum NestedPayloadParentRef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NestedPayloadResolution {
+    /// A language adapter has consumed the complete program and emitted its effects.
+    ModeledLanguage,
     Parsed {
         shell_kind: ShellKind,
         parsed: ParsedCommandArtifact,
