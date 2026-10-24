@@ -13,7 +13,15 @@ impl Engine<'_> {
                     return Err("Python binding budget exceeded".into());
                 }
             }
-            "attribute" if self.symbol(target)? == "sys.argv" => self.argv = value,
+            "attribute" => {
+                if self.symbol(target).as_deref() == Ok("sys.argv") {
+                    self.argv = value;
+                } else {
+                    let object = self.eval(field(target, "object")?, depth + 1)?;
+                    let attribute = self.raw(field(target, "attribute")?).to_owned();
+                    self.http_assignment(object, &attribute, value)?;
+                }
+            }
             "pattern_list" | "tuple_pattern" | "list_pattern" => {
                 let values = match value {
                     Value::List(v) | Value::Tuple(v) | Value::Range(v) => v,
@@ -32,9 +40,12 @@ impl Engine<'_> {
         Ok(())
     }
 
-    fn block(&mut self, block: Node<'_>) -> Result<()> {
+    pub(super) fn block(&mut self, block: Node<'_>) -> Result<()> {
         for statement in named(block) {
             self.statement(statement)?;
+            if self.flow != Flow::Continue {
+                break;
+            }
         }
         Ok(())
     }
@@ -68,7 +79,7 @@ impl Engine<'_> {
                         Some(_) => Err("unsupported Python conditional alternative".into()),
                         None => Ok(()),
                     },
-                    None => Err("Python conditional effects depend on unknown input".into()),
+                    None => self.unknown_branch(node),
                 }
             }
             "for_statement" => {
@@ -87,6 +98,9 @@ impl Engine<'_> {
                 for value in items {
                     self.assign(field(node, "left")?, value, 0)?;
                     self.block(field(node, "body")?)?;
+                    if self.flow != Flow::Continue {
+                        break;
+                    }
                 }
                 Ok(())
             }
@@ -133,6 +147,106 @@ impl Engine<'_> {
         Ok(value
             .map(Value::Bool)
             .unwrap_or(Value::Unknown(UnknownValue::Boolean)))
+    }
+}
+
+impl Engine<'_> {
+    fn unknown_branch(&mut self, node: Node<'_>) -> Result<()> {
+        let names = self.names.clone();
+        let argv = self.argv.clone();
+        let sockets = self.sockets.clone();
+        let servers = self.servers.clone();
+        let handlers = self.handlers.clone();
+        let report = self.report.clone();
+        self.block(field(node, "consequence")?)?;
+        let left_names = self.names.clone();
+        let left_argv = self.argv.clone();
+        let left_sockets = self.sockets.clone();
+        let left_servers = self.servers.clone();
+        let left_handlers = self.handlers.clone();
+        let left_flow = std::mem::take(&mut self.flow);
+        let left_report = self.report.clone();
+        self.names = names;
+        self.argv = argv;
+        self.sockets = sockets;
+        self.servers = servers;
+        self.handlers = handlers;
+        self.report = report.clone();
+        if let Some(alternative) = node.child_by_field_name("alternative") {
+            if alternative.kind() != "else_clause" {
+                return Err("unsupported Python conditional alternative".into());
+            }
+            self.block(field(alternative, "body")?)?;
+        }
+        if left_sockets != self.sockets
+            || left_servers != self.servers
+            || left_handlers != self.handlers
+        {
+            return Err("Python conditional object state cannot be joined".into());
+        }
+        self.report
+            .effects
+            .extend_from_slice(&left_report.effects[report.effects.len()..]);
+        self.report
+            .inputs
+            .extend_from_slice(&left_report.inputs[report.inputs.len()..]);
+        for module in left_report.imports {
+            if !self.report.imports.contains(&module) {
+                self.report.imports.push(module);
+            }
+        }
+        self.input_budget()?;
+        self.report.stdout_complete = false;
+        self.report.stdout.clear();
+        let right_flow = std::mem::take(&mut self.flow);
+        match (left_flow, right_flow) {
+            (Flow::Continue, Flow::Continue) => {
+                for name in left_names
+                    .keys()
+                    .chain(self.names.keys())
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+                {
+                    let value = join(left_names.get(&name), self.names.get(&name));
+                    self.names.insert(name, value);
+                }
+                self.argv = join(Some(&left_argv), Some(&self.argv));
+            }
+            (Flow::Return(_), Flow::Continue) => {}
+            (Flow::Continue, Flow::Return(_)) => {
+                self.names = left_names;
+                self.argv = left_argv;
+            }
+            (Flow::Return(left), Flow::Return(right)) => {
+                self.flow = Flow::Return(join(Some(&left), Some(&right)));
+            }
+        }
+        if self.names.values().map(value_size).sum::<usize>() > 1_048_576 {
+            return Err("Python binding budget exceeded".into());
+        }
+        Ok(())
+    }
+}
+
+fn join(left: Option<&Value>, right: Option<&Value>) -> Value {
+    match (left, right) {
+        (None, _) | (_, None) | (Some(Value::Unbound), _) | (_, Some(Value::Unbound)) => {
+            Value::Unbound
+        }
+        (Some(a), Some(b)) if a == b => a.clone(),
+        (
+            Some(Value::Text(_) | Value::Unknown(UnknownValue::Text)),
+            Some(Value::Text(_) | Value::Unknown(UnknownValue::Text)),
+        ) => Value::Unknown(UnknownValue::Text),
+        (
+            Some(Value::Bytes(_) | Value::Unknown(UnknownValue::Bytes)),
+            Some(Value::Bytes(_) | Value::Unknown(UnknownValue::Bytes)),
+        ) => Value::Unknown(UnknownValue::Bytes),
+        (
+            Some(Value::Int(_) | Value::Unknown(UnknownValue::Integer)),
+            Some(Value::Int(_) | Value::Unknown(UnknownValue::Integer)),
+        ) => Value::Unknown(UnknownValue::Integer),
+        _ => Value::Unknown(UnknownValue::Object),
     }
 }
 

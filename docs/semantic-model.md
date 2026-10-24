@@ -2951,6 +2951,33 @@ Search declarations have
 unique identifiers, at most 16 searches and 32 sources per search; suffixes are
 nonempty relative paths without parent traversal.
 
+## Bounded Python programs and scalar output routes
+
+The Python adapter interprets a bounded AST using supplied argv, environment
+and file bytes. Native child argv re-enters ordinary Profile binding; shell
+children enter the POSIX shell frontier. Unsupported syntax or unknown effect
+targets retain a language gap. Python 3 `-I -S` remains the supported startup
+contract; ordinary startup needs separate runtime and module-origin evidence.
+
+HTTP handlers directly inheriting the declared `BaseHTTPRequestHandler`
+contract are analyzed method by method. `HTTPServer` construction declares a
+listener, `handle_request` checks every possible request method and logging
+hook, and `server_close` updates shared handle state. Request fields remain
+unknown. Conditional branches join values and possible effects; returns end
+the corresponding path. Framework overrides, dynamic signatures, and handler
+changes to shared process/service state retain gaps. File inputs and listener
+responses enter the existing provenance and network policies.
+
+Scalar Bash words are decomposed by the shell grammar into literal text,
+quoted scalar parameters and quoted command substitutions. At most eight
+complete, read-only Python producers can supply a command's scalar fields.
+Prefixes, suffixes, empty fields and internal newlines survive; only trailing
+newlines from each producer are removed. Output is spliced as argv data, never
+parsed or expanded again. Every sibling producer must satisfy the contract;
+unknown output, NUL, unquoted splitting, process substitutions and side-effecting
+parameter operators do not receive an exact-field proof. Original source spans
+and producer input evidence remain available to provenance consumers.
+
 ## Further Reading
 
 - [How Caushell works](how-it-works.md)

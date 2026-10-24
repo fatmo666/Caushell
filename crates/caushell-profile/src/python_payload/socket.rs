@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Socket {
     address: Option<(String, u16)>,
     listening: bool,

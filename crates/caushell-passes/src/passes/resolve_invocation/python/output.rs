@@ -1,7 +1,6 @@
 use super::*;
 
-/// A single quoted substitution is one argv field. Its source AST remains
-/// available for child analysis and provenance; output bytes are never parsed.
+/// Quoted producer output remains data within the original scalar argv word.
 pub(in crate::passes::resolve_invocation) fn materialize_outputs(
     registry: &ProfileRegistry,
     session: SessionView<'_>,
@@ -11,8 +10,8 @@ pub(in crate::passes::resolve_invocation) fn materialize_outputs(
     max_depth: u8,
     ctx: &mut RunnerContext,
 ) {
-    let outcome = output_field(registry, session, request, entry, context, max_depth);
-    if let Some((command, proof)) = outcome {
+    let outcome = output_fields(registry, session, request, entry, context, max_depth);
+    if let Some((command, proofs)) = outcome {
         entry.result = resolve_invocation_artifact_with_bindings(
             registry,
             &command,
@@ -23,15 +22,17 @@ pub(in crate::passes::resolve_invocation) fn materialize_outputs(
             ),
             &entry.bindings,
         );
-        ctx.add_evidence(Evidence {
-            rule_id: caushell_types::RuleId::NestedPayloadExpansion,
-            summary: "Python stdout materialized as argv data".into(),
-            kind: EvidenceKind::PythonStdoutField(proof),
-        });
+        for proof in proofs {
+            ctx.add_evidence(Evidence {
+                rule_id: caushell_types::RuleId::NestedPayloadExpansion,
+                summary: "Python stdout materialized as argv data".into(),
+                kind: EvidenceKind::PythonStdoutField(proof),
+            });
+        }
     }
 }
 
-fn output_field(
+fn output_fields(
     registry: &ProfileRegistry,
     session: SessionView<'_>,
     request: &CheckRequest,
@@ -40,7 +41,7 @@ fn output_field(
     max_depth: u8,
 ) -> Option<(
     caushell_parse::CommandFact,
-    caushell_types::PythonStdoutFieldEvidence,
+    Vec<caushell_types::PythonStdoutFieldEvidence>,
 )> {
     if entry.depth.saturating_add(2) > max_depth
         || entry.inherited_scope.static_input_cwd_unproven
@@ -52,12 +53,20 @@ fn output_field(
         .parsed_scope
         .commands
         .get(entry.command_ref.command_index)?;
-    if original
+    let count = original
         .tokens
         .iter()
         .map(|t| t.command_substitutions.len())
-        .sum::<usize>()
-        != 1
+        .sum::<usize>();
+    if !(1..=8).contains(&count)
+        || original.text.len() > 65_536
+        || !caushell_parse::parse_process_substitutions(&original.text, entry.shell_kind)
+            .ok()?
+            .is_empty()
+        || caushell_parse::parse_command_substitutions(&original.text, entry.shell_kind)
+            .ok()?
+            .len()
+            != count
         || original
             .prefix_assignments
             .iter()
@@ -79,15 +88,114 @@ fn output_field(
     {
         return None;
     }
-    let (index, token) = original
-        .tokens
-        .iter()
-        .enumerate()
-        .find(|(_, t)| !t.command_substitutions.is_empty())?;
-    let substitution = &token.command_substitutions[0];
-    if !token.quoted || token.text != substitution.text || token.runtime_data {
-        return None;
+    let mut projected = original.clone();
+    let mut proofs = Vec::new();
+    let mut output_bytes = 0usize;
+    for (index, token) in original.tokens.iter().enumerate() {
+        if token.command_substitutions.is_empty() {
+            continue;
+        }
+        if token.runtime_data {
+            return None;
+        }
+        let parts = if entry.shell_kind == caushell_types::ShellKind::Bash {
+            caushell_parse::scalar_argument_parts(&token.text, token.quoted, &token.node_kind)?
+        } else if token.quoted
+            && token.command_substitutions.len() == 1
+            && token.text == token.command_substitutions[0].text
+        {
+            vec![caushell_parse::ScalarArgumentPart::CommandSubstitution(
+                token.text.clone(),
+            )]
+        } else {
+            return None;
+        };
+        let mut substitutions = token.command_substitutions.iter();
+        let mut value = String::new();
+        let start = proofs.len();
+        for part in parts {
+            match part {
+                caushell_parse::ScalarArgumentPart::Literal(text) => value.push_str(&text),
+                caushell_parse::ScalarArgumentPart::Parameter(text) => {
+                    value.push_str(
+                        &caushell_profile::exact_scalar_shell_parameter_reference_value(
+                            &text,
+                            &entry.bindings,
+                        )?,
+                    );
+                }
+                caushell_parse::ScalarArgumentPart::CommandSubstitution(text) => {
+                    let substitution = substitutions.next()?;
+                    if substitution.text != text {
+                        return None;
+                    }
+                    let report =
+                        producer_output(registry, session, request, entry, context, substitution)?;
+                    value.push_str(
+                        std::str::from_utf8(&report.stdout)
+                            .ok()?
+                            .trim_end_matches('\n'),
+                    );
+                    proofs.push(caushell_types::PythonStdoutFieldEvidence {
+                        node_id: entry.source_node_id.0.clone(),
+                        argument_index: index,
+                        expression: substitution.text.clone(),
+                        stdout: report.stdout,
+                        value: String::new(),
+                        inputs: report
+                            .inputs
+                            .into_iter()
+                            .map(|i| match i {
+                                PythonInput::Environment { name, value } => {
+                                    PythonPayloadInputEvidence::Environment { name, value }
+                                }
+                                PythonInput::File { path, bytes } => {
+                                    PythonPayloadInputEvidence::File { path, bytes }
+                                }
+                            })
+                            .collect(),
+                    });
+                }
+            }
+            if value.len() > 262_144 {
+                return None;
+            }
+        }
+        if substitutions.next().is_some() || value.contains('\0') {
+            return None;
+        }
+        output_bytes = output_bytes.checked_add(value.len())?;
+        if output_bytes > 1_048_576 {
+            return None;
+        }
+        for proof in &mut proofs[start..] {
+            proof.value = value.clone();
+        }
+        let field = &mut projected.tokens[index];
+        field.text = value.clone();
+        field.runtime_data = true;
+        field.quoted = true;
+        field.node_kind = "python_stdout".into();
+        field.command_substitutions.clear();
+        field.kind = if value == "--" {
+            caushell_parse::CommandTokenKind::DashDash
+        } else if value.starts_with('-') && value.len() > 1 {
+            caushell_parse::CommandTokenKind::Flag
+        } else {
+            caushell_parse::CommandTokenKind::Arg
+        };
     }
+    Some((projected, proofs))
+}
+
+fn producer_output(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    context: &ProgramSourceContext,
+    substitution: &caushell_parse::CommandSubstitutionFact,
+) -> Option<caushell_profile::PythonAnalysis> {
     let body = caushell_parse::parse_command(&substitution.body_text, entry.shell_kind).ok()?;
     if body.status != caushell_parse::ParseStatus::Complete
         || body.commands.len() != 1
@@ -197,43 +305,5 @@ fn output_field(
     {
         return None;
     }
-    let value = String::from_utf8(report.stdout.clone())
-        .ok()?
-        .trim_end_matches('\n')
-        .to_owned();
-    let mut projected = original.clone();
-    let field = &mut projected.tokens[index];
-    field.text = value.clone();
-    field.runtime_data = true;
-    field.node_kind = "python_stdout".into();
-    field.command_substitutions.clear();
-    field.kind = if value == "--" {
-        caushell_parse::CommandTokenKind::DashDash
-    } else if value.starts_with('-') && value.len() > 1 {
-        caushell_parse::CommandTokenKind::Flag
-    } else {
-        caushell_parse::CommandTokenKind::Arg
-    };
-    Some((
-        projected,
-        caushell_types::PythonStdoutFieldEvidence {
-            node_id: entry.source_node_id.0.clone(),
-            argument_index: index,
-            expression: substitution.text.clone(),
-            stdout: report.stdout,
-            value,
-            inputs: report
-                .inputs
-                .into_iter()
-                .map(|i| match i {
-                    PythonInput::Environment { name, value } => {
-                        PythonPayloadInputEvidence::Environment { name, value }
-                    }
-                    PythonInput::File { path, bytes } => {
-                        PythonPayloadInputEvidence::File { path, bytes }
-                    }
-                })
-                .collect(),
-        },
-    ))
+    Some(report)
 }

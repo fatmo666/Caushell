@@ -378,6 +378,115 @@ pub fn concatenated_argument_is_scalar(text: &str) -> bool {
         && with_single_argument(text, |node, source| Some(scalar(node, source))).unwrap_or(false)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScalarArgumentPart {
+    Literal(String),
+    Parameter(String),
+    CommandSubstitution(String),
+}
+
+/// Decompose one scalar Bash word without evaluating its expansion values.
+/// Dynamic parts must be double-quoted; static concatenated parts retain the
+/// grammar's quote removal. Parameters are limited to plain scalar names.
+pub fn scalar_argument_parts(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+) -> Option<Vec<ScalarArgumentPart>> {
+    fn parameter(text: &str) -> bool {
+        let name = text
+            .strip_prefix("${")
+            .and_then(|s| s.strip_suffix('}'))
+            .or_else(|| text.strip_prefix('$'));
+        name.is_some_and(|name| {
+            let mut bytes = name.bytes();
+            bytes
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        })
+    }
+    fn parts(
+        node: Node<'_>,
+        source: &[u8],
+        out: &mut Vec<ScalarArgumentPart>,
+        budget: &mut usize,
+    ) -> Option<()> {
+        *budget = budget.checked_sub(1)?;
+        match node.kind() {
+            "concatenation" => {
+                if unquoted_braces_may_expand(node.utf8_text(source).ok()?) {
+                    return None;
+                }
+                let mut cursor = node.start_byte();
+                for i in 0..node.named_child_count() {
+                    let child = node.named_child(i as u32)?;
+                    if child.start_byte() != cursor {
+                        return None;
+                    }
+                    parts(child, source, out, budget)?;
+                    cursor = child.end_byte();
+                }
+                if cursor != node.end_byte() {
+                    return None;
+                }
+            }
+            "string" => {
+                let mut cursor = node.start_byte() + 1;
+                let end = node.end_byte().checked_sub(1)?;
+                for i in 0..node.named_child_count() {
+                    *budget = budget.checked_sub(1)?;
+                    let child = node.named_child(i as u32)?;
+                    if child.start_byte() < cursor || child.end_byte() > end {
+                        return None;
+                    }
+                    let gap = std::str::from_utf8(source.get(cursor..child.start_byte())?).ok()?;
+                    out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
+                        gap, true, "string",
+                    )?));
+                    let text = child.utf8_text(source).ok()?;
+                    out.push(match child.kind() {
+                        "command_substitution" => {
+                            ScalarArgumentPart::CommandSubstitution(text.into())
+                        }
+                        "simple_expansion" | "expansion" if parameter(text) => {
+                            ScalarArgumentPart::Parameter(text.into())
+                        }
+                        "string_content" | "escape_sequence" => ScalarArgumentPart::Literal(
+                            decode_static_shell_argument(text, true, "string")?,
+                        ),
+                        _ => return None,
+                    });
+                    cursor = child.end_byte();
+                }
+                let tail = std::str::from_utf8(source.get(cursor..end)?).ok()?;
+                out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
+                    tail, true, "string",
+                )?));
+            }
+            _ => out.push(ScalarArgumentPart::Literal(decode_static_word_node(
+                node, source,
+            )?)),
+        }
+        Some(())
+    }
+    if text.len() > 65_536 {
+        return None;
+    }
+    let source = if quoted && node_kind == "string" {
+        format!("\"{text}\"")
+    } else if matches!(node_kind, "concatenation" | "word") {
+        text.to_owned()
+    } else {
+        return None;
+    };
+    with_single_argument(&source, |node, source| {
+        let mut out = Vec::new();
+        parts(node, source, &mut out, &mut 256)?;
+        Some(out)
+    })
+}
+
 pub fn parse_command(
     raw_command: &str,
     shell_kind: ShellKind,

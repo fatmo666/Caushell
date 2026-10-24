@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use tree_sitter::{Node, Parser};
 
 mod control;
+mod http;
 mod socket;
 
 const SOURCE_LIMIT: usize = 65_536;
@@ -55,6 +56,11 @@ enum Value {
     Dictionary(Vec<(Value, Value)>),
     Socket(usize),
     Unknown(UnknownValue),
+    Unbound,
+    HandlerClass(usize),
+    HttpServer(usize),
+    HttpRequest(usize),
+    ResponseWriter(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +69,15 @@ enum UnknownValue {
     Integer,
     Text,
     Boolean,
+    Sequence,
+    Object,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum Flow {
+    #[default]
+    Continue,
+    Return(Value),
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -132,6 +147,11 @@ pub fn analyze_python(
         steps: 0,
         statement_depth: 0,
         sockets: Vec::new(),
+        tree: None,
+        handlers: Vec::new(),
+        servers: Vec::new(),
+        flow: Flow::Continue,
+        function_depth: 0,
         report: PythonAnalysis {
             stdout_complete: true,
             ..PythonAnalysis::default()
@@ -159,6 +179,7 @@ pub fn analyze_python(
         if root.has_error() {
             return Err("invalid Python syntax".into());
         }
+        engine.tree = Some(tree.clone());
         for statement in named(root) {
             engine.statement(statement)?;
         }
@@ -186,6 +207,11 @@ struct Engine<'a> {
     statement_depth: usize,
     report: PythonAnalysis,
     sockets: Vec<socket::Socket>,
+    tree: Option<tree_sitter::Tree>,
+    handlers: Vec<http::HandlerClass>,
+    servers: Vec<http::HttpServer>,
+    flow: Flow,
+    function_depth: usize,
 }
 
 fn named(node: Node<'_>) -> Vec<Node<'_>> {
@@ -272,6 +298,9 @@ impl Engine<'_> {
         }
     }
     fn statement(&mut self, node: Node<'_>) -> Result<()> {
+        if self.flow != Flow::Continue {
+            return Ok(());
+        }
         self.step()?;
         if self.statement_depth >= 48 {
             return Err("Python statement depth exceeded".into());
@@ -324,7 +353,9 @@ impl Engine<'_> {
                     };
                     if !matches!(
                         (name.as_str(), member.as_str()),
-                        ("pathlib", "Path") | ("urllib.parse", "quote_from_bytes")
+                        ("pathlib", "Path")
+                            | ("urllib.parse", "quote_from_bytes")
+                            | ("http.server", "HTTPServer" | "BaseHTTPRequestHandler")
                     ) {
                         return Err(format!("unsupported Python import {name}.{member}"));
                     }
@@ -350,6 +381,17 @@ impl Engine<'_> {
                 Ok(())
             }
             "pass_statement" => Ok(()),
+            "class_definition" => self.define_handler(node),
+            "return_statement" if self.function_depth > 0 => {
+                let children = named(node);
+                let value = match children.as_slice() {
+                    [] => Value::None,
+                    [value] => self.eval(*value, 0)?,
+                    _ => return Err("unsupported Python return value".into()),
+                };
+                self.flow = Flow::Return(value);
+                Ok(())
+            }
             "assert_statement" | "for_statement" | "if_statement" => self.control(node),
             _ => Err(format!(
                 "unsupported Python statement {} at byte {}",
@@ -369,7 +411,13 @@ impl Engine<'_> {
         }
         if !matches!(
             name,
-            "os" | "sys" | "pathlib" | "subprocess" | "urllib.parse" | "socket" | "json"
+            "os" | "sys"
+                | "pathlib"
+                | "subprocess"
+                | "urllib.parse"
+                | "socket"
+                | "json"
+                | "http.server"
         ) {
             return Err(format!("unsupported Python module {name}"));
         }
@@ -431,12 +479,22 @@ impl Engine<'_> {
             "true" => Value::Bool(true),
             "false" => Value::Bool(false),
             "none" => Value::None,
-            "identifier" => self
-                .names
-                .get(self.raw(node))
-                .cloned()
-                .ok_or_else(|| format!("unknown Python name {}", self.raw(node)))?,
+            "identifier" => match self.names.get(self.raw(node)) {
+                Some(Value::Unbound) => {
+                    return Err(format!("unbound Python local {}", self.raw(node)));
+                }
+                Some(value) => value.clone(),
+                None => return Err(format!("unknown Python name {}", self.raw(node))),
+            },
             "attribute" => {
+                let object = self.eval(field(node, "object")?, depth + 1)?;
+                let attribute = self.raw(field(node, "attribute")?).to_owned();
+                if matches!(
+                    object,
+                    Value::HttpServer(_) | Value::HttpRequest(_) | Value::ResponseWriter(_)
+                ) {
+                    return self.http_attribute(object, &attribute);
+                }
                 let symbol = self.symbol(node)?;
                 if symbol == "sys.argv" {
                     self.argv.clone()
@@ -454,6 +512,9 @@ impl Engine<'_> {
                         | "socket.SO_REUSEADDR"
                         | "json.dumps"
                         | "os.getpid"
+                        | "http.server"
+                        | "http.server.HTTPServer"
+                        | "http.server.BaseHTTPRequestHandler"
                 ) {
                     Value::Symbol(symbol)
                 } else {
@@ -644,6 +705,7 @@ impl Engine<'_> {
             }
         }
         let result = match symbol.as_deref() {
+            Some("http.server.HTTPServer") => self.new_http_server(args, kwargs)?,
             Some("socket.socket") => self.new_socket(args, kwargs)?,
             Some("os.getpid") if args.is_empty() && kwargs.is_empty() => {
                 Value::Unknown(UnknownValue::Integer)
@@ -791,6 +853,12 @@ impl Engine<'_> {
                 let object = receiver.ok_or("missing Python method receiver")?;
                 let method = self.raw(field(function, "attribute")?).to_owned();
                 match (object, method.as_str()) {
+                    (
+                        object @ (Value::HttpServer(_)
+                        | Value::HttpRequest(_)
+                        | Value::ResponseWriter(_)),
+                        method,
+                    ) => self.http_call(object, method, args, kwargs)?,
                     (Value::Socket(id), method) => self.socket_call(id, method, args, kwargs)?,
                     (Value::Path(path), "read_bytes") if args.is_empty() && kwargs.is_empty() => {
                         self.input_budget()?;

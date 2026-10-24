@@ -443,3 +443,176 @@ fn python_functions_and_native_callbacks_share_the_language_adapter() {
         assert_eq!(r.decision, expected, "{:?}", r.decision_trace);
     }
 }
+
+#[test]
+fn python_http_handlers_use_shared_listener_response_and_child_policies() {
+    for (host, extra, decision) in [
+        ("127.0.0.2", "pass", Decision::Allow),
+        ("0.0.0.0", "pass", Decision::NeedApproval),
+        (
+            "127.0.0.2",
+            "subprocess.run([\"touch\",\"/outside/extra\"])",
+            Decision::NeedApproval,
+        ),
+        (
+            "127.0.0.2",
+            "subprocess.run([\"rm\",\"-rf\",\"/\"])",
+            Decision::Deny,
+        ),
+    ] {
+        let source = format!(
+            "from http.server import HTTPServer,BaseHTTPRequestHandler\nfrom pathlib import Path\nimport subprocess\nbody=Path(\"/workspace/body\").read_bytes()\nclass Handler(BaseHTTPRequestHandler):\n    def do_GET(self):\n        if self.path != \"/item\":\n            self.send_error(404)\n            return\n        self.send_response(200)\n        self.send_header(\"Content-Length\",str(len(body)))\n        self.end_headers()\n        self.wfile.write(body)\n    def do_POST(self):\n        {extra}\n    def log_message(self,*args):\n        pass\nserver=HTTPServer((\"{host}\",19232),Handler)\nserver.timeout=3\nfor _ in range(2):\n    server.handle_request()\nserver.server_close()"
+        );
+        let r = check(&format!(
+            "printf body > /workspace/body; python3 -I -S -c '{source}'"
+        ));
+        assert!(proof(&r).complete, "{source}: {:?}", proof(&r));
+        assert_eq!(r.decision, decision, "{source}: {:?}", r.decision_trace);
+        assert!(proof(&r).inputs.iter().any(
+            |i| matches!(i,PythonPayloadInputEvidence::File {path,..} if path=="/workspace/body")
+        ));
+        assert!(!proof(&r).stdout_complete);
+    }
+}
+
+#[test]
+fn unsupported_http_dispatch_and_request_paths_never_pass_as_complete() {
+    for method in [
+        "    def do_GET(self):\n        if self.path == \"/hidden\":\n            unknown_call()",
+        "    def do_GET(self):\n        self.wfile.write(Path(self.path).read_bytes())",
+        "    def do_GET(self):\n        pass\n    def log_message(self,*args):\n        unknown_call()",
+        "    def setup(self):\n        pass",
+    ] {
+        let source = format!(
+            "from http.server import HTTPServer,BaseHTTPRequestHandler\nfrom pathlib import Path\nclass Handler(BaseHTTPRequestHandler):\n{method}\nserver=HTTPServer((\"127.0.0.1\",19233),Handler)\nserver.handle_request()\nserver.server_close()"
+        );
+        let r = check(&format!("python3 -I -S -c '{source}'"));
+        assert!(!proof(&r).complete, "{source}: {:?}", proof(&r));
+        assert_eq!(
+            r.decision,
+            Decision::NeedApproval,
+            "{source}: {:?}",
+            r.decision_trace
+        );
+    }
+}
+
+#[test]
+fn scalar_stdout_routes_keep_prefix_suffix_parameters_and_multiple_producers() {
+    for (command, values, decision) in [
+        (
+            "touch -- \"/workspace/pre-$(python3 -I -S -c 'print(\"a b\")')-post\"",
+            vec!["/workspace/pre-a b-post"],
+            Decision::Allow,
+        ),
+        (
+            "ROOT=/outside; touch -- \"${ROOT}/$(python3 -I -S -c 'print(\"out\")')\"",
+            vec!["/outside/out"],
+            Decision::NeedApproval,
+        ),
+        (
+            "touch -- \"${ABSENT}/$(python3 -I -S -c 'print(\"file\")')\"",
+            vec!["/file"],
+            Decision::NeedApproval,
+        ),
+        (
+            "ROOT=/outside; ROOT=/workspace touch -- \"${ROOT}/$(python3 -I -S -c 'print(\"out\")')\"",
+            vec!["/outside/out"],
+            Decision::NeedApproval,
+        ),
+        (
+            "touch -- /workspace/\"$(python3 -I -S -c 'print(\"a\\n\")')\"'-'\"$(python3 -I -S -c 'print(\"b\")')\"",
+            vec!["/workspace/a-b", "/workspace/a-b"],
+            Decision::Allow,
+        ),
+        (
+            "touch -- \"$(python3 -I -S -c 'print(\"/workspace/a\")')\" \"$(python3 -I -S -c 'print(\"/outside/b\")')\"",
+            vec!["/workspace/a", "/outside/b"],
+            Decision::NeedApproval,
+        ),
+        (
+            "touch -- \"/workspace/$(python3 -I -S -c 'print(\"$HOME $(rm -rf /) `whoami`\")')\"",
+            vec!["/workspace/$HOME $(rm -rf /) `whoami`"],
+            Decision::Allow,
+        ),
+    ] {
+        let r = check(command);
+        let fields = r
+            .decision_trace
+            .evidence
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EvidenceKind::PythonStdoutField(p) => Some(p.value.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fields, values, "{command}: {:?}", r.decision_trace);
+        assert_eq!(r.decision, decision, "{command}: {:?}", r.decision_trace);
+        assert!(
+            !r.decision_trace
+                .execution_semantics
+                .iter()
+                .any(|s| matches!(s.normalized_command_name.as_str(), "rm" | "whoami"))
+        );
+    }
+}
+
+#[test]
+fn scalar_stdout_routes_require_all_sibling_producers_and_original_fields_to_be_known() {
+    for command in [
+        "ROOT=$(unknown-tool); touch -- \"${ROOT}/$(python3 -I -S -c 'print(\"file\")')\"",
+        "touch -- \"${ROOT:=/workspace}/$(python3 -I -S -c 'print(\"file\")')\"",
+        "touch -- \"$(python3 -I -S -c 'print(\"/workspace/a\")')-$(unknown-tool)\"",
+        "touch -- \"$(python3 -I -S -c 'print(\"/workspace/a\")')\" <(touch /workspace/other)",
+        "touch -- \"$(python3 -I -S -c 'print(\"/workspace/a\")')\" > \"$(unknown-tool)\"",
+        "touch -- \"$(python3 -I -S -c 'print(\"/workspace/a\")')\" \"$(python3 -I -S -c 'import subprocess; subprocess.run([\"touch\",\"/workspace/other\"])')\"",
+        "touch -- /workspace/$(python3 -I -S -c 'print(\"a b\")')",
+    ] {
+        let r = check(command);
+        assert!(
+            !r.decision_trace
+                .evidence
+                .iter()
+                .any(|e| matches!(e.kind, EvidenceKind::PythonStdoutField(_))),
+            "{command}: {:?}",
+            r.decision_trace
+        );
+    }
+}
+
+#[test]
+fn uri_encoded_stdout_reaches_the_original_endpoint_with_file_dependencies() {
+    for (options, decision) in [("", Decision::NeedApproval), ("-q ", Decision::Allow)] {
+        let command = format!(
+            "printf 'a b' > /workspace/body; DEST=127.0.0.1; curl {options}--fail -- \"gopher://${{DEST}}:19234/_$(python3 -I -S -c 'from pathlib import Path; from urllib.parse import quote_from_bytes; print(quote_from_bytes(Path(\"/workspace/body\").read_bytes(),safe=\"\"))')\""
+        );
+        let r = check(&command);
+        let field = r
+            .decision_trace
+            .evidence
+            .iter()
+            .find_map(|e| match &e.kind {
+                EvidenceKind::PythonStdoutField(p) => Some(p),
+                _ => None,
+            })
+            .expect("materialized endpoint");
+        assert_eq!(field.value, "gopher://127.0.0.1:19234/_a%20b");
+        assert!(field.inputs.iter().any(|i|matches!(i,PythonPayloadInputEvidence::File {path,bytes} if path=="/workspace/body" && bytes==b"a b")));
+        assert_eq!(r.decision, decision, "{:?}", r.decision_trace);
+    }
+}
+
+#[test]
+fn compound_stdout_fields_do_not_borrow_bash_quote_rules_for_zsh() {
+    let mut req = request("touch -- /workspace/'a''b'\"$(python3 -I -S -c 'print(\"out\")')\"");
+    req.shell_kind = ShellKind::Zsh;
+    let r = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(Files))
+        .check(req);
+    assert!(
+        !r.decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(e.kind, EvidenceKind::PythonStdoutField(_)))
+    );
+}
