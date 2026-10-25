@@ -65,7 +65,8 @@ impl SessionAnalysisPass for NetworkUploadGuardPass {
             endpoint.usage == ProvenanceEndpointUsage::UploadTarget
                 || endpoint.input_scope.is_some()
         })
-        .filter(|endpoint| !endpoint.has_loopback_scope()
+        .filter(|endpoint| !crate::support::resource::endpoint_is_loopback(ctx,
+            endpoint.execution_node_id, endpoint.endpoint, endpoint.kind)
             || NetworkEndpointQuery::has_nonlocal_transport_target(staged.graph(), endpoint.execution_node_id))
         .filter_map(|endpoint| {
             let key = (

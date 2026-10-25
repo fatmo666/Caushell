@@ -37,6 +37,18 @@ fn arbitrary_tool_names_follow_typed_effects_and_consumer_scoped_resources() {
             Duration::from_secs(60),
         )
         .unwrap();
+    let _route = registry
+        .bind_route(
+            ResourceRoute {
+                route_id: "result-name".into(),
+                resource: instance.instance().clone(),
+                owner: owner.clone(),
+                endpoint: "http://reports.internal:18891/results".into(),
+                target: "http://127.0.0.1:18891/results".into(),
+            },
+            Duration::from_secs(60),
+        )
+        .unwrap();
     for name in ["arbitrary-client", "renamed-client"] {
         let profile = load_command_profile_from_str(&format!(r#"
 dsl_version: caushell.profile/v1alpha1
@@ -59,10 +71,16 @@ forms:
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractEndpointProvenancePass);
         runner.register_session_analysis_pass(StateOperationGuardPass);
+        runner.register_session_analysis_pass(NetworkUploadGuardPass);
         runner.register_session_analysis_pass(ResolvePolicyPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
         for (tail, expected) in [
             ("http://127.0.0.1:18891/results", Decision::Allow),
+            ("http://reports.internal:18891/results", Decision::Allow),
+            (
+                "http://unknown.internal:18891/results",
+                Decision::NeedApproval,
+            ),
             (
                 "http://127.0.0.1:18891/results http://127.0.0.1:18891/admin",
                 Decision::NeedApproval,

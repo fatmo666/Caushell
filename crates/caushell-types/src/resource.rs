@@ -42,4 +42,8 @@ pub struct ResourceTargetEvidence {
     pub generation: Option<u64>,
     pub namespace_id: Option<String>,
     pub grant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_endpoint: Option<String>,
 }

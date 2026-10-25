@@ -1,4 +1,7 @@
-use caushell_query::{canonical_resource_endpoint, canonical_resource_origin};
+use caushell_query::{
+    canonical_resource_endpoint, canonical_resource_named_endpoint,
+    canonical_resource_named_origin, canonical_resource_origin,
+};
 use caushell_types::{
     ExecutionFrameBinding, SessionId, StateOperation, StateOperationDomain, StateOperationKind,
 };
@@ -95,6 +98,23 @@ pub struct ResourcePermission {
     pub operation: StateOperationKind,
 }
 
+/// The owning host pins this name-to-instance route through execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRoute {
+    pub route_id: String,
+    pub resource: ResourceInstanceRef,
+    pub owner: ResourceOwner,
+    pub endpoint: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceResolution {
+    pub instance: ResourceInstanceRef,
+    pub endpoint: String,
+    pub route_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct Instance {
     fact: ManagedResource,
@@ -105,6 +125,13 @@ struct Instance {
 #[derive(Debug, Clone)]
 struct Grant {
     permission: ResourcePermission,
+    expires: Instant,
+    revision: u64,
+}
+#[derive(Debug, Clone)]
+struct Route {
+    fact: ResourceRoute,
+    scope: ResourceLocatorScope,
     expires: Instant,
     revision: u64,
 }
@@ -121,6 +148,7 @@ struct Registry {
     exhausted: bool,
     instances: BTreeMap<String, Instance>,
     grants: BTreeMap<String, Grant>,
+    routes: BTreeMap<String, Route>,
     checks: BTreeMap<u64, AdmittedCheck>,
 }
 
@@ -138,6 +166,11 @@ pub struct ResourceGrant {
     grant_id: String,
     revision: u64,
 }
+pub struct ResourceRouteRegistration {
+    registry: ManagedResourceRegistry,
+    route_id: String,
+    revision: u64,
+}
 pub struct ResourceCheckAdmission {
     registry: ManagedResourceRegistry,
     id: u64,
@@ -151,6 +184,7 @@ pub struct ResourceAuthoritySnapshot {
     revision: u64,
     instances: Vec<Instance>,
     grants: Vec<Grant>,
+    routes: Vec<Route>,
     expires: Instant,
 }
 
@@ -367,6 +401,82 @@ impl ManagedResourceRegistry {
         })
     }
 
+    pub fn bind_route(
+        &self,
+        mut fact: ResourceRoute,
+        lifetime: Duration,
+    ) -> Result<ResourceRouteRegistration, String> {
+        let expires = expiry(lifetime)?;
+        if !identifier(&fact.route_id) || !fact.owner.valid() {
+            return Err("invalid resource route identity".into());
+        }
+        fact.endpoint = canonical_resource_named_endpoint(&fact.endpoint)
+            .ok_or("resource route requires an exact named HTTP(S) locator")?;
+        fact.target = canonical_resource_endpoint(&fact.target)
+            .ok_or("resource route target requires an exact numeric HTTP(S) locator")?;
+        if route_shape(&fact.endpoint) != route_shape(&fact.target) {
+            return Err("resource routes must preserve scheme, port and path".into());
+        }
+        let mut state = self
+            .inner
+            .write()
+            .map_err(|_| "resource registry unavailable")?;
+        if !Arc::ptr_eq(&state.identity, &fact.resource.authority) {
+            return Err("route belongs to another resource authority".into());
+        }
+        if state.routes.len() >= MAX_RECORDS || state.routes.contains_key(&fact.route_id) {
+            return Err("resource route already registered or registry full".into());
+        }
+        let instance = state
+            .instances
+            .get(&fact.resource.resource_id)
+            .filter(|i| {
+                same_instance(i, &fact.resource)
+                    && i.fact.owner == fact.owner
+                    && i.expires > Instant::now()
+            })
+            .ok_or("route does not name a live owned resource instance")?;
+        if !instance
+            .fact
+            .endpoints
+            .iter()
+            .any(|e| instance.scope.contains(e, &fact.target))
+            || instance.scope == ResourceLocatorScope::HttpOrigin
+                && canonical_resource_named_origin(&fact.endpoint).as_ref() != Some(&fact.endpoint)
+        {
+            return Err("resource route exceeds the registered locator scope".into());
+        }
+        let scope = instance.scope;
+        let expires = expires.min(instance.expires);
+        if state.routes.values().any(|route| {
+            route.fact.owner == fact.owner
+                && (canonical_resource_named_origin(&route.fact.endpoint)
+                    == canonical_resource_named_origin(&fact.endpoint)
+                    && canonical_resource_origin(&route.fact.target)
+                        != canonical_resource_origin(&fact.target)
+                    || named_contains(route.scope, &route.fact.endpoint, &fact.endpoint)
+                    || named_contains(scope, &fact.endpoint, &route.fact.endpoint))
+        }) {
+            return Err("resource name has a conflicting route".into());
+        }
+        let revision = next_revision(&mut state)?;
+        let route_id = fact.route_id.clone();
+        state.routes.insert(
+            route_id.clone(),
+            Route {
+                fact,
+                scope,
+                expires,
+                revision,
+            },
+        );
+        Ok(ResourceRouteRegistration {
+            registry: self.clone(),
+            route_id,
+            revision,
+        })
+    }
+
     /// The host keeps resource routes alive through execution, not just spawn.
     /// The callback must execute only the already checked request and wait for it.
     pub fn with_current_snapshot<T>(
@@ -416,10 +526,17 @@ impl ResourceAuthority for ManagedResourceRegistry {
             .filter(|g| g.permission.owner == check.owner && g.expires > now)
             .cloned()
             .collect();
+        let routes: Vec<_> = state
+            .routes
+            .values()
+            .filter(|r| r.fact.owner == check.owner && r.expires > now)
+            .cloned()
+            .collect();
         let expires = instances
             .iter()
             .map(|i| i.expires)
             .chain(grants.iter().map(|g| g.expires))
+            .chain(routes.iter().map(|r| r.expires))
             .chain(std::iter::once(check.expires))
             .min()
             .unwrap_or(now);
@@ -430,6 +547,7 @@ impl ResourceAuthority for ManagedResourceRegistry {
             revision: state.revision,
             instances,
             grants,
+            routes,
             expires,
         })
     }
@@ -452,11 +570,34 @@ impl ResourceAuthoritySnapshot {
     }
 
     pub fn resolve(&self, endpoint: &str) -> Option<ResourceInstanceRef> {
+        self.resolve_target(endpoint)
+            .map(|resolution| resolution.instance)
+    }
+
+    pub fn resolve_target(&self, endpoint: &str) -> Option<ResourceResolution> {
         let now = Instant::now();
         if self.expires <= now {
             return None;
         }
-        let endpoint = canonical_resource_endpoint(endpoint)?;
+        let (endpoint, route) = if let Some(endpoint) = canonical_resource_endpoint(endpoint) {
+            (endpoint, None)
+        } else {
+            let endpoint = canonical_resource_named_endpoint(endpoint)?;
+            let route = self.routes.iter().find(|r| {
+                r.expires > now
+                    && r.fact.owner.matches(&self.binding)
+                    && named_contains(r.scope, &r.fact.endpoint, &endpoint)
+            })?;
+            let translated = match route.scope {
+                ResourceLocatorScope::ExactEndpoint => route.fact.target.clone(),
+                ResourceLocatorScope::HttpOrigin => format!(
+                    "{}{}",
+                    route.fact.target,
+                    endpoint.strip_prefix(&route.fact.endpoint)?
+                ),
+            };
+            (translated, Some(route))
+        };
         let instance = self.instances.iter().find(|i| {
             i.expires > now
                 && i.fact.owner.matches(&self.binding)
@@ -464,13 +605,18 @@ impl ResourceAuthoritySnapshot {
                     .endpoints
                     .iter()
                     .any(|e| i.scope.contains(e, &endpoint))
+                && route.is_none_or(|r| same_instance(i, &r.fact.resource))
         })?;
-        Some(ResourceInstanceRef {
-            authority: self.identity.clone(),
-            resource_id: instance.fact.resource_id.clone(),
-            instance_id: instance.fact.instance_id.clone(),
-            generation: instance.generation,
-            namespace_id: instance.fact.owner.namespace_id.clone(),
+        Some(ResourceResolution {
+            instance: ResourceInstanceRef {
+                authority: self.identity.clone(),
+                resource_id: instance.fact.resource_id.clone(),
+                instance_id: instance.fact.instance_id.clone(),
+                generation: instance.generation,
+                namespace_id: instance.fact.owner.namespace_id.clone(),
+            },
+            endpoint,
+            route_id: route.map(|r| r.fact.route_id.clone()),
         })
     }
 
@@ -515,6 +661,7 @@ impl Drop for ResourceRegistration {
                 state
                     .grants
                     .retain(|_, g| g.permission.resource != self.instance);
+                state.routes.retain(|_, r| r.fact.resource != self.instance);
                 let _ = next_revision(&mut state);
             }
         }
@@ -535,6 +682,28 @@ impl Drop for ResourceGrant {
         }
     }
 }
+impl ResourceRouteRegistration {
+    pub fn route_id(&self) -> &str {
+        &self.route_id
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+impl Drop for ResourceRouteRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.registry.inner.write() {
+            if state
+                .routes
+                .get(&self.route_id)
+                .is_some_and(|r| r.revision == self.revision)
+            {
+                state.routes.remove(&self.route_id);
+                let _ = next_revision(&mut state);
+            }
+        }
+    }
+}
 impl Drop for ResourceCheckAdmission {
     fn drop(&mut self) {
         if let Ok(mut state) = self.registry.inner.write() {
@@ -547,6 +716,20 @@ impl Drop for ResourceCheckAdmission {
 
 fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+fn route_shape(endpoint: &str) -> Option<(&str, &str, &str)> {
+    let (scheme, rest) = endpoint.split_once("://")?;
+    let (authority, path) = rest.split_once('/')?;
+    let (_, port) = authority.rsplit_once(':')?;
+    Some((scheme, port, path))
+}
+fn named_contains(scope: ResourceLocatorScope, registered: &str, endpoint: &str) -> bool {
+    match scope {
+        ResourceLocatorScope::ExactEndpoint => registered == endpoint,
+        ResourceLocatorScope::HttpOrigin => {
+            canonical_resource_named_origin(endpoint).as_deref() == Some(registered)
+        }
+    }
 }
 fn expiry(lifetime: Duration) -> Result<Instant, String> {
     if lifetime.is_zero() || lifetime > MAX_LIFETIME {

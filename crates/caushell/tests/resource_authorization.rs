@@ -202,6 +202,14 @@ fn runtime_transport_persistence_and_owned_service_lifetimes_keep_authority_sepa
 
 #[test]
 fn tool_transport_cannot_register_resources_or_mint_grants() {
+    for kind in ["bind_resource_route", "unbind_resource_route"] {
+        assert!(
+            serde_json::from_value::<RuntimeTransportRequest>(
+                serde_json::json!({"kind":kind,"payload":{"route_id":"self-asserted"}})
+            )
+            .is_err()
+        );
+    }
     assert!(
         serde_json::from_value::<RuntimeTransportRequest>(
             serde_json::json!({"kind":"register_resource","payload":{"resource_id":"x"}})

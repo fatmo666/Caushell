@@ -218,6 +218,112 @@ fn exact_scope_does_not_trust_loopback_paths_names_or_dynamic_targets() {
 }
 
 #[test]
+fn host_bound_names_require_permission_and_do_not_override_other_policies() {
+    let registry = Arc::new(ManagedResourceRegistry::default());
+    let registration = register(&registry, "tls-reports", "https://127.0.0.1:18891/result");
+    let mut core = TestCore::new(&registry);
+    core.set_resource_authority(registry.clone());
+    let command = command("https://reports.internal:18891/result");
+    assert_eq!(
+        core.check(request(1, &command)).decision,
+        Decision::NeedApproval
+    );
+    let route = registry
+        .bind_route(
+            caushell_runner::ResourceRoute {
+                route_id: "reports-name".into(),
+                resource: registration.instance().clone(),
+                owner: owner(),
+                endpoint: "https://reports.internal:18891/result".into(),
+                target: "https://127.0.0.1:18891/result".into(),
+            },
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let bound = core.check(request(2, &command));
+    assert_eq!(bound.decision, Decision::NeedApproval);
+    assert_eq!(
+        proof(&bound).targets[0].route_id.as_deref(),
+        Some("reports-name")
+    );
+    assert!(proof(&bound).targets[0].grant_id.is_none());
+    let _grant = registry
+        .grant(permission(&registration, "upload"), Duration::from_secs(60))
+        .unwrap();
+    let allowed = core.check(request(3, &command));
+    assert_eq!(allowed.decision, Decision::Allow, "{allowed:#?}");
+    assert_eq!(
+        proof(&allowed).targets[0].resolved_endpoint.as_deref(),
+        Some("https://127.0.0.1:18891/result")
+    );
+    for (sequence, extra, expected) in [
+        (4, " --insecure", Decision::NeedApproval),
+        (5, "; python3 -c 'pass'", Decision::NeedApproval),
+        (6, "; perl -e 'print 1'", Decision::NeedApproval),
+        (7, "; rm -rf /", Decision::Deny),
+        (8, " --location", Decision::NeedApproval),
+        (
+            9,
+            " --resolve reports.internal:18891:127.0.0.2",
+            Decision::NeedApproval,
+        ),
+    ] {
+        assert_eq!(
+            core.check(request(sequence, &format!("{command}{extra}")))
+                .decision,
+            expected,
+            "{extra}"
+        );
+    }
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.rules.insert(
+        RuleId::StateMutation,
+        RulePolicyEntry::new(RuleAction::Deny),
+    );
+    core.replace_policy(policy);
+    assert_eq!(core.check(request(10, &command)).decision, Decision::Deny);
+    core.replace_policy(PolicyConfig::default());
+    drop(route);
+    assert_eq!(
+        core.check(request(11, &command)).decision,
+        Decision::NeedApproval
+    );
+}
+
+#[test]
+fn a_host_bound_localhost_name_does_not_make_a_nonlocal_service_local() {
+    let registry = Arc::new(ManagedResourceRegistry::default());
+    let registration = register(&registry, "nonlocal", "http://192.0.2.10:18891/result");
+    let _grant = registry
+        .grant(permission(&registration, "upload"), Duration::from_secs(60))
+        .unwrap();
+    let _route = registry
+        .bind_route(
+            caushell_runner::ResourceRoute {
+                route_id: "named-route".into(),
+                resource: registration.instance().clone(),
+                owner: owner(),
+                endpoint: "http://localhost:18891/result".into(),
+                target: "http://192.0.2.10:18891/result".into(),
+            },
+            Duration::from_secs(60),
+        )
+        .unwrap();
+    let mut core = TestCore::new(&registry);
+    core.set_resource_authority(registry);
+    let response = core.check(request(1, &command("http://localhost:18891/result")));
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(proof(&response).authorized);
+    assert!(
+        response
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::NetworkUpload)
+    );
+}
+
+#[test]
 fn all_targets_and_all_execution_units_need_their_own_authorization() {
     let registry = Arc::new(ManagedResourceRegistry::default());
     let a = register(&registry, "first", ENDPOINT);

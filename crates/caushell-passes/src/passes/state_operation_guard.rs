@@ -6,6 +6,7 @@ use caushell_types::{
 };
 
 use crate::support::decision_for_rule_action;
+use crate::support::resource::owner_namespace_is_proved;
 
 /// Enforces declared external state classes, never names, live state or guessed
 /// filesystem targets. The common path skips before querying the Graph.
@@ -78,12 +79,12 @@ impl SessionAnalysisPass for StateOperationGuardPass {
                         sequence,
                     );
                     for endpoint in endpoints.iter().filter(|e| selector.includes(e.usage)) {
-                        let instance = endpoint
-                            .endpoint
-                            .and_then(|endpoint| ctx.resource_authority()?.resolve(endpoint));
-                        let grant_id = instance
-                            .as_ref()
-                            .and_then(|i| ctx.resource_authority()?.permission(i, *state));
+                        let resolution = endpoint.endpoint.and_then(|endpoint| {
+                            ctx.resource_authority()?.resolve_target(endpoint)
+                        });
+                        let instance = resolution.as_ref().map(|r| &r.instance);
+                        let grant_id =
+                            instance.and_then(|i| ctx.resource_authority()?.permission(i, *state));
                         proof.targets.push(ResourceTargetEvidence {
                             slot_name: endpoint.slot_name.map(str::to_owned),
                             endpoint: endpoint.endpoint.map(str::to_owned),
@@ -92,6 +93,8 @@ impl SessionAnalysisPass for StateOperationGuardPass {
                             generation: instance.as_ref().map(|i| i.generation),
                             grant_id,
                             namespace_id: instance.as_ref().map(|i| i.namespace_id.clone()),
+                            route_id: resolution.as_ref().and_then(|r| r.route_id.clone()),
+                            resolved_endpoint: resolution.map(|r| r.endpoint),
                         });
                     }
                     proof.gap = if fact.operation_semantics_unresolved() {
@@ -150,85 +153,4 @@ impl SessionAnalysisPass for StateOperationGuardPass {
             }
         }
     }
-}
-
-fn owner_namespace_is_proved(ctx: &RunnerContext, source: &caushell_graph::NodeId) -> bool {
-    use caushell_runner::ExecutionUnitOriginKind;
-    let records = ctx.execution_unit_resolve_records();
-    let mut current = source;
-    let mut visited = std::collections::BTreeSet::new();
-    for _ in 0..64 {
-        if !visited.insert(current) {
-            return false;
-        }
-        let Some(record) = records
-            .iter()
-            .find(|record| record.source_node_id == *current)
-        else {
-            return false;
-        };
-        let bound = match &record.result {
-            ResolveInvocationArtifactResult::Resolved(resolved) => Some(&resolved.bound),
-            ResolveInvocationArtifactResult::SelectionError { partial_bound, .. } => {
-                partial_bound.as_ref()
-            }
-            _ => None,
-        };
-        if bound.is_some_and(|bound| {
-            bound.operation_semantics_unresolved
-                || bound
-                    .effects
-                    .iter()
-                    .any(|effect| effect.kind == EffectKind::ExecuteRemoteCommand)
-        }) {
-            return false;
-        }
-        if record.origin_kind == ExecutionUnitOriginKind::TopLevel {
-            return true;
-        }
-        let Some(parent) = records
-            .iter()
-            .find(|parent| parent.source_node_id == record.parent_execution_node_id)
-        else {
-            // A proved request-level shell function has no native invocation
-            // record. Its body inherits the shell frame, not a tool namespace.
-            return record.origin_kind == ExecutionUnitOriginKind::FunctionExpansion
-                && record.depth == 1
-                && ctx.parsed_command().is_some_and(|parsed| {
-                    parsed.commands.iter().enumerate().any(|(index, command)| {
-                        crate::support::source_node_id_for_command(
-                            ctx.request(),
-                            parsed,
-                            index,
-                            command,
-                        ) == record.parent_execution_node_id
-                    })
-                });
-        };
-        if matches!(
-            record.origin_kind,
-            ExecutionUnitOriginKind::Dispatch | ExecutionUnitOriginKind::StaticXargs
-        ) {
-            let ResolveInvocationArtifactResult::Resolved(resolved) = &parent.result else {
-                return false;
-            };
-            let dispatches: Vec<_> = resolved
-                .bound
-                .effects
-                .iter()
-                .filter(|effect| effect.kind == EffectKind::DispatchCommand)
-                .collect();
-            if resolved.bound.operation_semantics_unresolved
-                || dispatches.is_empty()
-                || dispatches.iter().any(|effect| {
-                    effect.resource_namespace
-                        != Some(caushell_profile::ResourceNamespaceTransfer::SameExecutor)
-                })
-            {
-                return false;
-            }
-        }
-        current = &parent.source_node_id;
-    }
-    false
 }

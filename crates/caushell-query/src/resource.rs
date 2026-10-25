@@ -57,6 +57,59 @@ pub fn canonical_resource_origin(value: &str) -> Option<String> {
     Some(endpoint[..=path].to_owned())
 }
 
+/// A named locator is usable only with a live host-maintained route binding.
+pub fn canonical_resource_named_endpoint(value: &str) -> Option<String> {
+    let (scheme, rest) = value.split_once("://")?;
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(h, p)| (h, Some(p)));
+    if host.len() > 253
+        || !host.bytes().any(|b| b.is_ascii_alphabetic())
+        || host.split('.').all(|label| {
+            label.bytes().all(|b| b.is_ascii_digit())
+                || label
+                    .strip_prefix("0x")
+                    .or_else(|| label.strip_prefix("0X"))
+                    .is_some_and(|digits| {
+                        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+        })
+        || !host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+    {
+        return None;
+    }
+    let numeric = format!(
+        "{scheme}://127.0.0.1{}/{path}",
+        port.map_or(String::new(), |p| format!(":{p}"))
+    );
+    let normalized = canonical_resource_endpoint(&numeric)?;
+    let (scheme, rest) = normalized.split_once("://")?;
+    let suffix = rest.strip_prefix("127.0.0.1")?;
+    Some(format!("{scheme}://{}{suffix}", host.to_ascii_lowercase()))
+}
+
+pub fn canonical_resource_named_origin(value: &str) -> Option<String> {
+    let endpoint = canonical_resource_named_endpoint(value)?;
+    let end = endpoint.find("://")? + 3;
+    let path = end + endpoint[end..].find('/')?;
+    Some(endpoint[..=path].to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +148,47 @@ mod tests {
             canonical_resource_origin("http://127.0.0.1/a?redirect=x"),
             None
         );
+    }
+
+    #[test]
+    fn named_locators_are_canonical_but_never_numeric_resource_facts() {
+        for (value, expected) in [
+            ("HTTPS://Reports.Example/a", "https://reports.example:443/a"),
+            ("http://localhost:8080/", "http://localhost:8080/"),
+            (
+                "https://service-1.internal/x",
+                "https://service-1.internal:443/x",
+            ),
+        ] {
+            assert_eq!(
+                canonical_resource_named_endpoint(value).as_deref(),
+                Some(expected)
+            );
+            assert!(canonical_resource_endpoint(value).is_none());
+        }
+        for value in [
+            "http://127.0.0.1/a",
+            "http://0x7f000001/a",
+            "http://0X7F.0.0.1/a",
+            "http://[::1]/a",
+            "http://local..test/a",
+            "http://-local.test/a",
+            "http://local-.test/a",
+            "http://localhost./a",
+            "http://local_host/a",
+            "http://user@localhost/a",
+            "http://localhost:0/a",
+            "http://localhost/a%2fb",
+            "http://localhost/a/../b",
+            "http://localhost/a?x=1",
+            "http://localhost\\evil/a",
+            "http://éxample.test/a",
+            "ftp://localhost/a",
+        ] {
+            assert!(
+                canonical_resource_named_endpoint(value).is_none(),
+                "{value}"
+            );
+        }
     }
 }

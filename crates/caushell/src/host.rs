@@ -3,7 +3,7 @@ use crate::{CliError, CliRuntime};
 use caushell_runner::{
     ManagedResource, ManagedResourceRegistry, ResourceAuthority, ResourceGrant,
     ResourceInstanceRef, ResourceLocatorScope, ResourceOwner, ResourcePermission,
-    ResourceRegistration,
+    ResourceRegistration, ResourceRoute, ResourceRouteRegistration,
 };
 use caushell_types::*;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,24 @@ pub struct GrantHandle {
     pub resource: ResourceHandle,
     pub serial: u64,
     pub policy_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteHandle {
+    pub route_id: String,
+    pub resource: ResourceHandle,
+    pub serial: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindResourceRoute {
+    pub route_id: String,
+    pub resource: ResourceHandle,
+    pub endpoint: String,
+    pub target: String,
+    pub lifetime_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +109,8 @@ pub enum HostRequest {
     GrantResource(GrantResource),
     RevokeResource(GrantHandle),
     RetireResource(ResourceHandle),
+    BindResourceRoute(BindResourceRoute),
+    UnbindResourceRoute(RouteHandle),
     Check(HostCheck),
     Authorize(ApprovalRequest),
     BeginExecution(ExecutionFrameBinding),
@@ -107,6 +127,8 @@ pub enum HostResponse {
     GrantResource(GrantHandle),
     RevokeResource(GrantHandle),
     RetireResource(ResourceHandle),
+    BindResourceRoute(RouteHandle),
+    UnbindResourceRoute(RouteHandle),
     Check(RuntimeCheckResponse),
     Authorize(ApprovalResponse),
     BeginExecution(ExecutionFrameBinding),
@@ -121,11 +143,16 @@ struct Grant {
     handle: GrantHandle,
     _lease: ResourceGrant,
 }
+struct Route {
+    handle: RouteHandle,
+    _lease: ResourceRouteRegistration,
+}
 #[derive(Default)]
 struct HostResources {
     registry: Arc<ManagedResourceRegistry>,
     registrations: BTreeMap<String, Registration>,
     grants: BTreeMap<String, Grant>,
+    routes: BTreeMap<String, Route>,
     next_grant: u64,
 }
 impl HostResources {
@@ -206,8 +233,49 @@ impl HostResources {
             HostRequest::RetireResource(handle) => {
                 self.registration(&handle)?;
                 self.grants.retain(|_, g| g.handle.resource != handle);
+                self.routes.retain(|_, r| r.handle.resource != handle);
                 self.registrations.remove(&handle.resource_id);
                 Ok(HostResponse::RetireResource(handle))
+            }
+            HostRequest::BindResourceRoute(request) => {
+                let registration = self.registration(&request.resource)?;
+                let lease = self
+                    .registry
+                    .bind_route(
+                        ResourceRoute {
+                            route_id: request.route_id,
+                            resource: registration.lease.instance().clone(),
+                            owner: registration.owner.clone(),
+                            endpoint: request.endpoint,
+                            target: request.target,
+                        },
+                        lifetime(request.lifetime_ms),
+                    )
+                    .map_err(invalid)?;
+                let handle = RouteHandle {
+                    route_id: lease.route_id().to_owned(),
+                    resource: request.resource,
+                    serial: lease.revision(),
+                };
+                self.routes.insert(
+                    handle.route_id.clone(),
+                    Route {
+                        handle: handle.clone(),
+                        _lease: lease,
+                    },
+                );
+                Ok(HostResponse::BindResourceRoute(handle))
+            }
+            HostRequest::UnbindResourceRoute(handle) => {
+                if !self
+                    .routes
+                    .get(&handle.route_id)
+                    .is_some_and(|r| r.handle == handle)
+                {
+                    return Err(invalid("route handle is stale or unknown"));
+                }
+                self.routes.remove(&handle.route_id);
+                Ok(HostResponse::UnbindResourceRoute(handle))
             }
             _ => Err(invalid("unexpected host management request")),
         }

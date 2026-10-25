@@ -108,6 +108,16 @@ passed to a model or tool subprocess; the embedding host is the trusted principa
 The host must isolate its control process from tools, including process-inspection
 interfaces. A matching user ID or network address is not host authentication.
 
+Named endpoints require a separate host-maintained route binding to a registered
+numeric service instance. The binding preserves scheme, port and path scope;
+it does not grant operations or perform DNS resolution. The owning executor pins
+the effective name resolution in its namespace until execution completes, and
+unbinds before changing that route. Binding removal, expiry and service retirement
+invalidate checked snapshots. A replacement instance inherits neither names nor
+permissions. Upload checks use the bound numeric destination for locality;
+nonlocal destinations, TLS-verification controls and script policies remain
+independent of a resource grant.
+
 Each proposed execution holds the resource snapshot until the host reports
 completion. `BeginExecution` requires the exact current checked binding and an
 Allow decision or matching single-call approval. Deny cannot be authorized.

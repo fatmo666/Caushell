@@ -10,7 +10,8 @@ pub use filesystem::{FilesystemView, UnavailableFilesystem};
 pub use resources::{
     ManagedResource, ManagedResourceRegistry, ResourceAuthority, ResourceAuthoritySnapshot,
     ResourceCheckAdmission, ResourceGrant, ResourceInstanceRef, ResourceLocatorScope,
-    ResourceOwner, ResourcePermission, ResourceRegistration,
+    ResourceOwner, ResourcePermission, ResourceRegistration, ResourceResolution, ResourceRoute,
+    ResourceRouteRegistration,
 };
 pub use runtime_file::{MAX_RUNTIME_FILE_BYTES, runtime_file_matches};
 mod mutation;

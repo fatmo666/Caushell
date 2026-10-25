@@ -130,10 +130,13 @@ impl Client {
         response
     }
     fn register(&mut self, origin: &str, shell: &OwnedBashFrame) -> ResourceHandle {
+        self.register_named("test-service", origin, shell)
+    }
+    fn register_named(&mut self, id: &str, origin: &str, shell: &OwnedBashFrame) -> ResourceHandle {
         let HostResponse::RegisterResource(handle) =
             self.rpc(HostRequest::RegisterResource(RegisterResource {
                 resource: ManagedResource {
-                    resource_id: "test-service".into(),
+                    resource_id: id.into(),
                     instance_id: "service-1".into(),
                     owner: owner(shell),
                     endpoints: vec![origin.into()],
@@ -147,9 +150,12 @@ impl Client {
         handle
     }
     fn grant(&mut self, resource: ResourceHandle) -> GrantHandle {
+        self.grant_named("test-policy-grant", resource)
+    }
+    fn grant_named(&mut self, id: &str, resource: ResourceHandle) -> GrantHandle {
         let HostResponse::GrantResource(handle) =
             self.rpc(HostRequest::GrantResource(GrantResource {
-                grant_id: "test-policy-grant".into(),
+                grant_id: id.into(),
                 resource,
                 domain: StateOperationDomain::RemoteResource,
                 operation: StateOperationKind::Mutate,
@@ -158,6 +164,25 @@ impl Client {
             }))
         else {
             panic!("grant")
+        };
+        handle
+    }
+    fn bind_route(
+        &mut self,
+        resource: ResourceHandle,
+        endpoint: &str,
+        target: &str,
+    ) -> RouteHandle {
+        let HostResponse::BindResourceRoute(handle) =
+            self.rpc(HostRequest::BindResourceRoute(BindResourceRoute {
+                route_id: "service-name".into(),
+                resource,
+                endpoint: endpoint.into(),
+                target: target.into(),
+                lifetime_ms: 60_000,
+            }))
+        else {
+            panic!("bind route")
         };
         handle
     }
@@ -174,7 +199,9 @@ fn owner(shell: &OwnedBashFrame) -> ResourceOwner {
         session_id: SessionId::new("host-session"),
         runtime_name: "owned-host".into(),
         executor_instance_id: shell.instance_id(),
-        namespace_id: "owned-network".into(),
+        namespace_id: fs::read_link("/proc/self/ns/net")
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "owned-network".into()),
     }
 }
 fn frame_binding(request: &HostCheck) -> ExecutionFrameBinding {
@@ -447,4 +474,256 @@ fn completion_and_approval_cannot_substitute_for_the_pending_binding() {
         approved: true,
         authority: ApprovalAuthority::Host,
     }));
+}
+
+#[test]
+fn named_service_routes_have_independent_permissions_and_stale_handle_protection() {
+    let mut client = Client::start();
+    let shell = client.shell();
+    let resource = client.register("http://127.0.0.1:19221/", &shell);
+    let command = "curl -q --noproxy '*' --data SAFE http://reports.internal:19221/result";
+    let route = client.bind_route(
+        resource.clone(),
+        "http://reports.internal:19221/",
+        "http://127.0.0.1:19221/",
+    );
+    assert_eq!(
+        client.judge(command, &shell).decision,
+        Decision::NeedApproval
+    );
+    client.grant(resource.clone());
+    assert_eq!(client.judge(command, &shell).decision, Decision::Allow);
+    client.rpc(HostRequest::UnbindResourceRoute(route.clone()));
+    assert_eq!(
+        client.judge(command, &shell).decision,
+        Decision::NeedApproval
+    );
+    let renewed = client.bind_route(
+        resource,
+        "http://reports.internal:19221/",
+        "http://127.0.0.1:19221/",
+    );
+    assert_ne!(route.serial, renewed.serial);
+    client.rejected(HostRequest::UnbindResourceRoute(route));
+}
+
+#[test]
+fn route_retirement_cannot_authorize_a_replacement_service() {
+    let mut client = Client::start();
+    let shell = client.shell();
+    let numeric = "http://127.0.0.1:19221/";
+    let named = "http://reports.internal:19221/";
+    let command = format!("curl -q --noproxy '*' --data SAFE {named}result");
+    let old = client.register(numeric, &shell);
+    let stale = client.bind_route(old.clone(), named, numeric);
+    client.grant(old.clone());
+    client.rpc(HostRequest::RetireResource(old));
+    let replacement = client.register(numeric, &shell);
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    let route = client.bind_route(replacement.clone(), named, numeric);
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    client.grant(replacement);
+    assert_eq!(client.judge(&command, &shell).decision, Decision::Allow);
+    assert_ne!(stale.resource.generation, route.resource.generation);
+    client.rejected(HostRequest::UnbindResourceRoute(stale));
+}
+
+#[test]
+fn pending_execution_rejects_route_changes() {
+    let mut client = Client::start();
+    let shell = client.shell();
+    let resource = client.register("http://127.0.0.1:19221/", &shell);
+    let route = client.bind_route(
+        resource,
+        "http://reports.internal:19221/",
+        "http://127.0.0.1:19221/",
+    );
+    let request = client.frame("true", CheckIntent::ProposeForExecution, &shell);
+    client.rpc(HostRequest::Check(request));
+    client.rejected(HostRequest::UnbindResourceRoute(route));
+}
+
+#[test]
+fn route_expiry_prevents_starting_a_previously_allowed_action() {
+    let mut client = Client::start();
+    let shell = client.shell();
+    let resource = client.register("http://127.0.0.1:19221/", &shell);
+    client.grant(resource.clone());
+    client.rpc(HostRequest::BindResourceRoute(BindResourceRoute {
+        route_id: "short-route".into(),
+        resource,
+        endpoint: "http://reports.internal:19221/".into(),
+        target: "http://127.0.0.1:19221/".into(),
+        lifetime_ms: 5000,
+    }));
+    let request = client.frame(
+        "curl -q --noproxy '*' --data SAFE http://reports.internal:19221/result",
+        CheckIntent::ProposeForExecution,
+        &shell,
+    );
+    let binding = frame_binding(&request);
+    let HostResponse::Check(response) = client.rpc(HostRequest::Check(request)) else {
+        panic!("check")
+    };
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    std::thread::sleep(Duration::from_millis(5100));
+    client.rejected(HostRequest::BeginExecution(binding));
+}
+
+#[cfg(target_os = "linux")]
+struct TlsService {
+    child: Child,
+    port: u16,
+    certificate: PathBuf,
+    body: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl TlsService {
+    fn start(root: &std::path::Path) -> Self {
+        let certificate = root.join("service.crt");
+        let key = root.join("service.key");
+        let body = root.join("received-body");
+        let result = Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
+                "-keyout",
+            ])
+            .arg(&key)
+            .arg("-out")
+            .arg(&certificate)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", include_str!("support/tls_service.py")])
+            .arg(&certificate)
+            .arg(&key)
+            .arg(&body)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let port = line.trim().parse().unwrap();
+        Self {
+            child,
+            port,
+            certificate,
+            body,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for TlsService {
+    fn drop(&mut self) {
+        self.child.stdin.take();
+        assert!(self.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn owned_http_and_tls_services_are_registered_separately_and_execute_through_the_host_pipe() {
+    let mut client = Client::start();
+    let mut shell = client.shell();
+    let http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let http_origin = format!("http://{}/", http_listener.local_addr().unwrap());
+    let http_resource = client.register_named("plain-service", &http_origin, &shell);
+    client.grant_named("plain-policy", http_resource.clone());
+    let tls = TlsService::start(&client.root);
+    let numeric = format!("https://127.0.0.1:{}/", tls.port);
+    let named = format!("https://localhost:{}/", tls.port);
+    let command = format!(
+        "curl -q --noproxy '*' --silent --show-error --fail --max-time 4 --cacert {} --data SAFE {named}result",
+        tls.certificate.display()
+    );
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    let tls_resource = client.register_named("tls-service", &numeric, &shell);
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    let route = client.bind_route(tls_resource.clone(), &named, &numeric);
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    let grant = client.grant_named("tls-policy", tls_resource.clone());
+    let allowed = client.judge(&command, &shell);
+    assert_eq!(allowed.decision, Decision::Allow, "{:?}", allowed.reasons);
+    assert!(allowed.decision_trace.evidence.iter().any(|e|
+        matches!(&e.kind, EvidenceKind::ResourceAuthorization(p) if p.authorized && p.targets.iter().all(|t| t.route_id.as_deref() == Some("service-name")))));
+    for (extra, expected) in [
+        (" --insecure", Decision::NeedApproval),
+        ("; python3 -c 'pass'", Decision::NeedApproval),
+        ("; perl -e 'print 1'", Decision::NeedApproval),
+        ("; rm -rf /", Decision::Deny),
+    ] {
+        assert_eq!(
+            client.judge(&format!("{command}{extra}"), &shell).decision,
+            expected,
+            "{extra}"
+        );
+    }
+    client.rpc(HostRequest::RevokeResource(grant));
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    client.grant_named("tls-policy", tls_resource.clone());
+    client.rpc(HostRequest::UnbindResourceRoute(route));
+    assert_eq!(
+        client.judge(&command, &shell).decision,
+        Decision::NeedApproval
+    );
+    client.bind_route(tls_resource.clone(), &named, &numeric);
+    let plain_command = format!("curl -q --noproxy '*' --silent --data PLAIN {http_origin}result");
+    let combined = format!("{command} && {plain_command}");
+    let request = client.frame(&combined, CheckIntent::ProposeForExecution, &shell);
+    let binding = frame_binding(&request);
+    let HostResponse::Check(response) = client.rpc(HostRequest::Check(request)) else {
+        panic!("check")
+    };
+    assert_eq!(response.decision, Decision::Allow);
+    let server = body_server(http_listener);
+    client.rpc(HostRequest::BeginExecution(binding.clone()));
+    assert!(shell.execute(&combined).success());
+    client.rpc(HostRequest::CompleteExecution(ExecutionCompletion {
+        binding,
+        executed: true,
+    }));
+    assert_eq!(server.join().unwrap(), b"PLAIN");
+    assert_eq!(fs::read(&tls.body).unwrap(), b"SAFE");
+    client.rpc(HostRequest::RetireResource(tls_resource));
+    client.rpc(HostRequest::RetireResource(http_resource));
+    drop(tls);
 }

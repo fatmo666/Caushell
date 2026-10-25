@@ -33,6 +33,7 @@ pub(crate) mod parallel_jobs;
 mod payload_hard_deny;
 mod pipeline;
 mod redirection;
+pub(crate) mod resource;
 mod runtime_variable_overlay;
 mod source_state;
 mod state_capture;
