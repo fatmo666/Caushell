@@ -301,3 +301,67 @@ fn frame_planning_is_read_only_and_racing_plans_do_not_authorize_later_checks() 
     let next = core.execution_frame_plan(plan_request).unwrap();
     assert_eq!(next.binding.sequence_no, CommandSequenceNo(3));
 }
+
+#[test]
+fn planning_reuses_static_requirements_but_binds_each_request_independently() {
+    let w = Workspace::new();
+    let mut core = ShellQueryCore::new();
+    let requirements = caushell_profile::execution_frame_requirements(
+        caushell_profile::ProfileRegistry::built_in()
+            .unwrap()
+            .profiles(),
+    );
+    for index in 0..16 {
+        let mut request = w.request(1, &format!("printf value_{index}"));
+        request.session_id = SessionId::new(format!("session-{index}"));
+        request.runtime.runtime_name = format!("runtime-{index}");
+        request.shell_state_before.cwd = w.0.join(format!("dir-{index}")).display().to_string();
+        let expected = ExecutionFrameBinding::for_request(&request, format!("executor-{index}"));
+        let runtime = RuntimeCheckRequest {
+            intent: CheckIntent::JudgeOnly,
+            session_id: request.session_id,
+            command: request.command,
+            shell_state_before: request.shell_state_before,
+            shell_kind: request.shell_kind,
+            runtime: request.runtime,
+            home: request.home,
+            workspace_root: request.workspace_root,
+        };
+        let plan_request = ExecutionFramePlanRequest {
+            request: runtime,
+            executor_instance_id: format!("executor-{index}"),
+        };
+        let mut plan = core.execution_frame_plan(plan_request.clone()).unwrap();
+        assert_eq!(plan.requirements, requirements);
+        assert_eq!(plan.binding, expected);
+        plan.requirements.environment_names.clear();
+        plan.requirements.pathname = false;
+        core.replace_policy(PolicyConfig::default());
+        let next = core.execution_frame_plan(plan_request).unwrap();
+        assert_eq!(next.requirements, requirements);
+        assert_eq!(next.binding, expected);
+    }
+    assert_eq!(core.session_count(), 0);
+}
+
+#[test]
+fn cached_requirements_do_not_cache_observed_environment_or_decisions() {
+    let w = Workspace::new();
+    let mut core = ShellQueryCore::new();
+    let command = "find . -iname '*.DATA' | xargs -n1 chmod g+w";
+    assert_eq!(
+        core.check(observed(w.request(1, command))).decision,
+        Decision::Allow
+    );
+    let mut unknown = observed(w.request(2, command));
+    let frame = unknown.shell_state_before.execution_frame.as_mut().unwrap();
+    frame.environment[0].value = ShellEnvironmentValue::Unknown;
+    frame.pathname.as_mut().unwrap().lc_all = ShellEnvironmentValue::Unknown;
+    let response = core.check(unknown);
+    assert!(accepted(&response));
+    assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+    assert_eq!(
+        core.check(observed(w.request(3, command))).decision,
+        Decision::Allow
+    );
+}

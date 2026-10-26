@@ -135,6 +135,7 @@ pub struct ShellQueryCore {
     filesystem: std::sync::Arc<dyn caushell_runner::FilesystemView>,
     policy: PolicyConfig,
     runner: PassRunner,
+    execution_frame_requirements: caushell_types::ExecutionFrameRequirements,
     sessions: BTreeMap<SessionId, SessionState>,
 }
 
@@ -163,11 +164,15 @@ impl ShellQueryCore {
     }
 
     pub fn try_with_policy(policy: PolicyConfig) -> Result<Self, ShellQueryCoreInitError> {
+        let registry = ProfileRegistry::built_in()?;
+        let execution_frame_requirements =
+            caushell_profile::execution_frame_requirements(registry.profiles());
         Ok(Self {
             resource_authority: None,
             filesystem: std::sync::Arc::new(crate::LocalFilesystem),
             policy,
-            runner: build_default_runner()?,
+            runner: build_default_runner(registry),
+            execution_frame_requirements,
             sessions: BTreeMap::new(),
         })
     }
@@ -535,14 +540,13 @@ impl ShellQueryCore {
         &self,
         request: caushell_types::ExecutionFramePlanRequest,
     ) -> Result<caushell_types::ExecutionFramePlan, ShellQueryCoreInitError> {
-        let registry = ProfileRegistry::built_in()?;
         let request_context = self.materialize_runtime_request(request.request);
         Ok(caushell_types::ExecutionFramePlan {
             binding: caushell_types::ExecutionFrameBinding::for_request(
                 &request_context,
                 request.executor_instance_id,
             ),
-            requirements: caushell_profile::execution_frame_requirements(registry.profiles()),
+            requirements: self.execution_frame_requirements.clone(),
         })
     }
 
@@ -747,9 +751,7 @@ fn enforce_analysis_budgets(
     usage
 }
 
-fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
-    let registry = ProfileRegistry::built_in()?;
-
+fn build_default_runner(registry: ProfileRegistry) -> PassRunner {
     let mut runner = PassRunner::new();
     runner.register_request_transform_pass(ParseCommandPass);
     runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
@@ -808,7 +810,7 @@ fn build_default_runner() -> Result<PassRunner, ShellQueryCoreInitError> {
     runner.register_session_analysis_pass(OutsideWorkspaceStartupConfigPass);
     runner.register_session_analysis_pass(SequenceIntegrityPass);
     runner.register_final_decision_pass(DecisionAssemblyPass);
-    Ok(runner)
+    runner
 }
 
 fn pending_mutations_from_shell_state_delta(
@@ -1233,7 +1235,32 @@ mod tests {
     }
 
     fn production_like_runner() -> PassRunner {
-        build_default_runner().expect("expected production-like runner to initialize")
+        build_default_runner(
+            caushell_profile::ProfileRegistry::built_in()
+                .expect("expected production-like registry to initialize"),
+        )
+    }
+
+    #[test]
+    fn frame_plans_read_the_requirements_owned_by_the_core() {
+        let mut core = ShellQueryCore::new();
+        core.execution_frame_requirements = caushell_types::ExecutionFrameRequirements {
+            environment_names: ["PROFILE_TEST_INPUT".to_owned()].into_iter().collect(),
+            pathname: false,
+        };
+        for index in 0..32 {
+            let request = caushell_types::ExecutionFramePlanRequest {
+                request: sample_runtime_request("plan-session", &format!("printf {index}")),
+                executor_instance_id: format!("executor-{index}"),
+            };
+            let plan = core.execution_frame_plan(request).unwrap();
+            assert_eq!(plan.requirements, core.execution_frame_requirements);
+            assert_eq!(
+                plan.binding.executor_instance_id,
+                format!("executor-{index}")
+            );
+        }
+        assert_eq!(core.session_count(), 0);
     }
 
     fn always_deny_runner() -> PassRunner {
@@ -2327,11 +2354,8 @@ mod tests {
         let session_id = SessionId::new("sess-1");
 
         let mut core = ShellQueryCore {
-            resource_authority: None,
-            filesystem: std::sync::Arc::new(crate::LocalFilesystem),
-            policy: PolicyConfig::default(),
             runner: always_deny_runner(),
-            sessions: BTreeMap::new(),
+            ..ShellQueryCore::new()
         };
 
         let denied = core.check(sample_request("sess-1", 10, "rm -rf /tmp/project"));

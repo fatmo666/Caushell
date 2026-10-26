@@ -258,6 +258,31 @@ fn body_server(listener: TcpListener) -> std::thread::JoinHandle<Vec<u8>> {
 }
 
 #[test]
+fn repeated_host_plans_keep_request_bindings_and_decisions_fresh() {
+    let mut client = Client::start();
+    let shell = client.shell();
+    for index in 0..24 {
+        let (command, expected) = match index % 3 {
+            0 => (format!("printf value_{index}"), Decision::Allow),
+            1 => ("python3 -c pass".into(), Decision::NeedApproval),
+            _ => ("rm -rf /".into(), Decision::Deny),
+        };
+        let request = client.frame(&command, CheckIntent::JudgeOnly, &shell);
+        let binding = frame_binding(&request);
+        assert_eq!(binding.sequence_no, CommandSequenceNo(index + 1));
+        let HostResponse::Check(response) = client.rpc(HostRequest::Check(request)) else {
+            panic!("check")
+        };
+        assert_eq!(response.decision, expected, "{command}: {response:#?}");
+        assert!(response.check_receipt.is_none());
+        assert!(response.decision_trace.evidence.iter().any(|e| {
+            matches!(&e.kind, EvidenceKind::ExecutionFrame(frame)
+                if frame.accepted && frame.binding == binding)
+        }));
+    }
+}
+
+#[test]
 fn private_host_pipe_checks_and_executes_with_separate_facts_grants_and_lifetimes() {
     let mut client = Client::start();
     let mut shell = client.shell();
