@@ -1,16 +1,25 @@
 //! Static checks only; do not run the command strings in this file.
 use caushell_core::ShellQueryCore;
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, RuntimeMetadata, SessionId, ShellKind,
-    ShellRuntimeCapabilities, ShellStateSnapshot,
+    CheckRequest, CommandSequenceNo, Decision, RuntimeMetadata, SessionId, ShellEnvironmentValue,
+    ShellKind, ShellRuntimeCapabilities, ShellStateKnowledge, ShellStateSnapshot,
 };
 
 fn check(command: &str) -> caushell_types::CheckResponse {
+    let mut state = ShellStateSnapshot::new("/tmp/project")
+        .with_environment_observation("TAR_OPTIONS", ShellEnvironmentValue::Absent);
+    state.observability.variables = ShellStateKnowledge::Complete;
+    state.observability.aliases = ShellStateKnowledge::Complete;
+    state.observability.functions = ShellStateKnowledge::Complete;
+    check_with_state(command, state)
+}
+
+fn check_with_state(command: &str, state: ShellStateSnapshot) -> caushell_types::CheckResponse {
     ShellQueryCore::new().check(CheckRequest {
         session_id: SessionId::new("tar-callbacks"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/tmp/project"),
+        shell_state_before: state,
         shell_kind: ShellKind::Bash,
         runtime: RuntimeMetadata {
             runtime_name: "static-tar".into(),
@@ -36,6 +45,19 @@ fn expect(command: &str, decision: Decision, child: Option<&str>) -> caushell_ty
         );
     }
     response
+}
+
+#[test]
+fn unobserved_option_environment_still_requires_approval() {
+    let result = check_with_state("tar --help", ShellStateSnapshot::new("/tmp/project"));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:?}");
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("TAR_OPTIONS option environment is not observed")),
+        "{result:?}"
+    );
 }
 
 #[test]

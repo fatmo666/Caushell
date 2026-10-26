@@ -30,6 +30,31 @@ fn request(command: &str) -> CheckRequest {
 }
 
 #[test]
+fn complete_sibling_clauses_survive_while_malformed_clauses_fail_closed() {
+    let result = ShellQueryCore::new().check(request(r"find . -exec echo {} \; -exec true {} \;"));
+    assert_eq!(result.decision, Decision::Allow, "{result:?}");
+    assert_eq!(
+        result.decision_trace.derived_invocations.len(),
+        2,
+        "{result:?}"
+    );
+    for command in [
+        r"find . -exec echo {} \; -exec echo {}",
+        r"sh -c 'find . -exec echo {} \; -execdir'",
+        r#"find . -exec "$CMD" {} \; -exec echo {} \;"#,
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:?}"
+        );
+        let result = ShellQueryCore::new().check(request(&format!("{command}; rm -rf /")));
+        assert_eq!(result.decision, Decision::Deny, "{command}: {result:?}");
+    }
+}
+
+#[test]
 fn child_data_never_triggers_outer_deletion() {
     for command in [
         r"find /opt/shared -exec printf %s -delete \;",
@@ -113,12 +138,20 @@ fn child_symlink_and_type_flags_cannot_widen_other_child_domains() {
             Decision::NeedApproval,
             "{command}: {result:?}"
         );
+        // Namespace invalidation may still require approval. What child flags
+        // must not do is widen the sibling's lexical search domain.
+        let targets: Vec<_> = result
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|target| target.slot_name == "path_targets")
+            .collect();
+        assert!(!targets.is_empty(), "{command}: {result:?}");
         assert!(
-            !result
-                .decision_trace
-                .findings
-                .iter()
-                .any(|f| f.rule_id == caushell_types::RuleId::OutsideWorkspaceMutation),
+            targets.iter().all(|target| matches!(&target.lexical,
+                caushell_types::PathResolution::BoundedPathSet { roots, may_escape: false }
+                    if roots == &["/tmp/project".to_string()]
+            )),
             "{command}: {result:?}"
         );
         assert_eq!(result.decision_trace.derived_invocations.len(), 2);

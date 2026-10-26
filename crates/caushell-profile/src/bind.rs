@@ -7381,6 +7381,223 @@ mod tests {
     }
 
     #[test]
+    fn xargs_parent_options_stop_at_wrapped_command_and_consume_their_own_values() {
+        let profile = built_in_profile("xargs");
+        let cases = [
+            ("xargs -p mkdir", true, Vec::<&str>::new()),
+            ("xargs mkdir -p", false, vec!["-p"]),
+            ("xargs -n 2 mkdir -p", false, vec!["-p"]),
+            ("xargs -I -p mkdir -p", false, vec!["-p"]),
+            ("xargs -n2 mkdir -p", false, vec!["-p"]),
+            ("xargs -Ip mkdir -p", false, vec!["-p"]),
+            ("xargs -0p mkdir -p", true, vec!["-p"]),
+            ("xargs -0n2 mkdir -p", false, vec!["-p"]),
+            (
+                "xargs -- mkdir -p -- /backup",
+                false,
+                vec!["-p", "--", "/backup"],
+            ),
+            ("xargs -pn2 mkdir -p", true, vec!["-p"]),
+            ("xargs --replace=-p mkdir -p", false, vec!["-p"]),
+            (
+                "xargs mkdir -I child -n 2 -p",
+                false,
+                vec!["-I", "child", "-n", "2", "-p"],
+            ),
+        ];
+
+        for (command_text, has_interactive, expected_child_args) in cases {
+            let artifact = parse_command(command_text, ShellKind::Bash)
+                .unwrap_or_else(|_| panic!("expected {command_text:?} to parse"));
+            let command = artifact.commands.first().expect("expected one command");
+            let projection = project_invocation(command, InvocationRuntimeContext::new());
+            let selection = select_invocation(&profile, &projection)
+                .unwrap_or_else(|error| panic!("expected {command_text:?} to select: {error}"));
+            let invocation = bind_invocation(&profile, &projection, &selection);
+            let has_interactive_modifier = invocation
+                .applied_modifiers
+                .iter()
+                .any(|modifier| modifier.as_str() == "interactive_prompt");
+            assert_eq!(has_interactive_modifier, has_interactive, "{command_text}");
+
+            let wrapped_command = find_bound_parameter(&invocation, "wrapped_command");
+            assert_eq!(
+                first_argument_text(wrapped_command),
+                "mkdir",
+                "{command_text}"
+            );
+            let actual_child_args: Vec<&str> = invocation
+                .bound_parameters
+                .iter()
+                .find(|parameter| parameter.name.as_str() == "wrapped_args")
+                .into_iter()
+                .flat_map(|parameter| &parameter.values)
+                .map(|value| match value {
+                    BoundValue::Argument { text, .. } => text.as_str(),
+                    other => panic!("expected argument, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(actual_child_args, expected_child_args, "{command_text}");
+        }
+    }
+
+    #[test]
+    fn leading_options_do_not_guess_unknown_or_conflicting_option_arity() {
+        let mut profile = built_in_profile("xargs");
+        for text in ["xargs --unknown 2 mkdir -p", "xargs -n"] {
+            let artifact = parse_command(text, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            assert!(
+                matches!(
+                    select_invocation(&profile, &projection),
+                    Err(BindError::UnsupportedProfileFeature { .. })
+                ),
+                "{text}"
+            );
+        }
+        profile.modifiers.push(
+            Modifier::new("conflicting_n")
+                .with_flag_name("-n")
+                .with_parameter(Parameter::new(
+                    "conflicting_count",
+                    SemanticType::PlainValue,
+                    BindingSpec::FollowingMatchedFlag {
+                        operand_mode: FlagOperandMode::SecondArg,
+                    },
+                )),
+        );
+        let artifact = parse_command("xargs -n 2 mkdir", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        assert!(select_invocation(&profile, &projection).is_err());
+    }
+
+    #[test]
+    fn leading_option_boundary_scopes_form_selectors_without_changing_default_profiles() {
+        let mut profile = built_in_profile("xargs");
+        profile.forms[0].selector = SelectorExpr::Not(Box::new(SelectorExpr::Predicate(
+            SelectorPredicate::HasFlag(FlagName::new("-p")),
+        )));
+        let artifact = parse_command("xargs mkdir -p", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        assert!(select_invocation(&profile, &projection).is_ok());
+        profile.option_scope = crate::OptionScopePolicy::AllArguments;
+        assert!(select_invocation(&profile, &projection).is_err());
+    }
+
+    #[test]
+    fn leading_option_form_selectors_see_attached_modifier_operands_as_values() {
+        let mut profile = built_in_profile("xargs");
+        profile.forms[0].selector =
+            SelectorExpr::Predicate(SelectorPredicate::HasModifierParameterMatching(
+                ModifierId::new("replace_token"),
+                crate::SlotName::new("replace_token"),
+                ValueMatcher::Literal("p".to_string()),
+            ));
+        let artifact = parse_command("xargs -Ip mkdir -p", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        let selection = select_invocation(&profile, &projection).unwrap();
+        let bound = bind_invocation(&profile, &projection, &selection);
+        assert_eq!(
+            first_argument_text(find_bound_parameter(&bound, "replace_token")),
+            "p"
+        );
+        assert_eq!(
+            argument_texts(find_bound_parameter(&bound, "wrapped_args")),
+            vec!["-p"]
+        );
+    }
+
+    #[test]
+    fn tar_form_options_participate_in_cluster_selection_and_binding() {
+        let profile = built_in_profile("tar");
+        for (text, form, archive) in [
+            ("tar -xf - -C /backup", "extract_archive_stdin", "-"),
+            ("tar -x -f - -C /backup", "extract_archive_stdin", "-"),
+            (
+                "tar -cf /backup/archive.tar /workspace/input",
+                "create_archive",
+                "/backup/archive.tar",
+            ),
+            (
+                "tar -tf /workspace/archive.tar",
+                "list_archive",
+                "/workspace/archive.tar",
+            ),
+            (
+                "tar -xf/backup/archive.tar -C /backup",
+                "extract_archive",
+                "/backup/archive.tar",
+            ),
+        ] {
+            let artifact = parse_command(text, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            let selection = select_invocation(&profile, &projection)
+                .unwrap_or_else(|error| panic!("{text}: {error}"));
+            assert_eq!(selection.form.id.as_str(), form, "{text}");
+            let bound = bind_invocation(&profile, &projection, &selection);
+            assert_eq!(
+                first_argument_text(find_bound_parameter(&bound, "archive_operand")),
+                archive,
+                "{text}"
+            );
+            assert!(bound.residuals.is_empty(), "{text}: {:?}", bound.residuals);
+            if form.starts_with("extract_archive") {
+                assert_eq!(
+                    first_argument_text(find_bound_parameter(&bound, "working_directory")),
+                    "/backup"
+                );
+                assert!(
+                    bound
+                        .effects
+                        .iter()
+                        .any(|effect| effect.kind == EffectKind::WritePath)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tar_archive_operand_does_not_supply_extraction_flags() {
+        let profile = built_in_profile("tar");
+        for text in [
+            "tar -fx /workspace/archive.tar",
+            "tar -qx /workspace/archive.tar",
+        ] {
+            let artifact = parse_command(text, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            assert!(select_invocation(&profile, &projection).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn clustered_form_binding_requires_declared_prefix_and_consistent_arity() {
+        let mut profile = built_in_profile("tar");
+        let artifact = parse_command("tar -x -qf /backup/archive.tar", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        // Scoped parsing rejects an unknown prefix before binding, rather than
+        // manufacturing an archive operand from the rest of the cluster.
+        assert!(select_invocation(&profile, &projection).is_err());
+
+        profile.modifiers.push(
+            Modifier::new("conflicting_f")
+                .with_flag_name("-f")
+                .with_parameter(Parameter::new(
+                    "conflicting_archive",
+                    SemanticType::PlainValue,
+                    BindingSpec::FollowingMatchedFlag {
+                        operand_mode: FlagOperandMode::SecondArg,
+                    },
+                )),
+        );
+        let artifact = parse_command("tar -xf /backup/archive.tar", ShellKind::Bash).unwrap();
+        let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+        assert!(select_invocation(&profile, &projection).is_err());
+    }
+
+    #[test]
     fn bind_invocation_binds_python_script_file_as_payload_source() {
         let profile = built_in_profile("python");
         let artifact = parse_command("python ./tools/build.py --release", ShellKind::Bash)

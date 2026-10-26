@@ -1366,6 +1366,107 @@ mod tests {
     }
 
     #[test]
+    fn process_control_guard_covers_nested_commands_and_does_not_leak_across_actions() {
+        for command in [
+            "kill 1234",
+            "pkill -f service",
+            "killall service",
+            "fg %1",
+            "bg %1",
+            "fg",
+            "bg",
+            "bash -c 'kill 1234'",
+            "echo 1234 | xargs kill",
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("process-control", 1, command));
+            assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == RuleId::ProcessControl),
+                "{command}"
+            );
+            let next = core.check(sample_request("process-control", 2, "echo ok"));
+            assert_eq!(next.decision, Decision::Allow);
+            assert!(
+                !next
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == RuleId::ProcessControl)
+            );
+        }
+    }
+
+    #[test]
+    fn process_control_guard_keeps_readonly_forms_and_other_rules_independent() {
+        for command in [
+            "kill -0 1234",
+            "kill -s 0 1234",
+            "kill --signal=0 1234",
+            "kill -l",
+            "kill -l TERM",
+            "kill -L",
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("process-readonly", 1, command));
+            assert_eq!(
+                response.decision,
+                Decision::Allow,
+                "{command}: {:?}",
+                response.reasons
+            );
+            assert!(
+                !response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|f| f.rule_id == RuleId::ProcessControl)
+            );
+        }
+        for command in [
+            "kill -s \"$sig\" 1234",
+            "kill -0 -TERM 1234",
+            "kill -s 0 -s TERM 1234",
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("process-ambiguous", 1, command));
+            assert_ne!(response.decision, Decision::Allow, "{command}");
+        }
+        let mut policy = PolicyConfig::default();
+        policy.rule_policy.rules.insert(
+            RuleId::ProcessControl,
+            RulePolicyEntry::new(RuleAction::Observe),
+        );
+        let mut core = ShellQueryCore::with_policy(policy);
+        let allowed = core.check(sample_request("process-policy", 1, "kill 1234"));
+        assert_eq!(allowed.decision, Decision::Allow);
+        assert!(
+            allowed
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::ProcessControl)
+        );
+        let other_risk = core.check(sample_request(
+            "process-policy",
+            2,
+            "kill 1234; rm /etc/some-file",
+        ));
+        assert_eq!(other_risk.decision, Decision::NeedApproval);
+        assert!(
+            other_risk
+                .decision_trace
+                .findings
+                .iter()
+                .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+    }
+
+    #[test]
     fn outside_workspace_mutation_guard_covers_direct_file_effects_and_redirections() {
         let cases = [
             ("rm /etc/wgetrc", "delete", "/etc/wgetrc"),
@@ -1421,6 +1522,52 @@ mod tests {
         assert_eq!(reasons.len(), 2, "{reasons:?}");
         assert!(reasons.iter().any(|reason| reason.contains("/etc/first")));
         assert!(reasons.iter().any(|reason| reason.contains("/var/second")));
+    }
+
+    #[test]
+    fn option_binding_keeps_nested_mkdir_and_clustered_tar_mutations_visible() {
+        for (command, expected_command, expected_form) in [
+            (
+                "find /workspace -type d -print | sed 's@^@/usr/@' | xargs mkdir -p",
+                "mkdir",
+                "create_directories",
+            ),
+            (
+                "printf '/backup/newdir\\n' | xargs mkdir -p",
+                "mkdir",
+                "create_directories",
+            ),
+            (
+                "gzip -dc /workspace/archive.tar.gz | tar -xf - -C /backup",
+                "tar",
+                "extract_archive_stdin",
+            ),
+        ] {
+            let mut core = ShellQueryCore::new();
+            let response = core.check(sample_request("binding-mutation-regression", 1, command));
+            assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+            assert!(
+                response
+                    .decision_trace
+                    .execution_semantics
+                    .iter()
+                    .any(|semantics| {
+                        semantics.normalized_command_name == expected_command
+                            && semantics.form_id == expected_form
+                    }),
+                "{command}: {:?}",
+                response.decision_trace.execution_semantics
+            );
+            assert!(
+                response
+                    .decision_trace
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation),
+                "{command}: {:?}",
+                response.decision_trace.findings
+            );
+        }
     }
 
     #[test]

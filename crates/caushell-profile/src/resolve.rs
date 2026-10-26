@@ -11200,7 +11200,8 @@ mod tests {
                     vec![
                         EffectKind::WritePath,
                         EffectKind::RepositoryOperation,
-                        EffectKind::TargetPath
+                        EffectKind::TargetPath,
+                        EffectKind::SetExecutionWorkingDirectory,
                     ]
                 );
                 assert!(matches!(
