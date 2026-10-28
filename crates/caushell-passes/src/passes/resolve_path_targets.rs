@@ -113,12 +113,18 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             baselines.push((resolution, observations));
         }
         let mut comparisons = 0usize;
-        let stable_producers = namespace_state::stable_producers(
-            &inputs,
-            &baselines,
-            &namespace_writes,
-            &mut comparisons,
-        );
+        let stable_producers = if namespace_operations_complete(ctx) {
+            namespace_state::stable_producers(
+                &inputs,
+                &baselines,
+                &namespace_writes,
+                &mut comparisons,
+            )
+        } else {
+            // An opaque sibling may have no declared mutation target at all.
+            // It cannot participate in a closed abstract namespace proof.
+            std::collections::BTreeSet::new()
+        };
         for index in 0..inputs.len() {
             if !inputs[index].pending_resolution {
                 continue;
@@ -200,6 +206,26 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             });
         }
     }
+}
+
+fn namespace_operations_complete(ctx: &RunnerContext) -> bool {
+    use caushell_profile::ResolveInvocationArtifactResult as Result;
+    ctx.unresolved_dispatch_records().is_empty()
+        && graph_backed_execution_resolve_records(ctx)
+            .into_iter()
+            .all(|record| match record.result() {
+                Result::Resolved(invocation) => !invocation.bound.operation_semantics_unresolved,
+                Result::NoProfile { .. } => matches!(
+                    crate::path::unmodeled_executable_path(record),
+                    Some(crate::path::ExecutableFileReference::Known(_))
+                ),
+                Result::MissingCommandName {
+                    gap_kind: caushell_types::ResolveGapKind::MissingCommandName,
+                } => record.command().is_some_and(|command| {
+                    command.command_name.is_none() && command.tokens.is_empty()
+                }),
+                _ => false,
+            })
 }
 
 fn entry_context_inputs(ctx: &RunnerContext) -> Vec<Input> {
