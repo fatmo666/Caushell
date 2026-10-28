@@ -62,13 +62,23 @@ original descriptor is subsequently redirected.
 
 ## Non-Shell Script Execution
 
-Declared non-Shell payload execution and interpreter module dispatch require
-approval under `non_shell_script_execution`. This applies to inline programs,
-script files, stdin and nested calls, including local files. Interpreter
-information modes and literal data are not script execution.
+Declared non-Shell inline programs, stdin payloads and interpreter module
+dispatch require approval under `non_shell_script_execution`, including nested
+calls. Interpreter information modes and literal data are not script execution.
+
+File execution uses the same authorization for native programs and interpreter
+script references. Every file target must resolve within the workspace, a
+temporary execution root (`/tmp`, `/private/tmp`), or an explicit
+`script_source_execute` grant. Unknown targets, unavailable path observations
+and targets outside these scopes retain approval. The grant belongs to the
+owning execution unit and file slot; it cannot authorize another inline,
+stdin or module payload. Read and write grants do not imply execution authority.
+This authorizes executing a file without claiming that its body is analyzed.
+Downloaded-code provenance and all other guards remain independent.
 
 The rule contributes at least `NeedApproval`; `Observe` does not lower this
-floor, and `Deny` can strengthen it. Other analysis continues across the action,
+floor for those opaque inputs. An explicit `Deny` on this rule also applies to
+script files and is never removed by a file grant. Other analysis continues across the action,
 so an existing denial is not replaced by script approval. Python bodies are not
 evaluated to derive child commands, stdout or completeness proofs. Interpreter
 Profiles still describe source inputs, dispatch and declared CLI effects.

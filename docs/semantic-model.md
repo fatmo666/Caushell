@@ -419,7 +419,7 @@ persisted exact variable values. No new risk Pass or Harness input is required.
 
 ### Opaque code and keyword-owned shell commands
 
-`{kind: payload, language: opaque, source: inline_string, recursive: true}` explicitly declares executable code outside the modeled shell languages. The existing recursive-analysis record retains its source and unsupported-language evidence; the existing ResolvePolicy pass defaults the `opaque_non_shell` subtype to approval. Named Python, JavaScript and Perl payloads use the same unsupported-code boundary while retaining their language identity. This applies to inline programs, script references and stdin, even when the text is literal or locally produced. A known string is not a modeled program. Python/Node script Profiles also retain separate script-source read facts. Registered Python module CLI contracts and modeled shell payloads keep their own semantic analysis; SQL client contracts are unchanged. No language interpreter, guessed internal path, dynamic code read or new risk pass is introduced. Explicit subtype policy overrides remain available and cannot override independent deny findings.
+`{kind: payload, language: opaque, source: inline_string, recursive: true}` explicitly declares executable code outside the modeled shell languages. The recursive-analysis record retains its source and unsupported-language evidence; ResolvePolicy defaults the `opaque_non_shell` subtype to approval. Named Python, JavaScript and Perl payloads use the same boundary while retaining their language identity. Inline programs and stdin retain approval even when literal or locally produced: a known string is not a modeled program. Script-file references use the separate file execution authorization described below. Registered module Profiles retain their CLI effects; module execution still has its non-Shell approval floor. Modeled Shell payloads and SQL client contracts retain their own analysis. No language interpreter, guessed internal path or dynamic code read is introduced. Explicit subtype overrides cannot override independent Deny findings.
 
 For a mixed option carrying a shell command, use a virtual plain-value slot and the existing `command_string: {slot: proxy_command, syntax: posix_shell}` dispatch:
 
@@ -2953,12 +2953,21 @@ nonempty relative paths without parent traversal.
 
 ## Script execution boundaries
 
-Non-Shell executable payloads and interpreter module dispatch contribute a
+Non-Shell inline/stdin payloads and interpreter module dispatch contribute a
 `non_shell_script_execution` approval floor. The rule follows declared effects
-and their payload semantics, not executable-name or source-text matching.
-Local paths, known program bytes and registered module CLI contracts do not
-remove this approval requirement. Shell payloads continue through the existing
-recursive analysis, and all sibling execution units continue through risk checks.
+and payload semantics, not executable-name or source-text matching. Known bytes
+and registered module CLI contracts do not remove that floor.
+
+For `script_file_ref`, the guard joins the owning execution unit and parameter
+slot to its `ExecuteFile` path targets. Complete authorized targets with at
+least one resolved file use the existing workspace, temporary-root or scoped
+execution grant, just as native executable paths do. Missing, unresolved or
+outside targets retain approval; `NotApplicable` alone is not a file grant.
+Only the unsupported-language residual for that file reference is exempted.
+Other gaps, sibling payloads, downloaded-code provenance and all Deny findings
+remain effective. Explicit `non_shell_script_execution: deny` is not exempted.
+Shell payloads continue through recursive analysis. No file body is evaluated
+to establish this authorization.
 
 Python has no in-tree program evaluator or output materializer. Its Profile
 still owns interpreter arguments, code sources and module dispatch; registered

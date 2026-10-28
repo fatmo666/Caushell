@@ -51,8 +51,6 @@ fn non_shell_code_is_approval_policy_not_a_source_analysis_result() {
     for command in [
         "python3 -c pass",
         "python3 -I -S -c 'print(1)'",
-        "python3 ./demo.py",
-        "python3 /tmp/demo.py",
         "python3 /dev/null",
         "python3 - <<< 'print(1)'",
         "python3 <<'PY'\nprint(1)\nPY",
@@ -65,10 +63,8 @@ fn non_shell_code_is_approval_policy_not_a_source_analysis_result() {
         "python3 -m pytest tests",
         "python3 -m unknown_module",
         "perl -e 1",
-        "perl ./demo.pl",
         "printf 1 | perl",
         "node -e 'console.log(1)'",
-        "node ./demo.js",
         "php -r 'echo 1;'",
         "lua -e 'print(1)'",
     ] {
@@ -175,7 +171,7 @@ fn other_analysis_continues_and_deny_is_not_downgraded() {
 }
 
 #[test]
-fn general_resolve_observe_and_local_files_do_not_override_script_approval() {
+fn general_resolve_observe_does_not_authorize_inline_or_module_execution() {
     let mut policy = PolicyConfig::default();
     policy.rule_policy.rules.insert(
         RuleId::NestedPayloadExpansion,
@@ -185,12 +181,7 @@ fn general_resolve_observe_and_local_files_do_not_override_script_approval() {
         RuleId::NonShellScriptExecution,
         RulePolicyEntry::new(RuleAction::Observe),
     );
-    for command in [
-        "python3 -I -S -c pass",
-        "python3 ./demo.py",
-        "node ./demo.js",
-        "python3 -m json.tool --help",
-    ] {
+    for command in ["python3 -I -S -c pass", "python3 -m json.tool --help"] {
         let r = ShellQueryCore::with_policy(policy.clone()).check(request(command));
         assert_eq!(
             r.decision,
@@ -199,6 +190,12 @@ fn general_resolve_observe_and_local_files_do_not_override_script_approval() {
             r.reasons
         );
         assert!(!script_evidence(&r).is_empty());
+    }
+    for command in ["python3 ./demo.py", "node ./demo.js", "perl /tmp/demo.pl"] {
+        let r = ShellQueryCore::with_policy(policy.clone()).check(request(command));
+        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        assert!(script_evidence(&r).is_empty());
+        no_python_analysis(&r);
     }
     policy.rule_policy.rules.insert(
         RuleId::NonShellScriptExecution,
@@ -258,13 +255,13 @@ impl FilesystemView for Files {
 }
 
 #[test]
-fn script_approval_does_not_require_source_or_runtime_inventory() {
+fn file_execution_authority_does_not_require_source_or_runtime_inventory() {
     let files = Arc::new(Files::default());
     let r = ShellQueryCore::new()
         .with_filesystem_view(files.clone())
         .check(request("/usr/bin/python3 /workspace/demo.py"));
-    assert_eq!(r.decision, Decision::NeedApproval);
-    assert!(!script_evidence(&r).is_empty());
+    assert_eq!(r.decision, Decision::Allow, "{:?}", r.reasons);
+    assert!(script_evidence(&r).is_empty());
     assert!(
         !files
             .reads

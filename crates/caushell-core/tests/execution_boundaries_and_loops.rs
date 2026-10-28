@@ -27,7 +27,7 @@ fn opaque(r: &CheckResponse) -> bool {
 }
 
 #[test]
-fn arbitrary_non_shell_code_asks_for_every_carrier() {
+fn inline_stream_and_outside_non_shell_code_keep_approval() {
     for c in [
         "python -c 'print(1)'",
         "python3 -c 'open(\"/opt/file\",\"w\").write(\"data\")'",
@@ -37,8 +37,6 @@ fn arbitrary_non_shell_code_asks_for_every_carrier() {
         "node -pe '1+1'",
         "node -e 'require(\"fs\").writeFileSync(\"/opt/file\",\"data\")'",
         "perl -e 'print 1'",
-        "python scripts/tool.py",
-        "node scripts/tool.js",
         "python /opt/tool.py",
         "node /opt/tool.js",
         "python - <<'PY'\nprint(1)\nPY",

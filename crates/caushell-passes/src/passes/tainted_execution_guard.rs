@@ -278,6 +278,41 @@ fn collect_sink_candidates(ctx: &RunnerContext, graph: &dyn GraphRead) -> Vec<Si
         );
     }
 
+    // Explicit executable files need the same provenance check as interpreter
+    // script inputs, even when the program has no registered CLI Profile.
+    // File-scope authorization must never launder a downloaded executable.
+    for reference in crate::support::file_execution_references(ctx) {
+        if sinks.contains_key(&reference.source) {
+            continue;
+        }
+        let Some(source) = execution_unit_info(graph, &reference.source) else {
+            continue;
+        };
+        if source.sequence_no != ctx.request().sequence_no {
+            continue;
+        }
+        let mut slots = reference.slots;
+        slots.insert(reference.slot);
+        sinks.insert(
+            reference.source,
+            SinkCandidate {
+                evidence: TaintedExecutionSinkEvidence {
+                    node_id: source.node_id.0,
+                    sequence_no: source.sequence_no,
+                    depth: source.depth,
+                    command: source.raw_text,
+                    risk_subtypes: BTreeSet::from([ExecutionRiskSubtype::GenericPayload]),
+                },
+                payload_scope: PayloadInputScope {
+                    code_sources_only: true,
+                    slot_names: slots,
+                    ..Default::default()
+                },
+                statically_resolved_runtime_inputs: BTreeSet::new(),
+            },
+        );
+    }
+
     sinks.into_values().collect()
 }
 

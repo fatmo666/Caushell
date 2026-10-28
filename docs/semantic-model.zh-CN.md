@@ -317,7 +317,7 @@ Shell 的词列表 `for` 循环在解析工件中保留变量、列表词、循�
 
 ### 不透明代码与选项内的 Shell 命令
 
-`{kind: payload, language: opaque, source: inline_string, recursive: true}` 显式声明不属于已建模 Shell 语言的可执行代码。既有递归分析保留真实来源及“不支持此语言”证据，既有 ResolvePolicy Pass 默认对 `opaque_non_shell` 要求审批。Python、JavaScript、Perl 载荷也使用这条边界，同时保留语言身份；覆盖内联代码、脚本引用和 stdin，即使代码是字面量或来自本地也一样。字符串已知不等于程序语义已建模。Python/Node 的脚本 Profile 同时保留脚本来源读取事实；已注册的 Python 模块 CLI、已建模的 Shell 载荷及 SQL 客户端契约继续按各自语义判断。不引入语言解释器、不猜内部路径、不动态读取代码，也不新增风险 Pass。保留显式 subtype 配置覆盖，且不能绕过独立的拒绝规则。
+`{kind: payload, language: opaque, source: inline_string, recursive: true}` 显式声明不属于已建模 Shell 语言的可执行代码。递归分析保留真实来源及“不支持此语言”证据，ResolvePolicy 默认对 `opaque_non_shell` 要求审批。Python、JavaScript、Perl 载荷使用相同边界，保留语言身份。内联代码和 stdin 即使是字面量或来自本地也仍需审批；字符串已知不等于程序语义已建模。脚本文件引用与原生程序统一使用文件执行授权：按所属执行单元和参数槽匹配完整的 `ExecuteFile` 目标，工作区、临时执行根或显式执行授权内的已解析文件沿用已有授权；未知、越界或仅有 `NotApplicable` 的目标仍需审批。这不分析文件正文，也不覆盖下载来源、其他分析缺口及任何 Deny。模块 CLI 契约保留其效果，模块执行仍受非 Shell 审批规则约束。Shell 载荷及 SQL 客户端契约继续按各自语义判断。不引入语言解释器、不猜内部路径、不动态读取代码。保留显式 subtype 配置覆盖，且不能绕过独立的拒绝规则。
 
 混合选项中的 Shell 命令先投影为 plain-value 虚拟 slot，再用既有 `command_string: {slot: proxy_command, syntax: posix_shell}` 分派：
 

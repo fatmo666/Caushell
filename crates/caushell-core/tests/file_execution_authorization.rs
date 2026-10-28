@@ -30,7 +30,7 @@ fn request(command: &str, sequence: u64) -> CheckRequest {
 
 fn expect(command: &str, expected: Decision) {
     let result = ShellQueryCore::new().check(request(command, 1));
-    assert_eq!(result.decision, expected, "{command}: {result:#?}");
+    assert_eq!(result.decision, expected, "{command}: {:?}", result.reasons);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn wrappers_aliases_functions_and_callbacks_keep_the_execution_file_owner() {
         "run() { perl ./main.pl; }; run",
         "find . -exec node ./main.js {} \\;",
         "printf '%s\\n' arg | xargs python3 ./main.py",
-        "cd /workspace/sub; lua ../main.lua",
+        "cd /workspace/sub && lua ../main.lua",
         "cd /outside; python3 /workspace/main.py",
     ] {
         expect(command, Decision::Allow);
@@ -150,6 +150,59 @@ fn an_explicit_non_shell_deny_is_never_erased_by_a_file_grant() {
 }
 
 #[test]
+fn execution_authority_cannot_be_borrowed_from_read_or_write_grants() {
+    for (scope, expected) in [
+        (PathTrustScope::Read, Decision::NeedApproval),
+        (PathTrustScope::Write, Decision::NeedApproval),
+        (PathTrustScope::ScriptSourceExecute, Decision::Allow),
+    ] {
+        let mut policy = PolicyConfig::default();
+        policy.path_trust_sets.insert(
+            "tools".into(),
+            PathTrustSet::new(
+                vec!["/opt/tools".into()],
+                PathTrustGrant::Scoped {
+                    scopes: [scope].into_iter().collect(),
+                },
+            ),
+        );
+        policy.rule_policy.rules.insert(
+            RuleId::OutsideWorkspaceScriptSource,
+            RulePolicyEntry::new(RuleAction::NeedApproval).with_trust_sets(vec!["tools".into()]),
+        );
+        for command in [
+            "/opt/tools/tool",
+            "python3 /opt/tools/main.py",
+            "node /opt/tools/main.js",
+        ] {
+            let result = ShellQueryCore::with_policy(policy.clone()).check(request(command, 1));
+            assert_eq!(
+                result.decision, expected,
+                "{scope:?} {command}: {:?}",
+                result.reasons
+            );
+        }
+    }
+}
+
+#[test]
+fn file_authority_does_not_hide_syntax_or_analysis_gaps() {
+    expect("bash -c 'node ./main.js; ('", Decision::NeedApproval);
+    let mut policy = PolicyConfig::default();
+    policy.analysis_budget.max_request_bytes = 8;
+    let result = ShellQueryCore::with_policy(policy).check(request("python3 ./main.py", 1));
+    assert_eq!(result.decision, Decision::NeedApproval);
+    assert!(
+        !result
+            .decision_trace
+            .analysis_usage
+            .unwrap()
+            .incomplete_budgets
+            .is_empty()
+    );
+}
+
+#[test]
 fn downloaded_files_keep_tainted_execution_for_every_file_entry() {
     for entry in [
         "./code",
@@ -180,6 +233,56 @@ fn downloaded_files_keep_tainted_execution_for_every_file_entry() {
         "curl -q -o /tmp/code https://example.test/code; node /tmp/code",
         Decision::NeedApproval,
     );
+}
+
+#[test]
+fn local_creation_and_downloaded_data_do_not_become_downloaded_code() {
+    for entry in ["./code", "python3 ./code", "node ./code"] {
+        let mut core = ShellQueryCore::new();
+        assert_eq!(
+            core.check(request("printf source > ./code", 1)).decision,
+            Decision::Allow
+        );
+        let result = core.check(request(entry, 2));
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{entry}: {:?}",
+            result.reasons
+        );
+    }
+    let mut core = ShellQueryCore::new();
+    assert_eq!(
+        core.check(request("curl -q -o ./data https://example.test/data", 1))
+            .decision,
+        Decision::Allow
+    );
+    let result = core.check(request("node ./main.js ./data", 2));
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+}
+
+struct Unavailable;
+impl FilesystemView for Unavailable {
+    fn entry(&self, _path: &str) -> FilesystemEntry {
+        FilesystemEntry::Unavailable {
+            reason: "no namespace observation".into(),
+        }
+    }
+}
+
+#[test]
+fn a_lexical_local_path_without_namespace_proof_keeps_approval() {
+    for command in ["./tool", "python3 ./main.py", "node /tmp/main.js"] {
+        let result = ShellQueryCore::new()
+            .with_filesystem_view(Arc::new(Unavailable))
+            .check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
 }
 
 struct Links;

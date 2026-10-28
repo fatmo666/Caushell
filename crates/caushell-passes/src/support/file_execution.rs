@@ -18,6 +18,9 @@ pub(crate) struct FileExecutionCheck {
     pub source: NodeId,
     pub slot: String,
     pub exempt: bool,
+    /// NotApplicable facts may suppress a path warning, but cannot authorize
+    /// an opaque program. At least one actual file target must be resolved.
+    pub has_resolved_file_target: bool,
     pub reason: String,
 }
 pub(crate) struct FileExecutionReference {
@@ -123,6 +126,12 @@ pub(crate) fn file_execution_checks(
                         && fact.slot_name == *slot
                 })
             });
+            let has_resolved_file_target = facts.iter().any(|fact| {
+                fact.operation == PathTargetOperation::ExecuteFile
+                    && fact.source_node_id == reference.source.0
+                    && slots.contains(&fact.slot_name)
+                    && matches!(&fact.resolution, SemanticResolution::Resolved { .. })
+            });
             let exempt = complete
                 && facts
                     .iter()
@@ -153,6 +162,7 @@ pub(crate) fn file_execution_checks(
                 source: reference.source,
                 slot: reference.slot,
                 exempt,
+                has_resolved_file_target,
             }
         })
         .collect()
