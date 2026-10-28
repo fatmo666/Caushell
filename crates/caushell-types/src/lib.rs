@@ -152,8 +152,9 @@ pub use runtime_request::{
 };
 pub use safety_history::{SafetyHistory, SafetyStateKind, SafetyStateRecord, SafetyStateValue};
 pub use semantic::{
-    FilesystemEntry, FilesystemObservation, FilesystemObservationSource, PathTargetAccess,
-    PathTargetFact, PathTargetOperation, SemanticGap, SemanticGapKind, SemanticResolution,
+    FilesystemEntry, FilesystemObservation, FilesystemObservationSource, PathNamespaceEffect,
+    PathNamespaceProof, PathTargetAccess, PathTargetFact, PathTargetOperation, SemanticGap,
+    SemanticGapKind, SemanticResolution,
 };
 pub use session::{CommandSequenceNo, SessionId};
 pub use session_summary::{

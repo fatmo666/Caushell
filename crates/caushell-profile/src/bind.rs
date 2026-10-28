@@ -5068,6 +5068,15 @@ fn owned_flag_token_binding_match<'a>(
     if let Some(value) = inline_long_flag_operand(token, flag) {
         return Some(FlagTokenMatch::LongInlineOperand(value));
     }
+    if matching == OptionMatchingPolicy::ExactNames
+        && let Some(value) = token
+            .strip_prefix(flag)
+            .and_then(|suffix| suffix.strip_prefix('='))
+    {
+        // The scoped scanner certified this exact option occurrence and its
+        // equals-operand grammar. Keep the canonical value, including empty.
+        return Some(FlagTokenMatch::LongInlineOperand(value));
+    }
     if matching == OptionMatchingPolicy::DeclaredShortWords {
         let mut offset = 1;
         for (_, name) in occurrences.iter().filter(|(i, _)| *i == index) {

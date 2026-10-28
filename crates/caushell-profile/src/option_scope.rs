@@ -330,29 +330,48 @@ pub(crate) fn scan_leading_options(
                     Ok((*mode, false, true))
                 }
                 None => {
-                    // An explicit attached grammar may extend only its own
-                    // declared word. Exact flag-only names win above; among
-                    // attached words the longest declaration owns the suffix.
-                    let matched = declarations
-                        .iter()
-                        .filter(|(name, mode)| {
-                            matches!(
-                                mode,
-                                Some(
-                                    FlagOperandMode::WordAttached
-                                        | FlagOperandMode::OptionalWordAttached
-                                        | FlagOperandMode::WordAttachedOrNextArg
-                                )
-                            ) && token.starts_with(name.as_str())
-                                && token.len() > name.len()
-                        })
-                        .max_by_key(|(name, _)| name.len());
-                    match matched {
-                        Some((name, mode)) => {
-                            token_flags.push(FlagName::new(name));
-                            Ok((*mode, true, true))
+                    // Exact single-prefix option words may own an explicitly
+                    // declared =VALUE operand, just like long options. Do not
+                    // reinterpret their suffix as short-option clusters.
+                    if let Some((name, _)) = token.split_once('=')
+                        && let Some(mode) = declarations.get(name)
+                        && matches!(
+                            mode,
+                            Some(
+                                FlagOperandMode::InlineOnly
+                                    | FlagOperandMode::OptionalInlineOnly
+                                    | FlagOperandMode::InlineOrShortAttached
+                                    | FlagOperandMode::OptionalInlineOrShortAttached
+                            )
+                        )
+                    {
+                        token_flags.push(FlagName::new(name));
+                        Ok((*mode, true, false))
+                    } else {
+                        // An explicit attached grammar may extend only its own
+                        // declared word. Exact flag-only names win above; among
+                        // attached words the longest declaration owns the suffix.
+                        let matched = declarations
+                            .iter()
+                            .filter(|(name, mode)| {
+                                matches!(
+                                    mode,
+                                    Some(
+                                        FlagOperandMode::WordAttached
+                                            | FlagOperandMode::OptionalWordAttached
+                                            | FlagOperandMode::WordAttachedOrNextArg
+                                    )
+                                ) && token.starts_with(name.as_str())
+                                    && token.len() > name.len()
+                            })
+                            .max_by_key(|(name, _)| name.len());
+                        match matched {
+                            Some((name, mode)) => {
+                                token_flags.push(FlagName::new(name));
+                                Ok((*mode, true, true))
+                            }
+                            None => Err(format!("unknown leading option {token:?}")),
                         }
-                        None => Err(format!("unknown leading option {token:?}")),
                     }
                 }
             }

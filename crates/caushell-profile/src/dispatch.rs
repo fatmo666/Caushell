@@ -866,6 +866,7 @@ mod tests {
             path_list: None,
             kind: EffectKind::DispatchCommand,
             path_access: None,
+            namespace_effect: None,
             path_scope: None,
             target: EffectTarget::Dispatch(DispatchTarget {
                 module_runtime: None,

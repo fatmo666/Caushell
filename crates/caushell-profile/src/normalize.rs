@@ -3052,6 +3052,18 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
             "auxiliary input effects require a declared slot target".into(),
         ));
     }
+    if raw.namespace_effect.is_some()
+        && (kind != EffectKind::WritePath
+            || raw.path_scope.is_some()
+            || !matches!(
+                target,
+                EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
+            ))
+    {
+        return Err(NormalizeError::InvalidPathAccess(
+            "namespace_effect requires a single write_path slot/tool-convention target, without subtree scope".into(),
+        ));
+    }
     if raw.path_access.is_some()
         && (!matches!(kind, EffectKind::ReadPath | EffectKind::WritePath)
             || !matches!(target, EffectTarget::Slot(_) | EffectTarget::DerivedPath(_)))
@@ -3194,6 +3206,7 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         kind,
         target,
         path_access: raw.path_access,
+        namespace_effect: raw.namespace_effect,
         path_scope: raw.path_scope.map(|scope| match scope {
             crate::RawPathScope::Subtree {
                 escape_modifiers,
@@ -4351,6 +4364,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    namespace_effect: None,
                     path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
@@ -4403,6 +4417,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    namespace_effect: None,
                     path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
@@ -4551,6 +4566,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    namespace_effect: None,
                     path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
@@ -4674,6 +4690,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    namespace_effect: None,
                     path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
@@ -4868,6 +4885,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    namespace_effect: None,
                     path_scope: None,
                     extensions: BTreeMap::new(),
                 }],
@@ -5032,6 +5050,7 @@ mod tests {
                     terminal_session_operation: None,
                     shell_job_operation: None,
                     path_access: None,
+                    namespace_effect: None,
                     path_scope: None,
                     extensions: BTreeMap::new(),
                 }],

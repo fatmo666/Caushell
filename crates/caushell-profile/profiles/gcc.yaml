@@ -250,11 +250,12 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: next_arg
+          operand_mode: word_attached_or_next_arg
         cardinality: required_one
         value_constraints: [{kind: exclude_literal, value: '-'}]
     effects:
       - kind: write_path
+        namespace_effect: regular_file_write
         target:
           kind: slot
           name: output_path
@@ -273,7 +274,7 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: inline_or_short_attached
+          operand_mode: word_attached_or_next_arg
         cardinality: optional_many
     effects:
       - kind: read_path

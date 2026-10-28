@@ -21,6 +21,7 @@ use crate::support::{
 };
 
 mod consumption;
+mod namespace_state;
 
 pub struct ResolvePathTargetsPass;
 
@@ -42,6 +43,7 @@ struct Input {
     namespace_write: bool,
     pending_resolution: bool,
     cwd_dependent: bool,
+    namespace_effect: Option<caushell_types::PathNamespaceEffect>,
 }
 
 impl SessionTransformPass for ResolvePathTargetsPass {
@@ -78,13 +80,16 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             .iter()
             .map(|record| (record.source_node_id.0.as_str(), record))
             .collect();
-        let mut comparisons = 0usize;
+        // Resolve the current namespace first. Abstract write dependencies are
+        // separate from observations, and must not depend on iteration order.
+        let mut baselines = Vec::with_capacity(inputs.len());
         for index in 0..inputs.len() {
             if !inputs[index].pending_resolution {
+                baselines.push((inputs[index].fact.resolution.clone(), Vec::new()));
                 continue;
             }
             let spelling = inputs[index].fact.spelling.as_deref();
-            let (mut resolution, observations) = if inputs[index].cwd_dependent
+            let (resolution, observations) = if inputs[index].cwd_dependent
                 && unproved_execution_directory(&records, &inputs[index].fact.source_node_id)
             {
                 (
@@ -105,6 +110,21 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     Vec::new(),
                 )
             };
+            baselines.push((resolution, observations));
+        }
+        let mut comparisons = 0usize;
+        let stable_producers = namespace_state::stable_producers(
+            &inputs,
+            &baselines,
+            &namespace_writes,
+            &mut comparisons,
+        );
+        for index in 0..inputs.len() {
+            if !inputs[index].pending_resolution {
+                continue;
+            }
+            let (mut resolution, observations) = baselines[index].clone();
+            let mut proofs = Vec::new();
             let entry_context = matches!(
                 inputs[index].fact.operation,
                 PathTargetOperation::WorkingDirectory | PathTargetOperation::WorkspaceRoot
@@ -118,18 +138,22 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     if *other == index {
                         return false;
                     }
-                    let Some(root) = root else {
-                        return true;
-                    };
-                    spelling.is_some_and(|path| spelling_visits(path, root))
-                        || observations.iter().any(|observation| {
-                            caushell_query::path_is_within_root(&observation.path, root)
-                        })
-                        || inputs[index]
-                            .fact
-                            .lexical
-                            .concrete_path()
-                            .is_some_and(|path| caushell_query::path_is_within_root(path, root))
+                    let overlaps = namespace_state::overlaps(
+                        &inputs[index],
+                        &baselines[index],
+                        root.as_deref(),
+                    );
+                    if overlaps && stable_producers.contains(other) {
+                        if let Some(proof) = namespace_state::scope_preservation(
+                            &inputs[*other],
+                            &baselines[*other],
+                            &baselines[index],
+                        ) {
+                            proofs.push(proof);
+                            return false;
+                        }
+                    }
+                    overlaps
                 });
             if comparisons > 65536 {
                 resolution = unresolved(
@@ -143,6 +167,14 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 );
             }
             inputs[index].fact.resolution = resolution;
+            // A failed or budget-truncated proof must not leave a partial
+            // certificate that could be mistaken for a complete namespace.
+            if matches!(
+                inputs[index].fact.resolution,
+                SemanticResolution::Resolved { .. }
+            ) {
+                inputs[index].fact.namespace_proofs = proofs;
+            }
             inputs[index].fact.observations = observations;
             inputs[index]
                 .fact
@@ -231,6 +263,7 @@ fn new_input(
             lexical,
             spelling,
             observations: Vec::new(),
+            namespace_proofs: Vec::new(),
             metadata_mutation: None,
             implicit_incidental_cache: false,
         },
@@ -239,6 +272,7 @@ fn new_input(
             && access != PathTargetAccess::Follow,
         pending_resolution: true,
         cwd_dependent: false,
+        namespace_effect: None,
     }
 }
 
@@ -338,6 +372,13 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             spelling,
                         );
                         input.fact.metadata_mutation = target.metadata_mutation.clone();
+                        // A plugin/config/wrapper may execute arbitrary logic;
+                        // its declaration is not a closed namespace transformer.
+                        if bound.effects.iter().all(|effect| {
+                            matches!(effect.kind, EffectKind::ReadPath | EffectKind::WritePath)
+                        }) {
+                            input.namespace_effect = effect.namespace_effect;
+                        }
                         if archive_members {
                             // The complete archive proof excludes link/special
                             // entries; these writes cannot redirect later members.

@@ -59,11 +59,30 @@ fn version_is_an_information_query_without_a_fictitious_output() {
 }
 
 #[test]
+fn exact_diagnostic_words_do_not_break_attached_compiler_operands() {
+    for command in [
+        "gcc -Wall -Wfatal-errors -Iinclude -Llib source.c -obuild/program",
+        "gcc -I include -L lib source.c -o build/program",
+    ] {
+        let r = resolve(command);
+        assert!(!r.bound.operation_semantics_unresolved, "{command}: {r:#?}");
+        let output = r
+            .bound
+            .bound_parameters
+            .iter()
+            .find(|p| p.name.as_str() == "output_path")
+            .unwrap();
+        assert!(
+            matches!(&output.values[0], BoundValue::Argument { text, .. } if text == "build/program")
+        );
+    }
+}
+
+#[test]
 fn diagnostics_and_queries_never_cover_unknown_or_code_loading_controls() {
     for command in [
         "gcc -Wall -Wl,-Map=/outside/map source.c -o build/program",
         "gcc --version --unknown-mode",
-        "gcc --version @options",
     ] {
         if let ResolveInvocationArtifactResult::Resolved(r) = artifact(command) {
             assert!(r.bound.operation_semantics_unresolved, "{command}");

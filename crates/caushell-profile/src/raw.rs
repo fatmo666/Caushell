@@ -935,6 +935,8 @@ pub struct RawEffect {
     #[serde(default)]
     pub path_access: Option<crate::PathAccessKind>,
     #[serde(default)]
+    pub namespace_effect: Option<caushell_types::PathNamespaceEffect>,
+    #[serde(default)]
     pub path_scope: Option<RawPathScope>,
     #[serde(default)]
     pub surface: Option<RawInteractiveEscapeSurface>,

@@ -83,6 +83,25 @@ pub struct FilesystemObservation {
     pub entry: FilesystemEntry,
 }
 
+/// A tool contract about namespace changes, never a grant or a runtime result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathNamespaceEffect {
+    /// May fail, write contents, or create/replace an ordinary file at the
+    /// target leaf. Cannot introduce a symlink or change a parent directory.
+    RegularFileWrite,
+}
+
+/// Request-local abstract-state dependency. Current filesystem observations
+/// remain observations; a hypothetical output is never recorded as observed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PathNamespaceProof {
+    pub producer_node_id: String,
+    pub producer_effect_key: String,
+    pub path: String,
+    pub effect: PathNamespaceEffect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PathTargetFact {
     pub sequence_no: CommandSequenceNo,
@@ -95,6 +114,8 @@ pub struct PathTargetFact {
     pub spelling: Option<String>,
     pub resolution: SemanticResolution<PathResolution>,
     pub observations: Vec<FilesystemObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace_proofs: Vec<PathNamespaceProof>,
     pub metadata_mutation: Option<PathMetadataMutation>,
     pub implicit_incidental_cache: bool,
 }

@@ -73,6 +73,7 @@ mod tests {
             spelling: Some("/lexical".into()),
             resolution,
             observations: Vec::new(),
+            namespace_proofs: Vec::new(),
             metadata_mutation: None,
             implicit_incidental_cache: false,
         }

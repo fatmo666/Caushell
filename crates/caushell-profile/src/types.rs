@@ -1506,6 +1506,7 @@ pub struct Effect {
     pub kind: EffectKind,
     pub target: EffectTarget,
     pub path_access: Option<PathAccessKind>,
+    pub namespace_effect: Option<caushell_types::PathNamespaceEffect>,
     /// Opt-in root-inclusive traversal domain, distinct from a single entry.
     pub path_scope: Option<PathScope>,
     pub interactive_escape_surface: Option<InteractiveEscapeSurface>,
@@ -1530,6 +1531,7 @@ impl Effect {
             path_list: None,
             target: EffectTarget::None,
             path_access: None,
+            namespace_effect: None,
             path_scope: None,
             interactive_escape_surface: None,
             catastrophic: CatastrophicEffectMetadata::default(),
