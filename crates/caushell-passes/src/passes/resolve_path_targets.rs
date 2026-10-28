@@ -374,9 +374,14 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                         input.fact.metadata_mutation = target.metadata_mutation.clone();
                         // A plugin/config/wrapper may execute arbitrary logic;
                         // its declaration is not a closed namespace transformer.
-                        if bound.effects.iter().all(|effect| {
-                            matches!(effect.kind, EffectKind::ReadPath | EffectKind::WritePath)
-                        }) {
+                        if matches!(
+                            record.result(),
+                            caushell_profile::ResolveInvocationArtifactResult::Resolved(_)
+                        ) && !bound.operation_semantics_unresolved
+                            && bound.effects.iter().all(|effect| {
+                                matches!(effect.kind, EffectKind::ReadPath | EffectKind::WritePath)
+                            })
+                        {
                             input.namespace_effect = effect.namespace_effect;
                         }
                         if archive_members {

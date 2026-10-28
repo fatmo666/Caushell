@@ -59,9 +59,9 @@ fn version_is_an_information_query_without_a_fictitious_output() {
 }
 
 #[test]
-fn exact_diagnostic_words_do_not_break_attached_compiler_operands() {
+fn diagnostic_words_do_not_steal_search_or_output_operands() {
     for command in [
-        "gcc -Wall -Wfatal-errors -Iinclude -Llib source.c -obuild/program",
+        "gcc -Wall -Wfatal-errors -I include -L lib source.c -o build/program",
         "gcc -I include -L lib source.c -o build/program",
     ] {
         let r = resolve(command);

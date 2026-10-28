@@ -70,7 +70,9 @@ fn stdio_restore_rechecks_current_namespace_and_keeps_deletion_approval() {
     );
     assert!(!work.join("a.out").exists());
     fs::remove_file(work.join("build/tool")).unwrap();
-    std::os::unix::fs::symlink(root.join("outside/tool"), work.join("build/tool")).unwrap();
+    // /tmp is intentionally an execution grant on Linux, so an adjacent
+    // temporary directory is not an ungranted outside-scope target.
+    std::os::unix::fs::symlink("/outside/tool", work.join("build/tool")).unwrap();
     let stale = round("./build/tool");
     assert_eq!(
         stale.decision,

@@ -120,6 +120,7 @@ fn compiler_unknown_options_and_code_loads_remain_approval() {
 fn ordinary_output_scope_is_invariant_across_shell_composition() {
     for command in [
         "gcc source.c -o build/tool && ./build/tool 7",
+        "gcc source.c && ./a.out 7",
         "cc source.c -o build/other && time ./build/other 8",
         "g++ source.cc -o /tmp/test-tool && /tmp/test-tool",
         "gcc -Wall -Wextra -pedantic source.c -o build/tool && ./build/tool",
@@ -347,4 +348,19 @@ fn a_changed_producer_spelling_invalidates_its_consumers_transitively() {
         matches!(target.resolution, SemanticResolution::Unresolved { .. }),
         "{target:#?}"
     );
+}
+
+#[test]
+fn unknown_compiler_options_do_not_erase_existing_wrapper_deny() {
+    for invocation in [
+        "gcc -wrapper /bin/sh,-s input.c",
+        "gcc --unknown-mode -wrapper /bin/sh,-s input.c",
+        "gcc -wrapper /bin/sh,-s --unknown-mode input.c",
+    ] {
+        let r = with_namespace().check(request(
+            &format!("printf '%s\\n' 'rm -rf /' | {invocation}"),
+            1,
+        ));
+        assert_eq!(r.decision, Decision::Deny, "{invocation}: {:?}", r.reasons);
+    }
 }

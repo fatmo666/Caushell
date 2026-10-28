@@ -950,7 +950,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 scan.path,
             )
         } else {
-            let mut root_options = scoped_options(
+            let root_options = scoped_options(
                 profile.option_scope,
                 profile.option_matching,
                 profile.option_prefixes,
@@ -964,9 +964,6 @@ pub(crate) fn bind_modifier_only_invocation(
                 &profile.exact_option_words,
                 &profile.trailing_option_words,
             );
-            if let Some(options) = &mut root_options {
-                retain_possible_inline_effects(profile, projection, scope, options);
-            }
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
             } else {
@@ -1063,73 +1060,7 @@ pub(crate) fn bind_modifier_only_invocation(
     }
 
     bound.residuals = residuals;
-    if option_scope
-        .as_ref()
-        .is_some_and(|options| options.error.is_some())
-    {
-        bound.operation_semantics_unresolved = true;
-    }
     Some(bound)
-}
-
-/// Partial, fail-closed projection only. An unknown option's arity prevents a
-/// complete scan, but must not erase a known self-contained effect later in a
-/// tool-owned argv. These are *possible* effects, never proof of ownership or
-/// absence of risk. Do not cross child-command regions or a data terminator.
-fn retain_possible_inline_effects(
-    profile: &CommandProfile,
-    projection: &ProjectedInvocation,
-    scope: ArgumentScope,
-    options: &mut crate::ScopedOptions,
-) {
-    if options.error.is_none()
-        || profile.option_scope != crate::OptionScopePolicy::PermutedOptions
-        || !profile.argument_regions.is_empty()
-        || !profile.trailing_option_words.is_empty()
-    {
-        return;
-    }
-    let Ok(declarations) = crate::declared_options(profile) else {
-        return;
-    };
-    for index in scope.start_index..scope.end_index {
-        let argument = &projection.args[index];
-        let shape = crate::argument_structure(argument);
-        let Some(token) = shape.exact_value() else {
-            continue;
-        };
-        if token == "--" {
-            break;
-        }
-        let Some((name, _)) = token.split_once('=') else {
-            continue;
-        };
-        let Some(Some(mode)) = declarations.get(name) else {
-            continue;
-        };
-        if !matches!(
-            mode,
-            FlagOperandMode::InlineOnly
-                | FlagOperandMode::OptionalInlineOnly
-                | FlagOperandMode::InlineOrShortAttached
-                | FlagOperandMode::OptionalInlineOrShortAttached
-        ) || !profile.modifiers.iter().any(|modifier| {
-            !modifier.effects.is_empty()
-                && modifier
-                    .matcher
-                    .flag_names()
-                    .iter()
-                    .any(|flag| flag.as_str() == name)
-        }) {
-            continue;
-        }
-        let occurrence = (index, FlagName::new(name));
-        if !options.flags.contains(&occurrence) {
-            options.flags.push(occurrence);
-        }
-    }
-    options.scope.end_index = scope.end_index;
-    options.ownership_unresolved = true;
 }
 
 fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &ProjectedInvocation) {
@@ -3269,6 +3200,23 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
             }
 
+            // An exact declared option word owns its token. In the legacy
+            // grammar, do not steal a short option from the middle of another
+            // modifier's complete word (e.g. -o from a diagnostic control).
+            if owned_occurrences.is_none()
+                && !flag_names.iter().any(|flag| flag.as_str() == arg.text)
+                && self.selected_modifiers.iter().any(|selected| {
+                    selected
+                        .modifier
+                        .matcher
+                        .flag_names()
+                        .iter()
+                        .any(|flag| flag.as_str() == arg.text)
+                })
+            {
+                continue;
+            }
+
             let flag_text = if self.exact_option_words {
                 crate::argument_regions::argv_value(arg)
             } else {
@@ -4860,6 +4808,9 @@ fn modifier_flag_token_matches_name(
     if allow_inline_long_operand && inline_long_flag_operand(token_text, flag_name).is_some() {
         return true;
     }
+    if allow_inline_long_operand && inline_word_flag_operand(token_text, flag_name).is_some() {
+        return true;
+    }
 
     allow_short_attached
         && flag_token_binding_match(
@@ -5084,6 +5035,9 @@ fn flag_token_binding_match<'a>(
     if let Some(inline_operand) = inline_long_flag_operand(token_text, flag_name) {
         return Some(FlagTokenMatch::LongInlineOperand(inline_operand));
     }
+    if allow_short_attached && let Some(value) = inline_word_flag_operand(token_text, flag_name) {
+        return Some(FlagTokenMatch::LongInlineOperand(value));
+    }
 
     if !allow_short_attached || matching == OptionMatchingPolicy::ExactNames {
         return None;
@@ -5138,12 +5092,8 @@ fn owned_flag_token_binding_match<'a>(
         return Some(FlagTokenMatch::LongInlineOperand(value));
     }
     if matching == OptionMatchingPolicy::ExactNames
-        && let Some(value) = token
-            .strip_prefix(flag)
-            .and_then(|suffix| suffix.strip_prefix('='))
+        && let Some(value) = inline_word_flag_operand(token, flag)
     {
-        // The scoped scanner certified this exact option occurrence and its
-        // equals-operand grammar. Keep the canonical value, including empty.
         return Some(FlagTokenMatch::LongInlineOperand(value));
     }
     if matching == OptionMatchingPolicy::DeclaredShortWords {
@@ -5222,6 +5172,13 @@ fn inline_long_flag_operand<'a>(token_text: &'a str, flag_name: &str) -> Option<
     }
 
     token_text.strip_prefix(flag_name)?.strip_prefix('=')
+}
+
+fn inline_word_flag_operand<'a>(token: &'a str, flag: &str) -> Option<&'a str> {
+    if flag.len() <= 2 || !flag.starts_with('-') || flag.starts_with("--") {
+        return None;
+    }
+    token.strip_prefix(flag)?.strip_prefix('=')
 }
 
 fn inline_short_flag_operand<'a>(

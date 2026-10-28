@@ -1,7 +1,5 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-option_scope: permuted_options
-option_matching: exact_names
 
 identity:
   canonical_name: gcc
@@ -210,6 +208,7 @@ forms:
           kind: slot
           name: input_paths
       - kind: write_path
+        namespace_effect: regular_file_write
         target:
           kind: tool_convention_path
           path: a.out
@@ -250,7 +249,7 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: word_attached_or_next_arg
+          operand_mode: next_arg
         cardinality: required_one
         value_constraints: [{kind: exclude_literal, value: '-'}]
     effects:
@@ -274,7 +273,7 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: word_attached_or_next_arg
+          operand_mode: next_arg
         cardinality: optional_many
     effects:
       - kind: read_path
