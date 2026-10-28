@@ -129,7 +129,7 @@ impl SessionAnalysisPass for NonShellScriptGuardPass {
                         check.source.0 == execution.node_id
                             && check.slot == *slot
                             && check.exempt
-                            && check.has_resolved_file_target
+                            && check.file_targets_resolved
                     })
                 })
             {
@@ -271,17 +271,26 @@ forms:
 
     #[test]
     fn non_file_stream_targets_do_not_authorize_an_opaque_body() {
-        let ctx = run_file_contract(
+        for command in [
             "custom-file-runner <(producer) <(producer)",
-            "script_file_ref",
-            true,
-        );
-        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
-            caushell_runner::PendingMutation::AddPathTargetFact { fact, .. }
-            if fact.operation == PathTargetOperation::ExecuteFile
-            && matches!(fact.resolution, SemanticResolution::NotApplicable { .. })
-        )));
-        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+            "custom-file-runner ./a <(producer)",
+            "custom-file-runner <(producer) ./b",
+        ] {
+            let ctx = run_file_contract(command, "script_file_ref", true);
+            assert!(
+                ctx.pending_mutations().iter().any(|m| matches!(m,
+                    caushell_runner::PendingMutation::AddPathTargetFact { fact, .. }
+                    if fact.operation == PathTargetOperation::ExecuteFile
+                    && matches!(fact.resolution, SemanticResolution::NotApplicable { .. })
+                )),
+                "{command}"
+            );
+            assert_eq!(
+                ctx.final_decision,
+                Some(Decision::NeedApproval),
+                "{command}"
+            );
+        }
     }
 
     #[test]

@@ -2959,10 +2959,10 @@ and payload semantics, not executable-name or source-text matching. Known bytes
 and registered module CLI contracts do not remove that floor.
 
 For `script_file_ref`, the guard joins the owning execution unit and parameter
-slot to its `ExecuteFile` path targets. Complete authorized targets with at
-least one resolved file use the existing workspace, temporary-root or scoped
+slot to its `ExecuteFile` path targets. Complete authorized targets that all
+resolve to files use the existing workspace, temporary-root or scoped
 execution grant, just as native executable paths do. Missing, unresolved or
-outside targets retain approval; `NotApplicable` alone is not a file grant.
+outside targets retain approval; a non-filesystem channel is not a file grant.
 Only the unsupported-language residual for that file reference is exempted.
 Other gaps, sibling payloads, downloaded-code provenance and all Deny findings
 remain effective. Explicit `non_shell_script_execution: deny` is not exempted.
