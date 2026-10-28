@@ -74,4 +74,54 @@ fn exact_option_words_own_declared_equals_operands_without_short_flag_confusion(
     assert!(
         matches!(&parameter.values[0], caushell_profile::BoundValue::Argument { text, .. } if text == "/outside/lib.so")
     );
+
+    let parsed = caushell_parse::parse_command(
+        "driver --unknown -loader=/outside/lib.so",
+        caushell_types::ShellKind::Bash,
+    )
+    .unwrap();
+    let caushell_profile::ResolveInvocationArtifactResult::SelectionError {
+        partial_bound: Some(partial),
+        ..
+    } = caushell_profile::resolve_invocation_artifact_with_bindings(
+        &registry,
+        &parsed.commands[0],
+        caushell_profile::InvocationRuntimeContext::new(),
+        &caushell_profile::SessionBindings::new(),
+    )
+    else {
+        panic!("expected incomplete risk projection")
+    };
+    assert!(partial.operation_semantics_unresolved);
+    assert!(
+        partial
+            .effects
+            .iter()
+            .any(|e| e.kind == caushell_profile::EffectKind::LoadInProcessCode)
+    );
+
+    // An explicit data boundary is not an opportunity to discover new options.
+    let parsed = caushell_parse::parse_command(
+        "driver --unknown -- -loader=/outside/lib.so",
+        caushell_types::ShellKind::Bash,
+    )
+    .unwrap();
+    let result = caushell_profile::resolve_invocation_artifact_with_bindings(
+        &registry,
+        &parsed.commands[0],
+        caushell_profile::InvocationRuntimeContext::new(),
+        &caushell_profile::SessionBindings::new(),
+    );
+    if let caushell_profile::ResolveInvocationArtifactResult::SelectionError {
+        partial_bound: Some(partial),
+        ..
+    } = result
+    {
+        assert!(
+            !partial
+                .effects
+                .iter()
+                .any(|e| e.kind == caushell_profile::EffectKind::LoadInProcessCode)
+        );
+    }
 }

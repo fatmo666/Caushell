@@ -950,7 +950,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 scan.path,
             )
         } else {
-            let root_options = scoped_options(
+            let mut root_options = scoped_options(
                 profile.option_scope,
                 profile.option_matching,
                 profile.option_prefixes,
@@ -964,6 +964,9 @@ pub(crate) fn bind_modifier_only_invocation(
                 &profile.exact_option_words,
                 &profile.trailing_option_words,
             );
+            if let Some(options) = &mut root_options {
+                retain_possible_inline_effects(profile, projection, scope, options);
+            }
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
             } else {
@@ -1060,7 +1063,73 @@ pub(crate) fn bind_modifier_only_invocation(
     }
 
     bound.residuals = residuals;
+    if option_scope
+        .as_ref()
+        .is_some_and(|options| options.error.is_some())
+    {
+        bound.operation_semantics_unresolved = true;
+    }
     Some(bound)
+}
+
+/// Partial, fail-closed projection only. An unknown option's arity prevents a
+/// complete scan, but must not erase a known self-contained effect later in a
+/// tool-owned argv. These are *possible* effects, never proof of ownership or
+/// absence of risk. Do not cross child-command regions or a data terminator.
+fn retain_possible_inline_effects(
+    profile: &CommandProfile,
+    projection: &ProjectedInvocation,
+    scope: ArgumentScope,
+    options: &mut crate::ScopedOptions,
+) {
+    if options.error.is_none()
+        || profile.option_scope != crate::OptionScopePolicy::PermutedOptions
+        || !profile.argument_regions.is_empty()
+        || !profile.trailing_option_words.is_empty()
+    {
+        return;
+    }
+    let Ok(declarations) = crate::declared_options(profile) else {
+        return;
+    };
+    for index in scope.start_index..scope.end_index {
+        let argument = &projection.args[index];
+        let shape = crate::argument_structure(argument);
+        let Some(token) = shape.exact_value() else {
+            continue;
+        };
+        if token == "--" {
+            break;
+        }
+        let Some((name, _)) = token.split_once('=') else {
+            continue;
+        };
+        let Some(Some(mode)) = declarations.get(name) else {
+            continue;
+        };
+        if !matches!(
+            mode,
+            FlagOperandMode::InlineOnly
+                | FlagOperandMode::OptionalInlineOnly
+                | FlagOperandMode::InlineOrShortAttached
+                | FlagOperandMode::OptionalInlineOrShortAttached
+        ) || !profile.modifiers.iter().any(|modifier| {
+            !modifier.effects.is_empty()
+                && modifier
+                    .matcher
+                    .flag_names()
+                    .iter()
+                    .any(|flag| flag.as_str() == name)
+        }) {
+            continue;
+        }
+        let occurrence = (index, FlagName::new(name));
+        if !options.flags.contains(&occurrence) {
+            options.flags.push(occurrence);
+        }
+    }
+    options.scope.end_index = scope.end_index;
+    options.ownership_unresolved = true;
 }
 
 fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &ProjectedInvocation) {

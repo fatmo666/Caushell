@@ -310,13 +310,17 @@ fn declared_code_load_deny_cannot_become_unknown_option_ask() {
         .rule_policy
         .rules
         .insert(RuleId::CodeLoadPath, RulePolicyEntry::new(RuleAction::Deny));
-    let r = ShellQueryCore::with_policy(policy)
-        .with_filesystem_view(Arc::new(Namespace::default()))
-        .check(request(
-            "gcc -Wall -fplugin=/outside/plugin.so source.c -o build/tool",
-            1,
-        ));
-    assert_eq!(r.decision, Decision::Deny, "{:?}", r.reasons);
+    for command in [
+        "gcc -Wall -fplugin=/outside/plugin.so source.c -o build/tool",
+        "gcc --version -fplugin=/outside/plugin.so",
+        "gcc --unknown-mode -fplugin=/outside/plugin.so source.c -o build/tool",
+        "gcc -fplugin=/outside/plugin.so --unknown-mode source.c -o build/tool",
+    ] {
+        let r = ShellQueryCore::with_policy(policy.clone())
+            .with_filesystem_view(Arc::new(Namespace::default()))
+            .check(request(command, 1));
+        assert_eq!(r.decision, Decision::Deny, "{command}: {:?}", r.reasons);
+    }
 }
 
 #[test]
