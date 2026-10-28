@@ -13,6 +13,8 @@ trust:
   tier: tier_a
   source: built_in
 
+# GCC uses whole single-prefix option words, not POSIX short-option clusters.
+option_matching: exact_names
 opaque_on_unresolved: true
 
 argument_files:

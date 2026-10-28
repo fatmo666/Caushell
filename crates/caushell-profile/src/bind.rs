@@ -3200,23 +3200,6 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
             }
 
-            // An exact declared option word owns its token. In the legacy
-            // grammar, do not steal a short option from the middle of another
-            // modifier's complete word (e.g. -o from a diagnostic control).
-            if owned_occurrences.is_none()
-                && !flag_names.iter().any(|flag| flag.as_str() == arg.text)
-                && self.selected_modifiers.iter().any(|selected| {
-                    selected
-                        .modifier
-                        .matcher
-                        .flag_names()
-                        .iter()
-                        .any(|flag| flag.as_str() == arg.text)
-                })
-            {
-                continue;
-            }
-
             let flag_text = if self.exact_option_words {
                 crate::argument_regions::argv_value(arg)
             } else {
@@ -3263,6 +3246,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
                                 | FlagOperandMode::OptionalNextArg
                                 | FlagOperandMode::OptionalInlineOrShortAttached
                         ),
+                        mode_allows_inline_word_operand(operand_mode),
                         &declared_short_flags,
                         &self.declared_short_flags,
                         &self.short_flags_allowing_attached_operands,
@@ -4635,6 +4619,12 @@ fn modifier_matches_in_scope(
     let allow_short_attached = modifier_allows_short_attached(modifier);
     let allow_ambiguous_short_attached = modifier_uses_inline_or_short_attached(modifier);
     let allow_inline_long_operand = modifier_allows_inline_long_operand(modifier);
+    let allow_inline_word_operand = modifier.parameters.iter().any(|parameter| {
+        matches!(parameter.binding,
+            BindingSpec::FollowingMatchedFlag { operand_mode }
+                | BindingSpec::FollowingFlag { operand_mode, .. }
+                if mode_allows_inline_word_operand(operand_mode))
+    });
 
     !flags.is_empty()
         && match &modifier.matcher {
@@ -4647,6 +4637,7 @@ fn modifier_matches_in_scope(
                     allow_short_attached,
                     allow_ambiguous_short_attached,
                     allow_inline_long_operand,
+                    allow_inline_word_operand,
                     declared_short_flags,
                     short_flags_allowing_attached_operands,
                     matching,
@@ -4661,6 +4652,7 @@ fn modifier_matches_in_scope(
                     allow_short_attached,
                     allow_ambiguous_short_attached,
                     allow_inline_long_operand,
+                    allow_inline_word_operand,
                     declared_short_flags,
                     short_flags_allowing_attached_operands,
                     matching,
@@ -4677,6 +4669,7 @@ fn modifier_flag_matches_in_scope(
     allow_short_attached: bool,
     allow_ambiguous_short_attached: bool,
     allow_inline_long_operand: bool,
+    allow_inline_word_operand: bool,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
     matching: OptionMatchingPolicy,
@@ -4699,6 +4692,7 @@ fn modifier_flag_matches_in_scope(
                     allow_short_attached && !saw_positional,
                     allow_ambiguous_short_attached,
                     allow_inline_long_operand,
+                    allow_inline_word_operand,
                     declared_short_flags,
                     short_flags_allowing_attached_operands,
                     matching,
@@ -4744,6 +4738,7 @@ fn constraint_flag_matches_in_scope(
             true,
             true,
             true,
+            false,
             declared_short_flags,
             short_flags_allowing_attached_operands,
             matching,
@@ -4778,6 +4773,7 @@ fn constraint_flag_matches_in_shape(
             true,
             true,
             true,
+            false,
             declared_short_flags,
             short_flags_allowing_attached_operands,
             shape.option_matching,
@@ -4797,6 +4793,7 @@ fn modifier_flag_token_matches_name(
     allow_short_attached: bool,
     allow_ambiguous_short_attached: bool,
     allow_inline_long_operand: bool,
+    allow_inline_word_operand: bool,
     declared_short_flags: &BTreeSet<String>,
     short_flags_allowing_attached_operands: &BTreeSet<String>,
     matching: OptionMatchingPolicy,
@@ -4808,7 +4805,7 @@ fn modifier_flag_token_matches_name(
     if allow_inline_long_operand && inline_long_flag_operand(token_text, flag_name).is_some() {
         return true;
     }
-    if allow_inline_long_operand && inline_word_flag_operand(token_text, flag_name).is_some() {
+    if allow_inline_word_operand && inline_word_flag_operand(token_text, flag_name).is_some() {
         return true;
     }
 
@@ -4818,6 +4815,7 @@ fn modifier_flag_token_matches_name(
             flag_name,
             allow_short_attached,
             allow_ambiguous_short_attached,
+            allow_inline_word_operand,
             declared_short_flags,
             declared_short_flags,
             short_flags_allowing_attached_operands,
@@ -5022,6 +5020,7 @@ fn flag_token_binding_match<'a>(
     flag_name: &str,
     allow_short_attached: bool,
     allow_ambiguous_short_attached: bool,
+    allow_inline_word_operand: bool,
     declared_short_flags: &BTreeSet<String>,
     all_declared_short_flags: &BTreeSet<String>,
     all_short_flags_allowing_attached_operands: &BTreeSet<String>,
@@ -5035,7 +5034,9 @@ fn flag_token_binding_match<'a>(
     if let Some(inline_operand) = inline_long_flag_operand(token_text, flag_name) {
         return Some(FlagTokenMatch::LongInlineOperand(inline_operand));
     }
-    if allow_short_attached && let Some(value) = inline_word_flag_operand(token_text, flag_name) {
+    if allow_inline_word_operand
+        && let Some(value) = inline_word_flag_operand(token_text, flag_name)
+    {
         return Some(FlagTokenMatch::LongInlineOperand(value));
     }
 
@@ -5092,6 +5093,7 @@ fn owned_flag_token_binding_match<'a>(
         return Some(FlagTokenMatch::LongInlineOperand(value));
     }
     if matching == OptionMatchingPolicy::ExactNames
+        && mode_allows_inline_word_operand(mode)
         && let Some(value) = inline_word_flag_operand(token, flag)
     {
         return Some(FlagTokenMatch::LongInlineOperand(value));
@@ -5172,6 +5174,16 @@ fn inline_long_flag_operand<'a>(token_text: &'a str, flag_name: &str) -> Option<
     }
 
     token_text.strip_prefix(flag_name)?.strip_prefix('=')
+}
+
+fn mode_allows_inline_word_operand(mode: FlagOperandMode) -> bool {
+    matches!(
+        mode,
+        FlagOperandMode::InlineOnly
+            | FlagOperandMode::OptionalInlineOnly
+            | FlagOperandMode::InlineOrShortAttached
+            | FlagOperandMode::OptionalInlineOrShortAttached
+    )
 }
 
 fn inline_word_flag_operand<'a>(token: &'a str, flag: &str) -> Option<&'a str> {
