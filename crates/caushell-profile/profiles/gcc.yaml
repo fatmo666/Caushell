@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: permuted_options
+option_matching: exact_names
 
 identity:
   canonical_name: gcc
@@ -27,6 +29,18 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_version
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: version}
+        - {kind: no_positional_args}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '--version'}}
+        - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^'}}}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
+    # Retain modifier effects and residuals: a query must not hide a plugin,
+    # response file, unknown option or sibling shell operation.
   - id: print_search_directories
     selector: {kind: has_modifier, modifier: print_search_dirs}
     parameters: []
@@ -150,6 +164,7 @@ forms:
     selector:
       kind: all
       items:
+        - {kind: not, item: {kind: has_modifier, modifier: version}}
         - {kind: has_modifier, modifier: output_path}
         - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
         - kind: not
@@ -173,6 +188,7 @@ forms:
     selector:
       kind: all
       items:
+        - {kind: not, item: {kind: has_modifier, modifier: version}}
         - {kind: not, item: {kind: has_modifier, modifier: print_search_dirs}}
         - {kind: not, item: {kind: has_modifier, modifier: output_path}}
         - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
@@ -201,6 +217,10 @@ forms:
           purpose: generic_operand
 
 modifiers:
+  - {id: version, matcher: {kind: any_flag, flags: ["--version"]}}
+  # Exact diagnostic controls, not a -W* wildcard (which would also own -Wl,).
+  - id: diagnostic_controls
+    matcher: {kind: any_flag, flags: ["-Wall", "-Wextra", "-pedantic", "-Wpedantic", "-pedantic-errors", "-Werror", "-Wfatal-errors", "-w"]}
   - {id: print_search_dirs, matcher: {kind: any_flag, flags: ["-print-search-dirs"]}}
   - id: preprocess_only
     matcher:
