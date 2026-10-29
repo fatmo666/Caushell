@@ -219,6 +219,11 @@ forms:
 
 modifiers:
   - {id: version, matcher: {kind: any_flag, flags: ["--version"]}}
+  # GCC 13.3 documented optimization modes are complete single-prefix words.
+  # No operand or short-option cluster is owned by these flags; in particular,
+  # bare -O leaves the next filename alone. Resource effects are unchanged.
+  - id: optimization_level
+    matcher: {kind: any_flag, flags: [-O, -O0, -O1, -O2, -O3, -Os, -Og, -Oz, -Ofast]}
   # GCC 13.3 C/C++ dialect names and documented aliases. Each occurrence is
   # validated; a later valid dialect cannot conceal an earlier unknown value.
   - {id: ansi_standard, matcher: {kind: any_flag, flags: [-ansi]}}
@@ -415,11 +420,14 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Optimize-Options.html
+    - https://github.com/gcc-mirror/gcc/blob/releases/gcc-13.3.0/gcc/opts.cc
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Instrumentation-Options.html
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Debugging-Options.html
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
+    - The nine documented -O optimization modes are modeled as complete option words. Other numeric spellings or levels, unknown/partial words, individual -f optimizations, profile/LTO and extra-output controls remain unresolved. Optimization does not establish build success, generated-code safety or additional resource authority.
     - Sanitizer operands admit nonempty lists of documented GCC 13.3 mode names, in any order and with repetitions. Enabling all, unknown modes, missing/partial values and unmodeled sanitizer suboptions remain unresolved. This models command effects, not whether GCC accepts a target-specific combination or whether the build succeeds.
     - Ordinary -g levels, GDB and DWARF formats are modeled without granting write or execution authority. Split debug files and other undeclared debug controls remain unresolved.
     - Compiler response files carry arbitrary options; their contents are not expanded. The argument-file declaration retains the concrete response-file read and possible output-file writes; nested wrapper and plugin options are not reconstructed.
