@@ -457,6 +457,9 @@ pub(crate) fn covered_positionals(
                         crate::ValueConstraint::ExcludeLiteral(word) => {
                             additional.iter().any(|i| shapes[*i].may_equal(word))
                         }
+                        // Changed ownership cannot prove a value grammar for
+                        // every possible newly bound operand.
+                        crate::ValueConstraint::RequireMatch(_) => true,
                     })
                 {
                     return None;
@@ -509,6 +512,7 @@ pub(crate) fn covered_positionals(
                                 crate::ValueConstraint::ExcludeLiteral(word) => {
                                     !shapes[*i].may_equal(word)
                                 }
+                                crate::ValueConstraint::RequireMatch(_) => false,
                             })
                     })
         });

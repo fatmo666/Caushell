@@ -1945,7 +1945,7 @@ fn normalize_parameter(raw: RawParameter) -> Result<Parameter, NormalizeError> {
             .value_constraints
             .into_iter()
             .map(normalize_value_constraint)
-            .collect(),
+            .collect::<Result<_, _>>()?,
         extensions: normalize_extensions(raw.extensions)?,
     })
 }
@@ -2725,10 +2725,17 @@ fn normalize_value_matcher(raw: RawValueMatcher) -> Result<ValueMatcher, Normali
     }
 }
 
-fn normalize_value_constraint(raw: RawValueConstraint) -> ValueConstraint {
-    match raw {
+fn normalize_value_constraint(raw: RawValueConstraint) -> Result<ValueConstraint, NormalizeError> {
+    Ok(match raw {
         RawValueConstraint::ExcludeLiteral { value } => ValueConstraint::ExcludeLiteral(value),
-    }
+        RawValueConstraint::RequireMatch { pattern } => {
+            ensure_non_empty(&pattern, "value_constraint.require_match.pattern")?;
+            let anchored = format!("\\A(?:{pattern})\\z");
+            let regex = crate::CompiledOperandRegex::compile(&anchored)
+                .map_err(|_| NormalizeError::InvalidRegexPattern(pattern))?;
+            ValueConstraint::RequireMatch(regex)
+        }
+    })
 }
 
 fn normalize_implicit_input(raw: RawImplicitInput) -> Result<ImplicitInput, NormalizeError> {

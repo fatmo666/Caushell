@@ -619,6 +619,7 @@ pub enum RawProjectionAbsentPolicy {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RawValueConstraint {
     ExcludeLiteral { value: String },
+    RequireMatch { pattern: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

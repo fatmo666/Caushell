@@ -741,6 +741,10 @@ pub enum FlagOperandMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueConstraint {
     ExcludeLiteral(String),
+    /// Validate every complete, decoded operand against a whole-value grammar.
+    /// Unknown or rejected values remain bound, retaining their possible effects;
+    /// validation adds an operation gap rather than removing data or authority.
+    RequireMatch(CompiledOperandRegex),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

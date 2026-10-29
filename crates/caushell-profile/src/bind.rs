@@ -591,6 +591,23 @@ pub fn bind_invocation(
 
     for (index, bound_parameter) in parameter_results.into_iter().enumerate() {
         if let Some(mut parameter) = bound_parameter {
+            for constraint in &targets[index].parameter.value_constraints {
+                if let ValueConstraint::RequireMatch(regex) = constraint
+                    && parameter.values.iter().any(|value| {
+                        !matches!(crate::project_value(&crate::ValueProjection::Identity, value),
+                            Some(crate::SemanticValueResolution::Known(text)) if regex.regex().is_match(&text))
+                    })
+                {
+                    // Keep original values and all known effects, including
+                    // code-loading/dispatch effects that can still prove Deny.
+                    bound.operation_semantics_unresolved = true;
+                    residuals.push(Residual::new(
+                        ResidualKind::UnboundControlSurface,
+                        ResidualSurface::Control,
+                        format!("parameter {} is not completely proved by its declared value grammar", parameter.name.as_str()),
+                    ).for_slot(parameter.name.as_str()));
+                }
+            }
             if targets[index].modifier.is_some() && form_suppresses_modifier_effects(selection.form)
             {
                 // A suppressed modifier must not regain its effect-bearing
@@ -598,6 +615,14 @@ pub fn bind_invocation(
                 parameter.structured_projection = None;
             }
             bound.bound_parameters.push(parameter);
+        } else if !targets[index].parameter.cardinality.is_optional()
+            && targets[index]
+                .parameter
+                .value_constraints
+                .iter()
+                .any(|constraint| matches!(constraint, ValueConstraint::RequireMatch(_)))
+        {
+            bound.operation_semantics_unresolved = true;
         }
     }
 
@@ -4271,6 +4296,7 @@ impl<'p, 'm> BindingState<'p, 'm> {
             if !admitted
                 || !value_constraints.iter().all(|constraint| match constraint {
                     ValueConstraint::ExcludeLiteral(value) => !structure.may_equal(value),
+                    ValueConstraint::RequireMatch(_) => true,
                 })
             {
                 continue;
@@ -4362,6 +4388,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
 fn argument_satisfies_value_constraints(text: &str, value_constraints: &[ValueConstraint]) -> bool {
     value_constraints.iter().all(|constraint| match constraint {
         ValueConstraint::ExcludeLiteral(value) => text != value,
+        // RequireMatch audits decoded bound values, without filtering effects.
+        ValueConstraint::RequireMatch(_) => true,
     })
 }
 
