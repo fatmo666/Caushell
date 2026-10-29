@@ -15,13 +15,16 @@ fn instrumentation_checks_restore_authority_and_reject_unknown_or_stale_evidence
     fs::write(work.join("input.c"), "not compiled\n").unwrap();
     fs::write(work.join("build/program"), "not executed\n").unwrap();
     fs::write(root.join("defaults.yaml"), "{}\n").unwrap();
-    let round = |command: &str| {
+    let round_with_modes = |command: &str, modes: Option<&str>| {
         let mut shell = ShellStateSnapshot::new(work.to_str().unwrap())
             .with_environment_observation("BASH_ENV", ShellEnvironmentValue::Absent)
             .with_environment_observation("ENV", ShellEnvironmentValue::Absent);
         shell.observability.variables = ShellStateKnowledge::Complete;
         shell.observability.aliases = ShellStateKnowledge::Complete;
         shell.observability.functions = ShellStateKnowledge::Complete;
+        if let Some(modes) = modes {
+            shell = shell.with_exact_scalar_variable("SANITIZERS", modes, false);
+        }
         let request = RuntimeTransportRequest::Check(RuntimeCheckRequest {
             intent: CheckIntent::JudgeOnly,
             session_id: SessionId::new("instrumentation-stdio"),
@@ -52,6 +55,7 @@ fn instrumentation_checks_restore_authority_and_reject_unknown_or_stale_evidence
         };
         result.response
     };
+    let round = |command: &str| round_with_modes(command, None);
     let first =
         round("gcc -g3 -fsanitize=address,undefined input.c -o build/program && ./build/program");
     assert_eq!(first.decision, Decision::Allow, "{:?}", first.reasons);
@@ -62,6 +66,28 @@ fn instrumentation_checks_restore_authority_and_reject_unknown_or_stale_evidence
             .iter()
             .any(|p| !p.namespace_proofs.is_empty())
     );
+    let dynamic_command =
+        "gcc -g -fsanitize=\"$SANITIZERS\" input.c -o build/program && ./build/program";
+    for (modes, expected) in [
+        ("address,undefined", Decision::Allow),
+        ("unknown", Decision::NeedApproval),
+        ("undefined,address", Decision::Allow),
+    ] {
+        let response = round_with_modes(dynamic_command, Some(modes));
+        assert_eq!(
+            response.decision, expected,
+            "{modes}: {:?}",
+            response.reasons
+        );
+        assert_eq!(
+            response
+                .decision_trace
+                .path_targets
+                .iter()
+                .any(|p| !p.namespace_proofs.is_empty()),
+            expected == Decision::Allow
+        );
+    }
     let unknown = round("gcc -g -fsanitize=unknown input.c -o build/program && ./build/program");
     assert_eq!(
         unknown.decision,

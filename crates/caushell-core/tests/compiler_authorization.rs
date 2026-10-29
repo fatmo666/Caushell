@@ -557,6 +557,54 @@ fn instrumentation_retains_deletion_approval_and_existing_denies() {
 }
 
 #[test]
+fn instrumentation_values_are_revalidated_after_snapshot_restore() {
+    let command = "gcc -g -fsanitize=\"$SANITIZERS\" input.c -o build/checked && ./build/checked";
+    let mut core = with_namespace();
+    let mut first = request(command, 1);
+    first.shell_state_before = first.shell_state_before.with_exact_scalar_variable(
+        "SANITIZERS",
+        "address,undefined",
+        false,
+    );
+    assert_eq!(core.check(first).decision, Decision::Allow);
+    let snapshot = core
+        .session_snapshot(&SessionId::new("compiler-authority"), 1)
+        .unwrap();
+    let snapshot = serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    let mut restored = with_namespace();
+    restored.insert_session_state(
+        SessionId::new("compiler-authority"),
+        caushell_core::SessionState::from_snapshot(snapshot).unwrap(),
+    );
+    for (sequence, modes, expected) in [
+        (2, Some("unknown"), Decision::NeedApproval),
+        (3, None, Decision::NeedApproval),
+        (4, Some("undefined,address"), Decision::Allow),
+    ] {
+        let mut req = request(command, sequence);
+        req.shell_state_before = match modes {
+            Some(value) => {
+                req.shell_state_before
+                    .with_exact_scalar_variable("SANITIZERS", value, false)
+            }
+            None => {
+                req.shell_state_before
+                    .with_opaque_dynamic_variable("SANITIZERS", "$DYNAMIC", false)
+            }
+        };
+        let r = restored.check(req);
+        assert_eq!(r.decision, expected, "{modes:?}: {:?}", r.reasons);
+        assert_eq!(
+            r.decision_trace
+                .path_targets
+                .iter()
+                .any(|p| !p.namespace_proofs.is_empty()),
+            expected == Decision::Allow
+        );
+    }
+}
+
+#[test]
 fn instrumentation_does_not_clean_downloaded_source_provenance() {
     let mut core = with_namespace();
     core.check(request("curl -q -o input.c https://example.test/source", 1));
