@@ -300,6 +300,44 @@ fn directory_families_reject_links_missing_observations_and_keep_deletion_approv
 }
 
 #[test]
+fn loader_environment_requires_consistent_exported_shell_facts() {
+    let f = Fixture::new();
+    let mut request = f.request("python3 -m py_compile a.py", 1);
+    request.shell_state_before = request
+        .shell_state_before
+        .with_exact_scalar_variable("HOME", "/home/owner", true)
+        .with_environment_observation(
+            "HOME",
+            ShellEnvironmentValue::Present {
+                value: "/home/owner".into(),
+            },
+        );
+    request
+        .shell_state_before
+        .execution_frame
+        .as_mut()
+        .unwrap()
+        .environment = request.shell_state_before.environment.clone();
+    let mut identity = f.identity(&request);
+    identity.environment.insert(
+        "HOME".into(),
+        ShellEnvironmentValue::Present {
+            value: "/home/owner".into(),
+        },
+    );
+    assert_eq!(
+        f.check(request.clone(), f.scope(identity.clone(), true))
+            .decision,
+        Decision::Allow
+    );
+    request.shell_state_before.variables.clear();
+    assert_eq!(
+        f.check(request, f.scope(identity, true)).decision,
+        Decision::NeedApproval
+    );
+}
+
+#[test]
 fn explicit_deny_and_sibling_scripts_survive_module_admission() {
     let f = Fixture::new();
     for (command, rule) in [

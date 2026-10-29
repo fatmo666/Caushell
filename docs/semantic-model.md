@@ -2972,7 +2972,38 @@ nonempty relative paths without parent traversal.
 Non-Shell inline/stdin payloads and interpreter module dispatch contribute a
 `non_shell_script_execution` approval floor. The rule follows declared effects
 and payload semantics, not executable-name or source-text matching. Known bytes
-and registered module CLI contracts do not remove that floor.
+and a registered module CLI profile alone do not remove that floor.
+
+A private owning executor can supply a current `ModuleIdentityFact` and a
+separate `ModuleContractPermission` through `serve-host-stdio`. The loader
+component certifies actual executable/module selection and its complete loading
+closure for an exact execution frame, invocation node, command and cwd. Core
+rechecks pinned runtime files, namespace, directory snapshots and environment;
+identity alone is not permission. A matching explicit host grant admits only the
+registered CLI semantics. File/network policy, opaque siblings, incomplete
+analysis and explicit Deny remain effective. The read-only `ModuleContractPlan`
+does not advance the live session or issue a capability. Admission is consumed
+by one check, is not serialized as session authority, expires with the host
+lease and is revalidated at BeginExecution. Tools cannot submit these facts or
+grants on ordinary check transports.
+
+The optional executor-side Python module binder is outside core. Its initial
+contract covers deployment-pinned CPython 3.12 on Linux, complete owner-supplied
+lookup/environment facts and an immutable-library namespace lease. Unsupported
+startup, custom hooks, executable `.pth` files, shadowed imports and absent
+facts retain Ask. It neither analyzes nor executes user Python bodies. See
+[the binding component](../integrations/python-module-cli/README.md).
+
+A declared `directory_tree_write` transforms only regular files/directories under
+its roots and cannot introduce links or rename directories. Its configured
+input-parent families may add a fixed relative suffix. Namespace resolution
+requires complete, bounded, stable link-free directory snapshots, records actual
+observations separately from hypothetical producer certificates, and recomputes
+physical roots on every request. A resolved cache family grants no authority.
+`py_compile` defaults to each input parent's `__pycache__`; known cache prefixes
+and interpreter environment suppression use the existing configured-path and
+dispatch mechanisms. Unknown filenames/prefixes and unexpanded stdin filename
+lists remain incomplete.
 
 For `script_file_ref`, the guard joins the owning execution unit and parameter
 slot to its `ExecuteFile` path targets. Complete authorized targets that all
