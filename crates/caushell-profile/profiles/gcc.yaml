@@ -222,6 +222,34 @@ modifiers:
   # Exact diagnostic controls, not a -W* wildcard (which would also own -Wl,).
   - id: diagnostic_controls
     matcher: {kind: any_flag, flags: ["-Wall", "-Wextra", "-pedantic", "-Wpedantic", "-pedantic-errors", "-Werror", "-Wfatal-errors", "-w"]}
+  # Debug information stays in the normal output. Options producing additional
+  # files (notably -gsplit-dwarf) are deliberately not covered by a -g* prefix.
+  - id: debug_information
+    matcher:
+      kind: any_flag
+      flags: [-g, -g0, -g1, -g2, -g3, -ggdb, -ggdb0, -ggdb1, -ggdb2, -ggdb3, -gdwarf, -gdwarf-2, -gdwarf-3, -gdwarf-4, -gdwarf-5, -gdwarf32, -gdwarf64]
+  # Generated-code instrumentation controls. These are not safety certificates
+  # or grants to execute the output. Validate every operand, not just the last.
+  - id: sanitizers
+    matcher: {kind: any_flag, flags: [-fsanitize]}
+    parameters:
+      - name: sanitizer_modes
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: inline_only}
+        cardinality: required_many
+        value_constraints:
+          - kind: require_match
+            pattern: '(?:address|hwaddress|kernel-address|kernel-hwaddress|pointer-compare|pointer-subtract|shadow-call-stack|thread|leak|undefined|shift|shift-exponent|shift-base|integer-divide-by-zero|unreachable|vla-bound|null|return|signed-integer-overflow|bounds|bounds-strict|alignment|object-size|float-divide-by-zero|float-cast-overflow|nonnull-attribute|returns-nonnull-attribute|bool|enum|vptr|pointer-overflow|builtin)(?:,(?:address|hwaddress|kernel-address|kernel-hwaddress|pointer-compare|pointer-subtract|shadow-call-stack|thread|leak|undefined|shift|shift-exponent|shift-base|integer-divide-by-zero|unreachable|vla-bound|null|return|signed-integer-overflow|bounds|bounds-strict|alignment|object-size|float-divide-by-zero|float-cast-overflow|nonnull-attribute|returns-nonnull-attribute|bool|enum|vptr|pointer-overflow|builtin))*'
+  - id: disabled_sanitizers
+    matcher: {kind: any_flag, flags: [-fno-sanitize]}
+    parameters:
+      - name: disabled_sanitizer_modes
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: inline_only}
+        cardinality: required_many
+        value_constraints:
+          - kind: require_match
+            pattern: '(?:all|address|hwaddress|kernel-address|kernel-hwaddress|pointer-compare|pointer-subtract|shadow-call-stack|thread|leak|undefined|shift|shift-exponent|shift-base|integer-divide-by-zero|unreachable|vla-bound|null|return|signed-integer-overflow|bounds|bounds-strict|alignment|object-size|float-divide-by-zero|float-cast-overflow|nonnull-attribute|returns-nonnull-attribute|bool|enum|vptr|pointer-overflow|builtin)(?:,(?:all|address|hwaddress|kernel-address|kernel-hwaddress|pointer-compare|pointer-subtract|shadow-call-stack|thread|leak|undefined|shift|shift-exponent|shift-base|integer-divide-by-zero|unreachable|vla-bound|null|return|signed-integer-overflow|bounds|bounds-strict|alignment|object-size|float-divide-by-zero|float-cast-overflow|nonnull-attribute|returns-nonnull-attribute|bool|enum|vptr|pointer-overflow|builtin))*'
   - {id: print_search_dirs, matcher: {kind: any_flag, flags: ["-print-search-dirs"]}}
   - id: preprocess_only
     matcher:
@@ -374,9 +402,13 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Instrumentation-Options.html
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Debugging-Options.html
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
+    - Sanitizer operands admit nonempty lists of documented GCC 13.3 mode names, in any order and with repetitions. Enabling all, unknown modes, missing/partial values and unmodeled sanitizer suboptions remain unresolved. This models command effects, not whether GCC accepts a target-specific combination or whether the build succeeds.
+    - Ordinary -g levels, GDB and DWARF formats are modeled without granting write or execution authority. Split debug files and other undeclared debug controls remain unresolved.
     - Compiler response files carry arbitrary options; their contents are not expanded. The argument-file declaration retains the concrete response-file read and possible output-file writes; nested wrapper and plugin options are not reconstructed.
     - GTFOBins' /bin/sh,-s wrapper syntax is projected as the known shell and -s argument. Other -wrapper comma lists cannot currently be split into a concrete command and argv using the existing declarative projections and remain unresolved.
     - Attached output operands such as -oapp depend on projection support for short-option attached values in this profile.

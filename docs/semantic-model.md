@@ -324,6 +324,22 @@ bash ./setup.sh
 
 The target written by `tee` and the script executed by `bash` therefore both refer to `./setup.sh`. This relative path is resolved further against the current directory during session graph extension.
 
+### Complete native value constraints
+
+A parameter can opt into a complete decoded-value grammar:
+
+```yaml
+value_constraints:
+  - {kind: require_match, pattern: 'stable|stable,debug'}
+```
+
+The regex is compiled once and matched against the entire operand, including
+every repeated occurrence. Unknown values, missing required values and rejected
+values keep the operation incomplete. They retain their original operands and
+all known effects, so a validation gap cannot erase code-loading or dispatch
+evidence. This validates native argument data and never grants authorization.
+The existing `exclude_literal` binding filter is unchanged.
+
 ### Parameter value projections
 
 A path parameter can declare `value_projection` when its operand contains more than the path itself. The binding still retains the complete argument, source span, binding origin and materialization provenance. Path analysis uses a separate semantic view; command dispatch and execution arguments are not rewritten.

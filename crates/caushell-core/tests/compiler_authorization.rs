@@ -430,3 +430,145 @@ fn downloaded_compiler_inputs_retain_execution_provenance() {
             .any(|f| f.rule_id == RuleId::TaintedExecution)
     );
 }
+
+#[test]
+fn instrumentation_preserves_compile_execute_path_and_authority_separation() {
+    for (tool, flags, output) in [
+        ("gcc", "-g -fsanitize=address,undefined", "build/checked"),
+        ("g++", "-ggdb3 -fsanitize=undefined,address", "/tmp/checked"),
+        (
+            "cc",
+            "-g0 -fsanitize=leak -fno-sanitize=leak",
+            "build/checked",
+        ),
+        ("gcc", "-gdwarf-4 -fno-sanitize=all", "build/checked"),
+    ] {
+        let command = format!(
+            "{tool} {flags} input.c -o {output} && {output_path}",
+            output_path = if output.starts_with('/') {
+                output.to_owned()
+            } else {
+                format!("./{output}")
+            }
+        );
+        let r = with_namespace().check(request(&command, 1));
+        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        assert!(
+            r.decision_trace
+                .path_targets
+                .iter()
+                .any(|f| !f.namespace_proofs.is_empty())
+        );
+    }
+    let r = with_namespace().check(request(
+        "gcc -g -fsanitize=address input.c -o /outside/checked && /outside/checked",
+        1,
+    ));
+    assert_eq!(r.decision, Decision::NeedApproval);
+    let mut req = request(
+        "gcc -g -fsanitize=address input.c -o build/checked && ./build/checked",
+        1,
+    );
+    req.workspace_root = None;
+    assert_eq!(with_namespace().check(req).decision, Decision::NeedApproval);
+}
+
+#[test]
+fn exact_instrumentation_bindings_do_not_guess_unknown_values() {
+    let r = with_namespace().check(request("modes=address,undefined; gcc -fsanitize=\"$modes\" -g input.c -o build/checked && ./build/checked", 1));
+    assert_eq!(r.decision, Decision::Allow, "{:?}", r.reasons);
+    for flags in [
+        "-fsanitize=address,unknown",
+        "-fsanitize=unknown -fno-sanitize=all",
+        "-fsanitize=\"$UNKNOWN\"",
+        "-gsplit-dwarf -fsanitize=address",
+    ] {
+        let r = with_namespace().check(request(
+            &format!("gcc -g {flags} input.c -o build/checked && ./build/checked"),
+            1,
+        ));
+        assert_eq!(
+            r.decision,
+            Decision::NeedApproval,
+            "{flags}: {:?}",
+            r.reasons
+        );
+        assert!(
+            r.decision_trace
+                .path_targets
+                .iter()
+                .all(|f| f.namespace_proofs.is_empty()),
+            "{flags}"
+        );
+    }
+}
+
+#[test]
+fn instrumentation_retains_deletion_approval_and_existing_denies() {
+    let command = "rm -f build/checked; gcc -g -fsanitize=address,undefined input.c -o build/checked && ./build/checked";
+    let r = with_namespace().check(request(command, 1));
+    assert_eq!(r.decision, Decision::NeedApproval);
+    assert!(
+        r.decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::FileDeletion)
+    );
+    let mut policy = PolicyConfig::default();
+    policy
+        .rule_policy
+        .rules
+        .insert(RuleId::FileDeletion, RulePolicyEntry::new(RuleAction::Deny));
+    assert_eq!(
+        ShellQueryCore::with_policy(policy)
+            .with_filesystem_view(Arc::new(Namespace::default()))
+            .check(request(command, 1))
+            .decision,
+        Decision::Deny
+    );
+    for modes in ["address,undefined", "unknown"] {
+        let r = with_namespace().check(request(
+            &format!("gcc -g -fsanitize={modes} input.c -o build/checked; rm -rf /"),
+            1,
+        ));
+        assert_eq!(r.decision, Decision::Deny);
+        let r = with_namespace().check(request(
+            &format!(
+                "printf '%s\\n' 'rm -rf /' | gcc -g -fsanitize={modes} -wrapper /bin/sh,-s input.c"
+            ),
+            1,
+        ));
+        assert_eq!(r.decision, Decision::Deny, "{modes}: {:?}", r.reasons);
+        let mut policy = PolicyConfig::default();
+        policy
+            .rule_policy
+            .rules
+            .insert(RuleId::CodeLoadPath, RulePolicyEntry::new(RuleAction::Deny));
+        let r = ShellQueryCore::with_policy(policy)
+            .with_filesystem_view(Arc::new(Namespace::default()))
+            .check(request(
+                &format!(
+                    "gcc -g -fsanitize={modes} -fplugin=/outside/plugin.so input.c -o build/checked"
+                ),
+                1,
+            ));
+        assert_eq!(r.decision, Decision::Deny, "{modes}: {:?}", r.reasons);
+    }
+}
+
+#[test]
+fn instrumentation_does_not_clean_downloaded_source_provenance() {
+    let mut core = with_namespace();
+    core.check(request("curl -q -o input.c https://example.test/source", 1));
+    let r = core.check(request(
+        "gcc -g3 -fsanitize=address,undefined input.c -o build/checked && ./build/checked",
+        2,
+    ));
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.reasons);
+    assert!(
+        r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::TaintedExecution)
+    );
+}
