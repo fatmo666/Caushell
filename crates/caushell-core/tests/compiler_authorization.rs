@@ -118,9 +118,8 @@ fn standards_reuse_existing_authority_and_require_every_value_to_be_known() {
         );
     }
     for standard in ["c17", "unknown"] {
-        let command = format!(
-            "gcc -std={standard} -wrapper /bin/sh,-s input.c -o build/program < /etc/passwd"
-        );
+        let command =
+            format!("printf '%s\\n' 'rm -rf /' | gcc -std={standard} -wrapper /bin/sh,-s input.c");
         assert_eq!(
             with_namespace().check(request(&command, 1)).decision,
             Decision::Deny
