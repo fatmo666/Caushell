@@ -1,5 +1,6 @@
 mod artifact;
 mod backtick;
+mod command_boundary;
 mod error;
 mod parser;
 mod syntax_compat;

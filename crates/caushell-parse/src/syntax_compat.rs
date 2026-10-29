@@ -10,15 +10,21 @@ pub(crate) fn project(
     source: &[u8],
     mut projected: Option<Vec<u8>>,
 ) -> Result<(Tree, Option<Vec<u8>>), ParseError> {
-    // Ordinary complete inputs pay only this root flag check. A fixed retry
-    // budget also keeps adversarial malformed input from driving reparsing.
+    // The grammar's multiline command merge can report Complete. Check its
+    // AST-qualified boundaries independently of the error flag. Both retries
+    // and separator edits are bounded; residual gaps become Partial below.
+    let mut boundary_budget = 256;
     for _ in 0..8 {
-        if !tree.root_node().has_error() {
-            break;
-        }
         let bytes = projected.as_deref().unwrap_or(source);
-        let mut edits = Vec::new();
-        collect(tree.root_node(), bytes, &mut edits);
+        let mut edits: Vec<_> = crate::command_boundary::separators(tree.root_node(), bytes)
+            .into_iter()
+            .take(boundary_budget)
+            .map(|index| (index, b';'))
+            .collect();
+        boundary_budget -= edits.len();
+        if tree.root_node().has_error() {
+            collect(tree.root_node(), bytes, &mut edits);
+        }
         if edits.is_empty() {
             break;
         }
@@ -30,7 +36,8 @@ pub(crate) fn project(
             .parse(bytes.as_slice(), None)
             .ok_or(ParseError::ParseCancelled)?;
     }
-    // Any remaining grammar error remains Partial in normal artifact creation.
+    // Remaining grammar errors OR unprojected boundaries remain Partial in
+    // normal artifact creation, retaining known effects and Deny evidence.
     Ok((tree, projected))
 }
 

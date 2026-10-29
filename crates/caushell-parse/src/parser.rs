@@ -580,7 +580,13 @@ fn malformed_here_string_prefix(node: Node<'_>, bytes: &[u8]) -> Option<SourceSp
         && node.parent().is_some_and(|parent| {
             matches!(parent.kind(), "file_redirect" | "redirected_statement")
         }))
-    .then(|| span_for(node))
+    .then(|| {
+        source_span_for_offsets(
+            std::str::from_utf8(bytes).expect("shell source is UTF-8"),
+            node.start_byte(),
+            node.end_byte(),
+        )
+    })
 }
 
 /// The grammar sometimes puts an IO number in argv (notably `0<&2`) or fails
@@ -594,9 +600,10 @@ fn parse_with_descriptor_ownership(
 ) -> Result<DescriptorTree, ParseError> {
     let projected = crate::backtick::project(parser, source)?;
     let bytes = source.as_bytes();
-    let (tree, projected_source) =
+    let (mut tree, projected_source) =
         crate::syntax_compat::project(parser, projected.tree, bytes, projected.source)?;
     if !bytes.iter().any(|byte| matches!(byte, b'<' | b'>')) {
+        crate::command_boundary::restore_points(&mut tree, bytes, projected_source.as_deref());
         return Ok(DescriptorTree {
             tree,
             descriptors: Vec::new(),
@@ -690,10 +697,9 @@ fn parse_with_descriptor_ownership(
         }
         let repaired = repaired_source.get_or_insert_with(|| bytes.to_vec());
         repaired[start..end].fill(b' ');
-        let mut span = span_for(node);
-        span.end_byte = end;
-        span.end_row = span.start_row;
-        span.end_column = span.start_column + end - start;
+        // Descriptor metadata is captured before the final tree-coordinate
+        // restoration, so derive its points from original source offsets.
+        let span = source_span_for_offsets(source, start, end);
         descriptors.push(DescriptorProjection {
             span,
             operator_byte: next,
@@ -734,6 +740,7 @@ fn parse_with_descriptor_ownership(
     }
     descriptors.sort_unstable_by_key(|descriptor| descriptor.operator_byte);
     descriptors.dedup_by_key(|descriptor| descriptor.operator_byte);
+    crate::command_boundary::restore_points(&mut tree, bytes, repaired_source.as_deref());
     Ok(DescriptorTree {
         tree,
         descriptors,
@@ -1018,8 +1025,9 @@ pub fn parse_command_substitutions(
 
     let projected = crate::backtick::project(&mut parser, raw_fragment)?;
     let source = raw_fragment.as_bytes();
-    let (tree, _) =
+    let (mut tree, projected_source) =
         crate::syntax_compat::project(&mut parser, projected.tree, source, projected.source)?;
+    crate::command_boundary::restore_points(&mut tree, source, projected_source.as_deref());
     let root = tree.root_node();
     let mut substitutions = Vec::new();
 
@@ -1058,8 +1066,9 @@ pub fn parse_process_substitutions(
 
     let source = raw_fragment.as_bytes();
     let projected = crate::backtick::project(&mut parser, raw_fragment)?;
-    let (tree, _) =
+    let (mut tree, projected_source) =
         crate::syntax_compat::project(&mut parser, projected.tree, source, projected.source)?;
+    crate::command_boundary::restore_points(&mut tree, source, projected_source.as_deref());
     let root = tree.root_node();
     let mut substitutions = Vec::new();
 
@@ -1375,6 +1384,18 @@ fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
         }
     });
 
+    // A complete grammar tree is insufficient when it still contains a
+    // swallowed shell separator (for example after exhausting repair bounds).
+    // Keep the tree's recognized effects, but never certify full coverage.
+    let original = std::str::from_utf8(source).expect("shell source is UTF-8");
+    for index in crate::command_boundary::separators(root, source) {
+        diagnostics.push(ParseDiagnostic {
+            kind: DiagnosticKind::ErrorNode,
+            node_kind: "unprojected_command_boundary".into(),
+            text: "\n".into(),
+            span: source_span_for_offsets(original, index, index + 1),
+        });
+    }
     diagnostics
 }
 

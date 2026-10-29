@@ -1,4 +1,4 @@
-use caushell_parse::parse_command;
+use caushell_parse::{ParseStatus, parse_command};
 use caushell_runner::{RequestTransformPass, RunnerContext};
 use caushell_types::{Decision, RuleId};
 
@@ -15,6 +15,21 @@ impl RequestTransformPass for ParseCommandPass {
 
         match parse_command(&command, shell_kind) {
             Ok(artifact) => {
+                if artifact.status == ParseStatus::Partial {
+                    let reason = format!(
+                        "command parsing is incomplete for {shell_kind:?}: {} unresolved syntax diagnostics",
+                        artifact.diagnostics.len()
+                    );
+                    ctx.add_finding(RuleId::CommandParseFailure, reason.clone());
+                    ctx.propose_decision(
+                        self.name(),
+                        RuleId::CommandParseFailure,
+                        Decision::NeedApproval,
+                        reason,
+                    );
+                }
+                // Preserve recognized commands even when coverage is partial,
+                // so known effects and hard Deny still reach later passes.
                 ctx.set_parsed_command(artifact);
             }
             Err(error) => {
@@ -108,6 +123,29 @@ mod tests {
         assert_eq!(
             ctx.decision_proposals[0].reason,
             "command parsing failed for Powershell: shell kind Powershell is not supported by caushell-parse"
+        );
+    }
+
+    #[test]
+    fn partial_parse_keeps_known_commands_and_requires_approval() {
+        let mut runner = PassRunner::new();
+        runner.register_request_transform_pass(ParseCommandPass);
+        runner.register_final_decision_pass(DecisionAssemblyPass);
+        let graph = SessionGraph::new();
+        let summary = SessionSummary::default();
+        let mut ctx = RunnerContext::new(sample_request(
+            ShellKind::Bash,
+            "rm -rf /; printf x | cat | cat\nprintf ok >out; echo \"unterminated",
+        ));
+        runner.run(SessionView::new(&graph, &summary), &mut ctx);
+        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
+        let parsed = ctx.parsed_command().unwrap();
+        assert_eq!(parsed.status, ParseStatus::Partial);
+        assert_eq!(parsed.commands[0].command_name.as_deref(), Some("rm"));
+        assert!(
+            ctx.decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::CommandParseFailure)
         );
     }
 }
