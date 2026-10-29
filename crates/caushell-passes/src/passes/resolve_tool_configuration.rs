@@ -592,6 +592,7 @@ fn attach_file_effects(bound: &mut BoundInvocation, path: Option<String>) {
         missing: ConfiguredPathMissing::Unknown,
         default_value: path,
         fallback_parent_slots: Vec::new(),
+        fallback_parent_suffix: None,
         purpose: Some(PathPurpose::ToolConfig),
     });
     for kind in [EffectKind::ReadPath, EffectKind::LoadConfig] {

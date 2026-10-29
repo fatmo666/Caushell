@@ -3059,17 +3059,23 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
             "auxiliary input effects require a declared slot target".into(),
         ));
     }
-    if raw.namespace_effect.is_some()
-        && (kind != EffectKind::WritePath
-            || raw.path_scope.is_some()
-            || !matches!(
-                target,
-                EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
-            ))
-    {
-        return Err(NormalizeError::InvalidPathAccess(
-            "namespace_effect requires a single write_path slot/tool-convention target, without subtree scope".into(),
-        ));
+    if let Some(effect) = raw.namespace_effect {
+        let valid = kind == EffectKind::WritePath
+            && raw.path_scope.is_none()
+            && match effect {
+                caushell_types::PathNamespaceEffect::RegularFileWrite => matches!(
+                    target,
+                    EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
+                ),
+                caushell_types::PathNamespaceEffect::DirectoryTreeWrite => {
+                    matches!(target, EffectTarget::ConfiguredPath(_))
+                }
+            };
+        if !valid {
+            return Err(NormalizeError::InvalidPathAccess(
+                "namespace effect does not match its declared write target shape".into(),
+            ));
+        }
     }
     if raw.path_access.is_some()
         && (!matches!(kind, EffectKind::ReadPath | EffectKind::WritePath)
@@ -3609,8 +3615,21 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             missing,
             default_value,
             fallback_parent_slots,
+            fallback_parent_suffix,
             purpose,
         } => {
+            if let Some(suffix) = &fallback_parent_suffix {
+                if fallback_parent_slots.is_empty()
+                    || suffix.is_empty()
+                    || suffix.starts_with('/')
+                    || suffix.contains('\0')
+                    || suffix
+                        .split('/')
+                        .any(|part| part.is_empty() || part == "." || part == "..")
+                {
+                    return Err(NormalizeError::InvalidConfiguredPath("parent-family suffix must be a fixed relative child path with declared input slots".into()));
+                }
+            }
             if only_when_sources_absent
                 && (sources.is_empty()
                     || default_value.is_none()
@@ -3721,6 +3740,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 expand_environment,
                 expand_user,
                 default_value,
+                fallback_parent_suffix,
                 fallback_parent_slots: normalize_slot_names(
                     fallback_parent_slots,
                     "effects.target.fallback_parent_slots",

@@ -359,6 +359,7 @@ fn attach_input(bound: &mut BoundInvocation, input: &ToolConfigInputEvidence) {
         missing: ConfiguredPathMissing::Unknown,
         default_value: input.resolved_path.clone(),
         fallback_parent_slots: Vec::new(),
+        fallback_parent_suffix: None,
         purpose: Some(PathPurpose::ToolConfig),
     });
     for kind in [EffectKind::ReadPath, EffectKind::LoadConfig] {

@@ -1423,6 +1423,7 @@ pub struct ConfiguredPathTarget {
     pub default_value: Option<String>,
     /// Applicable only after configured sources are proven absent/unset.
     pub fallback_parent_slots: Vec<SlotName>,
+    pub fallback_parent_suffix: Option<String>,
     pub purpose: Option<PathPurpose>,
 }
 

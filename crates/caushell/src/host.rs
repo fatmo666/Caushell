@@ -82,6 +82,10 @@ pub struct GrantResource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostCheck {
+    #[serde(default)]
+    pub module_identities: Vec<ModuleIdentityFact>,
+    #[serde(default)]
+    pub module_permissions: Vec<ModuleContractPermission>,
     pub request: RuntimeCheckRequest,
     pub owner: ResourceOwner,
     pub lifetime_ms: u64,
@@ -104,6 +108,7 @@ pub struct ExecutionCompletion {
 pub enum HostRequest {
     Ping,
     ExecutionFramePlan(ExecutionFramePlanRequest),
+    ModuleContractPlan(ExecutionFramePlanRequest),
     ShellStateDelta(RuntimeShellStateDeltaRequest),
     RegisterResource(RegisterResource),
     GrantResource(GrantResource),
@@ -122,6 +127,7 @@ pub enum HostRequest {
 pub enum HostResponse {
     Ping(RuntimePingResponse),
     ExecutionFramePlan(ExecutionFramePlan),
+    ModuleContractPlan(Vec<ModuleInvocation>),
     ShellStateDelta(RuntimeShellStateDeltaResponse),
     RegisterResource(ResourceHandle),
     GrantResource(GrantHandle),
@@ -311,6 +317,12 @@ pub fn serve_host_stdio(
                 }
                 _ => unreachable!(),
             },
+            HostRequest::ModuleContractPlan(request) => HostResponse::ModuleContractPlan(
+                runtime
+                    .core
+                    .module_contract_plan(request)
+                    .map_err(invalid)?,
+            ),
             HostRequest::ShellStateDelta(request) => match runtime
                 .handle_runtime_transport_request(RuntimeTransportRequest::ShellStateDelta(
                     request,
@@ -363,6 +375,14 @@ fn check(
     if plan.binding != binding {
         return Err(invalid("host frame does not match the current check plan"));
     }
+    let module_scope = caushell_runner::ModuleContractScope::new(
+        binding.clone(),
+        request.owner.namespace_id.clone(),
+        request.module_identities,
+        request.module_permissions,
+        lifetime(request.lifetime_ms),
+    )
+    .map_err(invalid)?;
     let _admission = resources
         .registry
         .admit_check(
@@ -374,9 +394,10 @@ fn check(
     let snapshot = resources.registry.snapshot(&binding).map_err(invalid)?;
     resources.registry.with_current_snapshot(&snapshot, &binding, || {
         let intent = request.request.intent;
-        let RuntimeTransportResponse::Check(response) =
-            runtime.handle_runtime_transport_request(RuntimeTransportRequest::Check(request.request))?
-        else { unreachable!() };
+        runtime.core.set_module_contract_scope(Some(module_scope.clone()));
+        let result = runtime.handle_runtime_transport_request(RuntimeTransportRequest::Check(request.request));
+        runtime.core.set_module_contract_scope(None);
+        let RuntimeTransportResponse::Check(response) = result? else { unreachable!() };
         let accepted = response.decision_trace.evidence.iter().any(|e| {
             matches!(&e.kind, EvidenceKind::ExecutionFrame(frame) if frame.accepted && frame.binding == binding)
         });
@@ -408,7 +429,7 @@ fn check(
                     write_packet(writer, &HostResponse::Authorize(response))?;
                 }
                 HostRequest::BeginExecution(expected) => {
-                    if expected != binding || started || !authorized || !resources.registry.is_current(&snapshot) {
+                    if expected != binding || started || !authorized || !resources.registry.is_current(&snapshot) || !runtime.core.module_contracts_current(&module_scope) {
                         return Err(invalid("execution is denied, stale, or bound to another check"));
                     }
                     started = true;

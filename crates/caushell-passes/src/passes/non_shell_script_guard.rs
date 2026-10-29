@@ -119,6 +119,26 @@ impl SessionAnalysisPass for NonShellScriptGuardPass {
                 Vec::new()
             };
         for (execution, file_slot) in executions {
+            if execution.source == "module" && decision != Decision::Deny {
+                let evidence = crate::support::module_contract_evidence(ctx, &execution.node_id);
+                let admitted = !evidence.is_empty()
+                    && evidence
+                        .iter()
+                        .all(|e| e.identity_verified && e.grant_id.is_some() && e.gap.is_none());
+                for proof in evidence {
+                    ctx.add_evidence(Evidence {
+                        rule_id: RuleId::NonShellScriptExecution,
+                        summary: proof.gap.clone().unwrap_or_else(|| {
+                            "host module identity and explicit CLI permission verified".into()
+                        }),
+                        kind: EvidenceKind::ModuleContract(proof),
+                    });
+                }
+                if admitted {
+                    continue;
+                }
+            }
+
             // This is existing file-execution authority, not a proof of the
             // program's body. Match the exact owning execution unit AND slot;
             // one file grant cannot cover a sibling inline/module/stdin input.

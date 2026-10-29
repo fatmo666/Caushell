@@ -1,3 +1,8 @@
+mod module_contract;
+pub use module_contract::{
+    DirectoryTreeEvidence, ModuleContractEvidence, ModuleContractPermission, ModuleIdentityFact,
+    ModuleInvocation,
+};
 mod analysis_budget;
 mod approval;
 mod decision;

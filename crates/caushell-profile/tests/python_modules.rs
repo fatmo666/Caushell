@@ -194,7 +194,6 @@ fn builtin_modules_are_separate_from_executable_names() {
 #[test]
 fn compiler_forms_separate_stdin_lists_legacy_outputs_and_metadata() {
     for (command, form) in [
-        ("python -m py_compile -", "stdin_list"),
         ("python -m py_compile - a.py", "files"),
         ("python -m py_compile --quiet a.py b.py", "files"),
         (
@@ -242,6 +241,31 @@ fn compiler_forms_separate_stdin_lists_legacy_outputs_and_metadata() {
                 _ => None,
             })
             .all(|p| p.environment.is_none())
+    );
+}
+#[test]
+fn compilation_stdin_filename_lists_do_not_claim_complete_effects() {
+    let parent = resolve("python -m py_compile -");
+    let children = collect_dispatch_command_candidates(&parent);
+    let child = &children[0];
+    let registry = ProfileRegistry::built_in().unwrap();
+    let ResolveInvocationResult::Resolved(result) = resolve_invocation_in_namespace(
+        &registry,
+        &child.to_command_fact(),
+        InvocationRuntimeContext::new(),
+        &SessionBindings::new(),
+        child.module_runtime.as_deref(),
+    ) else {
+        panic!("stdin form must remain represented, with its incompleteness");
+    };
+    assert_eq!(result.bound.form_id.as_str(), "stdin_list");
+    assert!(result.bound.operation_semantics_unresolved);
+    assert!(
+        result
+            .bound
+            .residuals
+            .iter()
+            .any(|residual| { residual.kind == ResidualKind::UnboundControlSurface })
     );
 }
 const FIXTURE: &str = r#"

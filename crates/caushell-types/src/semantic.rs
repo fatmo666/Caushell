@@ -90,6 +90,9 @@ pub enum PathNamespaceEffect {
     /// May fail, write contents, or create/replace an ordinary file at the
     /// target leaf. Cannot introduce a symlink or change a parent directory.
     RegularFileWrite,
+    /// May create directories and regular files beneath declared roots, but
+    /// cannot create links, rename directories, or traverse an unobserved link.
+    DirectoryTreeWrite,
 }
 
 /// Request-local abstract-state dependency. Current filesystem observations
@@ -100,6 +103,8 @@ pub struct PathNamespaceProof {
     pub producer_effect_key: String,
     pub path: String,
     pub effect: PathNamespaceEffect,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

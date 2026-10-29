@@ -86,6 +86,8 @@ impl Client {
             ExecutionFrameObservation::collect(plan.binding, &plan.requirements, shell).unwrap(),
         );
         HostCheck {
+            module_identities: Vec::new(),
+            module_permissions: Vec::new(),
             request,
             owner: owner(shell),
             lifetime_ms: 60_000,

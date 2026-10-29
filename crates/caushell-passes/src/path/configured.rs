@@ -126,7 +126,18 @@ fn input_parent_family(
                 .rsplit_once('/')
                 .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
                 .unwrap_or("/");
-            roots.insert(parent.to_string());
+            if let Some(suffix) = &target.fallback_parent_suffix {
+                // Preserve ordered dot/link traversal until namespace resolution.
+                let raw = if text.starts_with('/') {
+                    text.clone()
+                } else {
+                    format!("{cwd}/{text}")
+                };
+                let raw_parent = raw.rsplit_once('/').map(|(p, _)| p).unwrap_or("/");
+                roots.insert(format!("{}/{suffix}", raw_parent.trim_end_matches('/')));
+            } else {
+                roots.insert(parent.to_string());
+            }
         }
     }
     if roots.is_empty() {

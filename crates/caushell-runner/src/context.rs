@@ -437,6 +437,7 @@ pub enum ShellSourceCwdAnchor {
 // Proposals preserve per-pass judgments; final_decision is set only by the
 // final decision phase after earlier passes have contributed evidence.
 pub struct RunnerContext {
+    module_contract_scope: Option<crate::ModuleContractScope>,
     resource_authority: Option<crate::ResourceAuthoritySnapshot>,
     filesystem: crate::filesystem::FilesystemViewHandle,
     directory_budget: crate::DirectoryReadBudget,
@@ -476,6 +477,7 @@ impl RunnerContext {
 
     pub fn with_policy(request: CheckRequest, policy: PolicyConfig) -> Self {
         Self {
+            module_contract_scope: None,
             resource_authority: None,
             filesystem: Default::default(),
             directory_budget: Default::default(),
@@ -508,6 +510,13 @@ impl RunnerContext {
 
     pub fn request(&self) -> &CheckRequest {
         &self.request
+    }
+
+    pub fn set_module_contract_scope(&mut self, scope: crate::ModuleContractScope) {
+        self.module_contract_scope = Some(scope);
+    }
+    pub fn module_contract_scope(&self) -> Option<&crate::ModuleContractScope> {
+        self.module_contract_scope.as_ref()
     }
 
     pub fn set_resource_authority(&mut self, authority: crate::ResourceAuthoritySnapshot) {

@@ -131,6 +131,7 @@ pub struct PreparedRuntimeCheck {
 }
 
 pub struct ShellQueryCore {
+    module_contract_scope: Option<caushell_runner::ModuleContractScope>,
     resource_authority: Option<std::sync::Arc<dyn caushell_runner::ResourceAuthority>>,
     filesystem: std::sync::Arc<dyn caushell_runner::FilesystemView>,
     policy: PolicyConfig,
@@ -168,6 +169,7 @@ impl ShellQueryCore {
         let execution_frame_requirements =
             caushell_profile::execution_frame_requirements(registry.profiles());
         Ok(Self {
+            module_contract_scope: None,
             resource_authority: None,
             filesystem: std::sync::Arc::new(crate::LocalFilesystem),
             policy,
@@ -184,6 +186,18 @@ impl ShellQueryCore {
 
     pub fn replace_policy(&mut self, policy: PolicyConfig) {
         self.policy = policy;
+    }
+
+    /// Trusted executor admission, scoped to an exact request and never persisted.
+    pub fn set_module_contract_scope(
+        &mut self,
+        scope: Option<caushell_runner::ModuleContractScope>,
+    ) {
+        self.module_contract_scope = scope;
+    }
+
+    pub fn module_contracts_current(&self, scope: &caushell_runner::ModuleContractScope) -> bool {
+        scope.all_fresh(self.filesystem.as_ref())
     }
 
     /// Host-side resource lifecycle and authorization; never supplied by a tool.
@@ -261,6 +275,15 @@ impl ShellQueryCore {
 
         let mut ctx = RunnerContext::with_policy(request, self.policy.clone());
         ctx.set_filesystem_view(self.filesystem.clone());
+        let module_scope = self.module_contract_scope.take();
+        if let Some(scope) = module_scope.as_ref().filter(|scope| {
+            frame_evidence
+                .as_ref()
+                .is_some_and(|e| e.accepted && scope.matches(&e.binding))
+        }) {
+            ctx.set_module_contract_scope(scope.clone());
+        }
+
         if let Some(snapshot) = resource_snapshot {
             ctx.set_resource_authority(snapshot);
         }
@@ -534,6 +557,52 @@ impl ShellQueryCore {
     pub fn materialize_runtime_request(&self, request: RuntimeCheckRequest) -> CheckRequest {
         let sequence_no = self.next_sequence_no(&request.session_id);
         request.into_check_request(sequence_no)
+    }
+
+    /// Explicit read-only module admission planning. It cannot issue grants,
+    /// consume a receipt or mutate the live session; normal frame plans remain
+    /// the cached constant-time operation used by all other tool calls.
+    pub fn module_contract_plan(
+        &self,
+        input: caushell_types::ExecutionFramePlanRequest,
+    ) -> Result<Vec<caushell_types::ModuleInvocation>, String> {
+        let mut planner = Self::try_with_policy(self.policy.clone())
+            .map_err(|e| e.to_string())?
+            .with_filesystem_view(self.filesystem.clone());
+        if let Some(snapshot) = self.session_snapshot(&input.request.session_id, 0) {
+            planner.insert_session_state(
+                input.request.session_id.clone(),
+                SessionState::from_snapshot(snapshot).map_err(|e| format!("{e:?}"))?,
+            );
+        }
+        let mut request = input.request;
+        request.intent = caushell_types::CheckIntent::JudgeOnly;
+        let materialized = planner.materialize_runtime_request(request.clone());
+        let binding = caushell_types::ExecutionFrameBinding::for_request(
+            &materialized,
+            input.executor_instance_id,
+        );
+        if request.shell_state_before.execution_frame.is_none() {
+            request.shell_state_before.execution_frame =
+                Some(caushell_types::ExecutionFrameObservation {
+                    binding,
+                    environment: request.shell_state_before.environment.clone(),
+                    pathname: request.shell_state_before.pathname.clone(),
+                });
+        }
+        let prepared = planner
+            .prepare_runtime_check(request)
+            .map_err(|e| e.to_string())?;
+        let response = planner.check(prepared.request);
+        Ok(response
+            .decision_trace
+            .evidence
+            .into_iter()
+            .filter_map(|e| match e.kind {
+                caushell_types::EvidenceKind::ModuleContract(e) => Some(e.invocation),
+                _ => None,
+            })
+            .collect())
     }
 
     pub fn execution_frame_plan(

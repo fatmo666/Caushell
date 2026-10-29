@@ -21,6 +21,7 @@ use crate::support::{
 };
 
 mod consumption;
+mod directory_tree;
 mod namespace_state;
 
 pub struct ResolvePathTargetsPass;
@@ -58,12 +59,6 @@ impl SessionTransformPass for ResolvePathTargetsPass {
         if inputs.is_empty() {
             return;
         }
-        let namespace_writes: Vec<_> = inputs
-            .iter()
-            .enumerate()
-            .filter(|(_, input)| input.namespace_write && input.pending_resolution)
-            .map(|(index, input)| (index, input.fact.lexical.concrete_path().map(str::to_owned)))
-            .collect();
         let mut resolver = NamespaceResolver::new(ctx.filesystem_view());
         let mut scope_observations = Vec::new();
         let policy = ctx.path_exemption_policy().map_roots(|root| {
@@ -83,6 +78,8 @@ impl SessionTransformPass for ResolvePathTargetsPass {
         // Resolve the current namespace first. Abstract write dependencies are
         // separate from observations, and must not depend on iteration order.
         let mut baselines = Vec::with_capacity(inputs.len());
+        let mut tree_evidence = Vec::new();
+        let mut tree_budget = caushell_runner::DirectoryReadBudget::default();
         for index in 0..inputs.len() {
             if !inputs[index].pending_resolution {
                 baselines.push((inputs[index].fact.resolution.clone(), Vec::new()));
@@ -99,6 +96,17 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     ),
                     Vec::new(),
                 )
+            } else if inputs[index].namespace_effect
+                == Some(caushell_types::PathNamespaceEffect::DirectoryTreeWrite)
+            {
+                let (baseline, evidence) = directory_tree::resolve(
+                    &inputs[index],
+                    &mut resolver,
+                    ctx.filesystem_view(),
+                    &mut tree_budget,
+                );
+                tree_evidence.push(evidence);
+                baseline
             } else if let Some(spelling) = spelling {
                 resolver.resolve(spelling, inputs[index].fact.access)
             } else {
@@ -112,6 +120,36 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             };
             baselines.push((resolution, observations));
         }
+        for proof in tree_evidence {
+            ctx.add_evidence(caushell_types::Evidence {
+                rule_id: caushell_types::RuleId::OutsideWorkspaceMutation,
+                summary: proof.gap.clone().unwrap_or_else(|| {
+                    "link-free directory output family resolved without granting authority".into()
+                }),
+                kind: caushell_types::EvidenceKind::DirectoryTree(proof),
+            });
+        }
+        let namespace_writes: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, input)| input.namespace_write && input.pending_resolution)
+            .flat_map(|(index, _)| {
+                let roots = match &baselines[index].0 {
+                    SemanticResolution::Resolved {
+                        value: PathResolution::Concrete { path },
+                    } => vec![Some(path.clone())],
+                    SemanticResolution::Resolved {
+                        value:
+                            PathResolution::BoundedPathSet {
+                                roots,
+                                may_escape: false,
+                            },
+                    } if !roots.is_empty() => roots.iter().cloned().map(Some).collect(),
+                    _ => vec![None],
+                };
+                roots.into_iter().map(move |root| (index, root))
+            })
+            .collect();
         let mut comparisons = 0usize;
         let stable_producers = if namespace_operations_complete(ctx) {
             namespace_state::stable_producers(
@@ -405,7 +443,12 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             caushell_profile::ResolveInvocationArtifactResult::Resolved(_)
                         ) && !bound.operation_semantics_unresolved
                             && bound.effects.iter().all(|effect| {
-                                matches!(effect.kind, EffectKind::ReadPath | EffectKind::WritePath)
+                                matches!(
+                                    effect.kind,
+                                    EffectKind::ReadPath
+                                        | EffectKind::WritePath
+                                        | EffectKind::TransformData
+                                )
                             })
                         {
                             input.namespace_effect = effect.namespace_effect;

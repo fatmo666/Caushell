@@ -1162,6 +1162,8 @@ pub enum RawEffectTarget {
         #[serde(default)]
         fallback_parent_slots: Vec<String>,
         #[serde(default)]
+        fallback_parent_suffix: Option<String>,
+        #[serde(default)]
         purpose: Option<RawPathPurpose>,
     },
     Slot {

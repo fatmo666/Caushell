@@ -8,7 +8,7 @@ use caushell_types::{
 use super::Input;
 use std::collections::{BTreeSet, VecDeque};
 
-type Baseline = (
+pub(super) type Baseline = (
     SemanticResolution<PathResolution>,
     Vec<FilesystemObservation>,
 );
@@ -86,6 +86,56 @@ pub(super) fn scope_preservation(
     writer_state: &Baseline,
     consumer_state: &Baseline,
 ) -> Option<PathNamespaceProof> {
+    if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryTreeWrite) {
+        let SemanticResolution::Resolved {
+            value:
+                PathResolution::BoundedPathSet {
+                    roots,
+                    may_escape: false,
+                },
+        } = &writer_state.0
+        else {
+            return None;
+        };
+        let consumer_roots = match &consumer_state.0 {
+            SemanticResolution::Resolved {
+                value: PathResolution::Concrete { path },
+            } => vec![path],
+            SemanticResolution::Resolved {
+                value:
+                    PathResolution::BoundedPathSet {
+                        roots,
+                        may_escape: false,
+                    },
+            } => roots.iter().collect(),
+            _ => return None,
+        };
+        if roots.is_empty()
+            || consumer_roots.is_empty()
+            || writer_state.1.iter().any(|o| {
+                !matches!(
+                    o.entry,
+                    FilesystemEntry::Directory | FilesystemEntry::File | FilesystemEntry::Missing
+                )
+            })
+        {
+            return None;
+        }
+        if consumer_roots.iter().all(|path| {
+            roots
+                .iter()
+                .any(|root| caushell_query::path_is_within_root(path, root))
+        }) {
+            return Some(PathNamespaceProof {
+                producer_node_id: writer.fact.source_node_id.clone(),
+                producer_effect_key: writer.fact.effect_key.clone(),
+                path: roots[0].clone(),
+                effect: PathNamespaceEffect::DirectoryTreeWrite,
+                additional_paths: roots.iter().skip(1).cloned().collect(),
+            });
+        }
+        return None;
+    }
     if writer.namespace_effect != Some(PathNamespaceEffect::RegularFileWrite) {
         return None;
     }
@@ -107,6 +157,7 @@ pub(super) fn scope_preservation(
         producer_effect_key: writer.fact.effect_key.clone(),
         path,
         effect: PathNamespaceEffect::RegularFileWrite,
+        additional_paths: Vec::new(),
     })
 }
 

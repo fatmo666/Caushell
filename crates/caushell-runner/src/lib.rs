@@ -1,3 +1,5 @@
+mod module_contract;
+pub use module_contract::ModuleContractScope;
 mod context;
 mod directory;
 pub use directory::{DirectoryRead, DirectoryReadBudget, directory_path_is_resolved};

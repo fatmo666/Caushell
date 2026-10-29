@@ -1,3 +1,5 @@
+mod module_contract;
+pub(crate) use module_contract::module_contract_evidence;
 mod alias;
 pub(crate) mod config_tasks;
 mod execution_records;
