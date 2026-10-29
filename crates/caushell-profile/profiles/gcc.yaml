@@ -219,6 +219,19 @@ forms:
 
 modifiers:
   - {id: version, matcher: {kind: any_flag, flags: ["--version"]}}
+  # GCC 13.3 C/C++ dialect names and documented aliases. Each occurrence is
+  # validated; a later valid dialect cannot conceal an earlier unknown value.
+  - {id: ansi_standard, matcher: {kind: any_flag, flags: [-ansi]}}
+  - id: language_standard
+    matcher: {kind: any_flag, flags: [-std]}
+    parameters:
+      - name: language_standard
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: inline_only}
+        cardinality: required_many
+        value_constraints:
+          - kind: require_match
+            pattern: '(?:c(?:89|90|99|9x|11|1x|17|18|2x)|gnu(?:89|90|99|9x|11|1x|17|18|2x)|iso9899:(?:1990|199409|1999|199x|2011|2017|2018)|(?:c|gnu)\+\+(?:98|03|11|0x|14|1y|17|1z|20|2a|23|2b))'
   # Exact diagnostic controls, not a -W* wildcard (which would also own -Wl,).
   - id: diagnostic_controls
     matcher: {kind: any_flag, flags: ["-Wall", "-Wextra", "-pedantic", "-Wpedantic", "-pedantic-errors", "-Werror", "-Wfatal-errors", "-w"]}

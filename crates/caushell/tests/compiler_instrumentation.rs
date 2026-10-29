@@ -56,6 +56,24 @@ fn instrumentation_checks_restore_authority_and_reject_unknown_or_stale_evidence
         result.response
     };
     let round = |command: &str| round_with_modes(command, None);
+    for (flags, expected) in [
+        ("-std=c17", Decision::Allow),
+        ("-std=gnu++20 -g", Decision::Allow),
+        (
+            "-std=iso9899:2018 -fsanitize=address,undefined",
+            Decision::Allow,
+        ),
+        ("-std=unknown -std=c17", Decision::NeedApproval),
+    ] {
+        let response = round(&format!(
+            "gcc {flags} input.c -o build/program && ./build/program"
+        ));
+        assert_eq!(
+            response.decision, expected,
+            "{flags}: {:?}",
+            response.reasons
+        );
+    }
     let first =
         round("gcc -g3 -fsanitize=address,undefined input.c -o build/program && ./build/program");
     assert_eq!(first.decision, Decision::Allow, "{:?}", first.reasons);

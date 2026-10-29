@@ -66,6 +66,69 @@ fn expect(command: &str, expected: Decision) {
 }
 
 #[test]
+fn standards_reuse_existing_authority_and_require_every_value_to_be_known() {
+    for tool in ["gcc", "g++", "cc"] {
+        for flags in [
+            "-std=c17",
+            "-std=gnu17 -std=c18",
+            "-std=c++20",
+            "-ansi",
+            "-std=c17 -g -fsanitize=address,undefined",
+        ] {
+            let command = format!("{tool} {flags} input.c -o build/program && ./build/program");
+            let response = with_namespace().check(request(&command, 1));
+            assert_eq!(
+                response.decision,
+                Decision::Allow,
+                "{command}: {:?}",
+                response.reasons
+            );
+        }
+    }
+    for flags in [
+        "-std=unknown",
+        "-std=unknown -std=c17",
+        "-std=c17 -std=\"$UNKNOWN\"",
+    ] {
+        let response = with_namespace().check(request(
+            &format!("gcc {flags} input.c -o build/program && ./build/program"),
+            1,
+        ));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            response.reasons
+        );
+        assert!(
+            response
+                .decision_trace
+                .path_targets
+                .iter()
+                .all(|p| p.namespace_proofs.is_empty())
+        );
+    }
+    for command in [
+        "gcc -std=c17 input.c -o /outside/program",
+        "gcc -std=c17 input.c -o build/program; rm build/program",
+    ] {
+        assert_eq!(
+            with_namespace().check(request(command, 1)).decision,
+            Decision::NeedApproval
+        );
+    }
+    for standard in ["c17", "unknown"] {
+        let command = format!(
+            "gcc -std={standard} -wrapper /bin/sh,-s input.c -o build/program < /etc/passwd"
+        );
+        assert_eq!(
+            with_namespace().check(request(&command, 1)).decision,
+            Decision::Deny
+        );
+    }
+}
+
+#[test]
 fn compiler_diagnostics_use_existing_output_authority() {
     for output in ["./build/program", "/tmp/program", "/private/tmp/program"] {
         expect(
