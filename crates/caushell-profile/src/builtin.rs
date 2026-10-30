@@ -631,6 +631,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/R.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "Rscript",
+        content: include_str!("../profiles/Rscript.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "julia",
         content: include_str!("../profiles/julia.yaml"),
     },

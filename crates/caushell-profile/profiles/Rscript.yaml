@@ -1,0 +1,58 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+identity: {canonical_name: Rscript, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+forms:
+  - id: inline_code
+    selector: {kind: has_modifier, modifier: code}
+    parameters: [{name: script_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: information
+    selector: {kind: all, items: [{kind: has_modifier, modifier: information}, {kind: not, item: {kind: has_modifier, modifier: code}}]}
+    parameters: [{name: ignored_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+  - id: explicit_stdin
+    selector: {kind: all, items: [&not_code {kind: not, item: {kind: has_modifier, modifier: code}}, &not_information {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}]}
+    parameters:
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: script_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    implicit_inputs: [{source: stdin_payload, semantic: {kind: payload, language: opaque, source: stdin, recursive: true}}]
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_payload}}
+      - {kind: execute_payload, target: {kind: implicit_input, source: stdin_payload}}
+    stream_contract: {stdin_mode: payload_required, stdout_mode: opaque, stderr_mode: opaque}
+  - id: script_file
+    selector: {kind: all, items: [*not_code, *not_information, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
+    parameters:
+      - name: script_path
+        semantic: {kind: payload, language: opaque, source: script_file_ref, recursive: true}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches: []
+          fallback: {name: script_reads, semantic: {kind: path, role: read, purpose: script_source}}
+      - {name: script_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: script_reads}}
+      - {kind: execute_payload, target: {kind: slot, name: script_path}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+modifiers:
+  - id: code
+    matcher: {kind: any_flag, flags: ['-e']}
+    parameters: [{name: expressions, semantic: {kind: payload, language: opaque, source: inline_string, recursive: true}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: execute_payload, target: {kind: slot, name: expressions}}]
+  - id: information
+    matcher: {kind: any_flag, flags: ['--help', '--version']}
+    ends_option_scope: true
+  - id: switches
+    matcher: {kind: any_flag, flags: ['--vanilla', '--verbose', '--no-environ', '--no-site-file', '--no-init-file', '--no-restore', '--no-restore-data', '--no-restore-history', '--no-save', '--no-echo', '--quiet', '--silent']}
+extensions:
+  caushell.profile/source_research: [https://stat.ethz.ch/R-manual/R-devel/library/utils/html/Rscript.html]
+  caushell.profile/known_limitations:
+    - R expressions are opaque non-Shell payloads, not Bash, and require approval.
+    - Script paths use existing file identity, provenance and execution authority; this is not analysis of R bodies.
+    - Options before the script are separate from script arguments. Repeated -e expressions retain every execution effect.
+    - Unmodeled frontend options and absent or dynamic entry operands remain incomplete, requiring approval.

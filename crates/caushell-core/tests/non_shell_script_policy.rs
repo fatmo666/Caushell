@@ -67,6 +67,12 @@ fn non_shell_code_is_approval_policy_not_a_source_analysis_result() {
         "node -e 'console.log(1)'",
         "php -r 'echo 1;'",
         "lua -e 'print(1)'",
+        "Rscript -e 'print(1)'",
+        "Rscript --vanilla -e 'print(1)' -e 'print(2)'",
+        "Rscript -e 'print(1)' --help",
+        "Rscript -e 'not valid R !'",
+        "Rscript - <<< 'print(1)'",
+        "printf 'print(1)' | Rscript -",
     ] {
         let r = ShellQueryCore::new().check(request(command));
         assert_eq!(
@@ -98,6 +104,14 @@ fn wrappers_callbacks_functions_aliases_and_substitutions_keep_the_boundary() {
         "tar -cf ./out.tar --checkpoint=1 --checkpoint-action='exec=python3 -c pass' -- input",
         "printf '%s' \"$(python3 -c 'print(1)')\"",
         "cat <(python3 -c 'print(1)')",
+        "env -i Rscript -e 'print(1)'",
+        "timeout 5 /usr/bin/Rscript -e 'print(1)'",
+        "bash -c 'Rscript -e 1'",
+        "run() { Rscript -e 1; }; run",
+        "alias run='Rscript -e 1'; run",
+        "printf '%s' \"$(Rscript -e 1)\"",
+        "cat <(Rscript -e 1)",
+        "find . -exec Rscript -e 1 \\;",
     ] {
         let r = ShellQueryCore::new().check(request(command));
         assert_eq!(
@@ -121,6 +135,8 @@ fn shell_information_and_literal_data_do_not_become_script_execution() {
         "python3 --help",
         "python3 --version",
         "perl -v",
+        "Rscript --help",
+        "Rscript --version",
         "node --version",
         "printf '%s' 'python3 -c pass'",
         "printf '%s' './demo.py'",
@@ -147,6 +163,8 @@ fn other_analysis_continues_and_deny_is_not_downgraded() {
         "python3 -c pass & rm -rf /",
         "bash -c 'python3 -c pass; rm -rf /'",
         "printf '%s' \"$(python3 -c pass)\"; rm -rf /",
+        "Rscript -e 1; rm -rf /",
+        "bash -c 'Rscript -e 1; rm -rf /'",
     ] {
         let r = ShellQueryCore::new().check(request(command));
         assert_eq!(r.decision, Decision::Deny, "{command}: {:?}", r.reasons);
