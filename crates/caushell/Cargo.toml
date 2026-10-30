@@ -19,3 +19,7 @@ caushell-types = { path = "../caushell-types" }
 
 [dev-dependencies]
 caushell-profile = { path = "../caushell-profile" }
+
+[[example]]
+name = "trusted-filesystem-host"
+path = "../../integrations/terminal-bench/guard-host.rs"

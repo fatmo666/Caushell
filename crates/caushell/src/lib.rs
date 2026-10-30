@@ -572,6 +572,20 @@ impl CliRuntime {
         self.core.set_resource_authority(authority);
     }
     pub fn new(config_path: Option<&Path>, store_root: Option<&Path>) -> Result<Self, CliError> {
+        Self::new_with_filesystem_view(
+            config_path,
+            store_root,
+            std::sync::Arc::new(caushell_core::LocalFilesystem),
+        )
+    }
+
+    /// An embedding executor supplies observations from the command namespace.
+    /// This is a host capability, never a field accepted from tool requests.
+    pub fn new_with_filesystem_view(
+        config_path: Option<&Path>,
+        store_root: Option<&Path>,
+        filesystem: std::sync::Arc<dyn caushell_runner::FilesystemView>,
+    ) -> Result<Self, CliError> {
         let core = match config_path {
             Some(path) => match load_config_file_or_default(path) {
                 Ok(loaded) => ShellQueryCore::try_with_policy(loaded.effective.policy)
@@ -580,6 +594,7 @@ impl CliRuntime {
             },
             None => ShellQueryCore::try_new().map_err(CliError::InitCore)?,
         };
+        let core = core.with_filesystem_view(filesystem);
         let config_reload = config_path.map(ConfigReloadState::new);
         let identity = RuntimeIdentity::from_env();
 
