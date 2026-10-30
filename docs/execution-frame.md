@@ -37,6 +37,39 @@ Shell variables are not child-environment values. Unavailable observations remai
 unknown. Existing external hooks without an owning-executor observation channel
 continue without these facts; they do not synthesize defaults.
 
+The plan also includes environment dependencies of implicit configuration search,
+configured outputs and anchors, listener endpoints, and manager-owned dispatch
+environments. These names come from declarations, including subcommands and
+failure effects, rather than an integration's list of known tools.
+
+### Bash executor collector
+
+`integrations/execution-frame/capture.bash` provides a bounded NUL-framed
+collector to source in an **owning executor's paused Bash frame**.
+`observation.collect(plan, capture_callback)` supplies a fresh correlation nonce
+and the planned names to that executor's private capture channel, validates the
+returned frame, and constructs the existing protocol observation.
+
+The callback must collect in the actual pending execution frame and keep it
+paused until checking and approval finish. Launching another `docker exec env`
+or sampling the hook/guard process is not an implementation of this callback.
+The supplied collector is not installed into external hooks automatically.
+Native Claude Code integrations without that owning-executor channel retain
+unknown observations and Ask where those facts are required.
+
+Collection uses subshell scratch space and positional parameters instead of
+overwriting requested target variables. Unexported variables remain absent from
+the child environment, while pathname variables are captured separately. Arrays,
+namerefs and volatile values remain unknown. Partial, oversized, non-UTF-8,
+misdelivered or malformed captures are rejected; callers must not substitute
+their own environment or guessed defaults. The nonce detects channel mixups;
+it is not authentication of an untrusted executor.
+
+The collector supplies facts only. It does not run the pending command, grant
+write or execute authority, modify configuration, or persist observations across
+checks. The stdio end-to-end tests pair it with real paused Bash processes and
+the guard, including changed configuration, replay rejection and retained Deny.
+
 ```rust,ignore
 let plan = plan_execution_frame_unix_socket(socket, &plan_request)?;
 let frame = ExecutionFrameObservation::collect(

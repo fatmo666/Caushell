@@ -1,4 +1,4 @@
-use crate::CommandProfile;
+use crate::{CommandProfile, EffectTarget, ImplicitConfigSource};
 use caushell_types::ExecutionFrameRequirements;
 
 /// Profile-declared child-environment dependencies plus native locale inputs.
@@ -30,6 +30,24 @@ pub fn execution_frame_requirements<'a>(
                 .environment_names
                 .insert(input.environment.name.clone());
         }
+        for input in &profile.implicit_config_files {
+            for source in &input.sources {
+                if let ImplicitConfigSource::EnvironmentDirectory {
+                    name,
+                    unless_environment_set,
+                    ..
+                } = source
+                {
+                    requirements.environment_names.insert(name.clone());
+                    requirements
+                        .environment_names
+                        .extend(unless_environment_set.iter().cloned());
+                }
+            }
+        }
+        for effect in &profile.selection_failure_effects {
+            add_effect_inputs(effect, &mut requirements);
+        }
     }
     requirements
 }
@@ -54,8 +72,40 @@ fn add_resource_inputs(
         .flat_map(|f| &f.effects)
         .chain(modifiers.iter().flat_map(|m| &m.effects))
     {
-        requirements
-            .environment_names
-            .extend(effect.resource_environment_absent.iter().cloned());
+        add_effect_inputs(effect, requirements);
+    }
+}
+
+fn add_effect_inputs(effect: &crate::Effect, requirements: &mut ExecutionFrameRequirements) {
+    let names = &mut requirements.environment_names;
+    names.extend(effect.resource_environment_absent.iter().cloned());
+    match &effect.target {
+        EffectTarget::ConfiguredPath(path) => {
+            names.extend(path.environment.iter().map(|e| e.name.clone()));
+            if let Some(anchor) = &path.relative_to {
+                names.extend(anchor.environment.iter().map(|e| e.name.clone()));
+            }
+            if path.expand_user {
+                names.insert("HOME".into());
+            }
+        }
+        EffectTarget::Dispatch(dispatch) => {
+            names.extend(
+                dispatch
+                    .unknown_environment_from
+                    .iter()
+                    .map(|e| e.name.clone()),
+            );
+        }
+        EffectTarget::NetworkListener(listener) => {
+            for scalar in std::iter::once(&listener.host)
+                .chain(listener.port.iter())
+                .chain(listener.unix_socket.iter())
+                .chain(listener.inherited_fd.iter())
+            {
+                names.extend(scalar.environment.iter().map(|e| e.name.clone()));
+            }
+        }
+        _ => {}
     }
 }

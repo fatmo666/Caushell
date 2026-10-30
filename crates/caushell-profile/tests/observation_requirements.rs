@@ -93,3 +93,45 @@ forms: [{{id: run}}]
         );
     }
 }
+
+#[test]
+fn implicit_configuration_and_output_dependencies_are_in_the_plan() {
+    for name in ["first-owner", "another-owner"] {
+        let profile=load_command_profile_from_str(&format!(r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {{canonical_name: {name}}}
+implicit_config_files:
+  - id: initialization
+    sources:
+      - {{kind: environment_directory, name: DECLARED_CONFIG_HOME, suffix: tool.rc, unless_environment_set: DECLARED_OVERRIDE}}
+forms:
+  - id: run
+    parameters:
+      - {{name: root_path, semantic: {{kind: path, role: read}}, binding: {{kind: remaining_positionals}}, cardinality: optional_many}}
+    effects:
+      - kind: write_path
+        target:
+          kind: configured_path
+          sources: []
+          environment: {{name: DECLARED_OUTPUT}}
+          relative_to: {{slot: root_path, environment: {{name: DECLARED_ROOT}}, default_value: '.'}}
+          missing: unknown
+"#)).unwrap();
+        let r = execution_frame_requirements([&profile]);
+        for name in [
+            "DECLARED_CONFIG_HOME",
+            "DECLARED_OVERRIDE",
+            "DECLARED_OUTPUT",
+            "DECLARED_ROOT",
+        ] {
+            assert!(r.environment_names.contains(name), "{name}: {r:?}");
+        }
+    }
+    let registry = caushell_profile::ProfileRegistry::built_in().unwrap();
+    let r = execution_frame_requirements(registry.profiles());
+    for name in ["CURL_HOME", "XDG_CONFIG_HOME", "HOME", "PIP_TARGET"] {
+        assert!(r.environment_names.contains(name), "{name}");
+    }
+    assert!(r.environment_names.len() <= 128);
+}
