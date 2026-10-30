@@ -106,6 +106,9 @@ fn executable_scope_uses_execution_cwd_and_not_initial_cwd() {
             "cd /opt/shared; sort --compress-program=./hello input",
             "cd \"$unknown\"; ./hello",
             "find /opt/shared -execdir ./hello {} \\;",
+            // A bounded lexical cwd is not a physical namespace proof. This
+            // fixture supplies no observed, link-free traversal namespace.
+            "find /bench/workspace/sub -execdir ./hello {} \\;",
         ],
         Decision::NeedApproval,
     );
@@ -113,7 +116,6 @@ fn executable_scope_uses_execution_cwd_and_not_initial_cwd() {
         &[
             "cd /opt/shared; /tmp/hello",
             "cd /opt/shared; cd /bench/workspace; ./hello",
-            "find /bench/workspace/sub -execdir ./hello {} \\;",
         ],
         Decision::Allow,
     );
