@@ -94,17 +94,27 @@ fn nested_and_materialized_invocations_retain_the_code_origin() {
 }
 
 #[test]
-fn ordinary_reads_information_modes_and_registered_modules_are_unchanged() {
+fn ordinary_reads_and_information_modes_are_unchanged() {
     for command in [
         "cat /opt/lib.so",
         "curl -q https://example.test/file",
         "curl -q --engine list",
         "ssh-keygen -l -f /opt/key.pub",
         "getent --service=dns hosts example.test",
+    ] {
+        check(command, Decision::Allow, false);
+    }
+}
+
+#[test]
+fn modules_without_host_identity_and_authority_remain_ask() {
+    // A known module name is not a host-attested module identity or grant.
+    // The old Allow assertion predates the existing module-authority policy.
+    for command in [
         "python -m json.tool input.json output.json",
         "python -m http.server --bind 127.0.0.1",
     ] {
-        check(command, Decision::Allow, false);
+        check(command, Decision::NeedApproval, false);
     }
 }
 
