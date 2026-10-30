@@ -29,7 +29,7 @@ pub(crate) fn data_only(text: &str) -> bool {
                     return false;
                 }
                 count += 1;
-                if count > 64 {
+                if count >= 64 {
                     return false;
                 }
                 start = i + 1;
@@ -80,6 +80,8 @@ mod tests {
     use super::*;
     #[test]
     fn whole_graph_and_quoting_are_bounded() {
+        assert!(data_only(&vec!["hflip"; 64].join(",")));
+        assert!(!data_only(&vec!["hflip"; 65].join(",")));
         for graph in [
             "select='not(mod(n,17))'",
             "scale=320:240,crop=100:80",

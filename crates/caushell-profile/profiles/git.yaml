@@ -162,6 +162,9 @@ subcommands:
       option_scope: permuted_options
       forms:
         - id: clone_repository_with_recursive_submodules
+          # Credential helpers, templates and filters selected through native
+          # configuration require a separate complete configuration contract.
+          operation_semantics_unresolved: true
           selector:
             kind: all
             items:
@@ -214,6 +217,7 @@ subcommands:
                 root: destination
                 path_set: registered_submodule_worktrees
         - id: clone_repository
+          operation_semantics_unresolved: true
           selector:
             kind: all
             items:
@@ -256,6 +260,7 @@ subcommands:
                 kind: slot
                 name: destination
         - id: clone_implicit_destination
+          operation_semantics_unresolved: true
           selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
           parameters:
             - {name: repository, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}

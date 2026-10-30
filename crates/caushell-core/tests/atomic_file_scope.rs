@@ -98,3 +98,17 @@ fn deletion_and_independent_deny_remain_effective() {
         Decision::NeedApproval
     );
 }
+
+#[test]
+fn native_configuration_uncertainty_is_not_removed_by_cli_option_coverage() {
+    for command in [
+        "R CMD config BLAS_LIBS",
+        "git clone --depth 2 --branch dev https://example.org/repo.git /workspace/repo",
+    ] {
+        assert_eq!(
+            check(command, namespace()).decision,
+            Decision::NeedApproval,
+            "{command}"
+        );
+    }
+}

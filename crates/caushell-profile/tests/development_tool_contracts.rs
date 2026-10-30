@@ -2,7 +2,7 @@ use caushell_parse::parse_command;
 use caushell_profile::*;
 use caushell_types::ShellKind;
 use std::sync::OnceLock;
-fn resolve(s: &str) -> Option<BoundInvocation> {
+fn bound(s: &str) -> Option<BoundInvocation> {
     static REG: OnceLock<ProfileRegistry> = OnceLock::new();
     let p = parse_command(s, ShellKind::Bash).unwrap();
     match resolve_invocation(
@@ -10,11 +10,12 @@ fn resolve(s: &str) -> Option<BoundInvocation> {
         &p.commands[0],
         InvocationRuntimeContext::new(),
     ) {
-        ResolveInvocationResult::Resolved(r) if !r.bound.operation_semantics_unresolved => {
-            Some(r.bound)
-        }
+        ResolveInvocationResult::Resolved(r) => Some(r.bound),
         _ => None,
     }
+}
+fn resolve(s: &str) -> Option<BoundInvocation> {
+    bound(s).filter(|b| !b.operation_semantics_unresolved)
 }
 #[test]
 fn read_queries_do_not_borrow_mutator_authority() {
@@ -24,7 +25,6 @@ fn read_queries_do_not_borrow_mutator_authority() {
         "pip config list",
         "pip config get global.index-url",
         "pip --disable-pip-version-check show --files package",
-        "R CMD config BLAS_LIBS",
     ] {
         let b = resolve(c).unwrap_or_else(|| panic!("{c}"));
         assert!(
@@ -59,7 +59,11 @@ fn clone_options_retain_endpoint_and_destination_effects() {
         "git clone --depth 2 --branch release https://example.org/a.git /work/repo",
         "git clone -bdev --single-branch https://example.org/a.git /work/repo",
     ] {
-        let b = resolve(c).unwrap_or_else(|| panic!("{c}"));
+        let b = bound(c).unwrap_or_else(|| panic!("{c}"));
+        assert!(
+            b.operation_semantics_unresolved,
+            "native clone configuration remains unbounded"
+        );
         assert!(b.effects.iter().any(|e| e.kind == EffectKind::WritePath));
         assert!(
             b.effects
@@ -67,7 +71,7 @@ fn clone_options_retain_endpoint_and_destination_effects() {
                 .any(|e| e.kind == EffectKind::NetworkEndpoint)
         );
     }
-    let implicit = resolve("git clone --depth 2 https://example.org/a.git").unwrap();
+    let implicit = bound("git clone --depth 2 https://example.org/a.git").unwrap();
     assert!(
         implicit
             .effects
@@ -77,6 +81,14 @@ fn clone_options_retain_endpoint_and_destination_effects() {
     assert!(resolve("git clone --depth 2 'ext::sh -c bad' /work/repo").is_none());
     assert!(resolve("git clone --depth https://example.org/a.git").is_none());
     assert!(resolve("git clone --upload-pack='sh -c bad' host:a /work/repo").is_none());
+}
+
+#[test]
+fn configuration_query_does_not_claim_makefile_execution_is_fully_analyzed() {
+    let b = bound("R CMD config BLAS_LIBS").unwrap();
+    assert!(b.operation_semantics_unresolved);
+    assert!(b.effects.iter().any(|e| e.kind == EffectKind::LoadConfig));
+    assert!(!b.effects.iter().any(|e| e.kind == EffectKind::WritePath));
 }
 #[test]
 fn tex_models_cli_without_claiming_source_controlled_io_is_bounded() {

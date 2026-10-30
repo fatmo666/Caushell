@@ -8,6 +8,9 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
 forms:
   - id: native_configuration_query
+    # R CMD config evaluates Makefiles and native configuration, rather than
+    # merely reading a static key/value table. Their effects are not yet bounded.
+    operation_semantics_unresolved: true
     selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: CMD}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: config}}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: script_file}}]}
     parameters:
       - {name: cmd_word, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
