@@ -80,3 +80,43 @@ PYTHONPATH=RQ3_RUNTIME python -B tests/namespace_probe.py PLAN NEW_EVIDENCE
 The namespace regression launches and removes only its own disposable container.
 It verifies target-namespace facts, workspace execution, inline/deletion Ask,
 Deny, immutable assets, protected observer descriptors and fail-closed channel loss.
+
+## Owning Bash boundary
+
+New plans use the owning-frame gate by default. Add the repository's
+`owning-frame.bash` and `integrations/execution-frame/capture.bash` to the immutable
+asset directory, together with an observer built from the current `guard-host.rs`
+and `frame-submit.rs`. Preparation verifies the helper hashes. `--legacy-hooks`
+retains the previous unknown-observation behavior when this executor channel is
+unavailable; it does not manufacture defaults.
+
+The native PreToolUse hook registers the logical action and rewrites its command
+only to insert the trusted gate. Admission of that gate is not a Caushell Allow.
+After the native CLI has initialized its actual Bash, the gate pauses that frame,
+collects the declared environment and glob facts in forked copies of that frame,
+and submits them through a one-use action ticket. It never launches a probe Shell.
+Shell `HOME` is observed separately from exported child environment values; tilde
+resolution never falls back to a stale container startup value.
+The controller plans/checks the original action with the current sequence binding;
+only Caushell Allow or a receipted single-call approval releases the original code.
+Deny, declined approval and transport loss cannot execute it. Malformed captures
+are discarded, leaving facts unknown; they cannot bypass the original check or
+the approval receipt required by that check.
+Facts and approvals are distinct records; a known path/hostname never grants access.
+
+The inserted gate preserves stdin, caller positional parameters, `$?`, cwd updates
+and `errexit`. The native client's own cwd reset policy still applies. Scratch
+helper functions stay in subshells; only an unexported,
+randomly named status scratch variable exists in the pending Bash. Shell
+introspection can observe instrumentation, so this is not an invisible executor.
+Original and rewritten inputs, native gate admission, actual frame decisions,
+approval receipts, rejection and gate timing remain separately auditable.
+Cancellation discards pending tickets; captures are never cached across actions.
+The channel assumes the native executor and read-only collector assets are trusted;
+its tickets are not a claim of isolation from every malicious-root attack.
+
+For the Bash/transport regression suite, set `CAUSHELL_TEST_HOST` to the compiled
+host example and `PYTHONPATH` to the pinned RQ3 runtime. These tests use a local
+engineering HTTP listener, not a model endpoint. Native-client integration tests
+must additionally verify the framework's tool-result/cwd lifecycle in a disposable
+container.

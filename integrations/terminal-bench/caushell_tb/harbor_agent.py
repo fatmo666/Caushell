@@ -15,6 +15,7 @@ from .bridge import ExternalEngine,exec_prefix
 from .journal import BufferedJournal
 from . import native_loop
 from .provider import Provider
+from .owned_frames import OwningFrameLifecycle
 
 class FixtureLedger:
     def reserve_request(self,*args):pass
@@ -85,10 +86,10 @@ class TaskFaithfulClaude(ClaudeCode):
         image_env=dict(x.split('=',1) for x in info['Config'].get('Env',[]) if '=' in x)
         if any(task_env.get(k,image_env.get(k)) for k in ['LD_PRELOAD','LD_AUDIT']):raise ValueError('This native client asset cannot preserve custom loader instrumentation; do not silently remove it')
         save(folder/'task-context.json',dict(identity=fields[0],home=home,path=path,cwd=cwd,agent_user=c['agent_user'],phase_environment_keys=sorted(task_env),task_config_sha256=c['task_config_sha256']))
-        session=str(uuid.uuid4());engine=None;model=None
+        session=str(uuid.uuid4());engine=None;model=None;lifecycle=None
         try:
             engine=ExternalEngine(docker,container,c['agent_user'],asset_command(c,'observer'),c['host_guard'],c['guard_config'],folder,journal,home,cwd)
-            lifecycle=Lifecycle(session,journal,engine)
+            lifecycle=OwningFrameLifecycle(session,journal,engine,c['asset_mount']+'/owning-frame.bash',asset_command(c,'observer')) if c.get('owning_frames') else Lifecycle(session,journal,engine)
             if c['mode']=='offline':
                 model=MockModel(c['fixture_steps'],FixtureLedger(),session,journal,address=('0.0.0.0',0))
                 model.url=f'http://host.docker.internal:{model.server.server_port}'
@@ -106,7 +107,7 @@ class TaskFaithfulClaude(ClaudeCode):
         finally:
             cleanup_errors=[]
             try:
-                for name,resource in [('model',model),('guard',engine)]:
+                for name,resource in [('model',model),('frame_gate',lifecycle if hasattr(lifecycle,'close') else None),('guard',engine)]:
                     if resource:
                         try:resource.close()
                         except Exception as error:

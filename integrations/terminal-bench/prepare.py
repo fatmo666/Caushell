@@ -16,6 +16,7 @@ def main():
     p=argparse.ArgumentParser()
     for name in ['source','output','assets','runtime-root','host-guard','guard-config']:p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--docker',default='/Users/huangyu/.docker/bin/docker');p.add_argument('--mode',choices=['offline','local'],default='offline')
+    p.add_argument('--legacy-hooks',action='store_true',help='Keep observations unknown when no owning executor transport is supplied')
     p.add_argument('--steps',type=Path);p.add_argument('--provider',type=Path);p.add_argument('--system-prompt',type=Path,required=True);p.add_argument('--authorize-local',action='store_true')
     a=p.parse_args();source=a.source.resolve();output=a.output.resolve();assets=a.assets.resolve();runtime=a.runtime_root.resolve()
     config=tomllib.loads((source/'task.toml').read_text());reference=config['environment'].get('docker_image')
@@ -36,13 +37,18 @@ def main():
     for key in ['claude','observer']:
         if not layout[key] or any(not isinstance(x,str) or '\x00' in x for x in layout[key]):raise ValueError('Invalid executable asset command')
         if not layout[key][0].startswith('{assets}/'):raise ValueError('Executable must come from immutable harness assets')
+    frame_root=Path(__file__).resolve().parent.parent/'execution-frame'
+    frame_files={name:sha(frame_root/name) for name in ['observation.py','capture.bash']}
+    if not a.legacy_hooks:
+        for name,expected in [('capture.bash',frame_files['capture.bash']),('owning-frame.bash',sha(Path(__file__).resolve().parent/'owning-frame.bash'))]:
+            if not (assets/name).is_file() or sha(assets/name)!=expected:raise ValueError('Pinned owning-frame helper missing or different: '+name)
     assets_hash={str(p.relative_to(assets)):sha(p) for p in sorted(assets.rglob('*')) if p.is_file()}
     runtime_files={str(p.relative_to(runtime)):sha(p) for p in sorted((runtime/'rq3').glob('*.py'))}
     if not runtime_files:raise ValueError('Pinned RQ3 protocol/telemetry dependency missing')
     (output/'outputs').mkdir();users=task_users(config,image)
     integration=Path(__file__).resolve().parent
     integration_files={str(p.relative_to(integration)):sha(p) for p in sorted(integration.rglob('*.py')) if '__pycache__' not in p.parts and 'tests' not in p.relative_to(integration).parts}
-    plan=dict(integration_root=str(integration),integration_files=integration_files,compose_sha256=sha(output/'compose.json'),schema=1,mode=a.mode,task=str(task),task_manifest=manifest(task),task_config_sha256=sha(task/'task.toml'),task_users=users,agent_user=users['agent_user'],image_id=image['Id'],image_reference=reference,image_user=users['image_user'],
+    plan=dict(owning_frames=not a.legacy_hooks,execution_frame_root=str(frame_root),execution_frame_files=frame_files,integration_root=str(integration),integration_files=integration_files,compose_sha256=sha(output/'compose.json'),schema=1,mode=a.mode,task=str(task),task_manifest=manifest(task),task_config_sha256=sha(task/'task.toml'),task_users=users,agent_user=users['agent_user'],image_id=image['Id'],image_reference=reference,image_user=users['image_user'],
       runtime_root=str(runtime),runtime_files=runtime_files,assets=str(assets),asset_mount=mount,asset_sha256=assets_hash,asset_manifest=manifest(assets),commands=layout,
       state_dir='/tmp/.caushell-session-'+uuid.uuid4().hex,host_guard=str(a.host_guard.resolve()),host_guard_sha256=sha(a.host_guard),guard_config=str(a.guard_config.resolve()),guard_config_sha256=sha(a.guard_config),
       docker=a.docker,owner=owner,compose=str(output/'compose.json'),outputs=str(output/'outputs'),trial=owner,host_workdir=str(output),

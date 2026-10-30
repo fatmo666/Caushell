@@ -39,7 +39,7 @@ def exec_prefix(docker, container, user=None, cwd=None):
 class ExternalEngine:
     def __init__(self,docker,container,user,observer_command,host_binary,config,folder,journal,home,workspace):
         self.journal,self.home,self.workspace=journal,home,workspace
-        self.buffer=b'';self.failed=None;self.closed=False
+        self.buffer=b'';self.failed=None;self.closed=False;self.rpc_lock=threading.RLock()
         folder=Path(folder);folder.mkdir(exist_ok=True)
         self.observer_stderr=(folder/'observer.stderr.log').open('xb')
         self.stderr=(folder/'caushell.stderr.log').open('xb')
@@ -86,6 +86,9 @@ class ExternalEngine:
         finally:reader.close();writer.close()
 
     def call(self, request, tool_use_id=None):
+        with self.rpc_lock:return self._call(request,tool_use_id)
+
+    def _call(self, request, tool_use_id=None):
         if self.failed:raise RuntimeError(self.failed)
         began=time.monotonic_ns();self.journal.emit('caushell_request',request=request,tool_use_id=tool_use_id)
         self.process.stdin.write(json.dumps(request).encode()+b'\n');self.process.stdin.flush()
@@ -101,9 +104,29 @@ class ExternalEngine:
         self.journal.emit('caushell_response',response=response,tool_use_id=tool_use_id,wire_elapsed_ns=time.monotonic_ns()-began)
         return response['payload']
 
+    def request(self,command,cwd,session,intent='propose_for_execution'):
+        return dict(intent=intent,session_id=session,command=command,shell_kind='bash',home=self.home,workspace_root=self.workspace,shell_state_before=dict(cwd=cwd,observability=dict(variables='unknown',aliases='unknown',functions='unknown')),runtime=dict(runtime_name='rq3_claude_code',tool_name='Bash',shell_runtime_capabilities=dict(persists_cwd=True,persists_variables=False,persists_exported_environment=False,persists_aliases=False,persists_functions=False,persists_positionals=False)))
+
+    def plan(self,command,cwd,session,executor,home=None,home_is_actual=False):
+        request=self.request(command,cwd,session)
+        if home_is_actual:request['home']=home
+        return self.call(dict(kind='execution_frame_plan',payload=dict(request=request,executor_instance_id=executor)))
+
     def check(self,command,cwd,session,intent='propose_for_execution',tool_use_id=None):
-        # A hook has no owning Bash frame. Keep observations unknown instead of probing another shell.
-        return self.call(dict(kind='check',payload=dict(intent=intent,session_id=session,command=command,shell_kind='bash',home=self.home,workspace_root=self.workspace,shell_state_before=dict(cwd=cwd,observability=dict(variables='unknown',aliases='unknown',functions='unknown')),runtime=dict(runtime_name='rq3_claude_code',tool_name='Bash',shell_runtime_capabilities=dict(persists_cwd=True,persists_variables=False,persists_exported_environment=False,persists_aliases=False,persists_functions=False,persists_positionals=False)))),tool_use_id)
+        # Legacy hooks still preserve unknown facts; they never probe another Shell.
+        return self.call(dict(kind='check',payload=self.request(command,cwd,session,intent)),tool_use_id)
+
+    def check_observed(self,command,cwd,session,executor,nonce,raw,names,decode,tool_use_id,observed_home=None):
+        with self.rpc_lock:
+            plan=self.plan(command,cwd,session,executor,home=observed_home,home_is_actual=True)
+            if tuple(plan['requirements']['environment_names'])!=tuple(names):raise ValueError('Execution-frame requirements changed while paused')
+            request=self.request(command,cwd,session);request['home']=observed_home
+            try:request['shell_state_before']['execution_frame']=decode(plan,nonce,raw)
+            except ValueError as error:
+                # Discard invalid facts. Still analyze the registered original
+                # command so independent Deny and missing-fact Ask remain visible.
+                self.journal.emit('execution_frame_unavailable',tool_use_id=tool_use_id,error=repr(error))
+            return self.call(dict(kind='check',payload=request),tool_use_id)
 
     def authorize(self,receipt,approved=True,tool_use_id=None):
         return self.call(dict(kind='authorize',payload=dict(**receipt,approved=approved,authority='simulated_user')),tool_use_id)

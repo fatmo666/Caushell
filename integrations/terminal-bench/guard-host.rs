@@ -1,4 +1,6 @@
-//! Executor-side observation bridge. No Docker/task policy in the analysis core.
+#[path = "frame-submit.rs"]
+mod frame_submit;
+// Executor-side observation bridge. No Docker/task policy in the analysis core.
 use caushell_core::LocalFilesystem;
 use caushell_runner::{DirectoryRead, FileContentRead, FilesystemView, MAX_FILE_CONTENT_BYTES};
 use caushell_types::*;
@@ -187,7 +189,7 @@ fn observe() -> io::Result<()> {
     let mut initial = io::stdout().lock();
     send(
         &mut initial,
-        &json!({"observer_protocol":1,"pid":std::process::id(),"protected":cfg!(target_os="linux")}),
+        &json!({"frame_submit_protocol":1,"observer_protocol":1,"pid":std::process::id(),"protected":cfg!(target_os="linux")}),
     )?;
     drop(initial);
     let view = LocalFilesystem;
@@ -250,6 +252,9 @@ fn observe() -> io::Result<()> {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|s| s == "frame-submit") {
+        return frame_submit::submit(&args[1..]);
+    }
     if args == ["observe"] {
         observe()?;
         return Ok(());

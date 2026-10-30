@@ -83,6 +83,8 @@ def validate_container(info, expected_image, assets, mount, evidence):
 
 
 def verify_plan(plan):
+    for name,digest in plan.get('execution_frame_files',{}).items():
+        if sha(Path(plan['execution_frame_root'])/name)!=digest:raise ValueError('Execution-frame collector changed')
     for field in ['runtime_files','integration_files']:
         root=Path(plan['runtime_root'] if field=='runtime_files' else plan['integration_root'])
         for name,digest in plan[field].items():

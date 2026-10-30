@@ -7,7 +7,8 @@ fn request(command: &str) -> CheckRequest {
         session_id: SessionId::new("delete-policy"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/workspace"),
+        shell_state_before: ShellStateSnapshot::new("/workspace")
+            .with_environment_observation("TAR_OPTIONS", ShellEnvironmentValue::Absent),
         shell_kind: ShellKind::Bash,
         home: Some("/home/alice".into()),
         workspace_root: Some("/workspace".into()),
@@ -92,7 +93,6 @@ fn moves_and_ordinary_writes_keep_their_own_policies() {
     for c in [
         "mv old new",
         "mv -t dest old",
-        "rename old new file",
         "touch file",
         "touch /tmp/file",
         "chmod 600 file",
@@ -118,6 +118,25 @@ fn moves_and_ordinary_writes_keep_their_own_policies() {
     let r = check("mv /opt/shared/old new");
     assert_eq!(r.decision, Decision::NeedApproval);
     assert!(!deletion(&r));
+}
+
+#[test]
+fn opaque_rename_language_does_not_borrow_move_authority() {
+    // The registered dialect treats the first argument as code. This already
+    // required approval on main; deletion policy must not erase that boundary.
+    let r = check("rename old new file");
+    assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
+    assert!(!deletion(&r));
+}
+
+#[test]
+fn unobserved_option_environment_is_not_an_empty_default() {
+    let mut r = request("tar -tf archive.tar");
+    r.shell_state_before = ShellStateSnapshot::new("/workspace");
+    assert_eq!(
+        ShellQueryCore::new().check(r).decision,
+        Decision::NeedApproval
+    );
 }
 
 #[test]
