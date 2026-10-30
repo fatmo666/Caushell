@@ -17,8 +17,27 @@ platform:
   shell_families: []
   requires_features: []
 
-forms: []
+configuration_files: {syntax: apt, modifier: configuration_file, operand: configuration_paths}
+environment_inputs:
+  - name: apt_configuration_environment
+    environment: {name: APT_CONFIG, empty_is_unset: true}
+    semantic: {kind: plain_value}
+    unless_modifiers: [information]
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: information_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
 modifiers:
+  - id: information
+    matcher: {kind: any_flag, flags: ['--version', '-v', '--help', '-h']}
+  - &configuration_file
+    id: configuration_file
+    matcher: {kind: any_flag, flags: ['-c', '--config-file']}
+    parameters: [{name: configuration_paths, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - &download_only
+    id: download_only
+    matcher: {kind: any_flag, flags: ['-d', '--download-only']}
+    parameters: [{name: download_controls, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}]
   - id: global_option
     matcher: {kind: any_flag, flags: ["-o", "--option"]}
     parameters:
@@ -80,8 +99,11 @@ subcommands:
               target:
                 kind: slot
                 name: package_specs
+            - &managed_write {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
       modifiers:
         - *assume_yes
+        - *configuration_file
+        - *download_only
         - &local_configuration_option
           id: option
           matcher: {kind: any_flag, flags: ["-o", "--option"]}
@@ -109,6 +131,21 @@ subcommands:
       default_behavior: reject_unknown
       extensions: {}
 
+    - name: download
+      aliases: []
+      forms:
+        - id: download_packages
+          selector: {kind: has_positional_at, index: 0}
+          parameters:
+            - {name: package_specs, semantic: {kind: package_locator, manager: apt, locator_kinds: [registry_ref, unknown_dynamic]}, binding: {kind: remaining_positionals}, cardinality: required_many}
+          effects:
+            - {kind: import_package, target: {kind: slot, name: package_specs}}
+            - *managed_write
+      modifiers: [*assume_yes, *configuration_file, *download_only, *local_configuration_option]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
     - name: source
       aliases: []
       forms:
@@ -131,7 +168,8 @@ subcommands:
               target:
                 kind: slot
                 name: package_specs
-      modifiers: [*assume_yes, *local_configuration_option]
+            - *managed_write
+      modifiers: [*assume_yes, *configuration_file, *download_only, *local_configuration_option]
       children: []
       default_behavior: reject_unknown
       extensions: {}
@@ -147,6 +185,7 @@ subcommands:
             matcher: {kind: regex_pattern, pattern: "^(APT::Update::Pre-Invoke::|APT::Update::Post-Invoke::|DPkg::Pre-Invoke::|DPkg::Post-Invoke::)="}
           effects:
             - &update_lists_write {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+            - &list_cleanup {kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
         - id: update_metadata
           selector:
             kind: all
@@ -160,9 +199,12 @@ subcommands:
                   matcher: {kind: regex_pattern, pattern: "^(APT::Update::Pre-Invoke::|APT::Update::Post-Invoke::|DPkg::Pre-Invoke::|DPkg::Post-Invoke::)="}
           effects:
             - *update_lists_write
+            - *list_cleanup
             - {kind: load_config, target: {kind: none}}
       modifiers:
         - *assume_yes
+        - *configuration_file
+        - *download_only
         - *local_configuration_option
       children: []
       default_behavior: reject_unknown
@@ -178,13 +220,17 @@ subcommands:
           effects:
             - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
-      modifiers: [*assume_yes, *local_configuration_option]
+      modifiers: [*assume_yes, *configuration_file, *download_only, *local_configuration_option]
       children: []
       default_behavior: reject_unknown
       extensions: {}
 
 extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/trixie/apt/apt-get.8.en.html
+    - https://manpages.debian.org/trixie/apt/apt.conf.5.en.html
   caushell.profile/known_limitations:
-    - This first slice models `apt-get install <package_specs...>`, `apt-get install -y/--yes <package_specs...>`, and `apt-get source <package_specs...>`.
-    - This slice treats apt package operands as package references, not local `.deb` files or arbitrary URLs.
-    - Package removal, build-dep resolution, archive cache mutation, and dpkg-level filesystem side effects are intentionally out of scope for this profile slice.
+    - Native APT configuration is bounded data; hooks, unknown directives, custom binaries and security controls remain incomplete.
+    - Download-only suppresses package installation logic only after complete effective configuration proof. It never suppresses hooks or grants filesystem authority.
+    - Download writes the current directory; update and download-only install use configured manager paths. Output families require independent namespace evidence.
+    - Real installation and source extraction retain unknown filesystem effects. Unmodeled commands remain incomplete.

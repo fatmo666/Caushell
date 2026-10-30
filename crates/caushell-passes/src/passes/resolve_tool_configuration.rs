@@ -1,13 +1,14 @@
+mod apt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use caushell_parse::{CommandToken, CommandTokenKind, SourceSpan};
 use caushell_profile::{
-    BoundInvocation, CommandProfile, ConfiguredPathMissing, ConfiguredPathTarget, Effect,
-    EffectKind, EffectTarget, ImplicitConfigSource, InvocationRuntimeContext, PathPurpose,
-    ProfileRegistry, ResidualKind, ResolveInvocationArtifactResult, argument_structure,
-    mark_configuration_pending, parse_configuration, resolve_invocation_artifact_with_bindings,
-    root_option_ownership,
+    BoundInvocation, CommandProfile, ConfigurationSyntax, ConfiguredPathMissing,
+    ConfiguredPathTarget, Effect, EffectKind, EffectTarget, ImplicitConfigSource,
+    InvocationRuntimeContext, PathPurpose, ProfileRegistry, ResidualKind,
+    ResolveInvocationArtifactResult, argument_structure, mark_configuration_pending,
+    parse_configuration, resolve_invocation_artifact_with_bindings, root_option_ownership,
 };
 use caushell_query::QuerySession;
 use caushell_runner::{
@@ -19,7 +20,9 @@ use caushell_types::{
     ToolConfigInputStatus, ToolConfigOptionEvidence, ToolConfigParseEvidence,
 };
 
-use super::discover_tool_config_inputs::{possible_namespace_writes, possible_writes};
+use super::discover_tool_config_inputs::{
+    possible_namespace_writes, possible_writes, possible_writes_excluding_effects,
+};
 use crate::path::namespace::NamespaceResolver;
 use crate::support::{
     ExecutionResolveRecordRef, StaticFileContent, graph_backed_execution_resolve_records,
@@ -57,7 +60,7 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
             matches!(r.result(), ResolveInvocationArtifactResult::Resolved(r)
             if self.registry.lookup(&r.normalized_command_name).profile.is_some_and(|p|
                 p.configuration_files.as_ref().is_some_and(|contract|
-                    r.bound.applied_modifiers.iter().any(|id| id.as_str() == contract.modifier))))
+                    contract.syntax == ConfigurationSyntax::Apt || r.bound.applied_modifiers.iter().any(|id| id.as_str() == contract.modifier))))
         }) && !inputs_by_node.values().flatten().any(|input| {
             matches!(
                 input.status,
@@ -98,7 +101,9 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
                 .applied_modifiers
                 .iter()
                 .any(|id| id.as_str() == contract.modifier);
-            if !explicit
+            let is_apt = contract.syntax == ConfigurationSyntax::Apt;
+            if !is_apt
+                && !explicit
                 && inputs.iter().all(|input| {
                     matches!(
                         input.status,
@@ -115,14 +120,37 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
             let cwd = (cwds.len() == 1 && !record.static_input_cwd_unproven())
                 .then(|| cwds[0])
                 .flatten();
+            // A native loader reads before its own operation, but after shell redirects.
+            // Other execution units still invalidate config/content namespace facts.
+            let apt_writes;
+            let apt_namespace_writes;
+            let (input_writes, input_namespace_writes) = if is_apt {
+                apt_writes = possible_writes_excluding_effects(
+                    ctx,
+                    &records,
+                    &mut namespace,
+                    record.source_node_id(),
+                    true,
+                );
+                apt_namespace_writes = possible_writes_excluding_effects(
+                    ctx,
+                    &records,
+                    &mut namespace,
+                    record.source_node_id(),
+                    false,
+                );
+                (&apt_writes, &apt_namespace_writes)
+            } else {
+                (&writes, &namespace_writes)
+            };
             let static_content =
                 |path: &str| known_content(session, ctx, &self.registry, *record, &records, path);
             let mut expansion = Expansion {
                 profile,
                 view: ctx.filesystem_view(),
                 cwd,
-                writes: &writes,
-                namespace_writes: &namespace_writes,
+                writes: input_writes,
+                namespace_writes: input_namespace_writes,
                 static_content: &static_content,
                 stack: Vec::new(),
                 paths: Vec::new(),
@@ -136,15 +164,22 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
                     command: original.normalized_command_name.clone(),
                     complete: false,
                     files: Vec::new(),
+                    directories: Vec::new(),
                     namespace_observations: Vec::new(),
                     options: Vec::new(),
                     errors: Vec::new(),
                 },
             };
-            if let Some(search) = contract
-                .implicit_search
-                .as_deref()
-                .and_then(|id| profile.implicit_config_files.iter().find(|i| i.id == id))
+            let apt_result = if is_apt {
+                Some(apt::resolve(&mut expansion, *record))
+            } else {
+                None
+            };
+            if !is_apt
+                && let Some(search) = contract
+                    .implicit_search
+                    .as_deref()
+                    .and_then(|id| profile.implicit_config_files.iter().find(|i| i.id == id))
             {
                 if inputs.is_empty() {
                     expansion.error("implicit configuration discovery is unavailable");
@@ -203,7 +238,9 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
                 .map(|arg| argument_structure(arg).exact_value().map(str::to_owned))
                 .collect::<Option<Vec<_>>>();
             let ownership = root_option_ownership(profile, invocation);
-            let result = if let (Some(argv), Some(ownership)) = (argv, ownership)
+            let result = if let Some(result) = apt_result {
+                result
+            } else if let (Some(argv), Some(ownership)) = (argv, ownership)
                 && !ownership.ownership_unresolved
                 && ownership.error.is_none()
                 && !original.materialized_projection.shell_expansion_unresolved

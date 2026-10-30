@@ -443,12 +443,21 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             caushell_profile::ResolveInvocationArtifactResult::Resolved(_)
                         ) && !bound.operation_semantics_unresolved
                             && bound.effects.iter().all(|effect| {
-                                matches!(
-                                    effect.kind,
+                                match effect.kind {
                                     EffectKind::ReadPath
-                                        | EffectKind::WritePath
-                                        | EffectKind::TransformData
-                                )
+                                    | EffectKind::WritePath
+                                    | EffectKind::TransformData
+                                    | EffectKind::ImportPackage => true,
+                                    // A native configuration loader can participate only after
+                                    // complete current-action parse evidence. Executable hooks
+                                    // remain separate effects and fail this closed-effect test.
+                                    EffectKind::LoadConfig => ctx.evidence.iter().any(|e| {
+                                        matches!(&e.kind,
+                                        caushell_types::EvidenceKind::ToolConfigParse(p)
+                                        if p.node_id==record.source_node_id().0 && p.complete)
+                                    }),
+                                    _ => false,
+                                }
                             })
                         {
                             input.namespace_effect = effect.namespace_effect;

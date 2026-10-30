@@ -20,6 +20,9 @@ pub struct ConfigurationParse {
 }
 
 pub fn parse_configuration(profile: &CommandProfile, bytes: &[u8]) -> ConfigurationParse {
+    if profile.configuration_files.as_ref().map(|c| c.syntax) == Some(ConfigurationSyntax::Apt) {
+        return crate::parse_apt_configuration(bytes);
+    }
     let mut result = ConfigurationParse::default();
     let mut error = |line, detail: &str| {
         result.errors.push(ConfigurationParseError {

@@ -275,7 +275,7 @@ fn global_apt_options_cannot_hide_hooks_or_selected_command() {
         "apt-get install -o Acquire::Retries=3 curl",
         "apt-get -o Acquire::Retries=3 install curl",
     ] {
-        let r = check(command, Decision::Allow);
+        let r = check(command, Decision::NeedApproval);
         assert!(
             r.decision_trace
                 .execution_semantics

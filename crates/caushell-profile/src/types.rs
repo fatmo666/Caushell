@@ -2355,6 +2355,7 @@ pub struct ConfigurationFileContract {
 #[serde(rename_all = "snake_case")]
 pub enum ConfigurationSyntax {
     Curl,
+    Apt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]

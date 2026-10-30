@@ -394,7 +394,7 @@ pub(super) fn possible_writes(
     records: &[ExecutionResolveRecordRef<'_>],
     namespace: &mut NamespaceResolver,
 ) -> BTreeSet<Option<String>> {
-    possible_writes_with_redirections(ctx, records, namespace, true)
+    possible_writes_with_redirections(ctx, records, namespace, true, None)
 }
 
 pub(super) fn possible_namespace_writes(
@@ -402,7 +402,17 @@ pub(super) fn possible_namespace_writes(
     records: &[ExecutionResolveRecordRef<'_>],
     namespace: &mut NamespaceResolver,
 ) -> BTreeSet<Option<String>> {
-    possible_writes_with_redirections(ctx, records, namespace, false)
+    possible_writes_with_redirections(ctx, records, namespace, false, None)
+}
+
+pub(super) fn possible_writes_excluding_effects(
+    ctx: &RunnerContext,
+    records: &[ExecutionResolveRecordRef<'_>],
+    namespace: &mut NamespaceResolver,
+    excluded: &caushell_graph::NodeId,
+    redirections: bool,
+) -> BTreeSet<Option<String>> {
+    possible_writes_with_redirections(ctx, records, namespace, redirections, Some(excluded))
 }
 
 fn possible_writes_with_redirections(
@@ -410,16 +420,20 @@ fn possible_writes_with_redirections(
     records: &[ExecutionResolveRecordRef<'_>],
     namespace: &mut NamespaceResolver,
     redirections: bool,
+    excluded: Option<&caushell_graph::NodeId>,
 ) -> BTreeSet<Option<String>> {
     let mut writes = BTreeSet::new();
     for record in records {
         for cwd in record.cwd_options(&ctx.request().shell_state_before.cwd) {
             let base = cwd.unwrap_or(&ctx.request().shell_state_before.cwd);
-            let mut paths =
+            let mut paths = if excluded == Some(record.source_node_id()) {
+                Vec::new()
+            } else {
                 collect_effect_mutation_targets(*record, base, ctx.request().home.as_deref())
-                    .into_iter()
-                    .map(|target| (target.resolution, target.cwd_dependent))
-                    .collect::<Vec<_>>();
+            }
+            .into_iter()
+            .map(|target| (target.resolution, target.cwd_dependent))
+            .collect::<Vec<_>>();
             paths.extend(
                 collect_redirection_path_facts(
                     record.parsed_scope(),

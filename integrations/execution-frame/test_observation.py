@@ -183,6 +183,49 @@ class GuardEndToEnd(unittest.TestCase):
             self.assertEqual(self.rpc("check",request)["decision"],"deny")
         finally:owner.close()
 
+    def test_apt_native_configuration_mode_and_resource_lifecycle(self):
+        etc=self.root/"apt-config";etc.mkdir();(etc/"parts").mkdir()
+        config=etc/"startup.conf"
+        config.write_text('Dir::Etc "'+str(etc)+'"; Dir::Etc::Parts "parts"; Dir::Etc::main "main.conf";\n')
+        setup="export APT_CONFIG="+shlex.quote(str(config))
+        command="apt-get download fixture-package"
+        request=self.request(command,"apt-frame")
+        self.assertEqual(self.rpc("check",request)["decision"],"need_approval")
+        frame,owner=self.observed(request,setup)
+        try:
+            self.assertIn("APT_CONFIG",[e["name"] for e in frame["environment"]])
+            request["shell_state_before"]["execution_frame"]=frame
+            self.assertEqual(self.rpc("check",request)["decision"],"allow")
+        finally:owner.close()
+        # A new config hook is observed afresh; an old complete result is not cached.
+        hook=etc/"parts"/"50.conf";hook.write_text('DPkg::Pre-Invoke { "id"; };\n')
+        request=self.request(command,"apt-hook")
+        frame,owner=self.observed(request,setup)
+        try:
+            request["shell_state_before"]["execution_frame"]=frame
+            self.assertEqual(self.rpc("check",request)["decision"],"need_approval")
+        finally:owner.close()
+        hook.unlink()
+        # Download writes are authorized by the ordinary workspace policy.
+        for command in ["apt-get -d install fixture-package","apt-get install fixture-package",
+                        "apt-get download fixture-package; rm ./ordinary-file",
+                        "apt-get download fixture-package; Rscript -e 1"]:
+            request=self.request(command,command)
+            frame,owner=self.observed(request,setup)
+            try:
+                request["shell_state_before"]["execution_frame"]=frame
+                self.assertEqual(self.rpc("check",request)["decision"],"need_approval")
+            finally:owner.close()
+        # A symlink in a possible download output family cannot borrow directory authority.
+        (self.work/"existing.deb").symlink_to("/opt/ungranted/target")
+        request=self.request("apt-get download fixture-package","apt-link")
+        frame,owner=self.observed(request,setup)
+        try:
+            request["shell_state_before"]["execution_frame"]=frame
+            self.assertEqual(self.rpc("check",request)["decision"],"need_approval")
+        finally:owner.close()
+        self.assertEqual(list(self.work.glob("fixture-package*")),[])
+
     def test_observations_do_not_grant_write_execute_or_inline_authority(self):
         for command in ["touch /opt/ungranted/new-file","Rscript -e 'print(7)'","rm ./ordinary-file"]:
             request=self.request(command,command)

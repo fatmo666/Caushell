@@ -16284,6 +16284,7 @@ mod tests {
                     vec![
                         EffectKind::ImportPackage,
                         EffectKind::ExecuteImportedPackageLogic,
+                        EffectKind::WritePath,
                     ]
                 );
             }
@@ -16313,6 +16314,7 @@ mod tests {
                     vec![
                         EffectKind::ImportPackage,
                         EffectKind::ExecuteImportedPackageLogic,
+                        EffectKind::WritePath,
                     ]
                 );
             }
@@ -16342,6 +16344,7 @@ mod tests {
                     vec![
                         EffectKind::ImportPackage,
                         EffectKind::ExecuteImportedPackageLogic,
+                        EffectKind::WritePath,
                     ]
                 );
             }
@@ -16368,7 +16371,7 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::ImportPackage]
+                    vec![EffectKind::ImportPackage, EffectKind::WritePath]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),

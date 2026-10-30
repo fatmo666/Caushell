@@ -550,9 +550,26 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 "configuration_files.implicit_search is not declared",
             ));
         }
-        if option_scope != OptionScopePolicy::PermutedOptions
-            || subcommands.is_some()
-            || !dispatch_overrides.is_empty()
+        if contract.syntax == crate::ConfigurationSyntax::Apt
+            && (option_scope != OptionScopePolicy::LeadingOptions
+                || subcommands.is_none()
+                || !dispatch_overrides.is_empty()
+                || contract.implicit_search.is_some()
+                || modifier.matcher.flag_names().is_empty()
+                || modifier
+                    .matcher
+                    .flag_names()
+                    .iter()
+                    .any(|f| !matches!(f.as_str(), "-c" | "--config-file")))
+        {
+            return Err(invalid(
+                "APT configuration requires native leading subcommands and config-file options; search order belongs to the native loader",
+            ));
+        }
+        if contract.syntax == crate::ConfigurationSyntax::Curl
+            && (option_scope != OptionScopePolicy::PermutedOptions
+                || subcommands.is_some()
+                || !dispatch_overrides.is_empty())
         {
             return Err(invalid(
                 "configuration_files requires a flat permuted_options grammar",

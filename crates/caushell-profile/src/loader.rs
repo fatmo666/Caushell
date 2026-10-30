@@ -1275,9 +1275,9 @@ extensions: {}
             .subcommands
             .as_ref()
             .expect("expected apt-get subcommands to be present");
-        assert_eq!(subcommands.roots.len(), 4);
+        assert_eq!(subcommands.roots.len(), 5);
         assert_eq!(subcommands.roots[0].name, "install");
-        assert_eq!(subcommands.roots[1].name, "source");
+        assert_eq!(subcommands.roots[1].name, "download");
 
         let install_form = &subcommands.roots[0].forms[0];
         assert_eq!(install_form.id.as_str(), "install_packages");
@@ -1295,7 +1295,7 @@ extensions: {}
             other => panic!("unexpected apt-get install semantic: {other:?}"),
         }
 
-        let source_form = &subcommands.roots[1].forms[0];
+        let source_form = &subcommands.roots[2].forms[0];
         assert_eq!(source_form.id.as_str(), "source_packages");
         match &source_form.parameters[0].semantic {
             SemanticType::PackageLocator(locator) => {

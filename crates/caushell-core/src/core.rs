@@ -6071,7 +6071,8 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
         let response = core.check(sample_request("sess-apt", 1, "apt-get install curl"));
 
-        assert_eq!(response.decision, Decision::Allow);
+        // Observing package-code policy does not authorize native config or unknown install writes.
+        assert_eq!(response.decision, Decision::NeedApproval);
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert_eq!(
             response.decision_trace.execution_semantics[0].normalized_command_name,
@@ -6098,7 +6099,8 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
         let response = core.check(sample_request("sess-apt-yes", 1, "apt-get install -y curl"));
 
-        assert_eq!(response.decision, Decision::Allow);
+        // Observing package-code policy does not authorize native config or unknown install writes.
+        assert_eq!(response.decision, Decision::NeedApproval);
         assert_eq!(response.decision_trace.execution_semantics.len(), 1);
         assert_eq!(
             response.decision_trace.execution_semantics[0].normalized_command_name,

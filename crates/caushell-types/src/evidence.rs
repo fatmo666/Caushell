@@ -523,6 +523,8 @@ pub struct ToolConfigParseEvidence {
     pub command: String,
     pub complete: bool,
     pub files: Vec<crate::FileContentObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<crate::DirectoryObservation>,
     pub namespace_observations: Vec<crate::FilesystemObservation>,
     pub options: Vec<ToolConfigOptionEvidence>,
     pub errors: Vec<String>,
@@ -573,6 +575,7 @@ mod config_input_tests {
                 node_id: "invocation".into(),
                 command: "fixture".into(),
                 complete: true,
+                directories: Vec::new(),
                 files: vec![crate::FileContentObservation {
                     source: crate::FileContentSource::SuppliedView,
                     path: "/settings/fixture.rc".into(),
