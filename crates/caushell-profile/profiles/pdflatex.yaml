@@ -136,6 +136,18 @@ forms:
     target:
       kind: none
 modifiers:
+- id: interaction
+  matcher: {kind: any_flag, flags: ['-interaction', '--interaction']}
+  parameters: [{name: interaction, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: inline_only}, cardinality: required_one}]
+- id: output_directory
+  matcher: {kind: any_flag, flags: ['-output-directory', '--output-directory']}
+  parameters: [{name: output_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: inline_only}, cardinality: required_many}]
+  effects:
+  - {kind: write_path, target: {kind: configured_path, sources: [{slot: output_directory, projection: {kind: identity}}], missing: unknown}}
+- id: jobname
+  matcher: {kind: any_flag, flags: ['-jobname', '--jobname']}
+  parameters: [{name: jobname, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: inline_only}, cardinality: required_many}]
+- {id: diagnostics, matcher: {kind: any_flag, flags: ['-halt-on-error', '--halt-on-error', '-file-line-error', '--file-line-error', '-recorder', '--recorder']}}
 - id: shell_escape
   matcher:
     kind: any_flag

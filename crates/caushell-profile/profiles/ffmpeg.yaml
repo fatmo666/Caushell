@@ -31,6 +31,15 @@ forms:
     - {kind: not, item: {kind: has_modifier, modifier: audio_filter}}
     - {kind: not, item: {kind: has_modifier_parameter_matching, modifier: media_input, parameter: input_source, matcher: &protocol {kind: regex_pattern, pattern: '^[A-Za-z][A-Za-z0-9+.-]*:'}}}
     - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: *protocol}}
+    - kind: any
+      items:
+      - {kind: not, item: {kind: has_modifier, modifier: video_filter}}
+      - {kind: has_modifier_parameter_matching, modifier: video_filter, parameter: video_filter, matcher: {kind: structured_value_context, context: av_filtergraph}}
+    # One graph is interpreted for this slice. Repeated/per-stream declarations
+    # are order-sensitive; an earlier pure graph cannot hide a later I/O graph.
+    - {kind: not, item: {kind: has_flag_at_least, flag: '-vf', count: 2}}
+    - {kind: not, item: {kind: has_flag_at_least, flag: '-filter:v', count: 2}}
+    - {kind: not, item: {kind: all, items: [{kind: has_flag, flag: '-vf'}, {kind: has_flag, flag: '-filter:v'}]}}
     # Numeric output templates in a basename stay in the declared sibling
     # family. Templated directories cannot use that fixed-parent proof.
     - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '%[^/]*[/]'}}}
@@ -128,6 +137,14 @@ forms:
       kind: slot
       name: output_path
 modifiers:
+- id: video_filter
+  matcher: {kind: any_flag, flags: ['-vf', '-filter:v']}
+  parameters:
+  - {name: video_filter, semantic: {kind: structured_value, context: av_filtergraph}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+- id: video_sync
+  matcher: {kind: any_flag, flags: ['-vsync', '-fps_mode']}
+  parameters:
+  - {name: video_sync, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
 - id: audio_quality
   matcher: {kind: any_flag, flags: ["-aq"]}
   parameters: [{name: audio_quality, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]

@@ -524,6 +524,7 @@ pub struct CommandRefSemantic {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StructuredValueContext {
+    AvFiltergraph,
     Regex,
     SedScript,
     AwkProgram,

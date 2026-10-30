@@ -4884,6 +4884,9 @@ fn leading_positional_prefix_len(shape: &InvocationShape, matcher: &ValueMatcher
 
 pub(crate) fn argument_matches_value_matcher(text: &str, matcher: &ValueMatcher) -> bool {
     match matcher {
+        ValueMatcher::StructuredValueContext(StructuredValueContext::AvFiltergraph) => {
+            crate::av_filtergraph::data_only(text)
+        }
         ValueMatcher::StructuredValueContext(StructuredValueContext::Regex) => regex_matches(text),
         ValueMatcher::StructuredValueContext(StructuredValueContext::EnvAssignment) => {
             is_env_assignment(text)

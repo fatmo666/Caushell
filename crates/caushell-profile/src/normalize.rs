@@ -2891,6 +2891,7 @@ fn normalize_dispatch_kind(raw: RawDispatchKind) -> DispatchKind {
 
 fn normalize_structured_value_context(raw: RawStructuredValueContext) -> StructuredValueContext {
     match raw {
+        RawStructuredValueContext::AvFiltergraph => StructuredValueContext::AvFiltergraph,
         RawStructuredValueContext::Regex => StructuredValueContext::Regex,
         RawStructuredValueContext::SedScript => StructuredValueContext::SedScript,
         RawStructuredValueContext::AwkProgram => StructuredValueContext::AwkProgram,

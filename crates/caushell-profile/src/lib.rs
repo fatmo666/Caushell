@@ -1,5 +1,6 @@
 mod apt_configuration;
 mod archive;
+mod av_filtergraph;
 pub use apt_configuration::{AptConfiguration, parse_apt_configuration};
 mod argument_ownership;
 mod argument_regions;

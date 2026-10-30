@@ -159,6 +159,7 @@ subcommands:
   roots:
     - name: clone
       aliases: []
+      option_scope: permuted_options
       forms:
         - id: clone_repository_with_recursive_submodules
           selector:
@@ -177,6 +178,7 @@ subcommands:
               binding:
                 kind: next_positional
               cardinality: required_one
+              value_constraints: [{kind: require_match, pattern: '^https?://[^[:space:]]+$'}]
             - name: destination
               semantic:
                 kind: path
@@ -186,6 +188,7 @@ subcommands:
                 kind: next_positional
               cardinality: required_one
           effects:
+            - {kind: load_config, target: {kind: none}}
             - kind: network_endpoint
               target:
                 kind: slot
@@ -215,7 +218,7 @@ subcommands:
             kind: all
             items:
               - kind: has_positional_at
-                index: 0
+                index: 1
               - kind: not
                 item:
                   kind: all
@@ -233,6 +236,7 @@ subcommands:
               binding:
                 kind: next_positional
               cardinality: required_one
+              value_constraints: [{kind: require_match, pattern: '^https?://[^[:space:]]+$'}]
             - name: destination
               semantic:
                 kind: path
@@ -240,8 +244,9 @@ subcommands:
                 purpose: generic_operand
               binding:
                 kind: next_positional
-              cardinality: optional_one
+              cardinality: required_one
           effects:
+            - {kind: load_config, target: {kind: none}}
             - kind: network_endpoint
               target:
                 kind: slot
@@ -250,7 +255,22 @@ subcommands:
               target:
                 kind: slot
                 name: destination
+        - id: clone_implicit_destination
+          selector: {kind: all, items: [{kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+          parameters:
+            - {name: repository, semantic: {kind: endpoint, endpoint_kind: url, usage: fetch_source}, binding: {kind: next_positional}, cardinality: required_one}
+          effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: network_endpoint, target: {kind: slot, name: repository}}
+            - {kind: write_path, target: {kind: none}}
       modifiers:
+        - id: history_depth
+          matcher: {kind: any_flag, flags: [--depth, --shallow-since, --shallow-exclude]}
+          parameters: [{name: history_selection, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: selected_branch
+          matcher: {kind: any_flag, flags: [--branch, -b]}
+          parameters: [{name: selected_branch, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - {id: clone_mode, matcher: {kind: any_flag, flags: [--single-branch, --no-single-branch, --no-tags, --no-checkout, -n, --bare, --mirror, --quiet, -q, --verbose, -v, --progress]}}
         - id: recursive_submodules
           matcher: {kind: any_flag, flags: ["--recurse-submodules"]}
       children: []

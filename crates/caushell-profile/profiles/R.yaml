@@ -7,6 +7,14 @@ identity: {canonical_name: R, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
 forms:
+  - id: native_configuration_query
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: CMD}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: config}}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: script_file}}]}
+    parameters:
+      - {name: cmd_word, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: config_word, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: config_names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: load_config, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
   - id: information
     selector: {kind: all, items: [{kind: has_modifier, modifier: information}, {kind: not, item: {kind: has_modifier, modifier: code}}, {kind: not, item: {kind: has_modifier, modifier: script_file}}]}
   - id: inline_code

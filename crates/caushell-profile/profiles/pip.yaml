@@ -21,11 +21,161 @@ platform:
   shell_families: []
   requires_features: []
 
-forms: []
-modifiers: []
+forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: global_information}
+    parameters: [{name: information_tail, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
+modifiers:
+  - {id: global_information, matcher: {kind: any_flag, flags: [--help, -h, --version, -V]}}
+  - {id: global_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input, --quiet, -q, --verbose, -v]}}
+  - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+  - id: log_path
+    matcher: {kind: any_flag, flags: [--log]}
+    parameters: [{name: log_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: write_path, target: {kind: slot, name: log_path}}]
 
 subcommands:
   roots:
+    - name: list
+      option_scope: permuted_options
+      forms:
+        - id: inspect_installed_environment
+          selector: {kind: not, item: {kind: has_modifier, modifier: disable_version_check}}
+          parameters: []
+          # Without native config evidence, update checks retain unknown network/cache effects.
+          effects:
+            - {kind: network_endpoint, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+        - id: inspect_without_update_check
+          selector: {kind: has_modifier, modifier: disable_version_check}
+          parameters: []
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
+        - id: output_format
+          matcher: {kind: any_flag, flags: [--format, --exclude]}
+          parameters: [{name: output_setting, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: installed_path
+          matcher: {kind: any_flag, flags: [--path]}
+          parameters: [{name: installed_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: installed_path}}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: show
+      option_scope: permuted_options
+      forms:
+        - id: inspect_installed_environment
+          selector: {kind: not, item: {kind: has_modifier, modifier: disable_version_check}}
+          parameters: [{name: packages, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          # Without native config evidence, update checks retain unknown network/cache effects.
+          effects:
+            - {kind: network_endpoint, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+        - id: inspect_without_update_check
+          selector: {kind: has_modifier, modifier: disable_version_check}
+          parameters: [{name: packages, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
+        - id: output_format
+          matcher: {kind: any_flag, flags: [--format, --exclude]}
+          parameters: [{name: output_setting, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: installed_path
+          matcher: {kind: any_flag, flags: [--path]}
+          parameters: [{name: installed_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: installed_path}}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: freeze
+      option_scope: permuted_options
+      forms:
+        - id: inspect_installed_environment
+          selector: {kind: not, item: {kind: has_modifier, modifier: disable_version_check}}
+          parameters: []
+          # Without native config evidence, update checks retain unknown network/cache effects.
+          effects:
+            - {kind: network_endpoint, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+        - id: inspect_without_update_check
+          selector: {kind: has_modifier, modifier: disable_version_check}
+          parameters: []
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
+        - id: output_format
+          matcher: {kind: any_flag, flags: [--format, --exclude]}
+          parameters: [{name: output_setting, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: installed_path
+          matcher: {kind: any_flag, flags: [--path]}
+          parameters: [{name: installed_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: installed_path}}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: check
+      option_scope: permuted_options
+      forms:
+        - id: inspect_installed_environment
+          selector: {kind: not, item: {kind: has_modifier, modifier: disable_version_check}}
+          parameters: []
+          # Without native config evidence, update checks retain unknown network/cache effects.
+          effects:
+            - {kind: network_endpoint, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+        - id: inspect_without_update_check
+          selector: {kind: has_modifier, modifier: disable_version_check}
+          parameters: []
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
+        - id: output_format
+          matcher: {kind: any_flag, flags: [--format, --exclude]}
+          parameters: [{name: output_setting, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: installed_path
+          matcher: {kind: any_flag, flags: [--path]}
+          parameters: [{name: installed_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: installed_path}}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: inspect
+      option_scope: permuted_options
+      forms:
+        - id: inspect_installed_environment
+          selector: {kind: not, item: {kind: has_modifier, modifier: disable_version_check}}
+          parameters: []
+          # Without native config evidence, update checks retain unknown network/cache effects.
+          effects:
+            - {kind: network_endpoint, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+        - id: inspect_without_update_check
+          selector: {kind: has_modifier, modifier: disable_version_check}
+          parameters: []
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+      modifiers:
+        - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
+        - id: output_format
+          matcher: {kind: any_flag, flags: [--format, --exclude]}
+          parameters: [{name: output_setting, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: installed_path
+          matcher: {kind: any_flag, flags: [--path]}
+          parameters: [{name: installed_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: installed_path}}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
     - name: install
       option_scope: permuted_options
       aliases: []
@@ -81,7 +231,7 @@ subcommands:
           effects: [{kind: write_path, target: {kind: slot, name: report_path}}]
         - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
         - {id: preview, matcher: {kind: any_flag, flags: [--dry-run]}}
-        - {id: install_flags, matcher: {kind: any_flag, flags: [--break-system-packages, --user, --no-user, --no-deps, --upgrade, -U, --force-reinstall, --ignore-installed, --no-build-isolation, --no-compile, --compile, --require-hashes, --no-cache-dir, --quiet, -q, --verbose, -v, --no-index, --disable-pip-version-check]}}
+        - {id: install_flags, matcher: {kind: any_flag, flags: [--break-system-packages, --user, --no-user, --no-deps, --upgrade, -U, --force-reinstall, --ignore-installed, --no-build-isolation, --no-compile, --compile, --require-hashes, --no-cache-dir, --quiet, -q, --verbose, -v, --no-index]}}
         - id: install_values
           matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --constraint, -c, --config-settings, -C, --only-binary, --no-binary, --cache-dir, --python, --platform, --python-version]}
           parameters: [{name: install_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -179,6 +329,36 @@ subcommands:
           parameters:
             - {name: editor_command, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
       children:
+        - name: list
+          forms:
+            - id: inspect_configuration
+              selector: {kind: all, items: []}
+              parameters: [{name: configuration_keys, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+              stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: debug
+          forms:
+            - id: inspect_configuration
+              selector: {kind: all, items: []}
+              parameters: [{name: configuration_keys, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+              stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: get
+          forms:
+            - id: inspect_configuration
+              selector: {kind: all, items: []}
+              parameters: [{name: configuration_keys, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+              stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
         - name: edit
           aliases: []
           forms:
