@@ -225,6 +225,7 @@ fn materialized_opening_frame(
         function_definitions: Vec::new(),
         redirections: Vec::new(),
         diagnostics: Vec::new(),
+        status_conditions: Vec::new(),
     };
     parsed.redirections = unit
         .redirection_indexes

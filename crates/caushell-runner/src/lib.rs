@@ -319,6 +319,7 @@ mod tests {
                         function_definitions: Vec::new(),
                         redirections: Vec::new(),
                         diagnostics: Vec::new(),
+            status_conditions: Vec::new(),
                     },
                 },
             }]);

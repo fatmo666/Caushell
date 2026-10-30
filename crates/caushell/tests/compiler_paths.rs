@@ -89,3 +89,99 @@ fn stdio_restore_rechecks_current_namespace_and_keeps_deletion_approval() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn stdio_compound_substitutions_keep_scope_without_executing_or_persisting_proofs() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-compound-scope-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let work = root.join("work");
+    fs::create_dir_all(work.join("build")).unwrap();
+    fs::write(work.join("source.c"), "not compiled\n").unwrap();
+    fs::write(root.join("defaults.yaml"), "{}\n").unwrap();
+    let round = |command: &str| {
+        let mut shell = ShellStateSnapshot::new(work.to_str().unwrap())
+            .with_environment_observation("BASH_ENV", ShellEnvironmentValue::Absent)
+            .with_environment_observation("ENV", ShellEnvironmentValue::Absent);
+        shell.observability.variables = ShellStateKnowledge::Complete;
+        shell.observability.aliases = ShellStateKnowledge::Complete;
+        shell.observability.functions = ShellStateKnowledge::Complete;
+        let request = RuntimeTransportRequest::Check(RuntimeCheckRequest {
+            intent: CheckIntent::JudgeOnly,
+            session_id: SessionId::new("compound-scope-stdio"),
+            command: command.into(),
+            shell_state_before: shell,
+            shell_kind: ShellKind::Bash,
+            runtime: RuntimeMetadata {
+                runtime_name: "stdio-test".into(),
+                tool_name: Some("Bash".into()),
+                shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
+            },
+            home: None,
+            workspace_root: Some(work.to_str().unwrap().into()),
+        });
+        let mut runtime =
+            caushell::create_runtime(Some(&root.join("defaults.yaml")), Some(&root.join("store")))
+                .unwrap();
+        let mut output = Vec::new();
+        caushell::serve_stdio(
+            &mut runtime,
+            Cursor::new(serde_json::to_string(&request).unwrap() + "\n"),
+            &mut output,
+        )
+        .unwrap();
+        let RuntimeTransportResponse::Check(result) = serde_json::from_slice(&output).unwrap()
+        else {
+            panic!()
+        };
+        result.response
+    };
+    let command = "cd build && gcc ../source.c -o tool && for n in 1 2; do first=$(printf x); second=$(./tool $n); done";
+    let response = round(command);
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(
+        response
+            .decision_trace
+            .path_targets
+            .iter()
+            .any(|f| !f.namespace_proofs.is_empty())
+    );
+    for fact in response
+        .decision_trace
+        .path_targets
+        .iter()
+        .filter(|f| f.slot_name == "@executable_file")
+    {
+        assert_eq!(
+            fact.lexical.concrete_path(),
+            work.join("build/tool").to_str()
+        );
+    }
+    assert!(
+        !work.join("build/tool").exists(),
+        "judge-only must not compile or execute"
+    );
+    assert_eq!(
+        round("cd build && rm -f tool && gcc ../source.c -o tool && value=$(./tool)").decision,
+        Decision::NeedApproval
+    );
+    assert_eq!(round("cd build && gcc ../source.c -o tool && for n in 1; do first=$(printf x); second=$(rm -rf /); done").decision,Decision::Deny);
+    std::os::unix::fs::symlink("/outside/tool", work.join("build/tool")).unwrap();
+    let stale = round("./build/tool");
+    assert_eq!(
+        stale.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        stale.reasons
+    );
+    assert!(
+        stale
+            .decision_trace
+            .path_targets
+            .iter()
+            .all(|f| f.namespace_proofs.is_empty())
+    );
+    fs::remove_dir_all(root).unwrap();
+}

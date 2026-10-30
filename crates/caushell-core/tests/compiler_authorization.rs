@@ -319,6 +319,88 @@ fn ordinary_output_scope_is_invariant_across_shell_composition() {
 }
 
 #[test]
+fn executable_spellings_stay_paired_with_their_directory_candidate() {
+    // `cd` can fail: both directories are real analysis alternatives. A
+    // spelling from one alternative must not be attached to the other's path.
+    let r = with_namespace().check(request(
+        "gcc source.c -o build/tool; cd build; value=$(./tool)",
+        1,
+    ));
+    assert_eq!(r.decision, Decision::Allow, "{:?}", r.reasons);
+    let facts: Vec<_> = r
+        .decision_trace
+        .path_targets
+        .iter()
+        .filter(|f| f.slot_name == "@executable_file")
+        .collect();
+    assert!(!facts.is_empty());
+    for fact in facts {
+        let spelling = fact.spelling.as_deref().unwrap();
+        let expected = spelling.replace("/./", "/");
+        assert_eq!(
+            fact.lexical.concrete_path(),
+            Some(expected.as_str()),
+            "{fact:#?}"
+        );
+    }
+}
+
+#[test]
+fn matching_lexical_paths_do_not_collapse_distinct_symlink_spellings() {
+    let namespace = Arc::new(Namespace::default());
+    namespace.0.lock().unwrap().extend([
+        ("/workspace/left".into(), FilesystemEntry::Directory),
+        (
+            "/workspace/right".into(),
+            FilesystemEntry::Symlink {
+                target: "/outside/dir".into(),
+            },
+        ),
+        ("/outside/dir".into(), FilesystemEntry::Directory),
+    ]);
+    let mut req = request("cd /workspace/right; value=$(../tool)", 1);
+    req.shell_state_before.cwd = "/workspace/left".into();
+    let r = ShellQueryCore::new()
+        .with_filesystem_view(namespace)
+        .check(req);
+    assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
+    // Both cwd alternatives normalize lexically to /workspace/tool. The
+    // original right/../tool spelling must still follow the symlink first.
+    assert!(r.decision_trace.path_targets.iter().any(|f|
+        f.slot_name=="@executable_file" && f.spelling.as_deref()==Some("/workspace/right/../tool")
+        && matches!(&f.resolution, SemanticResolution::Resolved {value} if value.concrete_path()==Some("/outside/tool"))
+    ),"{r:#?}");
+}
+
+#[test]
+fn successful_compound_entry_is_retained_for_every_substitution() {
+    for tool in ["gcc", "cc", "g++"] {
+        for body in [
+            "first=$(./tool 1); second=$(./tool 2)",
+            "first=$(printf x); second=$(./tool 2); third=$(./tool 3)",
+        ] {
+            let command =
+                format!("cd build && {tool} ../source.c -o tool && for n in 1 2; do {body}; done");
+            let r = with_namespace().check(request(&command, 1));
+            assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+            for fact in r
+                .decision_trace
+                .path_targets
+                .iter()
+                .filter(|f| f.slot_name == "@executable_file")
+            {
+                assert_eq!(
+                    fact.lexical.concrete_path(),
+                    Some("/workspace/build/tool"),
+                    "{fact:#?}"
+                );
+                assert!(!fact.namespace_proofs.is_empty(), "{fact:#?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn resource_proofs_do_not_create_execution_authority() {
     let mut req = request("gcc source.c -o build/tool && ./build/tool", 1);
     req.workspace_root = None;

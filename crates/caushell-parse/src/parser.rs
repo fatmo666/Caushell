@@ -805,6 +805,7 @@ fn artifact_from_tree(
         function_definitions: extract_function_definitions(root, source),
         redirections: extract_redirections(root, source),
         diagnostics,
+        status_conditions: crate::status_conditions::collect(root, source),
     };
     for redirection in &mut artifact.redirections {
         if redirection.kind != RedirectionKind::File || redirection.operator.as_deref() != Some("<")
@@ -915,6 +916,13 @@ fn restore_descriptor_ownership(
             span.start_column = descriptor.span.start_column;
         }
     };
+    for condition in &mut artifact.status_conditions {
+        restore_start(&mut condition.command_span);
+        restore_start(&mut condition.guarded_region);
+        if let Some(scope) = &mut condition.shell_scope_span {
+            restore_start(scope);
+        }
+    }
     for command in &mut artifact.commands {
         restore_start(&mut command.span);
         restore_start(&mut command.top_level_span);

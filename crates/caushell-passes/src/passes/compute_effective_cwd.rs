@@ -1242,6 +1242,22 @@ fn cwd_at_scope_position(
         return initial;
     }
     let events = cwd_source_events(parsed);
+    let target_scope = events
+        .iter()
+        .find(|(_, command)| command.span.start_byte == source_start_byte)
+        .map(|(_, command)| &command.shell_scope_span);
+    let mut required_statuses = BTreeMap::<(usize, usize), u8>::new();
+    for condition in parsed.status_conditions.iter().filter(|condition| {
+        span_contains_byte(&condition.guarded_region, source_start_byte)
+            && target_scope == Some(&condition.shell_scope_span)
+    }) {
+        *required_statuses
+            .entry((
+                condition.command_span.start_byte,
+                condition.command_span.end_byte,
+            ))
+            .or_default() |= if condition.success { 1 } else { 2 };
+    }
     let mut flow = CwdFlow::new(initial);
     let home = ctx.request().home.as_deref();
     for (event_index, (command_index, command)) in events.iter().enumerate() {
@@ -1269,7 +1285,7 @@ fn cwd_at_scope_position(
         {
             return CwdState::empty();
         }
-        let outcome = if let Some(resolved) = resolved {
+        let mut outcome = if let Some(resolved) = resolved {
             if is_request_scope {
                 request_command_outcome_for_scoped_states(
                     ctx,
@@ -1304,6 +1320,20 @@ fn cwd_at_scope_position(
             }
             outcome
         };
+        // Condition this replay on actually reaching the requested source
+        // position. An enclosing `&& compound` still guards every statement
+        // inside that compound, even after an internal semicolon. Keep exit
+        // and unrelated source-position queries unconditioned.
+        if let Some(status) =
+            required_statuses.get(&(command.span.start_byte, command.span.end_byte))
+        {
+            if status & 1 != 0 {
+                outcome.failure.clear();
+            }
+            if status & 2 != 0 {
+                outcome.success.clear();
+            }
+        }
         // Only the immediately following separator belongs to this event.
         // Operators inside later assignments/substitutions are not connectors.
         let gap = events
@@ -2192,6 +2222,66 @@ mod tests {
 
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
+    }
+
+    fn substitution_cwds(source: &str) -> std::collections::BTreeSet<String> {
+        let ctx = run_pass(source, "/tmp/project");
+        let record = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .find(|r| r.rendered_command_text == "./program")
+            .unwrap();
+        let cwd = ctx.execution_cwd_for_node(&record.source_node_id).unwrap();
+        assert!(!cwd.has_unknown(), "{source}: {cwd:?}");
+        cwd.known_cwds().into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn source_replay_keeps_compound_status_across_multiple_assignments() {
+        for compound in [
+            "for n in 1 2; do first=$(printf a); second=$(./program); done",
+            "{ first=$(printf a); second=$(./program); }",
+        ] {
+            assert_eq!(
+                substitution_cwds(&format!("cd build && printf x && {compound}")),
+                std::collections::BTreeSet::from(["/tmp/project/build".into()])
+            );
+            assert_eq!(
+                substitution_cwds(&format!("cd build || {compound}")),
+                std::collections::BTreeSet::from(["/tmp/project".into()])
+            );
+            assert_eq!(
+                substitution_cwds(&format!("cd build; {compound}")),
+                std::collections::BTreeSet::from([
+                    "/tmp/project".into(),
+                    "/tmp/project/build".into()
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn source_replay_conditions_do_not_leak_after_compound_or_across_shell_frame() {
+        let expected =
+            std::collections::BTreeSet::from(["/tmp/project".into(), "/tmp/project/build".into()]);
+        assert_eq!(
+            substitution_cwds("cd build && { first=$(printf a); }; second=$(./program)"),
+            expected
+        );
+        assert_eq!(
+            substitution_cwds("(cd build && printf x); second=$(./program)"),
+            std::collections::BTreeSet::from(["/tmp/project".into()])
+        );
+        assert_eq!(
+            substitution_cwds("if cd build; then first=$(printf a); second=$(./program); fi"),
+            std::collections::BTreeSet::from(["/tmp/project/build".into()])
+        );
+        assert_eq!(
+            substitution_cwds(
+                "if cd build; then printf a; else first=$(printf a); second=$(./program); fi"
+            ),
+            std::collections::BTreeSet::from(["/tmp/project".into()])
+        );
     }
 
     #[test]

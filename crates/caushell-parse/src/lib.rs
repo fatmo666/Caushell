@@ -3,6 +3,7 @@ mod backtick;
 mod command_boundary;
 mod error;
 mod parser;
+mod status_conditions;
 mod syntax_compat;
 
 pub use artifact::{
@@ -11,8 +12,8 @@ pub use artifact::{
     DeclarationCommandKind, DiagnosticKind, ForLoopFact, FunctionDefinitionFact, ParseDiagnostic,
     ParseStatus, ParsedCommandArtifact, PipelinePosition, ProcessSubstitutionFact,
     ProcessSubstitutionOperator, RedirectionFact, RedirectionKind, RedirectionOperandFact,
-    ShellEvaluationKind, ShellEvaluationSite, SourceSpan, StatementTerminator, UnsetCommandFact,
-    VariableAssignmentFact,
+    ShellEvaluationKind, ShellEvaluationSite, ShellStatusCondition, SourceSpan,
+    StatementTerminator, UnsetCommandFact, VariableAssignmentFact,
 };
 pub use error::ParseError;
 pub use parser::{

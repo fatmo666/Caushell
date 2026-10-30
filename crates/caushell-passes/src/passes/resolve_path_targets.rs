@@ -747,7 +747,11 @@ fn target_spelling(
                 } else {
                     text
                 };
-                Some(absolute_spelling(&text, cwd))
+                let spelling = absolute_spelling(&text, cwd);
+                // Keep the spelling paired with the lexical fact from this
+                // cwd alternative. Physical namespace resolution still uses
+                // the original spelling, including `..` and symlinks.
+                (normalize_shell_path(&spelling) == path).then_some(spelling)
             }
             _ => None,
         };

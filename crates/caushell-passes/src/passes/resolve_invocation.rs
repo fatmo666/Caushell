@@ -2083,6 +2083,7 @@ fn parsed_dispatch_scope(
         function_definitions: Vec::new(),
         redirections: Vec::new(),
         diagnostics: Vec::new(),
+        status_conditions: Vec::new(),
     };
     Some((parsed, command))
 }
@@ -5042,6 +5043,7 @@ fn execution_body_scope(
                 function_definitions: Vec::new(),
                 redirections: Vec::new(),
                 diagnostics: Vec::new(),
+                status_conditions: Vec::new(),
             },
             match error {
                 Some(Err(error)) => {
@@ -8046,6 +8048,7 @@ fn empty_dispatch_scope(
         function_definitions: Vec::new(),
         redirections: Vec::new(),
         diagnostics: Vec::new(),
+        status_conditions: Vec::new(),
     }
 }
 

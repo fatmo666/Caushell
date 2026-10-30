@@ -312,6 +312,16 @@ pub enum ArithmeticReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellStatusCondition {
+    /// Pure syntax: reaching this region in the same shell frame requires
+    /// the command to have this status. This grants no resource authority.
+    pub command_span: SourceSpan,
+    pub success: bool,
+    pub guarded_region: SourceSpan,
+    pub shell_scope_span: Option<SourceSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommandArtifact {
     pub raw_command: String,
     pub shell_kind: ShellKind,
@@ -325,4 +335,5 @@ pub struct ParsedCommandArtifact {
     pub function_definitions: Vec<FunctionDefinitionFact>,
     pub redirections: Vec<RedirectionFact>,
     pub diagnostics: Vec<ParseDiagnostic>,
+    pub status_conditions: Vec<ShellStatusCondition>,
 }
