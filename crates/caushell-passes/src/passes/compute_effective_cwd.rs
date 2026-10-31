@@ -34,7 +34,6 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                 function_records_by_parent(ctx.execution_unit_resolve_records());
             let mut effective_cwds = BTreeMap::new();
             let mut execution_cwd_overrides = BTreeMap::new();
-            let known_existing_dirs = known_existing_dirs(ctx);
 
             let initial_cwd = initial_cwd(ctx, _session);
             let request_exit_cwd = if let Some(parsed) = ctx.parsed_command() {
@@ -44,7 +43,6 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                     initial_cwd,
                     &records_by_node,
                     &function_records_by_parent,
-                    &known_existing_dirs,
                     &mut effective_cwds,
                     &mut execution_cwd_overrides,
                 )
@@ -57,7 +55,6 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                 initial_cwd,
                 &records_by_node,
                 &function_records_by_parent,
-                &known_existing_dirs,
                 &mut effective_cwds,
                 &mut execution_cwd_overrides,
             );
@@ -66,7 +63,6 @@ impl SessionTransformPass for ComputeEffectiveCwdPass {
                 initial_cwd,
                 &records_by_node,
                 &function_records_by_parent,
-                &known_existing_dirs,
                 &mut effective_cwds,
                 &execution_cwd_overrides,
             );
@@ -201,7 +197,6 @@ enum CommandConnector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CwdUpdate {
     success: CwdState,
-    success_guaranteed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,7 +335,6 @@ fn compute_request_scope_cwds(
     initial_cwd: &str,
     records_by_node: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
-    known_existing_dirs: &BTreeSet<String>,
     effective_cwds: &mut BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: &mut BTreeMap<NodeId, EffectiveCwd>,
 ) -> EffectiveCwd {
@@ -377,7 +371,6 @@ fn compute_request_scope_cwds(
             function_records_by_parent,
             states,
             home,
-            known_existing_dirs,
         );
         flow.record_outcome(
             outcome,
@@ -397,7 +390,6 @@ fn compute_derived_scope_cwds(
     initial_cwd: &str,
     records_by_node: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
-    known_existing_dirs: &BTreeSet<String>,
     effective_cwds: &mut BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: &mut BTreeMap<NodeId, EffectiveCwd>,
 ) {
@@ -450,7 +442,6 @@ fn compute_derived_scope_cwds(
                 effective_cwds,
                 execution_cwd_overrides,
                 function_records_by_parent,
-                known_existing_dirs,
             );
             effective_cwds.insert(record.source_node_id.clone(), state.to_effective());
             if let Some(override_cwd) =
@@ -476,7 +467,6 @@ fn compute_derived_scope_cwds(
                 effective_cwds,
                 execution_cwd_overrides,
                 function_records_by_parent,
-                known_existing_dirs,
             ));
             let home = ctx.request().home.as_deref();
 
@@ -506,7 +496,6 @@ fn compute_derived_scope_cwds(
                     command,
                     states,
                     home,
-                    known_existing_dirs,
                     function_records_by_parent,
                 );
                 flow.record_outcome(
@@ -658,7 +647,6 @@ fn compute_record_sequence_exit_state(
     records: &[&ExecutionUnitResolveRecord],
     current: CwdState,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
 ) -> CwdState {
     let mut flow = CwdFlow::new(current);
@@ -678,7 +666,6 @@ fn compute_record_sequence_exit_state(
             command,
             states,
             home,
-            known_existing_dirs,
             function_records_by_parent,
         );
         flow.record_outcome(
@@ -703,7 +690,6 @@ fn request_command_outcome_for_scoped_states(
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
     states: Vec<ScopedCwdState>,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
 ) -> ScopedCwdOutcome {
     let mut scoped = ScopedCwdOutcome::default();
 
@@ -716,7 +702,6 @@ fn request_command_outcome_for_scoped_states(
             function_records,
             &state.cwd,
             home,
-            known_existing_dirs,
             function_records_by_parent,
         );
         merge_scoped_outcome_into(&mut scoped, scoped_outcome_from_cwd(&state, outcome));
@@ -733,7 +718,6 @@ fn request_command_outcome(
     function_records: Option<&[&ExecutionUnitResolveRecord]>,
     current: &CwdState,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
 ) -> CwdOutcome {
     if current.is_empty() {
@@ -749,7 +733,6 @@ fn request_command_outcome(
                 function_records,
                 current.clone(),
                 home,
-                known_existing_dirs,
                 function_records_by_parent,
             );
             return CwdOutcome {
@@ -765,7 +748,6 @@ fn request_command_outcome(
                     command_index,
                     current.clone(),
                     home,
-                    known_existing_dirs,
                     function_records_by_parent,
                 )
             {
@@ -779,14 +761,7 @@ fn request_command_outcome(
 
     record
         .map(|record| {
-            record_command_outcome(
-                record,
-                command,
-                current,
-                home,
-                known_existing_dirs,
-                function_records_by_parent,
-            )
+            record_command_outcome(record, command, current, home, function_records_by_parent)
         })
         .unwrap_or_else(|| unchanged_command_outcome(current))
 }
@@ -796,7 +771,6 @@ fn record_command_outcome_for_scoped_states(
     command: &CommandFact,
     states: Vec<ScopedCwdState>,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
 ) -> ScopedCwdOutcome {
     let mut scoped = ScopedCwdOutcome::default();
@@ -807,7 +781,6 @@ fn record_command_outcome_for_scoped_states(
             command,
             &state.cwd,
             home,
-            known_existing_dirs,
             function_records_by_parent,
         );
         merge_scoped_outcome_into(&mut scoped, scoped_outcome_from_cwd(&state, outcome));
@@ -821,7 +794,6 @@ fn record_command_outcome(
     command: &CommandFact,
     current: &CwdState,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
 ) -> CwdOutcome {
     if current.is_empty() {
@@ -840,7 +812,6 @@ fn record_command_outcome(
             children,
             current.clone(),
             home,
-            known_existing_dirs,
             function_records_by_parent,
         );
         return CwdOutcome {
@@ -849,17 +820,13 @@ fn record_command_outcome(
         };
     }
 
-    let Some(update) =
-        current_shell_cwd_update(record, command, current, home, known_existing_dirs)
-    else {
+    let Some(update) = current_shell_cwd_update(record, command, current, home) else {
         return unchanged_command_outcome(current);
     };
 
-    let failure = if update.success_guaranteed {
-        CwdState::empty()
-    } else {
-        current.clone()
-    };
+    // Directory observations do not prove a successful chdir.
+    // Redirect opening, permission changes and native lookup may still fail.
+    let failure = current.clone();
 
     CwdOutcome {
         success: update.success,
@@ -891,7 +858,6 @@ fn sourced_script_exit_state(
     command_index: usize,
     current: CwdState,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
 ) -> Option<CwdState> {
     let mut next = current;
@@ -924,13 +890,7 @@ fn sourced_script_exit_state(
         }
         records.sort_by(record_execution_order);
 
-        next = compute_record_sequence_exit_state(
-            &records,
-            next,
-            home,
-            known_existing_dirs,
-            function_records_by_parent,
-        );
+        next = compute_record_sequence_exit_state(&records, next, home, function_records_by_parent);
         saw_sourced_payload = true;
     }
 
@@ -945,7 +905,6 @@ fn base_cwd_for_record(
     effective_cwds: &BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: &BTreeMap<NodeId, EffectiveCwd>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
-    known_existing_dirs: &BTreeSet<String>,
 ) -> CwdState {
     // Assignment substitutions execute at their source position, not at the
     // entry cwd of a containing shell invocation. This is a source-scope
@@ -976,7 +935,6 @@ fn base_cwd_for_record(
             effective_cwds,
             execution_cwd_overrides,
             function_records_by_parent,
-            known_existing_dirs,
         );
     }
     let parent_override = if matches!(
@@ -1168,7 +1126,6 @@ fn assignment_source_cwd(
     effective_cwds: &BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: &BTreeMap<NodeId, EffectiveCwd>,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
-    known_existing_dirs: &BTreeSet<String>,
 ) -> CwdState {
     let (parsed, initial, scoped_records) = if let Some(scope_id) = scope_record_node_id {
         let Some(scope) = records_by_node
@@ -1200,7 +1157,6 @@ fn assignment_source_cwd(
                 effective_cwds,
                 execution_cwd_overrides,
                 function_records_by_parent,
-                known_existing_dirs,
             ),
             records,
         )
@@ -1224,7 +1180,6 @@ fn assignment_source_cwd(
         source_start_byte,
         scope_record_node_id.is_none(),
         function_records_by_parent,
-        known_existing_dirs,
     )
 }
 
@@ -1236,7 +1191,6 @@ fn cwd_at_scope_position(
     source_start_byte: usize,
     is_request_scope: bool,
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
-    known_existing_dirs: &BTreeSet<String>,
 ) -> CwdState {
     if source_start_byte == 0 {
         return initial;
@@ -1298,7 +1252,6 @@ fn cwd_at_scope_position(
                     function_records_by_parent,
                     states,
                     home,
-                    known_existing_dirs,
                 )
             } else {
                 record_command_outcome_for_scoped_states(
@@ -1306,7 +1259,6 @@ fn cwd_at_scope_position(
                     command,
                     states,
                     home,
-                    known_existing_dirs,
                     function_records_by_parent,
                 )
             }
@@ -1366,7 +1318,6 @@ fn compute_shell_redirection_cwds(
     initial_cwd: &str,
     records_by_node: &BTreeMap<NodeId, &ExecutionUnitResolveRecord>,
     functions: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
-    known_dirs: &BTreeSet<String>,
     cwds: &mut BTreeMap<NodeId, EffectiveCwd>,
     overrides: &BTreeMap<NodeId, EffectiveCwd>,
 ) {
@@ -1386,7 +1337,6 @@ fn compute_shell_redirection_cwds(
                 cwds,
                 overrides,
                 functions,
-                known_dirs,
             )
         } else if let ExecutionUnitOriginLocator::CommandSubstitutionAssignmentValue {
             source_cwd_anchor,
@@ -1414,7 +1364,6 @@ fn compute_shell_redirection_cwds(
                                 *start_byte,
                                 true,
                                 functions,
-                                known_dirs,
                             )
                         })
                         .unwrap_or_else(CwdState::unknown)
@@ -1432,7 +1381,6 @@ fn compute_shell_redirection_cwds(
                             cwds,
                             overrides,
                             functions,
-                            known_dirs,
                         );
                         let records = ctx
                             .execution_unit_resolve_records()
@@ -1448,7 +1396,6 @@ fn compute_shell_redirection_cwds(
                             *start_byte,
                             false,
                             functions,
-                            known_dirs,
                         )
                     } else {
                         CwdState::unknown()
@@ -1492,7 +1439,6 @@ fn compute_shell_redirection_cwds(
                 unit.opening_statement.span.start_byte,
                 scope.is_request_scope,
                 functions,
-                known_dirs,
             );
             cwds.insert(unit.source_node_id.clone(), state.to_effective());
         }
@@ -1519,7 +1465,7 @@ fn execution_cwd_override_for_record(
         bound,
         base,
         home,
-        Some(crate::support::ExecutionResolveRecordRef::new(record)),
+        Some(crate::support::ExecutionResolveRecordRef::relative_to_supplied_base(record)),
     )
 }
 
@@ -1572,7 +1518,6 @@ pub(crate) fn source_scope_execution_cwds(
         caushell_profile::SessionBindings,
     )],
 ) -> (Vec<EffectiveCwd>, Vec<EffectiveCwd>) {
-    let known_dirs = known_existing_request_dirs(request);
     let mut flow = CwdFlow::new(CwdState::from(initial));
     let mut cwds = Vec::new();
     let mut shell_cwds = Vec::new();
@@ -1614,15 +1559,11 @@ pub(crate) fn source_scope_execution_cwds(
                     failure: state.cwd.clone(),
                 }
             } else if let Some(update) =
-                current_shell_cwd_update_for_result(result, command, &state.cwd, home, &known_dirs)
+                current_shell_cwd_update_for_result(result, command, &state.cwd, home)
             {
                 CwdOutcome {
                     success: update.success,
-                    failure: if update.success_guaranteed {
-                        CwdState::empty()
-                    } else {
-                        state.cwd.clone()
-                    },
+                    failure: state.cwd.clone(),
                 }
             } else {
                 unchanged_command_outcome(&state.cwd)
@@ -1797,6 +1738,29 @@ fn command_cwd_scopes(command: &CommandFact) -> Vec<CwdScopeId> {
             span: span.clone(),
         });
     }
+    // A compound pipeline element can contain several commands. cd affects
+    // siblings in that frame; explicit subshells remain isolated.
+    if let Some(span) = &command.shell_scope_span
+        && command.subshell_span.as_ref() != Some(span)
+    {
+        scopes.push(CwdScopeId {
+            // The final element can run in the caller (e.g. Bash lastpipe).
+            // Without an execution-mode proof retain both exit directories.
+            kind: if command.in_pipeline
+                && matches!(
+                    command.pipeline_position,
+                    Some(
+                        caushell_parse::PipelinePosition::Last
+                            | caushell_parse::PipelinePosition::Only
+                    )
+                ) {
+                CwdScopeKind::ControlFlow
+            } else {
+                CwdScopeKind::Subshell
+            },
+            span: span.clone(),
+        });
+    }
     scopes
 }
 
@@ -1825,9 +1789,26 @@ fn connector_after_command(
         ""
     };
 
-    if gap.contains("&&") {
+    // Redirect destinations are data, even when they contain && or ||. Mask
+    // only their parsed source extents before inspecting the next connector;
+    // comments, compound closers and unknown syntax retain sequence merging.
+    let mut gap = gap.as_bytes().to_vec();
+    for redirect in &parsed.redirections {
+        let from = redirect.span.start_byte.max(start);
+        let to = redirect.span.end_byte.min(end);
+        if from < to {
+            for byte in &mut gap[from - start..to - start] {
+                if !matches!(*byte, b'\n' | b'\r') {
+                    *byte = b' ';
+                }
+            }
+        }
+    }
+    let gap = String::from_utf8_lossy(&gap);
+    let gap = gap.trim_start_matches([' ', '\t']);
+    if gap.starts_with("&&") {
         CommandConnector::And
-    } else if gap.contains("||") {
+    } else if gap.starts_with("||") {
         CommandConnector::Or
     } else {
         CommandConnector::Sequence
@@ -1839,10 +1820,9 @@ fn current_shell_cwd_update(
     command: &CommandFact,
     current: &CwdState,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
 ) -> Option<CwdUpdate> {
     let home = record.bindings.tilde_home_with_default(home);
-    current_shell_cwd_update_for_result(&record.result, command, current, home, known_existing_dirs)
+    current_shell_cwd_update_for_result(&record.result, command, current, home)
 }
 
 fn current_shell_cwd_update_for_result(
@@ -1850,17 +1830,14 @@ fn current_shell_cwd_update_for_result(
     command: &CommandFact,
     current: &CwdState,
     home: Option<&str>,
-    known_existing_dirs: &BTreeSet<String>,
 ) -> Option<CwdUpdate> {
     if !command_can_update_current_shell(command) {
         return None;
     }
 
     let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
-        return unresolved_cwd_command_updates_unknown(result, command).map(|success| CwdUpdate {
-            success,
-            success_guaranteed: false,
-        });
+        return unresolved_cwd_command_updates_unknown(result, command)
+            .map(|success| CwdUpdate { success });
     };
 
     if has_applied_modifier(&resolved.bound, "no_cd") {
@@ -1879,17 +1856,14 @@ fn current_shell_cwd_update_for_result(
             current,
             home,
         );
-        update = Some(CwdUpdate {
-            success_guaranteed: cwd_success_guaranteed(&success, known_existing_dirs),
-            success,
-        });
+        update = Some(CwdUpdate { success });
     }
 
     update
 }
 
 fn command_can_update_current_shell(command: &CommandFact) -> bool {
-    !command.in_pipeline && command.terminator != Some(StatementTerminator::Background)
+    command.terminator != Some(StatementTerminator::Background)
 }
 
 fn unresolved_cwd_command_updates_unknown(
@@ -2119,58 +2093,6 @@ fn cwd_independent_operand(text: &str, quoted: bool) -> bool {
     text.starts_with('/') || (!quoted && (text == "~" || text.starts_with("~/")))
 }
 
-fn cwd_success_guaranteed(state: &CwdState, known_existing_dirs: &BTreeSet<String>) -> bool {
-    !state.unknown
-        && state.roots.is_empty()
-        && !state.known.is_empty()
-        && state.known.iter().all(|cwd| {
-            known_existing_dirs.contains(cwd)
-                || known_existing_dirs.contains(normalize_shell_path(cwd).as_str())
-        })
-}
-
-fn known_existing_dirs(ctx: &RunnerContext) -> BTreeSet<String> {
-    known_existing_request_dirs(ctx.request())
-}
-
-fn known_existing_request_dirs(request: &caushell_types::CheckRequest) -> BTreeSet<String> {
-    let mut dirs = BTreeSet::new();
-    for dir in [
-        "/", "/bin", "/boot", "/dev", "/etc", "/home", "/tmp", "/usr", "/usr/bin", "/var",
-    ] {
-        insert_dir_with_ancestors(&mut dirs, dir);
-    }
-
-    insert_dir_with_ancestors(&mut dirs, request.shell_state_before.cwd());
-    if let Some(home) = request.home.as_deref() {
-        insert_dir_with_ancestors(&mut dirs, home);
-    }
-    if let Some(workspace_root) = request.workspace_root.as_deref() {
-        insert_dir_with_ancestors(&mut dirs, workspace_root);
-    }
-
-    dirs
-}
-
-fn insert_dir_with_ancestors(dirs: &mut BTreeSet<String>, path: &str) {
-    let normalized = normalize_shell_path(path);
-    if normalized.is_empty() {
-        return;
-    }
-
-    let mut current = normalized.as_str();
-    loop {
-        dirs.insert(current.to_string());
-        if current == "/" {
-            break;
-        }
-        let Some(parent) = current.rsplit_once('/').map(|(parent, _)| parent) else {
-            break;
-        };
-        current = if parent.is_empty() { "/" } else { parent };
-    }
-}
-
 fn has_applied_modifier(bound: &BoundInvocation, modifier_id: &str) -> bool {
     bound
         .applied_modifiers
@@ -2290,11 +2212,14 @@ mod tests {
 
         assert_eq!(
             ctx.effective_cwd_for_node(&NodeId::new("command:sess-1:1:1")),
-            Some(&EffectiveCwd::Known("/".to_string()))
+            Some(&EffectiveCwd::Known("/".into()))
         );
         assert_eq!(
             ctx.request_exit_cwd(),
-            Some(&EffectiveCwd::Known("/".to_string()))
+            Some(&EffectiveCwd::KnownOneOf(vec![
+                "/".into(),
+                "/tmp/project".into()
+            ]))
         );
     }
 
@@ -2432,31 +2357,37 @@ forms:
 
         assert_eq!(
             ctx.effective_cwd_for_node(&NodeId::new("command:sess-1:1:1")),
-            Some(&EffectiveCwd::Unreachable)
+            Some(&EffectiveCwd::Known("/tmp/project".into()))
         );
         assert_eq!(
             ctx.effective_cwd_for_node(&NodeId::new("command:sess-1:1:2")),
-            Some(&EffectiveCwd::Known("/".to_string()))
+            Some(&EffectiveCwd::KnownOneOf(vec![
+                "/".into(),
+                "/tmp/project".into()
+            ]))
         );
     }
 
     #[test]
-    fn compute_effective_cwd_marks_or_rhs_unreachable_after_guaranteed_cd() {
+    fn compute_effective_cwd_retains_or_rhs_until_cd_success_is_known() {
         let ctx = run_pass("cd /tmp/project || rm -rf etc", "/");
 
         assert_eq!(
             ctx.effective_cwd_for_node(&NodeId::new("command:sess-1:1:1")),
-            Some(&EffectiveCwd::Unreachable)
+            Some(&EffectiveCwd::Known("/".into()))
         );
     }
 
     #[test]
-    fn compute_effective_cwd_trusts_known_workspace_cd_sequence() {
+    fn known_workspace_facts_do_not_imply_a_successful_cd() {
         let ctx = run_pass("cd /tmp/project; rm -rf etc", "/");
 
         assert_eq!(
             ctx.effective_cwd_for_node(&NodeId::new("command:sess-1:1:1")),
-            Some(&EffectiveCwd::Known("/tmp/project".to_string()))
+            Some(&EffectiveCwd::KnownOneOf(vec![
+                "/".into(),
+                "/tmp/project".into()
+            ]))
         );
     }
 
@@ -2466,11 +2397,17 @@ forms:
 
         assert_eq!(
             ctx.effective_cwd_for_node(&NodeId::new("command:sess-1:1:2")),
-            Some(&EffectiveCwd::Known("/".to_string()))
+            Some(&EffectiveCwd::KnownOneOf(vec![
+                "/".into(),
+                "/tmp/project".into()
+            ]))
         );
         assert_eq!(
             ctx.request_exit_cwd(),
-            Some(&EffectiveCwd::Known("/".to_string()))
+            Some(&EffectiveCwd::KnownOneOf(vec![
+                "/".into(),
+                "/tmp/project".into()
+            ]))
         );
     }
 
@@ -2516,6 +2453,27 @@ forms:
                 ctx.effective_cwd_for_node(&record.source_node_id),
                 Some(&EffectiveCwd::Known("/opt".into())),
                 "{command}: {record:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirected_pipeline_execution_records_keep_the_control_flow_cwd() {
+        let ctx = run_pass(
+            "cat VERSION; cd /outside && ./run 2>&1 | tail -2",
+            "/workspace",
+        );
+        for record in ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .filter(|r| r.rendered_command_text.starts_with("./run"))
+        {
+            assert_eq!(
+                ctx.execution_cwd_for_node(&record.source_node_id),
+                Some(&EffectiveCwd::Known("/outside".into())),
+                "{}: {}",
+                record.source_node_id.0,
+                record.rendered_command_text
             );
         }
     }

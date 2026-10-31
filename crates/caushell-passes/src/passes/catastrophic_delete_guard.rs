@@ -63,7 +63,7 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
                     resolved,
                     record_cwd,
                     home,
-                    crate::support::ExecutionResolveRecordRef::new(record),
+                    crate::support::ExecutionResolveRecordRef::relative_to_supplied_base(record),
                 );
 
                 floor_reasons.extend(record_floor_reasons);
@@ -1011,16 +1011,20 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_ignores_unreachable_or_rhs_after_guaranteed_cd() {
+    fn catastrophic_delete_guard_retains_or_rhs_after_cd_without_exit_evidence() {
         let ctx = run_pass_with_cwd("cd /tmp/project || rm -rf etc", "/");
 
         assert_eq!(
             ctx.final_decision,
-            Some(Decision::Allow),
-            "expected allow, got findings: {:?}",
+            Some(Decision::Deny),
+            "expected failure-branch deny, got findings: {:?}",
             ctx.findings
         );
-        assert!(ctx.findings.is_empty());
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete)
+        );
     }
 
     #[test]
@@ -1037,16 +1041,20 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_allows_relative_delete_after_known_workspace_cd_sequence() {
+    fn catastrophic_delete_guard_keeps_failure_branch_after_workspace_cd_sequence() {
         let ctx = run_pass_with_cwd("cd /tmp/project; rm -rf etc", "/");
 
         assert_eq!(
             ctx.final_decision,
-            Some(Decision::Allow),
-            "expected allow, got findings: {:?}",
+            Some(Decision::Deny),
+            "expected failure-branch deny, got findings: {:?}",
             ctx.findings
         );
-        assert!(ctx.findings.is_empty());
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete)
+        );
     }
 
     #[test]
@@ -1067,16 +1075,20 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_allows_relative_delete_after_function_cd_to_workspace() {
+    fn catastrophic_delete_guard_keeps_failure_branch_after_function_cd() {
         let ctx = run_pass_with_cwd("f(){ cd /tmp/project; }; f; rm -rf etc", "/");
 
         assert_eq!(
             ctx.final_decision,
-            Some(Decision::Allow),
-            "expected allow, got findings: {:?}",
+            Some(Decision::Deny),
+            "expected failure-branch deny, got findings: {:?}",
             ctx.findings
         );
-        assert!(ctx.findings.is_empty());
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete)
+        );
     }
 
     #[test]
@@ -1102,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_allows_relative_delete_after_sourced_script_cd_to_workspace() {
+    fn catastrophic_delete_guard_keeps_failure_branch_after_sourced_cd() {
         let mut request =
             sample_request(ShellKind::Bash, "source /tmp/project/script.sh; rm -rf etc");
         request.sequence_no = CommandSequenceNo::new(2);
@@ -1115,11 +1127,15 @@ mod tests {
 
         assert_eq!(
             ctx.final_decision,
-            Some(Decision::Allow),
-            "expected allow, got findings: {:?}",
+            Some(Decision::Deny),
+            "expected failure-branch deny, got findings: {:?}",
             ctx.findings
         );
-        assert!(ctx.findings.is_empty());
+        assert!(
+            ctx.findings
+                .iter()
+                .any(|f| f.rule_id == caushell_types::RuleId::CatastrophicFileSystemDelete)
+        );
     }
 
     #[test]

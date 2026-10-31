@@ -251,6 +251,31 @@ fn collect_resolved_path_mutations(
                     });
                 }
             }
+            // Moving an entry can relocate an entire directory. Preserve a
+            // possible content domain without widening mutation authority or
+            // inventing any member filename. This follows the generic effect,
+            // not the executable name or a benchmark path.
+            if matches!(path.role, PathRole::Read | PathRole::Write)
+                && bound_invocation(record.result())
+                    .is_some_and(|b| b.effects.iter().any(|e| e.kind == EffectKind::MovePath))
+            {
+                let domain = resolution
+                    .concrete_path()
+                    .map(|p| PathResolution::BoundedPathSet {
+                        roots: vec![p.to_string()],
+                        may_escape: false,
+                    })
+                    .unwrap_or_else(|| resolution.clone());
+                mutations.extend(selection_content_mutations(
+                    &source_node_id,
+                    &slot_name,
+                    path.role,
+                    &domain,
+                    path.purpose,
+                    Some(&normalized_command_name),
+                    None,
+                ));
+            }
             if let Some(path_string) = resolution.concrete_path() {
                 if let Some((relation, semantics)) = provenance_edge_for_path_fact(
                     path.role,
@@ -266,10 +291,11 @@ fn collect_resolved_path_mutations(
                         semantics,
                     });
                 }
-            } else if path.role == PathRole::Read {
+            } else if matches!(path.role, PathRole::Read | PathRole::Write) {
                 mutations.extend(selection_content_mutations(
                     &source_node_id,
                     &slot_name,
+                    path.role,
                     &resolution,
                     path.purpose,
                     Some(&normalized_command_name),
@@ -284,13 +310,13 @@ fn collect_resolved_path_mutations(
 fn selection_content_mutations(
     source: &caushell_graph::NodeId,
     slot: &str,
+    role: PathRole,
     resolution: &PathResolution,
     purpose: Option<caushell_profile::PathPurpose>,
     command: Option<&str>,
     selector: Option<&str>,
 ) -> Vec<PendingMutation> {
-    let Some((relation, semantics)) =
-        provenance_edge_for_path_fact(PathRole::Read, purpose, slot, command)
+    let Some((relation, semantics)) = provenance_edge_for_path_fact(role, purpose, slot, command)
     else {
         return Vec::new();
     };
@@ -342,9 +368,9 @@ fn project_plain_path_mutations(
                 semantics,
             });
         }
-    } else if role == PathRole::Read {
+    } else if matches!(role, PathRole::Read | PathRole::Write) {
         mutations.extend(selection_content_mutations(
-            source, slot, resolution, purpose, name, None,
+            source, slot, role, resolution, purpose, name, None,
         ));
     }
     mutations
@@ -1031,11 +1057,64 @@ mod tests {
         run_pass_with_registry(command, home, built_in_registry())
     }
 
+    #[test]
+    fn directory_option_identity_uses_entry_cwd_while_native_effects_use_process_cwd() {
+        let registry = registry_from_yaml(
+            r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: arbitrary-directory-tool}
+forms:
+  - id: run
+    parameters:
+      - {name: output, semantic: {kind: path, role: write}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: write_path, target: {kind: mutation_scope, scope_kind: repository_worktree, root: directory, path_set: tracked}}
+modifiers:
+  - id: directory
+    matcher: {kind: any_flag, flags: [--directory]}
+    parameters:
+      - {name: directory, semantic: {kind: path, role: cwd_anchor}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+    effects:
+      - {kind: target_path, target: {kind: slot, name: directory}}
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [{slot: directory, projection: {kind: identity}}], missing: unknown}}
+"#,
+        );
+        let ctx = run_pass_with_registry(
+            "arbitrary-directory-tool --directory sub result",
+            None,
+            registry,
+        );
+        for (slot, expected) in [
+            ("directory", "/tmp/project/sub"),
+            ("directory_effect_1", "/tmp/project/sub"),
+            ("output", "/tmp/project/sub/result"),
+        ] {
+            assert!(ctx.pending_mutations().iter().any(|m| matches!(m, PendingMutation::AddPathFact {slot_name, resolution, ..} if slot_name == slot && resolution.concrete_path() == Some(expected))), "{slot}: {ctx:#?}");
+        }
+        assert!(has_mutation_scope_fact(
+            &ctx,
+            "command:sess-1:2:0",
+            &MutationScopeResolution::RepositoryWorktree {
+                root: PathResolution::Concrete {
+                    path: "/tmp/project/sub".into()
+                },
+                path_set: RepositoryWorktreePathSet::Tracked,
+                scope: RepositoryWorktreeScopeResolution::WholeWorktree
+            },
+            ResolvedMutationScopeOperation::Write,
+            "directory",
+            "arbitrary-directory-tool",
+            EdgeKind::Writes
+        ));
+    }
+
     fn run_pass_with_request(request: CheckRequest, registry: ProfileRegistry) -> RunnerContext {
         let mut runner = PassRunner::new();
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPipelineFlowPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
 
@@ -1785,7 +1864,7 @@ mod tests {
                 ..
             } if source_node_id.0 == "command:sess-1:2:0"
                 && path == "/tmp/project/repo/.gitmodules"
-                && slot_name == "derived_path_2"
+                && slot_name == "derived_path_3"
                 && command_name == "git"
         )));
 

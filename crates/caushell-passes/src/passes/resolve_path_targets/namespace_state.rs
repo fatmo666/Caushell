@@ -53,7 +53,9 @@ pub(super) fn stable_producers(
         .iter()
         .filter_map(|(i, _)| {
             if !closed_tree
-                && inputs[*i].namespace_effect != Some(PathNamespaceEffect::RegularFileWrite)
+                && (inputs[*i].namespace_effect != Some(PathNamespaceEffect::RegularFileWrite)
+                    || !matches!(&baselines[*i].0, SemanticResolution::Resolved { value }
+                        if value.concrete_path().is_some()))
             {
                 return None;
             }
@@ -131,7 +133,22 @@ pub(super) fn scope_preservation(
             additional_paths: Vec::new(),
         });
     }
-    if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryTreeWrite) {
+    // In a closed, observed link-free tree, regular-file writes at bounded
+    // execution directories cannot introduce symlinks or relocate ancestors.
+    // Preserve that invariant across alternative cwd projections, retaining
+    // the actual RegularFileWrite effect in the proof.
+    if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryTreeWrite)
+        || (writer.namespace_effect == Some(PathNamespaceEffect::RegularFileWrite)
+            && matches!(
+                writer_state.0,
+                SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet {
+                        may_escape: false,
+                        ..
+                    }
+                }
+            ))
+    {
         let SemanticResolution::Resolved {
             value:
                 PathResolution::BoundedPathSet {
@@ -175,7 +192,7 @@ pub(super) fn scope_preservation(
                 producer_node_id: writer.fact.source_node_id.clone(),
                 producer_effect_key: writer.fact.effect_key.clone(),
                 path: roots[0].clone(),
-                effect: PathNamespaceEffect::DirectoryTreeWrite,
+                effect: writer.namespace_effect.expect("typed output effect"),
                 additional_paths: roots.iter().skip(1).cloned().collect(),
             });
         }
@@ -191,6 +208,28 @@ pub(super) fn scope_preservation(
         _ => None,
     };
     let path = concrete(&writer_state.0)?;
+    if matches!(&consumer_state.0, SemanticResolution::Resolved {
+        value: PathResolution::BoundedPathSet { roots, may_escape: false }
+    } if !roots.is_empty() && roots.iter().any(|root| caushell_query::path_is_within_root(&path, root)))
+        && ordinary_leaf(&path, &writer_state.1)
+        && !consumer_state.1.is_empty()
+        && consumer_state.1.iter().all(|o| {
+            matches!(
+                o.entry,
+                FilesystemEntry::Directory | FilesystemEntry::File | FilesystemEntry::Missing
+            )
+        })
+    {
+        // A single regular leaf can change within a link-free family without
+        // invalidating that family's namespace. It does not rewrite its root.
+        return Some(PathNamespaceProof {
+            producer_node_id: writer.fact.source_node_id.clone(),
+            producer_effect_key: writer.fact.effect_key.clone(),
+            path,
+            effect: PathNamespaceEffect::RegularFileWrite,
+            additional_paths: Vec::new(),
+        });
+    }
     if concrete(&consumer_state.0)? != path {
         return None;
     }

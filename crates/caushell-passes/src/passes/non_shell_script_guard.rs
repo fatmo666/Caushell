@@ -228,6 +228,7 @@ forms:
         runner.register_session_transform_pass(crate::ResolveInvocationPass::new(
             ProfileRegistry::from_profiles(vec![profile]).unwrap(),
         ));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         if path_facts {
             runner.register_session_transform_pass(crate::ExtractPathFactsPass);
             runner.register_session_transform_pass(crate::ResolvePathTargetsPass);
@@ -351,6 +352,7 @@ forms:
         runner.register_session_transform_pass(crate::ResolveInvocationPass::new(
             ProfileRegistry::from_profiles(profiles).unwrap(),
         ));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_analysis_pass(NonShellScriptGuardPass);
         runner.register_final_decision_pass(crate::DecisionAssemblyPass);
         for (command, expected) in [

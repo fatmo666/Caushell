@@ -674,17 +674,8 @@ fn backward_neighbors(
             }
         }
         TraceNodeKey::Artifact(node_id) => {
-            for edge in graph.incoming_edges(node_id) {
-                if edge.kind != EdgeKind::Produces {
-                    continue;
-                }
-                if !caushell_query::DataDependencyQuery::carries_inputs(edge) {
-                    continue;
-                }
-
-                if execution_unit_info(graph, &edge.from).is_some() {
-                    neighbors.insert(TraceNodeKey::ExecutionUnit(edge.from.clone()));
-                }
+            for producer in caushell_query::DataDependencyQuery::input_producers(graph, node_id) {
+                neighbors.insert(TraceNodeKey::ExecutionUnit(producer));
             }
         }
     }
@@ -1180,6 +1171,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPipelineFlowPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);

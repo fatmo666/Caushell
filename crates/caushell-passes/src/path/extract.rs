@@ -715,7 +715,31 @@ pub(crate) fn collect_path_facts(
     for &record in records {
         let home = record.bindings().tilde_home_with_default(home);
         let executable = unmodeled_executable_path(record);
-        for case in record.cwd_cases(cwd) {
+        let bound = match record.result() {
+            ResolveInvocationArtifactResult::Resolved(r) => Some(&r.bound),
+            ResolveInvocationArtifactResult::SelectionError { partial_bound, .. } => {
+                partial_bound.as_ref()
+            }
+            _ => None,
+        };
+        let anchors: std::collections::BTreeSet<_> = bound.into_iter()
+            .flat_map(|b| &b.bound_parameters)
+            .filter(|p| matches!(&p.semantic, SemanticType::Path(path) if path.role == PathRole::CwdAnchor))
+            .map(|p| p.name.clone()).collect();
+        let mut cases: Vec<_> = record
+            .cwd_cases(cwd)
+            .into_iter()
+            .map(|case| (case, false))
+            .collect();
+        if !anchors.is_empty() {
+            cases.extend(
+                record
+                    .entry_cwd_cases(cwd)
+                    .into_iter()
+                    .map(|case| (case, true)),
+            );
+        }
+        for (case, entry_anchor) in cases {
             let start = paths.len();
             let resolution_cwd = case.resolution_base(cwd);
             match record.result() {
@@ -780,6 +804,16 @@ pub(crate) fn collect_path_facts(
                     ..
                 } => {}
             }
+            // A chdir option is resolved in the caller's entry directory;
+            // ordinary operands are resolved after the process-local chdir.
+            let candidates = paths.split_off(start);
+            paths.extend(candidates.into_iter().filter(|p| {
+                (p.role == PathRole::CwdAnchor
+                    || p.semantic_slot
+                        .as_ref()
+                        .is_some_and(|s| anchors.contains(s)))
+                    == entry_anchor
+            }));
             if !matches!(case, caushell_runner::CwdPathContext::Exact(_)) {
                 for path in &mut paths[start..] {
                     if path.cwd_dependent {
@@ -1063,8 +1097,16 @@ fn resolve_mutation_scope_target(
             path_set,
             subtree,
         } => {
+            let root_is_execution_directory = root.as_ref().is_some_and(|slot| {
+                invocation.effects.iter().find(|e| e.kind == EffectKind::SetExecutionWorkingDirectory).is_some_and(|e| matches!(&e.target, EffectTarget::ConfiguredPath(target)
+                        if target.sources.len() == 1 && target.sources[0].slot == *slot
+                        && target.sources[0].projection == caushell_profile::ValueProjection::Identity
+                        && target.relative_to.is_none() && !target.unresolved_relative_base
+                        && !target.expand_environment && !target.expand_user))
+            });
             let root_resolution = root
                 .as_ref()
+                .filter(|_| !root_is_execution_directory)
                 .and_then(|slot| first_path_resolution_for_slot(invocation, slot, cwd, home, case))
                 .unwrap_or_else(|| {
                     super::cwd::project_path_at_cwd(

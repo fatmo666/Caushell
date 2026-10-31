@@ -33,7 +33,10 @@ pub(crate) fn file_execution_references(ctx: &RunnerContext) -> Vec<FileExecutio
     // Most shell actions have no executable file input. Do not construct the
     // staged-node/path indexes for commands without an execution effect.
     if !ctx.execution_unit_resolve_records().iter().any(|r| {
-        crate::path::unmodeled_executable_path(ExecutionResolveRecordRef::new(r)).is_some()
+        crate::path::unmodeled_executable_path(
+            ExecutionResolveRecordRef::relative_to_supplied_base(r),
+        )
+        .is_some()
             || bound_invocation(&r.result).is_some_and(|b| {
                 b.effects.iter().any(|e| {
                     matches!(

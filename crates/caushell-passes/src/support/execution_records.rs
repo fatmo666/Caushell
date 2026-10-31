@@ -8,11 +8,14 @@ use caushell_runner::{ExecutionUnitResolveRecord, PendingMutation, RunnerContext
 pub(crate) struct ExecutionResolveRecordRef<'a>(
     &'a ExecutionUnitResolveRecord,
     Option<&'a caushell_runner::EffectiveCwd>,
+    Option<&'a caushell_runner::EffectiveCwd>,
 );
 
 impl<'a> ExecutionResolveRecordRef<'a> {
-    pub(crate) fn new(record: &'a ExecutionUnitResolveRecord) -> Self {
-        Self(record, None)
+    /// Local source analysis with a base explicitly supplied by its caller.
+    /// Graph-backed units use their own cwd evidence, including Unknown.
+    pub(crate) fn relative_to_supplied_base(record: &'a ExecutionUnitResolveRecord) -> Self {
+        Self(record, None, None)
     }
 
     pub(crate) fn cwd_options(&self, fallback: &'a str) -> Vec<Option<&'a str>> {
@@ -28,7 +31,19 @@ impl<'a> ExecutionResolveRecordRef<'a> {
     }
 
     pub(crate) fn cwd_cases(&self, fallback: &'a str) -> Vec<caushell_runner::CwdPathContext<'a>> {
-        crate::path::effective_cwd_cases(self.1, fallback)
+        match self.1 {
+            None => vec![caushell_runner::CwdPathContext::Exact(fallback)],
+            Some(cwd) => cwd.cases(),
+        }
+    }
+    pub(crate) fn entry_cwd_cases(
+        &self,
+        fallback: &'a str,
+    ) -> Vec<caushell_runner::CwdPathContext<'a>> {
+        self.2.map_or_else(
+            || vec![caushell_runner::CwdPathContext::Exact(fallback)],
+            caushell_runner::EffectiveCwd::cases,
+        )
     }
     pub(crate) fn source_node_id(&self) -> &'a NodeId {
         &self.0.source_node_id
@@ -94,7 +109,17 @@ pub(crate) fn graph_backed_execution_resolve_records(
         .iter()
         .filter(|record| staged_execution_unit_node_ids.contains(&record.source_node_id))
         .map(|record| {
-            ExecutionResolveRecordRef(record, ctx.execution_cwd_for_node(&record.source_node_id))
+            ExecutionResolveRecordRef(
+                record,
+                Some(
+                    ctx.execution_cwd_for_node(&record.source_node_id)
+                        .unwrap_or(&caushell_runner::EffectiveCwd::Unknown),
+                ),
+                Some(
+                    ctx.effective_cwd_for_node(&record.source_node_id)
+                        .unwrap_or(&caushell_runner::EffectiveCwd::Unknown),
+                ),
+            )
         })
         .collect()
 }
@@ -105,7 +130,17 @@ pub(crate) fn resolved_execution_records_for_local_analysis(
     ctx.execution_unit_resolve_records()
         .iter()
         .map(|record| {
-            ExecutionResolveRecordRef(record, ctx.execution_cwd_for_node(&record.source_node_id))
+            ExecutionResolveRecordRef(
+                record,
+                Some(
+                    ctx.execution_cwd_for_node(&record.source_node_id)
+                        .unwrap_or(&caushell_runner::EffectiveCwd::Unknown),
+                ),
+                Some(
+                    ctx.effective_cwd_for_node(&record.source_node_id)
+                        .unwrap_or(&caushell_runner::EffectiveCwd::Unknown),
+                ),
+            )
         })
         .collect()
 }

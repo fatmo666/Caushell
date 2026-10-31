@@ -396,51 +396,62 @@ forms:
     selector:
       kind: all
       items:
-        - kind: not
-          item:
-            kind: any
-            items:
-              - kind: has_flag
-                flag: "--help"
-              - kind: has_flag
-                flag: "--version"
-        - kind: not
-          item:
-            kind: any
-            items:
-              - kind: has_modifier
-                modifier: attributes_only
-              - kind: has_modifier
-                modifier: hard_link
-              - kind: has_modifier
-                modifier: symbolic_link
-        - {kind: not, item: {kind: has_modifier, modifier: remove_destination}}
-        - kind: not
-          item: &active_backup
-            kind: any
-            items:
-              - {kind: has_modifier, modifier: backup_short}
-              - kind: all
+        - &default_copy_selector
+          kind: all
+          items:
+            - kind: not
+              item:
+                kind: any
                 items:
-                  - {kind: has_modifier, modifier: backup_default}
-                  - kind: not
-                    item:
-                      kind: all
-                      items:
-                        # An any-value matcher cannot prove last-option-wins
-                        # for repeated controls. Retain namespace semantics.
-                        - {kind: not, item: {kind: has_flag_at_least, flag: "--backup", count: 2}}
-                        - kind: has_modifier_parameter_matching
-                          modifier: backup_default
-                          parameter: backup_control
-                          matcher: {kind: regex_pattern, pattern: '^(none|off)$'}
-        - kind: has_positional_at
-          index: 1
+                  - kind: has_flag
+                    flag: "--help"
+                  - kind: has_flag
+                    flag: "--version"
+            - kind: not
+              item:
+                kind: any
+                items:
+                  - kind: has_modifier
+                    modifier: attributes_only
+                  - kind: has_modifier
+                    modifier: hard_link
+                  - kind: has_modifier
+                    modifier: symbolic_link
+            - {kind: not, item: {kind: has_modifier, modifier: remove_destination}}
+            - kind: not
+              item: &active_backup
+                kind: any
+                items:
+                  - {kind: has_modifier, modifier: backup_short}
+                  - kind: all
+                    items:
+                      - {kind: has_modifier, modifier: backup_default}
+                      - kind: not
+                        item:
+                          kind: all
+                          items:
+                            # An any-value matcher cannot prove last-option-wins
+                            # for repeated controls. Retain namespace semantics.
+                            - {kind: not, item: {kind: has_flag_at_least, flag: "--backup", count: 2}}
+                            - kind: has_modifier_parameter_matching
+                              modifier: backup_default
+                              parameter: backup_control
+                              matcher: {kind: regex_pattern, pattern: '^(none|off)$'}
+            - kind: has_positional_at
+              index: 1
+            - kind: not
+              item:
+                kind: has_modifier
+                modifier: target_directory
         - kind: not
-          item:
-            kind: has_modifier
-            modifier: target_directory
-    parameters:
+          item: &ordinary_copy_namespace
+            kind: all
+            items:
+              - {kind: not, item: {kind: has_modifier, modifier: recursive}}
+              - {kind: not, item: {kind: has_modifier, modifier: archive}}
+              - {kind: not, item: {kind: has_modifier, modifier: no_dereference}}
+              - {kind: not, item: {kind: has_modifier, modifier: parents}}
+    parameters: &default_copy_parameters
       - name: source_paths
         semantic:
           kind: path
@@ -458,7 +469,8 @@ forms:
           kind: last_positional
         cardinality: required_one
     effects:
-      - kind: read_path
+      - &read_copy_sources
+        kind: read_path
         path_access: content_open
         target:
           kind: slot
@@ -470,6 +482,18 @@ forms:
           name: destination_path
         catastrophic:
           semantic_class: raw_write_target
+
+  - id: ordinary_file_copy
+    selector: {kind: all, items: [*default_copy_selector, *ordinary_copy_namespace]}
+    parameters: *default_copy_parameters
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    effects:
+      - *read_copy_sources
+      - kind: write_path
+        path_access: content_open
+        namespace_effect: regular_file_write
+        target: {kind: slot, name: destination_path}
+        catastrophic: {semantic_class: raw_write_target}
 
   - id: default_copy_replacing_destination
     # Unlink/backup modes change the namespace before copying: do not treat a

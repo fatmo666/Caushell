@@ -157,6 +157,48 @@ fn complete_plain_archive_proves_actual_member_targets() {
 }
 
 #[test]
+fn downloaded_archive_execution_keeps_origin_after_directory_rename_and_pipeline() {
+    let mut view = files();
+    view.bytes = archive(&[("source-v1/run", b'0', "")]);
+    let mut core = ShellQueryCore::new().with_filesystem_view(Arc::new(view));
+    assert_eq!(
+        core.check(request(
+            "curl -q -o bundle.tar https://example.test/source.tar",
+            1
+        ))
+        .decision,
+        Decision::Allow
+    );
+    let extracted = core.check_with_outcome(request("tar -xf bundle.tar", 2));
+    // A prior download is not proof of the current archive bytes. The archive
+    // and any later execution must remain conservative until that is observed.
+    assert_eq!(
+        extracted.response.decision,
+        Decision::NeedApproval,
+        "{extracted:#?}"
+    );
+    let receipt = extracted.check_receipt.unwrap();
+    core.authorize(&ApprovalRequest {
+        check_id: receipt.check_id,
+        state_revision: receipt.state_revision,
+        approved: true,
+        authority: ApprovalAuthority::SimulatedUser,
+    })
+    .unwrap();
+    let renamed = core.check(request("mv source-v1 source", 3));
+    assert_ne!(renamed.decision, Decision::Deny, "{renamed:#?}");
+    let result = core.check(request("cd /workspace/source && ./run 2>&1 | cat", 4));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+    assert!(
+        result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::TaintedExecution)
+    );
+}
+
+#[test]
 fn native_environment_and_explicit_options_share_ordered_targets() {
     for (prefix, expected, decision) in [
         (

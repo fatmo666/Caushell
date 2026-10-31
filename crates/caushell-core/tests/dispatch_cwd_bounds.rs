@@ -13,12 +13,70 @@ use caushell_types::{
     ShellStateSnapshot,
 };
 
+use caushell_runner::{DirectoryRead, FilesystemView};
+use caushell_types::{
+    DirectoryEntry, DirectoryEntryKind, DirectoryReadLimits, FileContentIdentity, FilesystemEntry,
+    FilesystemObservationSource,
+};
+use std::sync::Arc;
+
+// The synthetic executor's observed tree is independent of the host running
+// this test. Its declared cwd cannot simultaneously be Missing on that host.
+struct ExecutorTree;
+const DIRECTORIES: &[&str] = &[
+    "/",
+    "/workspace",
+    "/workspace/project",
+    "/workspace/project/sub",
+    "/opt",
+    "/opt/shared",
+];
+impl FilesystemView for ExecutorTree {
+    fn source(&self) -> FilesystemObservationSource {
+        FilesystemObservationSource::SuppliedView
+    }
+    fn entry(&self, path: &str) -> FilesystemEntry {
+        if DIRECTORIES.contains(&path) {
+            FilesystemEntry::Directory
+        } else {
+            FilesystemEntry::Missing
+        }
+    }
+    fn read_directory(&self, path: &str, limits: DirectoryReadLimits) -> DirectoryRead {
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let identity = FileContentIdentity {
+            device: 1,
+            inode: 1,
+            size: 0,
+            modified_seconds: 0,
+            modified_nanos: 0,
+            changed_seconds: 0,
+            changed_nanos: 0,
+        };
+        let entries = DIRECTORIES
+            .iter()
+            .filter_map(|p| p.strip_prefix(&prefix))
+            .filter(|name| !name.is_empty() && !name.contains('/'))
+            .map(|name| DirectoryEntry {
+                name: name.into(),
+                kind: DirectoryEntryKind::Directory,
+                identity: identity.clone(),
+            })
+            .collect();
+        DirectoryRead::complete(self.source(), path, limits, identity, entries)
+    }
+}
+
 fn request(command: &str) -> CheckRequest {
     CheckRequest {
         session_id: SessionId::new("dispatch-cwd-bounds"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/workspace/project"),
+        shell_state_before: ShellStateSnapshot::new("/workspace/project")
+            .with_environment_observation(
+                "TAR_OPTIONS",
+                caushell_types::ShellEnvironmentValue::Absent,
+            ),
         shell_kind: ShellKind::Bash,
         home: Some("/home/alice".into()),
         workspace_root: Some("/workspace/project".into()),
@@ -46,7 +104,9 @@ fn context(command: &str, registry: ProfileRegistry) -> RunnerContext {
 }
 
 fn decision(command: &str, expected: Decision) {
-    let result = ShellQueryCore::new().check(request(command));
+    let result = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(ExecutorTree))
+        .check(request(command));
     assert_eq!(result.decision, expected, "{command}: {result:?}");
     if expected == Decision::Allow {
         assert!(

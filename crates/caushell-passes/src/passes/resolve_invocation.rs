@@ -4292,7 +4292,7 @@ fn collect_execution_unit_resolve_records(
                     &entry.static_payload_scope.parsed_scope,
                     entry.static_payload_scope.command_index,
                     &resolved.bound,
-                    crate::support::ExecutionResolveRecordRef::new(
+                    crate::support::ExecutionResolveRecordRef::relative_to_supplied_base(
                         records.last().expect("current execution record"),
                     ),
                     &entry.bindings,
@@ -13773,7 +13773,7 @@ modifiers:
                     if runtime.len() < 2 {
                         "missing_operands"
                     } else {
-                        "default_copy"
+                        "ordinary_file_copy"
                     }
                 );
                 if runtime.len() == 2 {

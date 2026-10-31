@@ -183,6 +183,50 @@ impl DataDependencyQuery {
                     .map(|n| n.id.clone()),
             );
         }
+        let input = graph.get_node(artifact).and_then(|node| match &node.kind {
+            NodeKind::ProvenanceArtifact {
+                artifact: caushell_types::ProvenanceArtifact::PathContent { path, .. },
+            } => Some(caushell_types::PathResolution::Concrete { path: path.clone() }),
+            NodeKind::ProvenanceArtifact {
+                artifact:
+                    caushell_types::ProvenanceArtifact::PathSelectionContent { resolution, .. },
+            } => Some(resolution.clone()),
+            _ => None,
+        });
+        if let Some(input) = input {
+            for node in graph.path_selection_artifact_nodes() {
+                if let NodeKind::ProvenanceArtifact {
+                    artifact:
+                        caushell_types::ProvenanceArtifact::PathSelectionContent { resolution, .. },
+                } = &node.kind
+                    && domains_may_overlap(&input, resolution)
+                {
+                    artifacts.push(node.id.clone());
+                }
+            }
+            if input.concrete_path().is_none() {
+                for node in graph.path_content_artifact_nodes() {
+                    let domain = match &node.kind {
+                        NodeKind::ProvenanceArtifact {
+                            artifact: caushell_types::ProvenanceArtifact::PathContent { path, .. },
+                        } => Some(caushell_types::PathResolution::Concrete { path: path.clone() }),
+                        NodeKind::ProvenanceArtifact {
+                            artifact:
+                                caushell_types::ProvenanceArtifact::PathFamily { directory, prefix },
+                        } => Some(caushell_types::PathResolution::FileNamePrefix {
+                            directory: directory.clone(),
+                            prefix: prefix.clone(),
+                        }),
+                        _ => None,
+                    };
+                    if domain.is_some_and(|d| domains_may_overlap(&input, &d)) {
+                        artifacts.push(node.id.clone());
+                    }
+                }
+            }
+        }
+        artifacts.sort();
+        artifacts.dedup();
         artifacts
             .iter()
             .flat_map(|id| graph.incoming_edges(id))
@@ -201,6 +245,81 @@ impl DataDependencyQuery {
     }
 }
 
+/// Possible content influence only: an unknown output cannot prove that a
+/// later executable is unrelated. These domains never resolve a filename,
+/// prove existence, or grant a filesystem permission.
+fn domains_may_overlap(
+    left: &caushell_types::PathResolution,
+    right: &caushell_types::PathResolution,
+) -> bool {
+    use caushell_types::PathResolution as P;
+    fn under(path: &str, root: &str) -> bool {
+        path == root
+            || path
+                .strip_prefix(root.trim_end_matches('/'))
+                .is_some_and(|s| s.starts_with('/'))
+    }
+    if let (Some(a), Some(b)) = (left.concrete_path(), right.concrete_path()) {
+        return a == b;
+    }
+    match (left, right) {
+        (P::FileNamePrefix { directory, prefix }, other)
+        | (other, P::FileNamePrefix { directory, prefix }) => {
+            if let Some(path) = other.concrete_path() {
+                return path.rsplit_once('/').is_some_and(|(parent, name)| {
+                    (if parent.is_empty() { "/" } else { parent }) == directory
+                        && name.starts_with(prefix)
+                        && name.len() > prefix.len()
+                });
+            }
+            if let P::BoundedPathSet {
+                roots,
+                may_escape: false,
+            } = other
+            {
+                return roots.is_empty()
+                    || roots.iter().any(|r| {
+                        under(directory, r)
+                            || r.rsplit_once('/').is_some_and(|(parent, name)| {
+                                parent == directory
+                                    && name.starts_with(prefix)
+                                    && name.len() > prefix.len()
+                            })
+                    });
+            }
+            if let P::FileNamePrefix {
+                directory: d,
+                prefix: p,
+            } = other
+            {
+                return directory == d && (prefix.starts_with(p) || p.starts_with(prefix));
+            }
+            true
+        }
+        (P::BoundedPathSet { roots, may_escape }, other)
+        | (other, P::BoundedPathSet { roots, may_escape }) => {
+            if *may_escape || roots.is_empty() {
+                return true;
+            }
+            if let Some(path) = other.concrete_path() {
+                return roots.iter().any(|r| under(path, r));
+            }
+            if let P::BoundedPathSet {
+                roots: other_roots,
+                may_escape: false,
+            } = other
+            {
+                return other_roots.is_empty()
+                    || roots
+                        .iter()
+                        .any(|a| other_roots.iter().any(|b| under(a, b) || under(b, a)));
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
 fn is_artifact(graph: &dyn GraphRead, node: &NodeId) -> bool {
     graph
         .get_node(node)
@@ -209,6 +328,99 @@ fn is_artifact(graph: &dyn GraphRead, node: &NodeId) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn subtree_output_origins_survive_snapshot_restore_without_covering_a_sibling() {
+        use caushell_graph::{Edge, EdgeKind, GraphNode, NodeId, SessionGraph};
+        use caushell_types::{
+            CommandSequenceNo, PathResolution, ProvenanceArtifact, SessionId, ShellKind,
+        };
+        let mut graph = SessionGraph::new();
+        let producer = NodeId::new("producer");
+        graph.add_node(GraphNode::new_command_invocation(
+            producer.clone(),
+            SessionId::new("lineage"),
+            CommandSequenceNo(1),
+            "arbitrary-move-tool",
+            "/work",
+            ShellKind::Bash,
+        ));
+        let output = NodeId::new("output-domain");
+        graph.add_node(GraphNode::new_provenance_artifact(
+            output.clone(),
+            ProvenanceArtifact::PathSelectionContent {
+                resolution: PathResolution::BoundedPathSet {
+                    roots: vec!["/work/source".into()],
+                    may_escape: false,
+                },
+                selector: None,
+            },
+        ));
+        graph
+            .add_edge(Edge::new(producer.clone(), output, EdgeKind::Produces))
+            .unwrap();
+        for (id, path) in [
+            ("child", "/work/source/bin/run"),
+            ("sibling", "/work/source-peer/bin/run"),
+        ] {
+            graph.add_node(GraphNode::new_provenance_artifact(
+                NodeId::new(id),
+                ProvenanceArtifact::PathContent {
+                    path: path.into(),
+                    version: None,
+                },
+            ));
+        }
+        let restored = SessionGraph::from_snapshot(graph.to_snapshot()).unwrap();
+        for graph in [&graph, &restored] {
+            assert_eq!(
+                super::DataDependencyQuery::input_producers(graph, &NodeId::new("child")),
+                vec![producer.clone()]
+            );
+            assert!(
+                super::DataDependencyQuery::input_producers(graph, &NodeId::new("sibling"))
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn possible_content_domains_preserve_component_bounds_and_unknown_outputs() {
+        use caushell_types::PathResolution as P;
+        let exact = |path: &str| P::Concrete { path: path.into() };
+        let tree = P::BoundedPathSet {
+            roots: vec!["/work/source".into()],
+            may_escape: false,
+        };
+        assert!(super::domains_may_overlap(&tree, &exact("/work/source")));
+        assert!(super::domains_may_overlap(
+            &tree,
+            &exact("/work/source/bin/run")
+        ));
+        assert!(!super::domains_may_overlap(
+            &tree,
+            &exact("/work/source-peer/run")
+        ));
+        assert!(super::domains_may_overlap(
+            &tree,
+            &P::UnsupportedDynamicText {
+                text: "unknown output".into()
+            }
+        ));
+        let family = P::FileNamePrefix {
+            directory: "/work".into(),
+            prefix: "part".into(),
+        };
+        assert!(super::domains_may_overlap(&family, &exact("/work/part1")));
+        for path in [
+            "/work/part",
+            "/work/other",
+            "/work/part1/child",
+            "/other/part1",
+        ] {
+            assert!(!super::domains_may_overlap(&family, &exact(path)), "{path}");
+        }
+    }
+
     #[test]
     fn auxiliary_reads_remain_auditable_without_becoming_content() {
         use caushell_graph::{Edge, EdgeKind, GraphNode, NodeId, SessionGraph};

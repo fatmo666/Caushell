@@ -287,12 +287,21 @@ fn namespace_operations_complete(ctx: &RunnerContext, whole_tree: bool) -> bool 
                 }
                 // Keep the existing single-leaf build/execute contract. A
                 // known executable path cannot certify a closed directory tree.
-                Result::NoProfile { .. } => {
-                    !whole_tree
+                Result::NoProfile { normalized_command_name, .. } => {
+                    let expanded_function = record.bindings().function_binding(normalized_command_name).is_some()
+                        && ctx.execution_unit_resolve_records().iter().any(|child|
+                            child.parent_execution_node_id == *record.source_node_id()
+                                && child.origin_kind == caushell_runner::ExecutionUnitOriginKind::FunctionExpansion)
+                        && !ctx.evidence.iter().any(|e| matches!(&e.kind,
+                            caushell_types::EvidenceKind::ExecutionExpansionTruncated(t) if t.next_candidate_count > 0));
+                    // A resolved function call is a structural parent. Its
+                    // actual body units are checked by this same closure;
+                    // opaque children and truncated recursion cannot qualify.
+                    expanded_function || (!whole_tree
                         && matches!(
                             crate::path::unmodeled_executable_path(record),
                             Some(crate::path::ExecutableFileReference::Known(_))
-                        )
+                        ))
                 }
                 Result::MissingCommandName {
                     gap_kind: caushell_types::ResolveGapKind::MissingCommandName,

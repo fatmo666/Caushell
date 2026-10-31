@@ -133,7 +133,7 @@ forms:
         target:
           kind: slot
           name: archive_file
-      - &write_old_archive {kind: write_path, path_access: content_open, target: {kind: slot, name: old_archive_file}}
+      - &write_old_archive {kind: write_path, path_access: content_open, namespace_effect: regular_file_write, target: {kind: slot, name: old_archive_file}}
       - kind: read_path
         target:
           kind: slot
@@ -260,7 +260,7 @@ forms:
     effects: &update_effects
       - *read_archive
       - *read_old_archive
-      - &write_archive {kind: write_path, path_access: content_open, target: {kind: slot, name: archive_file}}
+      - &write_archive {kind: write_path, path_access: content_open, namespace_effect: regular_file_write, target: {kind: slot, name: archive_file}}
       - *write_old_archive
       - {kind: read_path, target: {kind: slot, name: input_paths}}
       - *archive_stdin

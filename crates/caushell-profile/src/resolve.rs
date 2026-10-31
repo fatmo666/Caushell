@@ -1548,7 +1548,7 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
+                assert_eq!(resolved.selection.form.id.as_str(), "ordinary_file_copy");
                 assert_eq!(
                     argument_texts(&resolved.bound, "source_paths"),
                     vec!["src-a", "src-b"]
@@ -1812,7 +1812,7 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
+                assert_eq!(resolved.selection.form.id.as_str(), "ordinary_file_copy");
                 assert_eq!(
                     modifier_ids,
                     vec!["preserve_default", "no_preserve", "set_security_context"]
@@ -1857,7 +1857,7 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
+                assert_eq!(resolved.selection.form.id.as_str(), "ordinary_file_copy");
                 assert_eq!(modifier_ids, vec!["reflink"]);
                 assert!(find_bound_parameter_opt(&resolved.bound, "reflink_mode").is_none());
                 assert_eq!(argument_texts(&resolved.bound, "source_paths"), vec!["src"]);
@@ -1889,7 +1889,7 @@ mod tests {
                     .collect();
 
                 assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
+                assert_eq!(resolved.selection.form.id.as_str(), "ordinary_file_copy");
                 assert_eq!(modifier_ids, vec!["sparse"]);
                 assert_eq!(first_argument_text(&resolved.bound, "sparse_mode"), "auto");
                 assert_eq!(argument_texts(&resolved.bound, "source_paths"), vec!["src"]);
@@ -7541,7 +7541,7 @@ mod tests {
         match result {
             ResolveInvocationResult::Resolved(resolved) => {
                 assert_eq!(resolved.normalized_command_name, "cp");
-                assert_eq!(resolved.selection.form.id.as_str(), "default_copy");
+                assert_eq!(resolved.selection.form.id.as_str(), "ordinary_file_copy");
                 assert_eq!(
                     effect_kinds(&resolved.bound),
                     vec![EffectKind::ReadPath, EffectKind::WritePath]
@@ -10013,7 +10013,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::NetworkEndpoint, EffectKind::WritePath]
+                    vec![
+                        EffectKind::LoadConfig,
+                        EffectKind::NetworkEndpoint,
+                        EffectKind::WritePath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -10051,6 +10055,7 @@ mod tests {
                 assert_eq!(
                     effect_kinds(&resolved.bound),
                     vec![
+                        EffectKind::LoadConfig,
                         EffectKind::NetworkEndpoint,
                         EffectKind::WritePath,
                         EffectKind::LoadConfig,
@@ -10058,7 +10063,7 @@ mod tests {
                     ]
                 );
                 assert!(matches!(
-                    &resolved.bound.effects[3].target,
+                    &resolved.bound.effects[4].target,
                     crate::EffectTarget::MutationScope(
                         crate::MutationScopeTarget::RepositoryWorktree {
                             root: Some(slot),

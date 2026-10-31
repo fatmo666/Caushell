@@ -118,6 +118,41 @@ fn check(command: &str, files: Files) -> CheckResponse {
 }
 
 #[test]
+fn bounded_regular_outputs_do_not_invalidate_their_own_namespace_alternatives() {
+    for command in [
+        r"find . -execdir touch marker \;",
+        r"find . -execdir sh -c 'touch marker' \;",
+    ] {
+        let response = check(command, Files::new());
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(response.decision_trace.path_targets.iter().any(|p| {
+            p.namespace_proofs
+                .iter()
+                .any(|proof| proof.effect == PathNamespaceEffect::RegularFileWrite)
+        }));
+    }
+    for command in [
+        r"ln -s /outside link; find . -execdir touch marker \;",
+        r"opaque-tool; find . -execdir touch marker \;",
+    ] {
+        assert_eq!(
+            check(command, Files::new()).decision,
+            Decision::NeedApproval,
+            "{command}"
+        );
+    }
+    assert_eq!(
+        check(r"find . -execdir touch marker \; ; rm -rf /", Files::new()).decision,
+        Decision::Deny
+    );
+}
+
+#[test]
 fn directory_creation_preserves_namespace_without_claiming_success() {
     for command in [
         "mkdir -p output && printf x > output/result",

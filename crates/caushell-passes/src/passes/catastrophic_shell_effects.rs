@@ -589,10 +589,12 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_shell_effects_ignore_plain_recursive_execution_without_fanout() {
+    fn plain_recursion_keeps_incomplete_analysis_approval_without_a_fanout_deny() {
         let ctx = run_pass("f(){ f; }; f");
 
-        assert_eq!(ctx.final_decision, Some(Decision::Allow));
+        // Recursive expansion hits the existing analysis bound. The absence of
+        // fork-bomb fanout must not turn incomplete analysis into Allow.
+        assert_eq!(ctx.final_decision, Some(Decision::NeedApproval));
         assert!(ctx.findings.is_empty());
     }
 

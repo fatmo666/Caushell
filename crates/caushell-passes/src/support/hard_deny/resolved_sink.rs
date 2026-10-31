@@ -217,42 +217,47 @@ pub(crate) fn bound_argument_operands_for_slot<'a>(
         .filter(|parameter| parameter.name.as_str() == slot_name)
         .flat_map(|parameter| parameter.semantic_values())
         .filter_map(|value| match value {
-            SemanticValueRef::Original(
-                source @ BoundValue::Argument {
-                    text,
-                    quoted,
-                    node_kind,
-                    materialization,
-                    ..
-                },
-            ) => Some(
-                if !matches!(
-                    materialization,
-                    caushell_profile::BoundArgumentMaterialization::Literal
-                ) {
-                    // The resolver already removed outer-shell syntax. Native
-                    // bytes (including literal glob metacharacters) cannot be
-                    // reinterpreted as another shell expansion by a risk query.
-                    HostTargetOperand::literal_argv_data(text)
-                } else {
-                    HostTargetOperand {
-                        text: text.as_str(),
-                        quoted: *quoted,
-                        node_kind: node_kind.as_str(),
-                        literal_argv_data: false,
-                        allow_tilde_expansion: source.allows_shell_tilde_expansion(),
-                    }
-                },
-            ),
+            SemanticValueRef::Original(source) => host_operand_from_source(source),
+            // Identity retains the original shell word even when pathname
+            // expansion prevents an exact projected value. Preserve known
+            // destructive patterns; native argv data still stays literal.
+            SemanticValueRef::Projected { source, value } if value.preserves_source => {
+                host_operand_from_source(source)
+            }
             SemanticValueRef::Projected { value, .. } => match &value.resolution {
                 SemanticValueResolution::Known(text) => {
                     Some(HostTargetOperand::literal_argv_data(text))
                 }
                 SemanticValueResolution::Unknown(_) => None,
             },
-            SemanticValueRef::Original(BoundValue::ImplicitInput { .. }) => None,
         })
         .collect()
+}
+
+fn host_operand_from_source(source: &BoundValue) -> Option<HostTargetOperand<'_>> {
+    let BoundValue::Argument {
+        text,
+        quoted,
+        node_kind,
+        materialization,
+        ..
+    } = source
+    else {
+        return None;
+    };
+    Some(
+        if *materialization != caushell_profile::BoundArgumentMaterialization::Literal {
+            HostTargetOperand::literal_argv_data(text)
+        } else {
+            HostTargetOperand {
+                text,
+                quoted: *quoted,
+                node_kind,
+                literal_argv_data: false,
+                allow_tilde_expansion: source.allows_shell_tilde_expansion(),
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -262,6 +267,68 @@ mod tests {
         ArgumentBindingSource, BoundInvocation, BoundParameter, BoundValue, CommandName, FormId,
         ImplicitInputSource, SemanticType, SlotName,
     };
+
+    #[test]
+    fn identity_projection_preserves_shell_patterns_but_never_reexpands_native_data() {
+        for (quoted, materialization, expected) in [
+            (
+                false,
+                caushell_profile::BoundArgumentMaterialization::Literal,
+                true,
+            ),
+            (
+                true,
+                caushell_profile::BoundArgumentMaterialization::Literal,
+                false,
+            ),
+            (
+                false,
+                caushell_profile::BoundArgumentMaterialization::RuntimeData,
+                false,
+            ),
+        ] {
+            let mut value = BoundValue::argument(
+                if quoted { "'/etc/*'" } else { "/etc/*" },
+                quoted,
+                caushell_parse::SourceSpan {
+                    start_byte: 0,
+                    end_byte: 13,
+                    start_row: 0,
+                    end_row: 0,
+                    start_column: 0,
+                    end_column: 13,
+                },
+                ArgumentBindingSource::RemainingArg,
+            )
+            .with_materialization(materialization.clone());
+            if quoted {
+                if let BoundValue::Argument { node_kind, .. } = &mut value {
+                    *node_kind = "raw_string".into();
+                }
+            }
+            let mut parameter =
+                BoundParameter::new(SlotName::new("target"), SemanticType::PlainValue)
+                    .with_value(value);
+            parameter.value_projection = Some(caushell_profile::ValueProjection::Identity);
+            caushell_profile::refresh_parameter_semantic_values(&mut parameter);
+            let bound = BoundInvocation::new(CommandName::new("arbitrary"), FormId::new("native"))
+                .with_bound_parameter(parameter);
+            let operands = bound_argument_operands_for_slot(&bound, "target");
+            assert_eq!(operands.len(), 1);
+            assert_eq!(
+                matches!(
+                    super::super::host_target_catalog::classify_host_target_with_optional_cwd(
+                        operands[0],
+                        Some("/workspace"),
+                        None
+                    ),
+                    Some(super::super::host_target_catalog::HostTargetKind::CatastrophicDeleteRoot)
+                ),
+                expected,
+                "{quoted:?} {materialization:?}"
+            );
+        }
+    }
 
     #[test]
     fn target_projection_keeps_runtime_source_distinct_from_literal_arguments() {

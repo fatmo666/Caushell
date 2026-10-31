@@ -145,6 +145,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
         runner.register_session_transform_pass(crate::ResolvePathTargetsPass);
@@ -166,6 +167,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(built_in_registry()));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ExtractImplicitStartupConfigPass);
         runner.register_session_transform_pass(crate::ResolvePathTargetsPass);

@@ -15,7 +15,7 @@ forms:
     selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}]}
     remaining_selector: {kind: no_positional_args}
     parameters: [{name: path_targets, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}]
-    effects: [{kind: write_path, target: {kind: slot, name: path_targets}}]
+    effects: [{kind: write_path, target: {kind: slot, name: path_targets}, namespace_effect: regular_file_write}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
 
 modifiers:

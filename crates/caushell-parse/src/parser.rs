@@ -13,6 +13,8 @@ use crate::{
 };
 use caushell_types::ShellKind;
 
+mod redirection_precedence;
+
 /// Decode a shell token only when its value is a static argv string. This is
 /// intentionally not an evaluator: expansions and pathname generation remain
 /// unresolved, while backslash-quoted characters are decoded as shell data.
@@ -829,6 +831,7 @@ fn artifact_from_tree(
         }
     }
     restore_descriptor_ownership(&mut artifact, source, descriptors);
+    redirection_precedence::restore(&mut artifact, root, source);
     crate::backtick::restore(&mut artifact, backticks, root);
     for redirect in &mut artifact.redirections {
         if redirect.operator.as_deref() == Some("<<-")

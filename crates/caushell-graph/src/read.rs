@@ -65,6 +65,17 @@ pub trait GraphRead {
             matches!(&node.kind, crate::NodeKind::ProvenanceArtifact { artifact } if artifact.family_contains_path(&path))
         }))
     }
+    /// Possible path-content domains, never concrete namespace or authority proofs.
+    fn path_selection_artifact_nodes<'a>(&'a self) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        Box::new(self.nodes().filter(|n| {
+            matches!(
+                &n.kind,
+                crate::NodeKind::ProvenanceArtifact {
+                    artifact: caushell_types::ProvenanceArtifact::PathSelectionContent { .. }
+                }
+            )
+        }))
+    }
     fn get_node(&self, id: &NodeId) -> Option<&GraphNode>;
     fn node_count(&self) -> usize;
     fn edge_count(&self) -> usize;

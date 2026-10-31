@@ -6,10 +6,11 @@ use super::normalize::normalize_shell_path;
 
 pub(crate) fn effective_cwd_cases<'a>(
     cwd: Option<&'a EffectiveCwd>,
-    fallback: &'a str,
+    _fallback: &'a str,
 ) -> Vec<CwdPathContext<'a>> {
     cwd.map_or_else(
-        || vec![CwdPathContext::Exact(fallback)],
+        // A missing per-unit mapping is not evidence of the request-entry cwd.
+        || vec![CwdPathContext::Unknown],
         EffectiveCwd::cases,
     )
 }

@@ -37,9 +37,9 @@ fn values(bound: &BoundInvocation, slot: &str) -> Vec<String> {
 #[test]
 fn backup_control_is_an_option_value_and_disabled_backups_keep_content_open_semantics() {
     for (option, expected_form, content_open) in [
-        ("", "default_copy", true),
-        ("--backup=none", "default_copy", true),
-        ("--backup=off", "default_copy", true),
+        ("", "ordinary_file_copy", true),
+        ("--backup=none", "ordinary_file_copy", true),
+        ("--backup=off", "ordinary_file_copy", true),
         ("--backup", "default_copy_replacing_destination", false),
         ("-b", "default_copy_replacing_destination", false),
         (

@@ -982,6 +982,7 @@ mod tests {
         runner.register_session_transform_pass(ResolveInvocationPass::new(
             ProfileRegistry::built_in().expect("expected built-in profiles to load"),
         ));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPipelineFlowPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ExtractEndpointProvenancePass);
@@ -1042,6 +1043,7 @@ forms:
             runner.register_request_transform_pass(ParseCommandPass);
             runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
             runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+            runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
             runner.register_session_transform_pass(ExtractPathFactsPass);
             runner.register_session_transform_pass(ExtractEndpointProvenancePass);
             runner.register_session_analysis_pass(SensitiveDataExfiltrationGuardPass);

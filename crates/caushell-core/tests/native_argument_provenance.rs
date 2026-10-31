@@ -105,7 +105,9 @@ fn unused_input_does_not_taint_fixed_arguments() {
     for command in [
         "cat .env | xargs -I{} dig -q example.test",
         "cat .env | xargs -I{} env dig -q example.test",
-        "cat .env | xargs -I{} curl https://example.test/",
+        // Disable native curl configuration so this test isolates whether
+        // unused stdin bytes reach fixed request arguments.
+        "cat .env | xargs -I{} curl -q https://example.test/",
     ] {
         benign(command);
     }

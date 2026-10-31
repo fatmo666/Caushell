@@ -30,6 +30,7 @@ pub struct SessionGraph {
     path_fact_node_index: Vec<NodeId>,
     path_fact_by_concrete_path_index: BTreeMap<String, Vec<NodeId>>,
     path_content_artifact_index: Vec<NodeId>,
+    path_selection_artifact_index: Vec<NodeId>,
     path_content_artifact_by_path_index: BTreeMap<String, Vec<NodeId>>,
     path_family_by_directory_index: BTreeMap<String, Vec<NodeId>>,
 }
@@ -325,6 +326,9 @@ impl SessionGraph {
                 }
             }
             NodeKind::ProvenanceArtifact { artifact } => {
+                if matches!(artifact, ProvenanceArtifact::PathSelectionContent { .. }) {
+                    self.path_selection_artifact_index.push(node.id.clone());
+                }
                 if let ProvenanceArtifact::PathFamily { directory, .. } = artifact {
                     self.path_content_artifact_index.push(node.id.clone());
                     self.path_family_by_directory_index
@@ -417,6 +421,9 @@ impl SessionGraph {
                 }
             }
             NodeKind::ProvenanceArtifact { artifact } => {
+                if matches!(artifact, ProvenanceArtifact::PathSelectionContent { .. }) {
+                    remove_vec_entry(&mut self.path_selection_artifact_index, &node.id);
+                }
                 if let ProvenanceArtifact::PathFamily { directory, .. } = artifact {
                     remove_vec_entry(&mut self.path_content_artifact_index, &node.id);
                     remove_index_entry(
@@ -606,6 +613,10 @@ impl GraphRead for SessionGraph {
             Some(node_ids) => self.indexed_nodes(node_ids),
             None => Box::new(std::iter::empty()),
         }
+    }
+
+    fn path_selection_artifact_nodes<'a>(&'a self) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {
+        self.indexed_nodes(&self.path_selection_artifact_index)
     }
 
     fn path_content_artifact_nodes<'a>(&'a self) -> Box<dyn Iterator<Item = &'a GraphNode> + 'a> {

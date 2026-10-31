@@ -59,6 +59,7 @@ pub struct OverlayGraphRead<'a> {
     overlay_path_fact_node_index: Vec<NodeId>,
     overlay_path_fact_by_concrete_path_index: BTreeMap<String, Vec<NodeId>>,
     overlay_path_content_artifact_index: Vec<NodeId>,
+    overlay_path_selection_artifact_index: Vec<NodeId>,
     overlay_path_content_artifact_by_path_index: BTreeMap<String, Vec<NodeId>>,
     overlay_path_family_by_directory_index: BTreeMap<String, Vec<NodeId>>,
 }
@@ -113,6 +114,7 @@ impl<'a> OverlayGraphRead<'a> {
             overlay_path_fact_node_index: Vec::new(),
             overlay_path_fact_by_concrete_path_index: BTreeMap::new(),
             overlay_path_content_artifact_index: Vec::new(),
+            overlay_path_selection_artifact_index: Vec::new(),
             overlay_path_content_artifact_by_path_index: BTreeMap::new(),
             overlay_path_family_by_directory_index: BTreeMap::new(),
         };
@@ -295,6 +297,10 @@ impl<'a> OverlayGraphRead<'a> {
                     }
                 }
                 NodeKind::ProvenanceArtifact { artifact } => {
+                    if matches!(artifact, ProvenanceArtifact::PathSelectionContent { .. }) {
+                        self.overlay_path_selection_artifact_index
+                            .push(node.id.clone());
+                    }
                     if let ProvenanceArtifact::PathFamily { directory, .. } = artifact {
                         self.overlay_path_content_artifact_index
                             .push(node.id.clone());
@@ -485,6 +491,13 @@ impl GraphRead for OverlayGraphRead<'_> {
                 Some(node_ids) => self.overlay_indexed_nodes(node_ids),
                 None => Box::new(std::iter::empty()),
             },
+        )
+    }
+
+    fn path_selection_artifact_nodes<'b>(&'b self) -> Box<dyn Iterator<Item = &'b GraphNode> + 'b> {
+        self.merge_base_and_overlay_nodes(
+            self.base.path_selection_artifact_nodes(),
+            self.overlay_indexed_nodes(&self.overlay_path_selection_artifact_index),
         )
     }
 

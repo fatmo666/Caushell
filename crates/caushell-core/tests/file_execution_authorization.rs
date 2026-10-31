@@ -236,6 +236,164 @@ fn downloaded_files_keep_tainted_execution_for_every_file_entry() {
 }
 
 #[test]
+fn pipeline_file_execution_uses_the_cwd_of_the_execution_unit() {
+    for (command, path, expected) in [
+        (
+            "cd /tmp/source && ./run | cat",
+            "/tmp/source/run",
+            Decision::Allow,
+        ),
+        (
+            "cat VERSION; cd /outside && ./run 2>&1 | tail -2",
+            "/outside/run",
+            Decision::NeedApproval,
+        ),
+        (
+            "cd /outside && python3 ./run.py | cat",
+            "/outside/run.py",
+            Decision::NeedApproval,
+        ),
+        (
+            "(cd /outside && ./run) 2>&1 | cat",
+            "/outside/run",
+            Decision::NeedApproval,
+        ),
+        (
+            "{ cd /outside && ./run; } 2>&1 | cat",
+            "/outside/run",
+            Decision::NeedApproval,
+        ),
+        (
+            "{ cd /outside; } 2>&1 | cat; ./run",
+            "/workspace/run",
+            Decision::Allow,
+        ),
+    ] {
+        let result = ShellQueryCore::new().check(request(command, 1));
+        let targets: Vec<_> = result
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|fact| fact.operation == PathTargetOperation::ExecuteFile)
+            .collect();
+        assert!(!targets.is_empty(), "{command}: no execution target");
+        assert!(
+            targets
+                .iter()
+                .all(|fact| fact.lexical.concrete_path() == Some(path)),
+            "{command}: {targets:#?}"
+        );
+        assert_eq!(result.decision, expected, "{command}: {:?}", result.reasons);
+    }
+    expect(
+        "cd \"$UNKNOWN\" && ./run 2>&1 | cat",
+        Decision::NeedApproval,
+    );
+    expect("cd /tmp && ./run 2>&1 | cat; rm -rf /", Decision::Deny);
+    expect("rm -rf /; true && value=x >out | cat", Decision::Deny);
+    let mut core = ShellQueryCore::new();
+    assert_eq!(
+        core.check(request(
+            "curl -q -o /tmp/source/run https://example.test/run",
+            1
+        ))
+        .decision,
+        Decision::Allow
+    );
+    let result = core.check(request("cd /tmp/source && ./run 2>&1 | cat", 2));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+    assert!(
+        result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::TaintedExecution)
+    );
+}
+
+#[test]
+fn directory_moves_preserve_descendant_content_origin_without_tainting_other_paths() {
+    let mut core = ShellQueryCore::new();
+    assert_eq!(
+        core.check(request(
+            "curl -q -o /workspace/source/tools/run https://example.test/run",
+            1
+        ))
+        .decision,
+        Decision::Allow
+    );
+    assert_ne!(
+        core.check(request("mv /workspace/source /workspace/renamed", 2))
+            .decision,
+        Decision::Deny
+    );
+    let result = core.check(request(
+        "cd /workspace/renamed && ./tools/run 2>&1 | cat",
+        3,
+    ));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+    assert!(
+        result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::TaintedExecution)
+    );
+    assert_eq!(
+        core.check(request("./other/run", 4)).decision,
+        Decision::Allow
+    );
+    assert_eq!(
+        core.check(request("./renamed-peer/tools/run", 5)).decision,
+        Decision::Allow
+    );
+}
+
+#[test]
+fn redirect_data_cannot_assert_a_successful_cd() {
+    let result =
+        ShellQueryCore::new().check(request("cd /outside && cd /workspace 2>'a&&b'; ./run", 1));
+    let paths: Vec<_> = result
+        .decision_trace
+        .path_targets
+        .iter()
+        .filter(|p| p.operation == PathTargetOperation::ExecuteFile)
+        .filter_map(|p| p.lexical.concrete_path())
+        .collect();
+    assert!(
+        paths.contains(&"/outside/run") && paths.contains(&"/workspace/run"),
+        "{paths:?}"
+    );
+    assert_eq!(result.decision, Decision::NeedApproval);
+}
+
+#[test]
+fn an_unobserved_last_pipeline_mode_cannot_hide_a_possible_cwd_change() {
+    let result = ShellQueryCore::new().check(request("printf x | cd /outside; ./run", 1));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+    assert!(
+        result
+            .decision_trace
+            .path_targets
+            .iter()
+            .any(|p| p.operation == PathTargetOperation::ExecuteFile
+                && p.lexical.concrete_path() == Some("/outside/run"))
+    );
+    expect("cd /outside | cat; ./run", Decision::Allow);
+    expect("printf x | (cd /outside); ./run", Decision::Allow);
+    let background = ShellQueryCore::new().check(request("{ cd /outside && true; } & ./run", 1));
+    assert!(
+        background
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|p| p.operation == PathTargetOperation::ExecuteFile)
+            .all(|p| p.lexical.concrete_path() == Some("/workspace/run")),
+        "{background:#?}"
+    );
+}
+
+#[test]
 fn local_creation_and_downloaded_data_do_not_become_downloaded_code() {
     for entry in ["./code", "python3 ./code", "node ./code"] {
         let mut core = ShellQueryCore::new();

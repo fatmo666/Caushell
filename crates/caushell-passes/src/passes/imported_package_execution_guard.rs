@@ -233,6 +233,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -376,6 +377,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -421,6 +423,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -444,6 +447,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -467,6 +471,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -490,6 +495,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -513,6 +519,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);
@@ -540,6 +547,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(crate::ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
         runner.register_session_analysis_pass(ImportedPackageExecutionGuardPass);

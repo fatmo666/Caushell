@@ -89,23 +89,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_current_working_directory_stages_static_cd_exit() {
-        let summary = SessionSummary::new();
-
-        let ctx = run_pass("cd /", &summary);
-
+    fn extract_current_working_directory_does_not_commit_an_unobserved_cd_result() {
+        let ctx = run_pass("cd /", &SessionSummary::new());
         assert_eq!(
             ctx.request_exit_cwd(),
-            Some(&EffectiveCwd::Known("/".to_string()))
+            Some(&EffectiveCwd::KnownOneOf(vec![
+                "/".into(),
+                "/tmp/project".into()
+            ]))
         );
-        assert_eq!(
-            cwd_mutations(&ctx),
-            vec![&PendingMutation::SetCurrentWorkingDirectory {
-                path: "/".to_string(),
-                observed_at: CommandSequenceNo::new(7),
-                source: caushell_types::SessionCurrentWorkingDirectorySource::StaticAnalysis,
-            }]
-        );
+        assert!(cwd_mutations(&ctx).is_empty());
     }
 
     #[test]

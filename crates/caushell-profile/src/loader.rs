@@ -447,7 +447,7 @@ extensions: {}
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
 
         assert_eq!(profile.primary_name(), "cp");
-        assert_eq!(profile.forms.len(), 12);
+        assert_eq!(profile.forms.len(), 13);
         assert_eq!(
             form_ids,
             vec![
@@ -462,6 +462,7 @@ extensions: {}
                 "default_hard_link",
                 "default_symbolic_link",
                 "default_copy",
+                "ordinary_file_copy",
                 "default_copy_replacing_destination"
             ]
         );
@@ -1098,7 +1099,8 @@ extensions: {}
             .subcommands
             .as_ref()
             .expect("expected pip subcommands to be present");
-        assert_eq!(subcommands.roots.len(), 2);
+        assert!(subcommands.roots.iter().any(|n| n.name == "list"));
+        assert!(subcommands.roots.iter().any(|n| n.name == "config"));
         let install = subcommands
             .roots
             .iter()
