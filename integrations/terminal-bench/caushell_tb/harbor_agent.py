@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import uuid
 from harbor.agents.installed.claude_code import ClaudeCode
+from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from rq3.lifecycle import Lifecycle
 from rq3.mock_model import MockModel
 from .contract import save,sha,validate_container
@@ -20,6 +21,23 @@ from .owned_frames import OwningFrameLifecycle
 class FixtureLedger:
     def reserve_request(self,*args):pass
     def settle(self,*args):pass
+
+
+class NativeAgentFailure(NonZeroAgentExitCodeError):
+    """Use Harbor's recoverable agent-failure path so verification still runs.
+
+    This reports the native session outcome, not an invented OS exit code.
+    """
+
+
+def native_outcome(output):
+    result=output.get('result')
+    present=isinstance(result,dict) and result.get('type')=='result'
+    native=result if isinstance(result,dict) else {}
+    return dict(success=output.get('terminal')=='completed' and present and native.get('is_error') is False,
+                terminal=output.get('terminal'),native_result_present=present,
+                native_is_error=native.get('is_error'),native_subtype=native.get('subtype'),
+                terminal_reason=native.get('terminal_reason'),api_error_status=native.get('api_error_status'))
 
 
 def asset_command(config,name):
@@ -104,6 +122,11 @@ class TaskFaithfulClaude(ClaudeCode):
                 journal.emit('harbor_cancelled_agent');model.stopped.set();output=await worker;output['native_loop_terminal']=output['terminal'];output['terminal']='harbor_cancelled';save(folder/'result.json',output);raise
             save(folder/'result.json',output)
             shutil.copyfile(folder/'claude.stdout.jsonl',self.logs_dir/'claude-code.txt')
+            outcome=native_outcome(output)
+            save(folder/'native-outcome.json',outcome)
+            journal.emit('native_agent_outcome',**outcome)
+            if not outcome['success']:
+                raise NativeAgentFailure('Native session did not complete: '+json.dumps(outcome,sort_keys=True))
         finally:
             cleanup_errors=[]
             try:

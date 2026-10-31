@@ -138,6 +138,19 @@ native stream remains open for completion events and follow-up turns. The origin
 task timeout still bounds the session. Missing completion evidence remains
 unresolved; it is never synthesized as a successful execution.
 
+Native session completion, agent-phase failure, and verifier reward are separate
+outcomes. A native `result` requires `is_error=false` and a completed session;
+the `success` subtype alone does not establish success. The adapter persists
+`control/native-outcome.json` and reports failed or incomplete sessions through
+Harbor's recoverable agent-failure contract. Harbor can then run the original
+verifier and preserve its reward, while the runner exits nonzero for the agent
+failure. A failed shell tool that the agent handles is not itself a failed
+agent session. This does not retry the task or change its execution authorization.
+
+`test_native_agent_outcome.py` exercises the adapter and Harbor's actual trial
+control flow with mocked external boundaries, checking error propagation,
+evidence capture, cleanup, and retained verification without Docker or a model.
+
 `test_background_frames.py` controls callback/capture/authorization order with
 threading events. `test_owned_frames.py` also verifies the early-callback ordering
 with actual Bash bodies held behind the gate, including Allow, receipted Ask,
