@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+opaque_on_unresolved: true
+option_scope: leading_options
 
 identity:
   canonical_name: script
@@ -18,6 +20,20 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: &information
+      kind: any
+      items:
+        - {kind: has_modifier, modifier: help}
+        - {kind: has_modifier, modifier: version}
+    parameters:
+      - name: arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data}
+    extensions: {caushell.form/suppress_modifier_semantics: true}
+
   - id: command_string_default_record
     selector:
       kind: all
@@ -25,6 +41,7 @@ forms:
         - kind: has_modifier
           modifier: command
         - kind: no_positional_args
+        - {kind: not, item: *information}
     effects:
       - kind: write_path
         target: {kind: configured_path, sources: [], default_value: typescript}
@@ -37,8 +54,10 @@ forms:
 
   - id: command_string
     selector:
-      kind: has_modifier
-      modifier: command
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: command}
+        - {kind: not, item: *information}
     parameters:
       - name: output_path
         semantic: {kind: path, role: write, purpose: generic_operand}
@@ -88,6 +107,7 @@ forms:
           item:
             kind: has_modifier
             modifier: command
+        - {kind: not, item: *information}
     parameters:
       - name: output_path
         semantic:

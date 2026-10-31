@@ -41,6 +41,8 @@ pub struct RawCommandProfile {
 #[serde(deny_unknown_fields)]
 pub struct RawDispatchOverride {
     pub subcommand_depth: usize,
+    #[serde(default)]
+    pub subcommand_paths: Vec<Vec<String>>,
     pub first_arguments: Vec<String>,
     pub forms: Vec<RawForm>,
     #[serde(default)]

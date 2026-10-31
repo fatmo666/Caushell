@@ -457,6 +457,19 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     let mut dispatch_overrides = Vec::new();
     let mut override_words = BTreeSet::new();
     for rule in raw.dispatch_overrides {
+        let mut paths = BTreeSet::new();
+        for path in &rule.subcommand_paths {
+            if path.len() != rule.subcommand_depth
+                || path
+                    .iter()
+                    .any(|name| name.is_empty() || name.contains('\0'))
+                || !paths.insert(path)
+            {
+                return Err(NormalizeError::InvalidDispatchOverride(
+                    "subcommand paths must be unique, match the declared depth and contain nonempty, NUL-free names".into(),
+                ));
+            }
+        }
         if subcommands.is_none()
             || option_scope != OptionScopePolicy::LeadingOptions
             || rule.first_arguments.is_empty()
@@ -515,6 +528,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         }
         dispatch_overrides.push(crate::DispatchOverride {
             subcommand_depth: rule.subcommand_depth,
+            subcommand_paths: rule.subcommand_paths,
             first_arguments: rule.first_arguments,
             forms: override_forms,
             modifiers: override_modifiers,

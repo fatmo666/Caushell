@@ -742,7 +742,13 @@ The declaration is not a command-name allowlist or a rule-policy override.
 
 `dispatch_overrides` optionally selects native forms before ordinary subcommand
 dispatch. It requires a subcommand tree and root `option_scope: leading_options`.
-Each rule declares `subcommand_depth`, exact `first_arguments`, and `forms`:
+Each rule declares `subcommand_depth`, exact `first_arguments`, and `forms`.
+Optional `subcommand_paths` restricts a rule to canonical subcommand name paths
+of that depth; omitting it retains the depth-wide rule. Paths must be unique,
+have the declared length and contain nonempty, NUL-free names. This keeps an
+information mode distinct from the same spelling owned by another subcommand.
+For example:
+
 
 ```yaml
 dispatch_overrides:
@@ -2952,11 +2958,14 @@ using this predicate request the extra width query. The cp/mv Profiles use
 positive count proofs to describe native missing-operand calls without
 inventing a copy/move; variable-width globs and batches cannot select them.
 
-Forms may explicitly set the boolean extension
-`caushell.form/suppress_modifier_effects`. It suppresses modifier effects and
-their structured virtual-slot projections through later materialization
-refreshes, but not shell substitutions/redirections or the form's own effects.
-Legacy help-form identifiers remain compatible. Complete concatenated-word
+Forms may explicitly set `caushell.form/suppress_modifier_effects` to suppress
+modifier effects and their structured virtual slots through later refreshes.
+A proven native early-exit form can instead set
+`caushell.form/suppress_modifier_semantics: true`: ownership and original argv
+remain, while modifier operands become plain data instead of file accesses or
+executable payloads. Neither extension suppresses shell substitutions,
+redirections or the form's own effects. Legacy help identifiers retain their
+effects-only compatibility. Complete concatenated-word
 decoding is shared by argv ownership, value projections and recursive payloads:
 quoted program punctuation is data, real brace vectors remain expansions,
 and unhandled/anonymous grammar bytes can never be dropped from a proof.

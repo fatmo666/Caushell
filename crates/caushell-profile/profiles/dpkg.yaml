@@ -14,6 +14,15 @@ platform:
 opaque_on_unresolved: true
 option_scope: permuted_options
 forms:
+- id: installed_file_listing
+  selector: {kind: has_modifier, modifier: list_files}
+  parameters:
+  - name: packages
+    semantic: {kind: plain_value}
+    binding: {kind: remaining_positionals}
+    cardinality: required_many
+  effects: [{kind: read_path, target: {kind: none}}]
+  stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
 - id: package_selection_query
   selector:
     kind: any
@@ -118,6 +127,17 @@ forms:
     stdout_mode: data
     stderr_mode: data
 modifiers:
+- id: list_files
+  matcher: {kind: any_flag, flags: ["-L", "--listfiles"]}
+- id: no_pager
+  matcher: {kind: any_flag, flags: ["--no-pager"]}
+- id: query_pager
+  matcher: {kind: any_flag, flags: ["-L", "--listfiles"]}
+  effects_when: {unless_modifiers: [no_pager]}
+  effects:
+  - kind: open_interactive_escape_surface
+    target: {kind: none}
+    surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}
 - id: architecture_query
   matcher: {kind: any_flag, flags: ["--print-architecture", "--print-foreign-architectures"]}
 - id: selections

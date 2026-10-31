@@ -613,6 +613,18 @@ pub fn bind_invocation(
                 // A suppressed modifier must not regain its effect-bearing
                 // virtual slots during the post-materialization refresh.
                 parameter.structured_projection = None;
+                if selection
+                    .form
+                    .extensions
+                    .get("caushell.form/suppress_modifier_semantics")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                {
+                    // A proven native early-exit mode still owns and audits
+                    // its argv values, but does not access files or evaluate
+                    // payloads named by otherwise operational options.
+                    parameter.semantic = SemanticType::PlainValue;
+                }
             }
             bound.bound_parameters.push(parameter);
         } else if !targets[index].parameter.cardinality.is_optional()
@@ -1205,14 +1217,13 @@ struct SubcommandScan<'p, 'a> {
 fn dispatch_override_forms<'a>(
     profile: &'a CommandProfile,
     projection: &ProjectedInvocation,
-    depth: usize,
+    path: &[String],
     start: usize,
 ) -> Result<Option<&'a crate::DispatchOverride>, BindError> {
-    if !profile
-        .dispatch_overrides
-        .iter()
-        .any(|rule| rule.subcommand_depth == depth)
-    {
+    if !profile.dispatch_overrides.iter().any(|rule| {
+        rule.subcommand_depth == path.len()
+            && (rule.subcommand_paths.is_empty() || rule.subcommand_paths.iter().any(|p| p == path))
+    }) {
         return Ok(None);
     }
     let unresolved = || BindError::IndeterminateDispatch {
@@ -1233,11 +1244,10 @@ fn dispatch_override_forms<'a>(
     if structure.fields != crate::ArgumentFieldCount::ExactlyOne {
         return Err(unresolved());
     }
-    for rule in profile
-        .dispatch_overrides
-        .iter()
-        .filter(|rule| rule.subcommand_depth == depth)
-    {
+    for rule in profile.dispatch_overrides.iter().filter(|rule| {
+        rule.subcommand_depth == path.len()
+            && (rule.subcommand_paths.is_empty() || rule.subcommand_paths.iter().any(|p| p == path))
+    }) {
         if let Some(value) = structure.exact_value() {
             if rule.first_arguments.iter().any(|word| word == value) {
                 return Ok(Some(rule));
@@ -1310,7 +1320,7 @@ fn scan_subcommand_path<'p, 'a>(
         let start = root_options
             .as_ref()
             .map_or(0, |options| options.scope.end_index);
-        match dispatch_override_forms(profile, projection, 0, start) {
+        match dispatch_override_forms(profile, projection, &[], start) {
             Ok(Some(forms)) => {
                 let prefix = scoped_options(
                     profile.option_scope,
@@ -1391,7 +1401,7 @@ fn scan_subcommand_path<'p, 'a>(
         scan_start = index + 1;
 
         let node_scope = ArgumentScope::new(scan_start, projection.args.len());
-        match dispatch_override_forms(profile, projection, path.len(), scan_start) {
+        match dispatch_override_forms(profile, projection, &path, scan_start) {
             Ok(Some(forms)) => {
                 dispatch_override = Some((forms, node_scope));
                 break;
@@ -2446,6 +2456,14 @@ fn preview_form_consumption<'a>(
 }
 
 fn form_suppresses_modifier_effects(form: &Form) -> bool {
+    if form
+        .extensions
+        .get("caushell.form/suppress_modifier_semantics")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
     if let Some(explicit) = form
         .extensions
         .get("caushell.form/suppress_modifier_effects")
@@ -6428,13 +6446,14 @@ mod tests {
             "https://example.test/repo.git"
         );
         assert_eq!(first_argument_text(destination), "./repo");
-        assert_eq!(invocation.effects.len(), 4);
-        assert_eq!(invocation.effects[0].kind, EffectKind::NetworkEndpoint);
-        assert_eq!(invocation.effects[1].kind, EffectKind::WritePath);
-        assert_eq!(invocation.effects[2].kind, EffectKind::LoadConfig);
-        assert_eq!(invocation.effects[3].kind, EffectKind::WritePath);
+        assert_eq!(invocation.effects.len(), 5);
+        assert_eq!(invocation.effects[0].kind, EffectKind::LoadConfig);
+        assert_eq!(invocation.effects[1].kind, EffectKind::NetworkEndpoint);
+        assert_eq!(invocation.effects[2].kind, EffectKind::WritePath);
+        assert_eq!(invocation.effects[3].kind, EffectKind::LoadConfig);
+        assert_eq!(invocation.effects[4].kind, EffectKind::WritePath);
         assert!(matches!(
-            &invocation.effects[3].target,
+            &invocation.effects[4].target,
             EffectTarget::MutationScope(crate::MutationScopeTarget::RepositoryWorktree {
                 root: Some(slot),
                 path_set,
@@ -6443,7 +6462,11 @@ mod tests {
                 && *path_set
                     == caushell_types::RepositoryWorktreePathSet::RegisteredSubmoduleWorktrees
         ));
-        assert!(invocation.residuals.is_empty());
+        assert!(invocation.operation_semantics_unresolved);
+        assert!(invocation.residuals.iter().any(|r| {
+            r.reason
+                .contains("unresolved tool-owned operation semantics")
+        }));
     }
 
     #[test]

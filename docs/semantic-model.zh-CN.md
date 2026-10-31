@@ -485,7 +485,7 @@ cwd 与工作区均为 `/workspace` 时，默认 `pytest tests/` 放行隐含未
 
 ### 可选声明：操作语义未解析
 
-`dispatch_overrides` 可在普通子命令分派前选择原生调用形式，要求声明子命令树及根级 `option_scope: leading_options`。每项包含 `subcommand_depth`、精确匹配的 `first_arguments` 和 `forms`。深度 0 是已解析全局选项后的命令边界，深度 1 是第一级子命令名称之后；匹配先于该节点的选项和后代解析。替代形式绑定当前作用域，此前已解析的祖先 modifier 效果仍保留。选项参数、后续参数及根级 `--` 之后的词不会触发替代形式；参数宽度或首个参数是否匹配无法确定时，沿用 `OpaqueInvocation` 政策。归一化检查同一深度的触发词非空且唯一，并验证普通形式契约。未声明该字段的 Profile 不变。
+`dispatch_overrides` 可在普通子命令分派前选择原生调用形式，要求声明子命令树及根级 `option_scope: leading_options`。每项包含 `subcommand_depth`、精确匹配的 `first_arguments` 和 `forms`。深度 0 是已解析全局选项后的命令边界，深度 1 是第一级子命令名称之后；匹配先于该节点的选项和后代解析。替代形式绑定当前作用域，此前已解析的祖先 modifier 效果仍保留。选项参数、后续参数及根级 `--` 之后的词不会触发替代形式；参数宽度或首个参数是否匹配无法确定时，沿用 `OpaqueInvocation` 政策。可选 `subcommand_paths` 将规则限定到指定的规范子命令名称路径；每条路径须唯一、长度符合深度、名称非空且不含 NUL。省略时仍适用于该深度的所有路径。这样可避免帮助选项覆盖另一子命令中同名参数的原生含义。归一化检查同一深度的触发词非空且唯一，并验证普通形式契约。未声明该字段的 Profile 不变。
 
 Git 用此声明表达根级帮助／版本拼写及第一级 `--help` 重定向，并区分手册查看器、分页列表和直接输出的简短用法。`--no-pager` 关闭 Git 自身的列表分页器，不关闭独立的手册查看器。对应实现见 [Git 分派](https://github.com/git/git/blob/master/git.c)与[帮助模式](https://github.com/git/git/blob/master/builtin/help.c)。
 
@@ -1475,9 +1475,12 @@ Gopher 同时保留 selector 发送和响应来源，回环范围仍由共享传
 触发额外宽度查询。cp/mv 用正向数量证明描述原生缺参调用，不虚构复制／
 移动效果；变长通配符和批次不能命中这些形式。
 
-形式可以用布尔扩展 `caushell.form/suppress_modifier_effects` 显式禁止
-修饰器效果及其结构化虚拟槽，且后续物化刷新不能重新启用它们；形式自身
-的效果和外层 Shell 替换、重定向不受影响。旧帮助形式名称保持兼容。
+形式可用 `caushell.form/suppress_modifier_effects` 显式禁止修饰器效果及其
+结构化虚拟槽，后续物化刷新不能重新启用它们。已证明会提前退出的原生
+信息模式可用 `caushell.form/suppress_modifier_semantics: true`，同时把修饰器
+参数变为普通数据，不再解释为文件访问或代码；选项归属和原始 argv 仍保留。
+两种扩展均不抑制形式自身效果、外层 Shell 替换或重定向。旧帮助形式名称
+继续按仅抑制效果的契约兼容。
 参数归属、值投影和嵌套代码共用完整拼接词解码：引号内程序标点属于数据，
 真正的大括号向量仍按展开处理；不能忽略未处理或匿名语法节点的字节。
 

@@ -2229,6 +2229,8 @@ pub struct CommandProfile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchOverride {
     pub subcommand_depth: usize,
+    /// Empty applies at every path of this depth; entries use canonical names.
+    pub subcommand_paths: Vec<Vec<String>>,
     pub first_arguments: Vec<String>,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,

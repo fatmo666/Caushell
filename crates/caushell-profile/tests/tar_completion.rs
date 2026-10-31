@@ -5,11 +5,15 @@ use caushell_types::ShellKind;
 
 fn resolve(command: &str) -> BoundInvocation {
     let parsed = parse_command(command, ShellKind::Bash).unwrap();
+    let mut bindings = SessionBindings::new();
+    // The fixture observes an empty child environment; omitted evidence is
+    // intentionally insufficient to certify the absence of TAR_OPTIONS.
+    bindings.reset_child_environment(true);
     match resolve_invocation_with_bindings(
         &ProfileRegistry::built_in().unwrap(),
         &parsed.commands[0],
         InvocationRuntimeContext::default(),
-        &SessionBindings::new(),
+        &bindings,
     ) {
         ResolveInvocationResult::Resolved(r) => {
             assert!(

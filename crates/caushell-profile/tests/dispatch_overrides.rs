@@ -173,9 +173,56 @@ fn invalid_declarations_are_rejected() {
         ),
         PROFILE.replacen("subcommand_depth: 1", "subcommand_depth: 0", 1),
         PROFILE.replacen("first_arguments: [--inspect]", "first_arguments: ['']", 1),
+        PROFILE.replacen(
+            "subcommand_depth: 1",
+            "subcommand_depth: 1\n    subcommand_paths: [[edit, child]]",
+            1,
+        ),
+        PROFILE.replacen(
+            "subcommand_depth: 1",
+            "subcommand_depth: 1\n    subcommand_paths: [[edit], [edit]]",
+            1,
+        ),
     ] {
         assert!(load_command_profile_from_str(&source).is_err());
     }
+}
+
+#[test]
+fn modes_can_be_scoped_to_canonical_subcommand_paths() {
+    let source = PROFILE.replacen(
+        "subcommand_depth: 1",
+        "subcommand_depth: 1\n    subcommand_paths: [[edit]]",
+        1,
+    );
+    let registry =
+        ProfileRegistry::from_profiles(vec![load_command_profile_from_str(&source).unwrap()])
+            .unwrap();
+    for command in [
+        "arbitrary-tool edit --inspect",
+        "arbitrary-tool change --inspect",
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let ResolveInvocationResult::Resolved(result) = resolve_invocation(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+        ) else {
+            panic!("{command}")
+        };
+        assert_eq!(result.bound.form_id.as_str(), "inspect_child");
+    }
+    let source = source.replace(
+        "subcommand_paths: [[edit]]",
+        "subcommand_paths: [[another]]",
+    );
+    let registry =
+        ProfileRegistry::from_profiles(vec![load_command_profile_from_str(&source).unwrap()])
+            .unwrap();
+    let parsed = parse_command("arbitrary-tool edit --inspect", ShellKind::Bash).unwrap();
+    assert!(
+        !matches!(resolve_invocation(&registry, &parsed.commands[0], InvocationRuntimeContext::new()), ResolveInvocationResult::Resolved(r) if r.bound.form_id.as_str() == "inspect_child")
+    );
 }
 
 #[test]
