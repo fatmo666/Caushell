@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+opaque_on_unresolved: true
 
 identity:
   canonical_name: seq
@@ -18,10 +19,40 @@ platform:
   requires_features: []
 
 forms:
+  # Fixed-point integer operands and the native newline separator produce
+  # decimal arithmetic text. Do not borrow this contract for custom formats,
+  # floating-point spellings, unknown controls, or arbitrarily large inputs.
+  - id: integer_sequence
+    selector: &integer_sequence
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: format}}
+        - {kind: has_positional_at_matching, index: 0, matcher: &integer {kind: regex_pattern, pattern: '^[0-9]{1,9}$'}}
+        - kind: any
+          items:
+            - {kind: exact_positional_count, count: 1}
+            - kind: all
+              items:
+                - {kind: exact_positional_count, count: 2}
+                - {kind: has_positional_at_matching, index: 1, matcher: *integer}
+            - kind: all
+              items:
+                - {kind: exact_positional_count, count: 3}
+                - {kind: has_positional_at_matching, index: 1, matcher: *integer}
+                - {kind: has_positional_at_matching, index: 2, matcher: *integer}
+    parameters:
+      - name: sequence_values
+        semantic: {kind: structured_value, context: numeric_quantity}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+    remaining_selector: {kind: no_positional_args}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    stdout_scalar: arithmetic_text
+    effects: [{kind: transform_data, target: {kind: none}}]
   - id: generate_sequence
     selector:
-      kind: all
-      items: []
+      kind: not
+      item: *integer_sequence
     parameters:
       - name: sequence_values
         semantic:

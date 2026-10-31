@@ -6,6 +6,90 @@ use caushell_profile::{
 };
 use caushell_types::{PathResolution, RuntimeArgumentDomain};
 
+/// A proof about every possible member, independent of the path-domain
+/// approximation below. PathSet roots are anchors, not exact scalar values.
+pub(super) fn numeric_iteration(
+    iteration: &ForLoopFact,
+    bindings: &SessionBindings,
+    registry: Option<&caushell_profile::ProfileRegistry>,
+    shell_kind: caushell_types::ShellKind,
+) -> bool {
+    const MAX_ITEMS: usize = 256;
+    let Some(items) = &iteration.items else {
+        return bindings.positional_parameters_are_complete()
+            && !bindings.positional_parameters().is_empty()
+            && bindings.positional_parameters().len() <= MAX_ITEMS
+            && bindings
+                .positional_parameters()
+                .iter()
+                .all(|value| match value {
+                    SessionValue::ExactScalar(value)
+                    | SessionValue::RuntimeProduced { value, .. } => {
+                        super::variable_facts::arithmetic_text(value)
+                    }
+                    _ => false,
+                });
+    };
+    if items.is_empty() || items.len() > MAX_ITEMS {
+        return false;
+    }
+    let projection = iteration_projection(items, shell_kind);
+    let materialized = materialize_projected_invocation(&projection, bindings);
+    if !materialized.shell_expansion_unresolved
+        && !materialized.invocation.args.is_empty()
+        && materialized.invocation.args.len() <= MAX_ITEMS
+        && materialized.invocation.args.iter().all(|arg| {
+            caushell_profile::argument_structure(arg)
+                .exact_value()
+                .is_some_and(super::variable_facts::arithmetic_text)
+        })
+    {
+        return true;
+    }
+    // Reuse registered stdout/assignment contracts. This proves an output
+    // alphabet, never a producer's value, iteration count, or successful exit.
+    items.iter().all(|item| {
+        let value = caushell_parse::AssignmentValueFact {
+            text: item.text.clone(),
+            quoted: item.quoted,
+            node_kind: item.node_kind.clone(),
+            span: item.span.clone(),
+            command_substitutions: item.command_substitutions.clone(),
+        };
+        super::variable_facts::assignment(&value, bindings, registry, shell_kind).scalar_shape
+            == Some(caushell_profile::StdoutScalarShape::ArithmeticText)
+    })
+}
+
+fn iteration_projection(
+    items: &[caushell_parse::CommandToken],
+    shell_kind: caushell_types::ShellKind,
+) -> ProjectedInvocation {
+    ProjectedInvocation {
+        shell_kind,
+        option_prefixes: Default::default(),
+        command_name: None,
+        stdin_payload_available: false,
+        interactive_session: false,
+        args: items
+            .iter()
+            .map(|item| ProjectedArg {
+                word_context: Default::default(),
+                text: item.text.clone(),
+                quoted: item.quoted,
+                node_kind: item.node_kind.clone(),
+                span: item.span.clone(),
+                kind: ProjectedArgKind::Positional,
+                implicit_input_source: item.implicit_input_source,
+                runtime_argument_domain: item.runtime_argument_domain.clone(),
+                runtime_data: item.runtime_data,
+                substitution_shape: None,
+                lexical_field_prefix: None,
+            })
+            .collect(),
+    }
+}
+
 pub(super) fn iteration_domain(
     iteration: &ForLoopFact,
     bindings: &SessionBindings,
@@ -33,29 +117,7 @@ pub(super) fn iteration_domain(
     if items.len() > MAX_ITEMS {
         return None;
     }
-    let projection = ProjectedInvocation {
-        shell_kind,
-        option_prefixes: Default::default(),
-        command_name: None,
-        stdin_payload_available: false,
-        interactive_session: false,
-        args: items
-            .iter()
-            .map(|item| ProjectedArg {
-                word_context: Default::default(),
-                text: item.text.clone(),
-                quoted: item.quoted,
-                node_kind: item.node_kind.clone(),
-                span: item.span.clone(),
-                kind: ProjectedArgKind::Positional,
-                implicit_input_source: item.implicit_input_source,
-                runtime_argument_domain: item.runtime_argument_domain.clone(),
-                runtime_data: item.runtime_data,
-                substitution_shape: None,
-                lexical_field_prefix: None,
-            })
-            .collect(),
-    };
+    let projection = iteration_projection(items, shell_kind);
     let materialized = materialize_projected_invocation(&projection, bindings);
     if materialized.shell_expansion_unresolved {
         return None;

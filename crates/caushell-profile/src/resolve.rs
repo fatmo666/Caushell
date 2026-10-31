@@ -14317,7 +14317,7 @@ mod tests {
             (
                 "seq 1 10",
                 "seq",
-                "generate_sequence",
+                "integer_sequence",
                 &[EffectKind::TransformData],
             ),
             (

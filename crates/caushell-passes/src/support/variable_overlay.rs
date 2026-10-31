@@ -178,6 +178,12 @@ pub(super) fn apply_variable_overlay(
                     continue;
                 }
                 assigned.insert(iteration.variable.clone());
+                let numeric = super::loop_overlay::numeric_iteration(
+                    iteration,
+                    &bindings,
+                    registry,
+                    parsed.shell_kind,
+                );
                 let domain =
                     super::loop_overlay::iteration_domain(iteration, &bindings, parsed.shell_kind);
                 if let Some(domain) = domain {
@@ -186,6 +192,15 @@ pub(super) fn apply_variable_overlay(
                     bindings.insert_opaque_dynamic(
                         &iteration.variable,
                         "unresolved shell iteration list",
+                    );
+                }
+                if numeric {
+                    bindings.set_variable_facts(
+                        &iteration.variable,
+                        caushell_profile::ShellVariableFacts {
+                            scalar_shape: Some(caushell_profile::StdoutScalarShape::ArithmeticText),
+                            ..Default::default()
+                        },
                     );
                 }
             }
