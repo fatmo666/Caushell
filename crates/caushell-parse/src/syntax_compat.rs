@@ -14,6 +14,7 @@ pub(crate) fn project(
     // AST-qualified boundaries independently of the error flag. Both retries
     // and separator edits are bounded; residual gaps become Partial below.
     let mut boundary_budget = 256;
+    let mut arithmetic_budget = 256;
     for _ in 0..8 {
         let bytes = projected.as_deref().unwrap_or(source);
         let mut edits: Vec<_> = crate::command_boundary::separators(tree.root_node(), bytes)
@@ -23,7 +24,7 @@ pub(crate) fn project(
             .collect();
         boundary_budget -= edits.len();
         if tree.root_node().has_error() {
-            collect(tree.root_node(), bytes, &mut edits);
+            collect(tree.root_node(), bytes, &mut edits, &mut arithmetic_budget);
         }
         if edits.is_empty() {
             break;
@@ -41,9 +42,26 @@ pub(crate) fn project(
     Ok((tree, projected))
 }
 
-fn collect(node: Node<'_>, bytes: &[u8], edits: &mut Vec<(usize, u8)>) {
+fn collect(node: Node<'_>, bytes: &[u8], edits: &mut Vec<(usize, u8)>, budget: &mut usize) {
     if !node.has_error() {
         return;
+    }
+    if node.kind() == "c_style_for_statement" {
+        for field in ["initializer", "condition", "update"] {
+            let mut cursor = node.walk();
+            for expression in node.children_by_field_name(field, &mut cursor) {
+                if expression.has_error()
+                    && let Some(tokens) = arithmetic_projection(
+                        expression.start_byte(),
+                        expression.end_byte(),
+                        bytes,
+                        budget,
+                    )
+                {
+                    edits.extend(tokens);
+                }
+            }
+        }
     }
     if node.kind() == "expansion"
         && bytes.get(node.start_byte()..node.start_byte() + 2) == Some(b"${")
@@ -81,6 +99,17 @@ fn collect(node: Node<'_>, bytes: &[u8], edits: &mut Vec<(usize, u8)>) {
         let children: Vec<_> = (0..node.child_count())
             .filter_map(|i| node.child(i as u32))
             .collect();
+        // With a ternary inside a function the grammar can recover the entire
+        // function as ERROR. Only its own `for` and `((` tokens admit header
+        // recovery; word/string/heredoc contents cannot introduce such tokens.
+        for pair in children.windows(2) {
+            if pair[0].kind() == "for"
+                && pair[1].kind() == "(("
+                && let Some(tokens) = recovered_for_header(pair[1].end_byte(), bytes, budget)
+            {
+                edits.extend(tokens);
+            }
+        }
         for pair in children.windows(2) {
             let [keyword, variable] = pair else {
                 unreachable!()
@@ -107,6 +136,101 @@ fn collect(node: Node<'_>, bytes: &[u8], edits: &mut Vec<(usize, u8)>) {
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect(child, bytes, edits);
+        collect(child, bytes, edits, budget);
     }
+}
+
+/// The pinned C-style-for grammar lacks ternaries, although its independent
+/// shell-arithmetic grammar recognizes them. Validate the whole original field
+/// there before projecting only its ternary punctuation to same-width binary
+/// operators. Facts and later arithmetic analysis still use original bytes;
+/// strings, substitutions, branch payloads and source coordinates are retained.
+fn arithmetic_projection(
+    start: usize,
+    end: usize,
+    bytes: &[u8],
+    budget: &mut usize,
+) -> Option<Vec<(usize, u8)>> {
+    *budget = budget.checked_sub(1)?;
+    let original = bytes.get(start..end)?;
+    if original.len() > 8192 {
+        return None;
+    }
+    let mut source = b"(( ".to_vec();
+    source.extend_from_slice(original);
+    source.extend_from_slice(b" ))");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_bash::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    if root.has_error()
+        || root.named_child_count() != 1
+        || root.named_child(0)?.kind() != "compound_statement"
+    {
+        return None;
+    }
+    let mut pending = vec![root];
+    let mut edits = Vec::new();
+    let mut node_budget = 512usize;
+    while let Some(node) = pending.pop() {
+        node_budget = node_budget.checked_sub(1)?;
+        if node.kind() == "ternary_expression" {
+            for i in 0..node.child_count() {
+                let token = node.child(i as u32)?;
+                if matches!(token.kind(), "?" | ":") {
+                    let index = token.start_byte().checked_sub(3)?;
+                    if index >= original.len() {
+                        return None;
+                    }
+                    edits.push((start + index, b'+'));
+                }
+            }
+        }
+        // A nested substitution has its own shell grammar and control flow.
+        // Only punctuation owned by this arithmetic field is projected here.
+        if node.kind() != "command_substitution" {
+            pending
+                .extend((0..node.named_child_count()).filter_map(|i| node.named_child(i as u32)));
+        }
+    }
+    Some(edits)
+}
+
+fn recovered_for_header(
+    start: usize,
+    bytes: &[u8],
+    budget: &mut usize,
+) -> Option<Vec<(usize, u8)>> {
+    // Delimiter candidates are validated by the independent arithmetic grammar.
+    // A semicolon or close pair inside a string/substitution cannot truncate a
+    // complete arithmetic field. No submitted text is evaluated or removed.
+    let end = start.saturating_add(8192).min(bytes.len());
+    let mut field_start = start;
+    let mut edits = Vec::new();
+    for field in 0..3 {
+        let delimiter = if field < 2 {
+            b";".as_slice()
+        } else {
+            b"))".as_slice()
+        };
+        let mut selected = None;
+        for at in field_start..end {
+            if bytes.get(at..at + delimiter.len()) != Some(delimiter) {
+                continue;
+            }
+            if let Some(tokens) = arithmetic_projection(field_start, at, bytes, budget) {
+                selected = Some((at + delimiter.len(), tokens));
+                break;
+            }
+            if *budget == 0 {
+                return None;
+            }
+        }
+        let (next, tokens) = selected?;
+        field_start = next;
+        edits.extend(tokens);
+    }
+    (!edits.is_empty()).then_some(edits)
 }
