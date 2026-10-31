@@ -87,4 +87,52 @@ class OwningFrameTests(unittest.TestCase):
         values={v['name']:v['value'] for v in facts[0]['environment']}
         self.assertEqual(values['HOME'],dict(status='absent'))
 
+    def test_early_background_callback_cannot_run_real_bash_before_check_and_approval(self):
+        for order in ('before_frame','during_check'):
+            for decision,policy in [('allow','approve'),('need_approval','approve'),
+                                    ('deny','approve'),('need_approval','reject')]:
+                with self.subTest(order=order,decision=decision,policy=policy), tempfile.TemporaryDirectory() as tmp:
+                    root=Path(tmp);integration=Path(__file__).resolve().parents[1]
+                    for name,source in [('owning-frame.bash',integration/'owning-frame.bash'),('capture.bash',integration.parent/'execution-frame/capture.bash')]:shutil.copy2(source,root/name)
+                    check_entered,check_release=threading.Event(),threading.Event()
+                    approval_entered,approval_release=threading.Event(),threading.Event()
+                    class PausedEngine(Engine):
+                        def check_observed(self,*args,**kwargs):
+                            check_entered.set()
+                            if not check_release.wait(5):raise TimeoutError('Check fixture not released')
+                            return super().check_observed(*args,**kwargs)
+                        def authorize(self,*args,**kwargs):
+                            approval_entered.set()
+                            if not approval_release.wait(5):raise TimeoutError('Approval fixture not released')
+                            return super().authorize(*args,**kwargs)
+                    journal=BufferedJournal(root/'events.jsonl');engine=PausedEngine(decision)
+                    life=OwningFrameLifecycle('s',journal,engine,str(root/'owning-frame.bash'),[BINARY],approval_policy=policy,address=('127.0.0.1',0),public_host='127.0.0.1')
+                    process=None
+                    try:
+                        payload=dict(session_id='s',tool_name='Bash',cwd=str(root),tool_input=dict(command='printf authorized > marker',run_in_background=True))
+                        wrapped=life.before('tool',payload)['hookSpecificOutput']['updatedInput']
+                        life.approve('tool','Bash',wrapped)
+                        post=dict(payload,tool_input=wrapped,tool_response=dict(backgroundTaskId='bg-tool'))
+                        if order=='before_frame':life.after('tool',post)
+                        process=subprocess.Popen(['/bin/bash','--noprofile','--norc','-c',wrapped['command']],cwd=root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                        self.assertTrue(check_entered.wait(3))
+                        if order=='during_check':life.after('tool',post)
+                        self.assertFalse((root/'marker').exists())
+                        self.assertFalse(engine.authorizations)
+                        check_release.set()
+                        if decision=='need_approval':
+                            self.assertTrue(approval_entered.wait(3))
+                            self.assertFalse((root/'marker').exists())
+                            approval_release.set()
+                        out,err=process.communicate(timeout=5)
+                        allowed=decision=='allow' or (decision=='need_approval' and policy=='approve')
+                        self.assertEqual(process.returncode==0,allowed,err)
+                        self.assertEqual((root/'marker').exists(),allowed)
+                        life.observe_native(dict(type='system',subtype='task_notification',session_id='s',tool_use_id='tool',task_id='bg-tool',status='completed' if allowed else 'failed'))
+                        self.assertEqual(life.actions['tool']['status'],'executed' if allowed else 'denied' if decision=='deny' else 'rejected')
+                    finally:
+                        check_release.set();approval_release.set()
+                        if process and process.poll() is None:process.kill();process.communicate(timeout=3)
+                        life.close();journal.close()
+
 if __name__=='__main__':unittest.main()
