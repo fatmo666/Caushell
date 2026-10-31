@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: time
@@ -36,6 +38,8 @@ forms:
                 flag: "--help"
               - kind: has_flag
                 flag: "--version"
+    remaining_selector:
+      kind: no_positional_args
     parameters:
       - name: wrapped_command
         semantic:

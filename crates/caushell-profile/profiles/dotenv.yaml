@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
 
 identity:
   canonical_name: dotenv
@@ -207,6 +209,7 @@ subcommands:
   roots:
     - name: run
       aliases: []
+      option_scope: leading_options
       forms:
         - id: run_named_env_file
           selector:

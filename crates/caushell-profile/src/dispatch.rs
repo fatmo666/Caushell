@@ -1263,6 +1263,127 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_argument_ownership_keeps_the_complete_child_tail() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "time",
+                "time child -v error -i input -f fmt -o child.out -p data",
+                &[
+                    "-v",
+                    "error",
+                    "-i",
+                    "input",
+                    "-f",
+                    "fmt",
+                    "-o",
+                    "child.out",
+                    "-p",
+                    "data",
+                ],
+            ),
+            (
+                "time",
+                "/usr/bin/time -f '%E %U' -o /tmp/timing.log -- child --help --format '%s' --output target -v -- -q",
+                &[
+                    "--help", "--format", "%s", "--output", "target", "-v", "--", "-q",
+                ],
+            ),
+            (
+                "time",
+                "/usr/bin/time --format=%E --output=/tmp/timing.log -- child --format=child --output=target -- --help",
+                &["--format=child", "--output=target", "--", "--help"],
+            ),
+            (
+                "time",
+                "time -f '' child '' 'two words' --help",
+                &["", "two words", "--help"],
+            ),
+            ("command", "command child -v -V -p", &["-v", "-V", "-p"]),
+            (
+                "command",
+                "command -p -- child -p --help",
+                &["-p", "--help"],
+            ),
+            (
+                "exec",
+                "exec -a visible-name child -a child-name -c -l",
+                &["-a", "child-name", "-c", "-l"],
+            ),
+            ("exec", "exec -- child -- -c", &["--", "-c"]),
+            (
+                "nohup",
+                "nohup child --help --version -n 2",
+                &["--help", "--version", "-n", "2"],
+            ),
+            (
+                "stdbuf",
+                "stdbuf -oL child -o child.out -i child.in -e child.err --help",
+                &[
+                    "-o",
+                    "child.out",
+                    "-i",
+                    "child.in",
+                    "-e",
+                    "child.err",
+                    "--help",
+                ],
+            ),
+            (
+                "dotenv",
+                "dotenv -f /tmp/local.env run -- child --help -f child.env -- --keep",
+                &["--help", "-f", "child.env", "--", "--keep"],
+            ),
+            (
+                "dotenv",
+                "dotenv run child --help -f child.env -- --keep",
+                &["--help", "-f", "child.env", "--", "--keep"],
+            ),
+        ];
+        for (name, command, expected) in cases {
+            let invocation = bind_first_command(&built_in_profile(name), command);
+            let candidates = collect_dispatch_command_candidates(&invocation);
+            assert_eq!(candidates.len(), 1, "{command}: {invocation:?}");
+            assert_eq!(candidates[0].command.text, "child", "{command}");
+            assert_eq!(
+                candidates[0]
+                    .argv
+                    .iter()
+                    .map(|a| a.text.as_str())
+                    .collect::<Vec<_>>(),
+                *expected,
+                "{command}"
+            );
+            assert!(
+                invocation.residuals.is_empty(),
+                "{command}: {:?}",
+                invocation.residuals
+            );
+        }
+    }
+
+    #[test]
+    fn wrapper_argument_ownership_does_not_turn_child_options_into_parent_effects() {
+        let invocation = bind_first_command(
+            &built_in_profile("time"),
+            "time -f '%E' -o /tmp/timing.log child -o /outside/child.out -f child-format",
+        );
+        assert_eq!(
+            first_argument_text(&invocation, "output_path"),
+            "/tmp/timing.log"
+        );
+        assert_eq!(first_argument_text(&invocation, "format_string"), "%E");
+        let candidates = collect_dispatch_command_candidates(&invocation);
+        assert_eq!(
+            candidates[0]
+                .argv
+                .iter()
+                .map(|a| a.text.as_str())
+                .collect::<Vec<_>>(),
+            ["-o", "/outside/child.out", "-f", "child-format"]
+        );
+    }
+
+    #[test]
     fn collects_dispatch_environment_overlay_separately_from_child_argv() {
         let invocation = bind_first_command(
             &built_in_profile("env"),

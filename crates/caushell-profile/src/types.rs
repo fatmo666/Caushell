@@ -679,6 +679,8 @@ pub enum BindingSpec {
     RemainingPositionals,
     RemainingPositionalsAfterDashDash,
     RemainingPositionalsBeforeLast,
+    /// All still-unowned argv words in the binding scope, in source order.
+    /// Previously bound options/operands do not advance a positional cursor.
     RemainingArgs,
     ArgsUntilLiteral {
         terminator: String,

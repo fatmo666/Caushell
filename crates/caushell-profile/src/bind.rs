@@ -4079,19 +4079,12 @@ impl<'p, 'm> BindingState<'p, 'm> {
         scope: ArgumentScope,
         value_constraints: &[ValueConstraint],
     ) -> Vec<BoundValue> {
-        let start_index = self
-            .consumed
-            .iter()
-            .enumerate()
-            .take(scope.end_index)
-            .skip(scope.start_index)
-            .filter_map(|(index, consumed)| consumed.then_some(index + 1))
-            .max()
-            .unwrap_or(scope.start_index);
-
         let mut values = Vec::new();
 
-        for index in start_index..scope.end_index {
+        // Option operands are bound before positional parameters and can occur
+        // later in argv. Consumption is ownership, not a monotonic cursor:
+        // every unowned argument in this scope must survive in original order.
+        for index in scope.start_index..scope.end_index {
             if self.consumed[index] {
                 continue;
             }
@@ -5519,7 +5512,8 @@ mod tests {
         ModifierConstraint, ModifierId, Parameter, PathPurpose, PathRole, PathSemantic,
         PayloadLanguage, PayloadSemantic, PayloadSource, PositionalBindingSource, SelectorExpr,
         SelectorPredicate, SemanticType, StructuredValueContext, SubcommandNode, SubcommandTree,
-        ValueMatcher, load_command_profile_from_path, project_invocation,
+        ValueMatcher, load_command_profile_from_path, load_command_profile_from_str,
+        project_invocation,
     };
 
     fn built_in_profile(name: &str) -> CommandProfile {
@@ -7332,6 +7326,49 @@ mod tests {
             }
         )));
         assert!(invocation.residuals.is_empty());
+    }
+
+    #[test]
+    fn remaining_argument_ownership_keeps_inputs_before_later_flag_operands() {
+        let profile = load_command_profile_from_str(r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: collectlike}
+option_scope: permuted_options
+forms:
+  - id: collect
+    parameters:
+      - {name: inputs, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_many}
+modifiers:
+  - id: output
+    matcher: {kind: any_flag, flags: [--output]}
+    parameters:
+      - {name: output, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+"#).unwrap();
+        for command in [
+            "collectlike first --output archive second",
+            "collectlike --output archive first second",
+        ] {
+            let artifact = parse_command(command, ShellKind::Bash).unwrap();
+            let projection =
+                project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
+            let selection = select_invocation(&profile, &projection).unwrap();
+            let invocation = bind_invocation(&profile, &projection, &selection);
+            assert_eq!(
+                argument_texts(find_bound_parameter(&invocation, "inputs")),
+                ["first", "second"],
+                "{command}"
+            );
+            assert_eq!(
+                first_argument_text(find_bound_parameter(&invocation, "output")),
+                "archive"
+            );
+            assert!(
+                invocation.residuals.is_empty(),
+                "{command}: {:?}",
+                invocation.residuals
+            );
+        }
     }
 
     #[test]
