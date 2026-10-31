@@ -1455,6 +1455,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/uv.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "pypi-server",
+        content: include_str!("../profiles/pypi-server.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "uvicorn",
         content: include_str!("../profiles/uvicorn.yaml"),
     },
