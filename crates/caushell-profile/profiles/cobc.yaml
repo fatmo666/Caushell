@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: permuted_options
+exact_option_words: ['-free', '-fixed', '-frelax-syntax-checks', '-O0', '-O2', '-O3', '-Os', '-Wall', '-Wextra']
 opaque_on_unresolved: true
 identity:
   canonical_name: cobc
@@ -15,6 +16,67 @@ platform:
   - macos
   shell_families: []
   requires_features: []
+environment_inputs:
+  - name: compiler_command
+    environment: {name: COB_CC, empty_is_unset: true}
+    require_observation: true
+    semantic: &native_control {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+    unless_modifiers: [information]
+  - name: compiler_flags
+    environment: {name: COB_CFLAGS, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: linker_flags
+    environment: {name: COB_LDFLAGS, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: debug_flags
+    environment: {name: COB_DEBUG_FLAGS, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: libraries
+    environment: {name: COB_LIBS, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: additional_libraries
+    environment: {name: COB_LDADD, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: library_paths
+    environment: {name: COB_LIB_PATHS, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: config_directory
+    environment: {name: COB_CONFIG_DIR, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: copy_directories
+    environment: {name: COBCPY, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: temporary_directory
+    environment: {name: TMPDIR, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: temporary_directory_tmp
+    environment: {name: TMP, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
+  - name: temporary_directory_temp
+    environment: {name: TEMP, empty_is_unset: true}
+    require_observation: true
+    semantic: *native_control
+    unless_modifiers: [information]
 forms:
 - id: show_help
   selector:
@@ -27,7 +89,9 @@ forms:
     binding:
       kind: remaining_args
     cardinality: optional_many
+  extensions: {caushell.form/suppress_modifier_effects: true}
 - id: compile_and_run
+  operation_semantics_unresolved: true
   selector:
     kind: all
     items:
@@ -71,6 +135,22 @@ forms:
   - kind: write_path
     target:
       kind: none
+- id: compile_to_explicit_output
+  selector:
+    kind: all
+    items:
+    - {kind: has_positional_at, index: 0}
+    - {kind: has_flag, flag: '-x'}
+    - {kind: lacks_flag, flag: '-j'}
+    - {kind: has_modifier, modifier: output_path}
+    - {kind: not, item: {kind: has_modifier, modifier: information}}
+  parameters:
+  - name: source_paths
+    semantic: {kind: path, role: read, purpose: generic_operand}
+    binding: {kind: remaining_positionals}
+    cardinality: required_many
+    value_constraints: [{kind: require_match, pattern: '^[A-Za-z0-9_./+][A-Za-z0-9_./+:-]*$'}]
+  effects: [{kind: read_path, target: {kind: slot, name: source_paths}}]
 - id: compile_without_run
   selector:
     kind: all
@@ -81,6 +161,7 @@ forms:
         index: 0
       - kind: lacks_flag
         flag: "-j"
+    - {kind: not, item: {kind: has_modifier, modifier: output_path}}
     - kind: not
       item:
         kind: has_modifier
@@ -103,29 +184,64 @@ forms:
     target:
       kind: none
 modifiers:
+- id: output_path
+  matcher: {kind: any_flag, flags: ['-o']}
+  parameters:
+  - name: output_path
+    semantic: {kind: plain_value}
+    binding: {kind: following_matched_flag, operand_mode: next_arg}
+    cardinality: required_many
+    value_constraints: [{kind: require_match, pattern: '^[A-Za-z0-9_./+][A-Za-z0-9_./+:-]*$'}]
+  effects:
+  - kind: write_path
+    namespace_effect: regular_file_write
+    target:
+      kind: configured_path
+      sources: [{slot: output_path, projection: {kind: identity}}]
+      missing: unknown
 - id: executable_mode
   matcher:
     kind: any_flag
     flags:
     - "-x"
     - "-F"
-    - "-j"
+    - "-free"
+    - "--free"
+    - "-fixed"
+    - "--fixed"
+- id: job
+  matcher: {kind: any_flag, flags: ['-j']}
+  parameters:
+  - name: job_arguments
+    semantic: {kind: plain_value}
+    binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}
+    cardinality: optional_many
 - id: relaxed_syntax
   matcher:
     kind: any_flag
     flags:
     - "--frelax-syntax-checks"
+    - "-frelax-syntax-checks"
+- id: compile_switches
+  matcher: {kind: any_flag, flags: ['-g', '-O0', '-O2', '-O3', '-Os', '-Wall', '-Wextra', '-w']}
 - id: information
   matcher:
     kind: any_flag
     flags:
     - "--help"
+    - "-h"
+    - "--version"
+    - "-V"
   ends_option_scope: true
 subcommands:
 extensions:
   caushell.profile/source_research:
   - https://gtfobins.org/gtfobins/cobc/
+  - https://gnucobol.sourceforge.io/doc/gnucobol.html
+  - https://github.com/OCamlPro/gnucobol/blob/gitside-gnucobol-3.x/cobc/cobc.c
   caushell.profile/known_limitations:
   - The COBOL source is read and compiled. Upstream -j runs the generated program,
     whose COBOL SYSTEM callback is executable but whose runtime child argv is not
     represented.
+  - Explicit -x executable compilation models ordinary source reads and the last -o output through existing path effects. Native toolchain controls require supplied environment observations; nonempty overrides remain opaque, never parsed as Bash. Module compilation without -x can append a platform suffix and is not covered by the exact-output contract.
+  - GnuCOBOL invokes the C compiler through a command string. The bounded complete route accepts only conservative scalar filename bytes; whitespace, shell metacharacters, unknown values and unmodeled forwarding/configuration options remain Ask. Default implicit outputs and compile-and-run remain unresolved.

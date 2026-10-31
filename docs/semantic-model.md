@@ -2833,6 +2833,18 @@ remains distinct from a supplied value. Prefix assignments retain their data
 identity, and information modifiers may explicitly bypass controls they do not
 use. This is a Profile contract, not authorization or an ambient environment read.
 
+GnuCOBOL's `cobc` uses this observation contract for native toolchain and temporary
+directory controls. Its bounded complete compilation form requires `-x`, explicit
+`-o`, conservative scalar filename bytes and proven default controls. Source reads
+and the last output operand use existing path effects and policy; they add no
+permissions. Information queries suppress compile effects. `-j` retains its
+optional attached operand and unresolved generated-program execution. Implicit
+outputs, module suffix selection, forwarding options, nonempty overrides and
+unproven filename bytes retain Ask. No COBOL or generated C body is analyzed.
+This boundary follows the [native compiler implementation](https://github.com/OCamlPro/gnucobol/blob/gitside-gnucobol-3.x/cobc/cobc.c),
+including its command-string compiler invocation and replacement of earlier `-o`
+values; the Profile never interprets those native data values as Bash.
+
 Configured path anchors may supply `environment` and `default_value` fallbacks
 after their declared argv slot and optional parent slot. A provided unknown
 anchor does not fall back to a known default. The GNU mktemp contract uses this

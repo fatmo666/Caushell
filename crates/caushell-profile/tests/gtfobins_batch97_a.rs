@@ -184,8 +184,15 @@ fn pinned_source_forms_bind_to_the_expected_native_input() {
             expected_form,
             "{name}: {command}: {bound:#?}"
         );
-        assert!(
-            !bound.operation_semantics_unresolved,
+        let profile = load_command_profile_from_str(source).unwrap();
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let projected = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+        let declared_uncertainty = select_invocation(&profile, &projected)
+            .unwrap()
+            .form
+            .operation_semantics_unresolved;
+        assert_eq!(
+            bound.operation_semantics_unresolved, declared_uncertainty,
             "{name}: {command}: {bound:#?}"
         );
         assert!(!bound.effects.is_empty(), "{name}: {command}");
