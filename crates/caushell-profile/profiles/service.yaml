@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+option_scope: leading_options
 identity:
   canonical_name: service
   aliases: []
@@ -57,8 +58,8 @@ forms:
     - kind: not
       item: {kind: has_modifier, modifier: information}
   parameters:
-  - {name: service_name, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
-  - {name: action, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: required_one}
+  - {name: service_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+  - {name: action, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
   effects:
   - kind: state_operation
     state_operation: {domain: service_manager, operation: inspect}
@@ -75,8 +76,8 @@ forms:
     - kind: not
       item: {kind: has_modifier, modifier: information}
   parameters:
-  - {name: service_name, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
-  - {name: action, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 1}, cardinality: required_one}
+  - {name: service_name, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+  - {name: action, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
   - {name: service_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
   effects:
   - kind: state_operation
