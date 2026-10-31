@@ -20,10 +20,18 @@ forms:
     selector:
       kind: all
       items:
-        - &not_information {kind: not, item: {kind: has_modifier, modifier: information}}
-        - &not_update {kind: not, item: {kind: has_modifier, modifier: legacy_update}}
-        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: run}}
-    parameters:
+        - &native_run
+          kind: all
+          items:
+            - &not_information {kind: not, item: {kind: has_modifier, modifier: information}}
+            - &not_update {kind: not, item: {kind: has_modifier, modifier: legacy_update}}
+            - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: run}}
+        - &no_auth_route
+          kind: not
+          item: &auth_route
+            kind: any
+            items: [{kind: has_modifier, modifier: authentication}, {kind: has_modifier, modifier: passwords}, {kind: has_modifier, modifier: overwrite}]
+    parameters: &run_parameters
       - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: require_match, pattern: '^run$'}]}
       - &roots {name: package_directories, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
     effects: &serve
@@ -38,13 +46,26 @@ forms:
     selector:
       kind: all
       items:
-        - *not_information
-        - *not_update
-        # Modern subcommands with preceding global options and native legacy
-        # fallback ambiguities are deliberately not guessed to be directories.
-        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(run|update)$'}}}
-        # The native legacy adapter scans raw argv for -U, including after --.
-        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-U'}}}
+        - &legacy_run
+          kind: all
+          items:
+            - *not_information
+            - *not_update
+            # Ambiguous global-option/subcommand fallback is not guessed.
+            - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(run|update)$'}}}
+            # The native legacy adapter scans raw argv for -U, even after --.
+            - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-U'}}}
+        - *no_auth_route
+    parameters: [*roots]
+    effects: *serve
+  - id: run_with_unresolved_auth_route
+    selector: {kind: all, items: [*native_run, *auth_route]}
+    operation_semantics_unresolved: true
+    parameters: *run_parameters
+    effects: *serve
+  - id: legacy_run_with_unresolved_auth_route
+    selector: {kind: all, items: [*legacy_run, *auth_route]}
+    operation_semantics_unresolved: true
     parameters: [*roots]
     effects: *serve
 
@@ -67,8 +88,8 @@ modifiers:
   - id: log_file
     matcher: {kind: any_flag, flags: ['--log-file']}
     parameters:
-      - {name: log_file, semantic: {kind: path, role: write, purpose: generic_operand}, binding: *following, cardinality: required_many}
-    effects: [{kind: write_path, target: {kind: slot, name: log_file}}]
+      - {name: log_file, semantic: *plain, binding: *following, cardinality: required_many}
+    effects: [{kind: write_path, target: {kind: configured_path, sources: [{slot: log_file, projection: {kind: identity}}], missing: skip}}]
   - id: welcome
     matcher: {kind: any_flag, flags: ['--welcome']}
     parameters:
@@ -88,6 +109,14 @@ modifiers:
     matcher: {kind: any_flag, flags: ['--log-stream']}
     parameters:
       - {name: log_stream, semantic: *plain, binding: *following, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '(?i)^(stdout|stderr|none)$'}]}
+  - id: authentication
+    matcher: {kind: any_flag, flags: ['-a', '--authenticate']}
+    parameters: [{name: authenticate_actions, semantic: *plain, binding: *following, cardinality: required_many}]
+  - id: passwords
+    matcher: {kind: any_flag, flags: ['-P', '--passwords']}
+    parameters: [{name: passwords, semantic: {kind: path, role: read, purpose: generic_operand}, binding: *following, cardinality: required_many}]
+    effects: [{kind: read_path, target: {kind: slot, name: passwords}}]
+  - {id: overwrite, matcher: {kind: any_flag, flags: ['-o', '--overwrite']}}
   - id: data_options
     matcher: {kind: any_flag, flags: ['--log-frmt', '--log-req-frmt', '--log-res-frmt', '--log-err-frmt', '--fallback-url', '--health-endpoint', '--cache-control', '--server-base-url', '--hash-algo']}
     parameters: [{name: data_values, semantic: *plain, binding: *following, cardinality: required_many}]
@@ -101,5 +130,5 @@ extensions:
   caushell.profile/scope:
     - Declares native run and unambiguous legacy startup through the existing listener effect. Explicit arguments precede literal defaults, repeated scalar options use their last owned operand, and hostnames/dynamic addresses are never resolved with DNS or the guard's environment.
     - Package directories are read targets, not listener permission or ownership. Loopback only exempts the listener rule; logging paths, startup uncertainty, independent mutations and Deny findings remain separate.
-    - The supported default authentication route has no password file and rejects updates. Authentication/password/overwrite options remain unresolved because they can enable upload/removal routes. Update mode and adapters with unmodeled executable configuration also remain Ask.
+    - The supported default authentication route has no password file and rejects updates. Authentication/password/overwrite operands are owned, but the upload/removal route remains explicitly unresolved; its known listener is retained. Update mode and adapters with unmodeled executable configuration also remain Ask.
     - Help/version does not start a listener or initialize a log file. Option-looking operands stay with their native option. Incomplete grammar, abbreviations and ambiguous global-option/subcommand fallback are not silently completed.

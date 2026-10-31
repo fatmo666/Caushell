@@ -109,6 +109,8 @@ fn complete_information_suppresses_startup_effects_and_unmodeled_adapters_do_not
     for command in [
         "pypi-server run --server gunicorn /workspace/packages",
         "pypi-server run --port 65536 /workspace/packages",
+        "pypi-server run -a . -P . /workspace/packages",
+        "pypi-server -P /workspace/credentials /workspace/packages",
     ] {
         let b = resolve(SOURCE, command);
         assert!(b.operation_semantics_unresolved, "{command}: {b:#?}");

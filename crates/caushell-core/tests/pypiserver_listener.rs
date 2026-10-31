@@ -107,6 +107,17 @@ fn explicit_loopback_and_native_host_aliases_do_not_gain_other_authority() {
             .iter()
             .any(|p| p.operation == PathTargetOperation::Write)
     );
+    let r = check(
+        "pypi-server run --host 127.0.0.1; rm /workspace/obsolete",
+        Decision::NeedApproval,
+    );
+    assert!(!exposure(&r));
+    assert!(
+        r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::FileDeletion)
+    );
 }
 
 #[test]
@@ -230,15 +241,13 @@ fn listener_overrides_and_partial_analysis_preserve_independent_denies() {
         RuleId::NetworkListenerExposure,
         RulePolicyEntry::new(RuleAction::Deny),
     );
-    let r = ShellQueryCore::with_policy(policy).check(request(
+    for command in [
         "pypi-server run --server gunicorn /workspace/packages",
-    ));
-    assert_eq!(
-        r.decision,
-        Decision::Deny,
-        "{:?}; semantics: {:?}",
-        r.reasons,
-        r.decision_trace.execution_semantics
-    );
-    assert!(exposure(&r));
+        "pypi-server run -a . -P . /workspace/packages",
+        "pypi-server -P /workspace/credentials /workspace/packages",
+    ] {
+        let r = ShellQueryCore::with_policy(policy.clone()).check(request(command));
+        assert_eq!(r.decision, Decision::Deny, "{command}: {:?}", r.reasons);
+        assert!(exposure(&r));
+    }
 }
