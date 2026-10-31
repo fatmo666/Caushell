@@ -1444,6 +1444,8 @@ pub struct EnvironmentInput {
     pub name: SlotName,
     pub environment: EnvironmentValueSource,
     pub semantic: SemanticType,
+    /// An unobserved native control is unresolved, not an absent default.
+    pub require_observation: bool,
     pub structured_projection: Option<StructuredProjection>,
     pub unless_modifiers: Vec<ModifierId>,
 }

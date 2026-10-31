@@ -2826,6 +2826,13 @@ module-loading options; Facter treats explicit `FACTERLIB` as a Ruby loader,
 not merely a directory read. No Perl/Ruby decoder or host environment probe is
 introduced.
 
+A native control may opt into `require_observation: true`. For that input,
+unavailable environment evidence records unresolved operation semantics rather
+than assuming the native default. An observed absence or declared empty reset
+remains distinct from a supplied value. Prefix assignments retain their data
+identity, and information modifiers may explicitly bypass controls they do not
+use. This is a Profile contract, not authorization or an ambient environment read.
+
 Configured path anchors may supply `environment` and `default_value` fallbacks
 after their declared argv slot and optional parent slot. A provided unknown
 anchor does not fall back to a known default. The GNU mktemp contract uses this

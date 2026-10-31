@@ -226,6 +226,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
             name: parameter.name,
             environment: normalize_environment_source(input.environment)?,
             semantic: parameter.semantic,
+            require_observation: input.require_observation,
             structured_projection: parameter.structured_projection,
             unless_modifiers: input
                 .unless_modifiers
@@ -3083,7 +3084,9 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
             && match effect {
                 caushell_types::PathNamespaceEffect::RegularFileWrite => matches!(
                     target,
-                    EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
+                    EffectTarget::Slot(_)
+                        | EffectTarget::ToolConventionPath(_)
+                        | EffectTarget::ConfiguredPath(_)
                 ),
                 caushell_types::PathNamespaceEffect::DirectoryTreeWrite => {
                     matches!(target, EffectTarget::ConfiguredPath(_))

@@ -57,6 +57,8 @@ pub struct RawEnvironmentInput {
     pub environment: RawEnvironmentValueSource,
     pub semantic: RawSemanticType,
     #[serde(default)]
+    pub require_observation: bool,
+    #[serde(default)]
     pub structured_projection: Option<RawStructuredProjection>,
     #[serde(default)]
     pub unless_modifiers: Vec<String>,

@@ -10,6 +10,15 @@ fn namespace_contract_is_opt_in_and_exclusive_to_single_file_writes() {
     )
     .unwrap();
     assert!(old.forms[0].effects[0].namespace_effect.is_none());
+    let configured = source.replace(
+        "target: {kind: slot, name: destination}",
+        "target: {kind: configured_path, sources: [{slot: destination, projection: {kind: identity}}], missing: unknown}",
+    );
+    assert!(
+        load_command_profile_from_str(&configured).unwrap().forms[0].effects[0]
+            .namespace_effect
+            .is_some()
+    );
     for invalid in [
         source.replace(
             "kind: write_path, namespace_effect:",

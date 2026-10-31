@@ -58,7 +58,21 @@ pub(crate) fn attach(
             // loader policy. Explicit unknown values are Present(Opaque/Runtime).
             match bindings.environment_value(&input.environment.name) {
                 EnvironmentValueRef::Present(value) => value,
-                EnvironmentValueRef::Absent | EnvironmentValueRef::Unknown => continue,
+                EnvironmentValueRef::Absent => continue,
+                EnvironmentValueRef::Unknown => {
+                    if input.require_observation {
+                        bound.operation_semantics_unresolved = true;
+                        bound.residuals.push(crate::Residual::new(
+                            crate::ResidualKind::UnboundControlSurface,
+                            crate::ResidualSurface::Control,
+                            format!(
+                                "{} native environment control is not observed",
+                                input.environment.name
+                            ),
+                        ));
+                    }
+                    continue;
+                }
             }
         };
         let value = match value {
