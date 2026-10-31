@@ -157,6 +157,21 @@ independent. Commands without a state-operation candidate return before
 the state guard queries the Graph; candidate queries cover the current action,
 not a scan of all session history.
 
+Native service frontends use the same contract: `postfix`, `postmulti` and
+`mailman` declare `service_manager` operations through Profiles. Start/stop and
+reload operations are control; Postfix `check` can create missing directories
+and is maintenance, not inspection. Status/list operations retain inspection
+facts separately from unresolved configured helper/initialization routes.
+Those routes remain opaque, including when a configuration path is local.
+Neither a service name, instance selection, configuration directory nor
+`--run-as-root` creates a resource grant. Explicit `postmulti -x` child argv is
+analyzed with an unproved manager context rather than borrowed caller facts;
+independent child Deny findings survive. Instance destruction retains unknown
+deletion targets. Unrecognized syntax retains uncertainty and identified
+operation effects, so it cannot erase a known control Deny. No service is
+queried or started to produce these facts, and unknown-command policy is not
+changed globally.
+
 `connection_verification` describes explicit connection peer-verification
 overrides, not persistent host configuration. Disabling verification is a
 `control` operation, handled by the existing state guard. curl declares direct,

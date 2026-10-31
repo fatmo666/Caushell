@@ -173,3 +173,178 @@ fn partial_service_analysis_does_not_erase_independent_or_explicit_denies() {
         );
     }
 }
+
+#[test]
+fn adjacent_manager_entries_share_the_service_state_contract() {
+    for (command, name) in [
+        ("postmulti -p start", "postfix"),
+        ("postmulti -a -p reload", "postfix"),
+        ("postmulti -i example -p stop", "postfix"),
+        ("postmulti -g group -p flush", "postfix"),
+        ("mailman start", "mailman"),
+        ("mailman stop", "mailman"),
+        ("mailman restart", "mailman"),
+        ("mailman --run-as-root start", "mailman"),
+        ("mailman -C /workspace/mailman.cfg restart", "mailman"),
+        (
+            "mailman --config=/tmp/mailman.cfg --run-as-root stop",
+            "mailman",
+        ),
+        ("service example start --help", "service"),
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(
+            has_operation(&response, name, StateOperationKind::Control),
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+    for command in [
+        "postmulti -e init",
+        "postmulti -I postfix-test -e create",
+        "postmulti -i example -e disable",
+        "mailman info",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(
+            response.decision_trace.execution_semantics.iter().any(|f| f
+                .state_operations
+                .iter()
+                .any(|op| op.domain == StateOperationDomain::ServiceManager
+                    && op.operation == StateOperationKind::Mutate)),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn configured_queries_are_inspection_with_separate_unresolved_initialization() {
+    for (command, name) in [("postmulti -l", "postmulti"), ("mailman status", "mailman")] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert!(has_operation(&response, name, StateOperationKind::Inspect));
+        assert!(!has_operation(&response, name, StateOperationKind::Control));
+        assert!(has_operation(&response, name, StateOperationKind::Opaque));
+        assert_eq!(response.decision, Decision::NeedApproval);
+    }
+    for command in [
+        "postmulti -p -x start",
+        "postmulti -e",
+        "postmulti -x",
+        "postmulti -p",
+        "postmulti --unknown",
+        "postmulti -i /workspace/instance -p start",
+        "mailman -C",
+        "mailman --unknown start",
+        "mailman shell",
+        "mailman start --unknown",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+}
+
+#[test]
+fn explicit_child_denies_and_partial_control_denies_survive_manager_wrappers() {
+    for command in [
+        "postmulti -x rm -rf /",
+        "postmulti -i example -x sh -c 'rm -rf /'",
+        "postmulti -x sh -c 'rm -rf /' --help",
+        "mailman --unknown start; rm -rf /",
+        "mailman -C \"$(rm -rf /)\" start",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::Deny,
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+    let mut policy = PolicyConfig::default();
+    policy
+        .rule_policy
+        .rules
+        .insert(RuleId::StateControl, RulePolicyEntry::new(RuleAction::Deny));
+    for command in [
+        "postmulti -p start",
+        "postmulti -p start --unknown",
+        "mailman start",
+        "mailman start --unknown",
+        "service example start --help",
+    ] {
+        let response = ShellQueryCore::with_policy(policy.clone()).check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::Deny,
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+}
+
+#[test]
+fn manager_context_and_instance_names_are_not_caller_facts_or_deletion_grants() {
+    let command =
+        "queue_directory=/workspace postmulti -x sh -c 'printf x > \"$queue_directory/out\"'";
+    let response = ShellQueryCore::new().check(request(command));
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(!response.decision_trace.path_targets.iter().any(|p|
+        p.operation == PathTargetOperation::Write && matches!(&p.resolution,
+            SemanticResolution::Resolved { value: PathResolution::Concrete { path } } if path == "/workspace/out")));
+    assert!(
+        response
+            .decision_trace
+            .path_targets
+            .iter()
+            .any(|p| p.operation == PathTargetOperation::Write
+                && matches!(&p.resolution, SemanticResolution::Unresolved { .. }))
+    );
+    let mut policy = PolicyConfig::default();
+    policy.rule_policy.families.insert(
+        RuleFamily::StateSafety,
+        FamilyPolicy {
+            action: RuleAction::Observe,
+            trust_sets: vec![],
+        },
+    );
+    let response = ShellQueryCore::with_policy(policy)
+        .check(request("postmulti -i /workspace/instance -e destroy"));
+    assert_eq!(
+        response.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        response.reasons
+    );
+    assert!(
+        response
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::FileDeletion)
+    );
+    assert!(
+        response
+            .decision_trace
+            .path_targets
+            .iter()
+            .any(|p| p.operation == PathTargetOperation::Delete
+                && !matches!(&p.resolution, SemanticResolution::Resolved { .. }))
+    );
+}

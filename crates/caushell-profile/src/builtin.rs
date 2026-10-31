@@ -247,6 +247,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/postfix.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "postmulti",
+        content: include_str!("../profiles/postmulti.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mailman",
+        content: include_str!("../profiles/mailman.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "snap",
         content: include_str!("../profiles/snap.yaml"),
     },

@@ -1,0 +1,82 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: postmulti, aliases: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+selection_failure_effects:
+  - &configured_instances {kind: state_operation, state_operation: {domain: service_manager, operation: opaque}, target: {kind: none}}
+forms:
+  - id: postfix_command
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: postfix_mode}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: command_mode}, {kind: has_modifier, modifier: edit_mode}, {kind: has_modifier, modifier: list_mode}]}}
+    parameters:
+      - {name: postfix_argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_many}
+    effects:
+      - *configured_instances
+      - {kind: dispatch_command, target: {kind: dispatch, command_literal: postfix, argv: [postfix_argv], unknown_environment: true, stdin_from_parent: true, stdout_to_parent: true}}
+  - id: explicit_command
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: command_mode}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: postfix_mode}, {kind: has_modifier, modifier: edit_mode}, {kind: has_modifier, modifier: list_mode}]}}
+    parameters:
+      - {name: command, semantic: {kind: command_ref, dispatch: wrapper_command}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - *configured_instances
+      # The configured per-instance context is not a captured caller frame.
+      - {kind: set_execution_working_directory, target: {kind: configured_path, sources: [], missing: unknown}}
+      - {kind: dispatch_command, target: {kind: dispatch, command: command, argv: [argv], unknown_environment: true, stdin_from_parent: true, stdout_to_parent: true}}
+  - id: destroy_instance
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier_parameter_matching, modifier: edit_mode, parameter: action, matcher: {kind: literal, value: destroy}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: postfix_mode}, {kind: has_modifier, modifier: command_mode}, {kind: has_modifier, modifier: list_mode}]}}
+    effects:
+      - &mutate {kind: state_operation, state_operation: {domain: service_manager, operation: mutate}, target: {kind: none}}
+      - *configured_instances
+      - {kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown}}
+  - id: edit_instances
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier_parameter_matching, modifier: edit_mode, parameter: action, matcher: {kind: regex_pattern, pattern: '^(init|create|import|deport|enable|disable|assign)$'}}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: postfix_mode}, {kind: has_modifier, modifier: command_mode}, {kind: has_modifier, modifier: list_mode}]}}
+    parameters:
+      - {name: settings, semantic: {kind: structured_value, context: env_assignment}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [*mutate, *configured_instances]
+  - id: list_instances
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: list_mode}
+        - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: postfix_mode}, {kind: has_modifier, modifier: command_mode}, {kind: has_modifier, modifier: edit_mode}]}}
+    effects:
+      - {kind: state_operation, state_operation: {domain: service_manager, operation: inspect}, target: {kind: none}}
+      - *configured_instances
+modifiers:
+  - {id: postfix_mode, matcher: {kind: any_flag, flags: ['-p']}}
+  - {id: command_mode, matcher: {kind: any_flag, flags: ['-x']}}
+  - {id: list_mode, matcher: {kind: any_flag, flags: ['-l']}}
+  - id: edit_mode
+    matcher: {kind: any_flag, flags: ['-e']}
+    parameters: [{name: action, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+  - id: instance_selection
+    matcher: {kind: any_flag, flags: ['-i', '-g', '-I', '-G']}
+    parameters: [{name: instance_names, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  - {id: switches, matcher: {kind: any_flag, flags: ['-a', '-R', '-v', '-j']}}
+extensions:
+  caushell.profile/sources:
+    - https://www.postfix.org/postmulti.1.html
+    - https://raw.githubusercontent.com/vdukhovni/postfix/master/postfix/man/man1/postmulti.1
+  caushell.profile/scope:
+    - Models distinct list, edit, Postfix-wrapper and explicit-command modes. Instance names and configuration locations are not ownership or authorization grants.
+    - Configured instance discovery and generated environments remain opaque. Explicit child argv retains independent effects and Deny findings, without borrowing a caller environment or an unproved per-instance cwd.
+    - Destroy retains an unknown deletion target; the Profile does not fabricate a root path or discover instance contents. Unknown or conflicting modes remain Ask.

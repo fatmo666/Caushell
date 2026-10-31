@@ -1,0 +1,49 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: mailman, aliases: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+selection_failure_effects:
+  - &configuration_initialization {kind: state_operation, state_operation: {domain: service_manager, operation: opaque}, target: {kind: none}}
+forms:
+  - id: control_service
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(start|stop|restart)$'}}
+    parameters:
+      - &operation {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: state_operation, state_operation: {domain: service_manager, operation: control}, target: {kind: none}}
+      - *configuration_initialization
+  - id: inspect_status
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: status}}
+    parameters: [*operation]
+    effects:
+      - {kind: state_operation, state_operation: {domain: service_manager, operation: inspect}, target: {kind: none}}
+      - *configuration_initialization
+  - id: initialize_and_report
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: info}}
+    parameters: [*operation]
+    effects:
+      # The first info invocation can initialize files/directories and a DB.
+      - {kind: state_operation, state_operation: {domain: service_manager, operation: mutate}, target: {kind: none}}
+      - *configuration_initialization
+modifiers:
+  - id: configuration
+    matcher: {kind: any_flag, flags: ['-C', '--config']}
+    parameters: [{name: configuration_file, semantic: {kind: path, role: read, purpose: tool_config}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    effects:
+      - {kind: read_path, target: {kind: slot, name: configuration_file}}
+      - {kind: load_config, target: {kind: slot, name: configuration_file}}
+  - {id: run_as_root, matcher: {kind: any_flag, flags: ['--run-as-root']}}
+extensions:
+  caushell.profile/sources:
+    - https://docs.mailman3.org/projects/mailman/en/latest/src/mailman/commands/docs/control.html
+    - https://docs.mailman3.org/projects/mailman/en/latest/src/mailman/commands/docs/status.html
+    - https://docs.mailman3.org/en/latest/install/virtualenv.html
+    - https://docs.mailman3.org/projects/mailman/en/latest/src/mailman/config/docs/config.html
+    - https://gitlab.com/mailman/mailman/-/raw/master/src/mailman/bin/mailman.py
+  caushell.profile/scope:
+    - Uses the same typed service-manager control effects as other native managers. --run-as-root disables Mailman's refusal to run as root; it is not resource authorization.
+    - Configuration search, eager initialization, database setup and plugin command loading remain opaque, including for status and unknown subcommands. No Python body or configuration is executed or read to guess effects.
+    - Unknown subcommand options retain the identified operation and residual uncertainty. No PID, daemon state, default configuration or installation path is invented.
