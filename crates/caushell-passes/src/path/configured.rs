@@ -56,6 +56,14 @@ fn expand_path_text(
     expand_user: bool,
     home: Option<&str>,
 ) -> Result<String, PathResolution> {
+    // Empty tool configuration is not evidence for the caller's directory.
+    // Native tools differ (error, default, or literal empty prefix); none of
+    // those meanings can be supplied by generic lexical normalization.
+    if text.is_empty() {
+        return Err(unknown(
+            "empty configured path has no declared path semantics",
+        ));
+    }
     if expand_environment && contains_environment_reference(text) {
         return Err(unknown(format!(
             "tool environment expansion is unresolved: {text}"
@@ -398,6 +406,34 @@ modifiers:
                 .unwrap()
                 .implicit_incidental_cache
         );
+    }
+
+    #[test]
+    fn empty_explicit_paths_and_relative_anchors_never_become_cwd_or_defaults() {
+        let (bound, mut target) = bound("configured-tool --output '' --ini path=/work/fallback");
+        target.default_value = Some("/work/default".into());
+        let untouched = bound.clone();
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
+        assert!(matches!(
+            path.resolution,
+            PathResolution::UnsupportedDynamicText { .. }
+        ));
+        assert!(!path.implicit_incidental_cache);
+        assert_eq!(bound, untouched);
+        target.sources.clear();
+        target.default_value = Some("child".into());
+        target.relative_to = Some(caushell_profile::ConfiguredPathAnchor {
+            slot: caushell_profile::SlotName::new("output"),
+            expand_environment: false,
+            fallback_parent_slot: None,
+            environment: None,
+            default_value: Some("/work/default-anchor".into()),
+        });
+        let path = resolve_configured_path(&bound, &target, "/work", None, None).unwrap();
+        assert!(matches!(
+            path.resolution,
+            PathResolution::UnsupportedDynamicText { .. }
+        ));
     }
 
     #[test]
