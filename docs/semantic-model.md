@@ -1170,6 +1170,28 @@ Source: [Uvicorn CLI](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f8
 [server startup](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/server.py),
 [socket binding](https://github.com/Kludex/uvicorn/blob/724f82fdba1765fe5f821a3ebed6da5c1ddcb386/uvicorn/config.py).
 
+`pypi-server` declares the same generic listener effect for explicit `run` and
+unambiguous legacy startup, including the `python -m pypiserver` entrypoint.
+Its native default is `0.0.0.0:8080`; `-i`, `-H`, `--interface` and `--host`
+provide the address. Repeated scalar options use the last owned operand. Package
+directories are read targets, never ownership or permission to expose a socket.
+Only a proven numeric loopback address exempts the listener rule. Unknown
+addresses, incomplete operands and unsupported native routes retain approval;
+no DNS, socket or host-environment probe is performed.
+
+Help/version exits before startup logging and has no listener effect. An
+option-looking hostname, log filename or formatting value cannot become help.
+Logging remains an independent filesystem write, with the last explicit log
+filename selected by the existing configured-path contract. Welcome content is
+read as data. Authentication/password/overwrite options preserve the listener
+but explicitly leave upload/removal behavior unresolved; local binding does not
+authorize those routes. Update mode, ambiguous global-option/subcommand legacy
+fallback and adapters with unmodeled executable configuration remain Ask. This
+is a Profile contract, with no command-name cases in core or listener policy.
+
+Source: [pypiserver CLI and configuration](https://github.com/pypiserver/pypiserver/blob/v2.4.2/pypiserver/config.py),
+[native entrypoint](https://github.com/pypiserver/pypiserver/blob/v2.4.2/pypiserver/__main__.py).
+
 ## Environment preparation and `uv`
 
 The `uv` Profile retains both wrapper preparation and child execution. `uv run`
