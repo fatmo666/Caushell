@@ -827,6 +827,95 @@ subcommands:
         caushell.profile/known_limitations:
           - HTTP headers inherited from Git configuration are not represented by the current profile effect model.
 
+    - name: bundle
+      aliases: []
+      forms: []
+      modifiers: []
+      children:
+        - name: list-heads
+          aliases: []
+          option_scope: leading_options
+          forms:
+            - id: inspect_bundle_refs
+              selector: {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+              parameters:
+                - {name: bundle, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+                - {name: refs, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+              effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: bundle}}]
+              stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
+            - id: inspect_bundle_refs_stdin
+              selector: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+              parameters:
+                - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: require_match, pattern: '^-$'}]}
+                - {name: refs, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+              stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: verify
+          aliases: []
+          option_scope: leading_options
+          forms:
+            - id: verify_bundle
+              selector: {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+              parameters:
+                - {name: bundle, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+              remaining_selector: {kind: no_positional_args}
+              effects:
+                - {kind: read_path, path_access: content_open, target: {kind: slot, name: bundle}}
+                - {kind: load_config, target: {kind: tool_convention_path, path: .git/config, convention: git.local_config, purpose: tool_config}}
+              stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
+            - id: verify_bundle_stdin
+              selector: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}
+              parameters:
+                - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: require_match, pattern: '^-$'}]}
+              remaining_selector: {kind: no_positional_args}
+              effects: [{kind: load_config, target: {kind: tool_convention_path, path: .git/config, convention: git.local_config, purpose: tool_config}}]
+              stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
+          modifiers: [{id: quiet, matcher: {kind: any_flag, flags: ["-q", "--quiet"]}}]
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: ls-tree
+      aliases: []
+      option_scope: permuted_options
+      forms:
+        - id: inspect_tree
+          parameters:
+            - {name: tree, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+            - {name: tree_paths, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: &read_repository_metadata
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git, convention: git.repository_metadata, purpose: generic_operand}}
+            - {kind: load_config, target: {kind: tool_convention_path, path: .git/config, convention: git.local_config, purpose: tool_config}}
+          stream_contract: &repository_query_streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs}
+      modifiers:
+        - {id: tree_modes, matcher: {kind: any_flag, flags: ["-r", "-t", "-d", "-l", "--long", "-z", "--name-only", "--name-status", "--full-name", "--full-tree"]}}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: rev-list
+      aliases: []
+      option_scope: permuted_options
+      forms:
+        - id: inspect_revision_list
+          parameters:
+            - {name: revisions, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+          effects: *read_repository_metadata
+          stream_contract: *repository_query_streams
+      modifiers:
+        - {id: revision_modes, matcher: {kind: any_flag, flags: ["--all", "--count", "--objects", "--parents", "--children", "--reverse", "--first-parent", "--no-merges", "--merges", "--topo-order", "--date-order"]}}
+        - id: revision_count
+          matcher: {kind: any_flag, flags: ["-n", "--max-count"]}
+          parameters: [{name: count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
     - name: describe
       aliases: []
       option_scope: leading_options
@@ -854,6 +943,7 @@ subcommands:
       extensions: {}
 
     - name: status
+      option_scope: permuted_options
       aliases: []
       forms:
         - id: inspect_worktree_status
@@ -881,7 +971,11 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
-      modifiers: []
+      modifiers:
+        - {id: status_output, matcher: {kind: any_flag, flags: ["--short", "-s", "--branch", "-b", "--show-stash", "-z"]}}
+        - id: porcelain
+          matcher: {kind: any_flag, flags: ["--porcelain"]}
+          parameters: [{name: version, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_one}]
       children: []
       default_behavior: reject_unknown
       extensions: {}
@@ -981,11 +1075,13 @@ subcommands:
           - Without an explicit -- separator, git diff positionals are left as plain revision args to avoid misclassifying commit names or blobs as filesystem paths.
 
     - name: log
+      option_scope: permuted_options
       aliases: [whatchanged]
       forms:
-        - id: inspect_history_pathspecs
+        - id: inspect_history_pathspecs_no_pager
           selector:
-            kind: has_dash_dash
+            kind: all
+            items: [{kind: has_dash_dash}, {kind: has_modifier, modifier: no_pager}]
           parameters:
             - name: pathspecs
               semantic:
@@ -1008,9 +1104,10 @@ subcommands:
               target:
                 kind: none
 
-        - id: inspect_history
+        - id: inspect_history_no_pager
           selector:
-            kind: no_dash_dash
+            kind: all
+            items: [{kind: no_dash_dash}, {kind: has_modifier, modifier: no_pager}]
           parameters:
             - name: revision_args
               semantic:
@@ -1026,12 +1123,66 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
-      modifiers: []
+        - id: inspect_history_pathspecs
+          selector:
+            kind: all
+            items: [{kind: has_dash_dash}, {kind: not, item: {kind: has_modifier, modifier: no_pager}}]
+          parameters:
+            - name: pathspecs
+              semantic:
+                kind: path
+                role: read
+                purpose: generic_operand
+              binding:
+                kind: remaining_positionals_after_dash_dash
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: read_path
+              target:
+                kind: slot
+                name: pathspecs
+            - kind: transform_data
+              target:
+                kind: none
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+
+        - id: inspect_history
+          selector:
+            kind: all
+            items: [{kind: no_dash_dash}, {kind: not, item: {kind: has_modifier, modifier: no_pager}}]
+          parameters:
+            - name: revision_args
+              semantic:
+                kind: plain_value
+              binding:
+                kind: remaining_args
+              cardinality: optional_many
+          stream_contract:
+            stdin_mode: ignored
+            stdout_mode: data
+            stderr_mode: opaque
+          effects:
+            - kind: transform_data
+              target:
+                kind: none
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+      modifiers:
+        - {id: history_modes, matcher: {kind: any_flag, flags: ["--oneline", "--all", "--no-decorate"]}}
+        # Native -<number> is a read-only count spelling; every digit must be owned.
+        - {id: history_count_digits, matcher: {kind: any_flag, flags: ["-0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"]}}
+        - id: history_count
+          matcher: {kind: any_flag, flags: ["-n", "--max-count"]}
+          parameters: [{name: count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
       children: []
       default_behavior: reject_unknown
       extensions: {}
 
     - name: grep
+      option_scope: permuted_options
       aliases: []
       forms:
         - id: search_repository
@@ -1043,7 +1194,8 @@ subcommands:
             - {kind: read_path, target: {kind: slot, name: pathspecs}}
             - {kind: transform_data, target: {kind: none}}
           stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
-      modifiers: []
+      modifiers:
+        - {id: search_modes, matcher: {kind: any_flag, flags: ["-n", "--line-number", "-P", "--perl-regexp", "-E", "--extended-regexp", "-G", "--basic-regexp", "-F", "--fixed-strings", "-h", "--no-filename", "-i", "--ignore-case", "-v", "--invert-match"]}}
       children: []
       default_behavior: reject_unknown
       extensions: {}
@@ -5266,7 +5418,15 @@ subcommands:
       default_behavior: reject_unknown
       extensions: {}
 extensions:
+  caushell.profile/sources:
+    - https://git-scm.com/docs/git-bundle
+    - https://git-scm.com/docs/git-ls-tree
+    - https://git-scm.com/docs/git-rev-list
+    - https://git-scm.com/docs/git-log
+    - https://git-scm.com/docs/git-grep
   caushell.profile/known_limitations:
+    - Repository query forms own native filters and count spellings without treating revision/tree labels as host source paths. Bundle file and stdin modes have distinct stream dependencies. History paging remains a separate effect; --no-pager is a global option, not a child-owned spelling.
+    - Unknown executable helpers, output destinations and unsupported query controls remain unresolved; query coverage does not exempt clone, hooks, bundle import, deletion or incomplete native configuration.
     - Clone only records an explicit destination path. The default basename destination and repository member writes remain tracked under the pending derived/default path effect capability.
     - Commit and am delegate git hook path materialization to the runtime path pass so effective hook roots can be resolved from git config precedence rather than hardcoded profile paths. Hook-stage coverage currently focuses on `git commit` and `git am`.
     - "`git apply` / `git am` now project mailbox or patch reads plus a coarse `patch_selected_tracked` repository-worktree write scope. The runtime still does not parse patch bodies into exact target-path sets."

@@ -140,3 +140,65 @@ fn git_query_flags_preserve_remote_effects_and_local_metadata_reads() {
         !matches!(resolve_invocation(&registry, &parsed.commands[0], InvocationRuntimeContext::new()), ResolveInvocationResult::Resolved(r) if r.bound.form_id.as_str() == "short_help_information")
     );
 }
+
+#[test]
+fn repository_queries_own_native_filters_and_do_not_create_host_writes() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for (source, form) in [
+        (
+            "git bundle list-heads arbitrary.bundle 'refs/tags/*'",
+            "inspect_bundle_refs",
+        ),
+        (
+            "git bundle verify --quiet arbitrary.bundle",
+            "verify_bundle",
+        ),
+        ("git bundle list-heads -", "inspect_bundle_refs_stdin"),
+        ("git bundle verify -", "verify_bundle_stdin"),
+        ("git ls-tree -r HEAD path/in/tree", "inspect_tree"),
+        ("git rev-list --all", "inspect_revision_list"),
+        ("git status --short", "inspect_worktree_status"),
+        (
+            "git --no-pager log --oneline -20",
+            "inspect_history_no_pager",
+        ),
+        (
+            "git --no-pager log --oneline -1234",
+            "inspect_history_no_pager",
+        ),
+        (
+            "git --no-pager log --max-count=8 --oneline",
+            "inspect_history_no_pager",
+        ),
+        ("git grep -nP '^value[0-9]+' src", "search_repository"),
+        ("git grep -h needle src", "search_repository"),
+    ] {
+        let bound = resolved(&registry, source);
+        assert_eq!(bound.form_id.as_str(), form, "{source}");
+        assert!(
+            !bound.operation_semantics_unresolved,
+            "{source}: {bound:#?}"
+        );
+        assert!(
+            !bound.effects.iter().any(|e| matches!(
+                e.kind,
+                EffectKind::WritePath | EffectKind::ExecutePayload | EffectKind::ExecuteHook
+            )),
+            "{source}: {bound:#?}"
+        );
+    }
+    let paged = resolved(&registry, "git log --oneline -25");
+    assert!(
+        paged
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::OpenInteractiveEscapeSurface)
+    );
+    let plain = resolved(&registry, "git --no-pager log --oneline -25");
+    assert!(
+        !plain
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::OpenInteractiveEscapeSurface)
+    );
+}
