@@ -71,9 +71,9 @@ fn wrapper_argument_ownership_preserves_child_effects_and_uncertainty_end_to_end
         ("time printf '%s' -v -f -o --help", Decision::Allow),
         (
             "time ffmpeg -v error -i clip.mp4 -vf fps=5 -vsync cfr frames/f_%04d.png",
-            // The child argv must survive even when the output pattern's path
-            // namespace cannot be proved. Argument preservation grants no access.
-            Decision::NeedApproval,
+            // Complete observations prove the bounded local output family;
+            // preserving child argv still grants no authority outside that scope.
+            Decision::Allow,
         ),
         ("command rm -v /", Decision::Deny),
         ("exec rm -rf /", Decision::Deny),

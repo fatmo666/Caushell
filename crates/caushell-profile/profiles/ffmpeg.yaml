@@ -71,10 +71,10 @@ forms:
   effects:
   - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
   - {kind: consume_stdin, target: {kind: slot, name: input_stream}}
-  - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_paths}}
+  - {kind: write_path, namespace_effect: regular_file_write, path_access: content_open, target: {kind: slot, name: output_paths}}
   # A container selected by the filename can produce sibling side files.
   # Preserve the explicit target and a directory-bounded output family.
-  - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: output_paths}, rule: {kind: sibling_files}, purpose: generic_operand}}
+  - {kind: write_path, namespace_effect: directory_tree_write, target: {kind: derived_path, source: {kind: slot, name: output_paths}, rule: {kind: sibling_files}, purpose: generic_operand}}
   - {kind: transform_data, target: {kind: none}}
   stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
 - id: show_help
@@ -221,4 +221,4 @@ extensions:
     records only the demonstrated mechanism.
   - Ordinary conversion models declared file reads, stdin, every explicit local output and byte transformation. It does not execute ffmpeg or inspect media/container headers.
   - Unknown read operands stay unknown reads under the existing policy; they are not proven local files or dynamically resolved protocols. This Profile does not introduce a blanket approval rule for unknown reads.
-  - URL protocols (including file and pipe), filename patterns, filter expressions, multi-file formats and repeated -f declarations retain approval through unresolved invocation selection. Output-side logs, passes, attachments and other unlisted options are not silently accepted.
+  - URL protocols (including file and pipe), templated output directories, unmodeled filter expressions and formats, and repeated -f declarations retain approval through unresolved invocation selection. Basename templates use a bounded sibling family only when its current namespace can be proved. Output-side logs, passes, attachments and other unlisted options are not silently accepted.

@@ -21,7 +21,7 @@ forms:
         semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
         binding: {"kind":"remaining_positionals"}
         cardinality: "required_many"
-    effects: [{"kind":"write_path","target":{"kind":"slot","name":"directory_paths"}}]
+    effects: [{"kind":"write_path","namespace_effect":"directory_create","target":{"kind":"slot","name":"directory_paths"}}]
     stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
     remaining_selector: {"kind":"no_positional_args"}
   - id: "create_directories_reporting"
@@ -35,7 +35,7 @@ forms:
         semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
         binding: {"kind":"remaining_positionals"}
         cardinality: "required_many"
-    effects: [{"kind":"write_path","target":{"kind":"slot","name":"directory_paths"}}]
+    effects: [{"kind":"write_path","namespace_effect":"directory_create","target":{"kind":"slot","name":"directory_paths"}}]
     stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
     remaining_selector: {"kind":"no_positional_args"}
 modifiers:

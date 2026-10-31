@@ -477,6 +477,15 @@ restoring an old value, and isolated loop scopes do not change caller state.
 Bounds become ordinary Graph path facts, never guessed concrete filenames or
 persisted exact variable values. No new risk Pass or Harness input is required.
 
+Numeric member proofs are separate from path-set anchors: numeric-looking path
+roots are not scalar values. Complete literal/positional lists or registered
+arithmetic-output contracts can prove the alphabet of every loop member, and
+ordinary assignment facts carry that proof into arithmetic uses. Writes,
+shadowing and loop exit invalidate it. The integer default-format slice of
+`seq` declares this output shape; custom formats, unknown controls and numeric
+spellings outside that slice do not borrow the contract. No concrete arithmetic
+result, final loop value or iteration count is fabricated.
+
 ### Opaque code and keyword-owned shell commands
 
 `{kind: payload, language: opaque, source: inline_string, recursive: true}` explicitly declares executable code outside the modeled shell languages. The recursive-analysis record retains its source and unsupported-language evidence; ResolvePolicy defaults the `opaque_non_shell` subtype to approval. Named Python, JavaScript and Perl payloads use the same boundary while retaining their language identity. Inline programs and stdin retain approval even when literal or locally produced: a known string is not a modeled program. Script-file references use the separate file execution authorization described below. Registered module Profiles retain their CLI effects; module execution still has its non-Shell approval floor. Modeled Shell payloads and SQL client contracts retain their own analysis. No language interpreter, guessed internal path or dynamic code read is introduced. Explicit subtype overrides cannot override independent Deny findings.
@@ -3057,12 +3066,21 @@ startup, custom hooks, executable `.pth` files, shadowed imports and absent
 facts retain Ask. It neither analyzes nor executes user Python bodies. See
 [the binding component](../integrations/python-module-cli/README.md).
 
+A declared `directory_create` may create missing directory components or fail;
+it cannot replace an existing entry or introduce links. Its request-local
+certificate preserves namespace resolution without asserting successful creation.
+The observed entries remain `missing` until a later real observation changes them.
+
 A declared `directory_tree_write` transforms only regular files/directories under
 its roots and cannot introduce links or rename directories. Its configured
-input-parent families may add a fixed relative suffix. Namespace resolution
+input-parent families may add a fixed relative suffix; an explicit `sibling_files`
+derived target can declare a bounded output family. Namespace resolution
 requires complete, bounded, stable link-free directory snapshots, records actual
 observations separately from hypothetical producer certificates, and recomputes
-physical roots on every request. A resolved cache family grants no authority.
+physical roots on every request. Namespace mutations inside a family's root
+participate in the dependency closure even when those entries were absent from
+the snapshot. Opaque executable siblings cannot certify a closed directory-tree transformer
+merely because their executable path is known. Resolving a family grants no authority.
 `py_compile` defaults to each input parent's `__pycache__`; known cache prefixes
 and interpreter environment suppression use the existing configured-path and
 dispatch mechanisms. Unknown filenames/prefixes and unexpanded stdin filename

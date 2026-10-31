@@ -98,6 +98,13 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 )
             } else if inputs[index].namespace_effect
                 == Some(caushell_types::PathNamespaceEffect::DirectoryTreeWrite)
+                || matches!(
+                    inputs[index].fact.lexical,
+                    PathResolution::BoundedPathSet {
+                        may_escape: false,
+                        ..
+                    } | PathResolution::FileNamePrefix { .. }
+                )
             {
                 let (baseline, evidence) = directory_tree::resolve(
                     &inputs[index],

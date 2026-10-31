@@ -100,6 +100,37 @@ pub(super) fn scope_preservation(
     writer_state: &Baseline,
     consumer_state: &Baseline,
 ) -> Option<PathNamespaceProof> {
+    if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryCreate) {
+        let SemanticResolution::Resolved {
+            value: PathResolution::Concrete { path },
+        } = &writer_state.0
+        else {
+            return None;
+        };
+        if !matches!(&consumer_state.0, SemanticResolution::Resolved { value }
+            if value.concrete_path().is_some()
+                || matches!(value, PathResolution::BoundedPathSet { roots, may_escape: false } if !roots.is_empty()))
+            || writer_state.1.is_empty()
+            || writer_state.1.iter().any(|o| {
+                !matches!(
+                    o.entry,
+                    FilesystemEntry::Directory | FilesystemEntry::Missing
+                )
+            })
+        {
+            return None;
+        }
+        // Missing -> directory, unchanged, or failure all preserve path
+        // resolution. This invariant does not require execution-order guesses
+        // or turn an observed Missing entry into an observed Directory.
+        return Some(PathNamespaceProof {
+            producer_node_id: writer.fact.source_node_id.clone(),
+            producer_effect_key: writer.fact.effect_key.clone(),
+            path: path.clone(),
+            effect: PathNamespaceEffect::DirectoryCreate,
+            additional_paths: Vec::new(),
+        });
+    }
     if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryTreeWrite) {
         let SemanticResolution::Resolved {
             value:

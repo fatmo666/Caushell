@@ -15,6 +15,9 @@ pub(super) fn numeric_iteration(
     shell_kind: caushell_types::ShellKind,
 ) -> bool {
     const MAX_ITEMS: usize = 256;
+    if bindings.runtime_variable_target_is_unresolved(&iteration.variable) {
+        return false;
+    }
     let Some(items) = &iteration.items else {
         return bindings.positional_parameters_are_complete()
             && !bindings.positional_parameters().is_empty()
@@ -198,4 +201,61 @@ fn path_domain(mut roots: Vec<String>) -> Option<RuntimeArgumentDomain> {
         roots,
         may_escape: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use caushell_profile::{ProfileRegistry, load_command_profile_from_str};
+    use caushell_types::ShellKind;
+
+    #[test]
+    fn numeric_loop_proofs_follow_generic_contracts_not_path_anchors_or_names() {
+        let source = "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: arbitrary_counter}\nopaque_on_unresolved: true\nforms:\n  - id: run\n    stdout_scalar: arithmetic_text\n    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}\n";
+        let registry =
+            ProfileRegistry::from_profiles(vec![load_command_profile_from_str(source).unwrap()])
+                .unwrap();
+        let parsed = caushell_parse::parse_command(
+            "for member in $(arbitrary_counter); do echo $((member)); done",
+            ShellKind::Bash,
+        )
+        .unwrap();
+        assert!(numeric_iteration(
+            &parsed.for_loops[0],
+            &SessionBindings::new(),
+            Some(&registry),
+            ShellKind::Bash
+        ));
+        let registry = ProfileRegistry::from_profiles(vec![
+            load_command_profile_from_str(
+                &source.replace("    stdout_scalar: arithmetic_text\n", ""),
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        assert!(!numeric_iteration(
+            &parsed.for_loops[0],
+            &SessionBindings::new(),
+            Some(&registry),
+            ShellKind::Bash
+        ));
+
+        let parsed = caushell_parse::parse_command(
+            "for member in \"$anchor\"; do echo $((member)); done",
+            ShellKind::Bash,
+        )
+        .unwrap();
+        let mut bindings = SessionBindings::new();
+        bindings.insert_argument_domain(
+            "anchor",
+            RuntimeArgumentDomain::PathSet {
+                roots: vec!["123".into()],
+                may_escape: false,
+            },
+        );
+        assert!(
+            !numeric_iteration(&parsed.for_loops[0], &bindings, None, ShellKind::Bash),
+            "a numeric-looking directory anchor says nothing about its descendants' arithmetic syntax"
+        );
+    }
 }

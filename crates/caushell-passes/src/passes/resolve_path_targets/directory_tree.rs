@@ -18,6 +18,7 @@ pub(super) fn resolve(
             roots,
             may_escape: false,
         } => roots.clone(),
+        PathResolution::FileNamePrefix { directory, .. } => vec![directory.clone()],
         _ => Vec::new(),
     };
     let mut evidence = DirectoryTreeEvidence {

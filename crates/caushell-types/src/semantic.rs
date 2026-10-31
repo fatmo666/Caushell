@@ -87,6 +87,10 @@ pub struct FilesystemObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathNamespaceEffect {
+    /// May create missing directory components or fail, but cannot replace an
+    /// existing entry, create links, or change the target of an existing link.
+    /// Does not assert that any directory will exist after the operation.
+    DirectoryCreate,
     /// May fail, write contents, or create/replace an ordinary file at the
     /// target leaf. Cannot introduce a symlink or change a parent directory.
     RegularFileWrite,

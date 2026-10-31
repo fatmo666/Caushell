@@ -3082,6 +3082,10 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         let valid = kind == EffectKind::WritePath
             && raw.path_scope.is_none()
             && match effect {
+                caushell_types::PathNamespaceEffect::DirectoryCreate => matches!(
+                    target,
+                    EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
+                ),
                 caushell_types::PathNamespaceEffect::RegularFileWrite => matches!(
                     target,
                     EffectTarget::Slot(_)
@@ -3090,6 +3094,8 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
                 ),
                 caushell_types::PathNamespaceEffect::DirectoryTreeWrite => {
                     matches!(target, EffectTarget::ConfiguredPath(_))
+                        || matches!(&target, EffectTarget::DerivedPath(path)
+                            if path.rule == caushell_types::DerivedPathRule::SiblingFiles)
                 }
             };
         if !valid {

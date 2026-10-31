@@ -193,3 +193,74 @@ fn family_proofs_close_over_unobserved_children_and_opaque_siblings() {
         }
     }
 }
+
+#[test]
+fn directory_creation_proofs_follow_generic_contracts_without_fabricating_entries() {
+    let source = "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: directory_materializer}\nforms:\n  - id: emit\n    parameters: [{name: destination, semantic: {kind: path, role: write}, binding: {kind: next_positional}, cardinality: required_one}]\n    effects: [{kind: write_path, namespace_effect: directory_create, target: {kind: slot, name: destination}}]\n";
+    for declared in [true, false] {
+        let yaml = if declared {
+            source.to_owned()
+        } else {
+            source.replace("namespace_effect: directory_create, ", "")
+        };
+        let mut profiles = ProfileRegistry::built_in().unwrap().profiles().to_vec();
+        profiles.push(load_command_profile_from_str(&yaml).unwrap());
+        let mut runner = PassRunner::new();
+        runner.register_request_transform_pass(ParseCommandPass);
+        runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+        runner.register_session_transform_pass(ResolveInvocationPass::new(
+            ProfileRegistry::from_profiles(profiles).unwrap(),
+        ));
+        runner.register_session_transform_pass(ExtractPathFactsPass);
+        runner.register_session_transform_pass(ResolvePathTargetsPass);
+        let req = CheckRequest {
+            session_id: SessionId::new("abstract-directory-namespace"),
+            sequence_no: CommandSequenceNo(1),
+            command: "directory_materializer ./new; printf x > ./new/product".into(),
+            shell_state_before: ShellStateSnapshot::new("/workspace"),
+            shell_kind: ShellKind::Bash,
+            home: None,
+            workspace_root: Some("/workspace".into()),
+            runtime: RuntimeMetadata {
+                runtime_name: "static".into(),
+                tool_name: None,
+                shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
+            },
+        };
+        let mut ctx = RunnerContext::with_policy(req, PolicyConfig::default());
+        ctx.set_filesystem_view(Arc::new(Namespace));
+        runner.run(
+            SessionView::new(&SessionGraph::new(), &SessionSummary::default()),
+            &mut ctx,
+        );
+        let target = ctx
+            .pending_mutations()
+            .iter()
+            .find_map(|m| match m {
+                PendingMutation::AddPathTargetFact { fact, .. }
+                    if fact.lexical.concrete_path() == Some("/workspace/new/product") =>
+                {
+                    Some(fact)
+                }
+                _ => None,
+            })
+            .expect("the consuming write retains its target fact");
+        assert_eq!(!target.namespace_proofs.is_empty(), declared, "{target:#?}");
+        assert_eq!(
+            matches!(target.resolution, SemanticResolution::Resolved { .. }),
+            declared
+        );
+        assert!(
+            target
+                .observations
+                .iter()
+                .any(|o| o.path == "/workspace/new" && o.entry == FilesystemEntry::Missing)
+        );
+        assert!(
+            target
+                .namespace_proofs
+                .iter()
+                .all(|p| p.effect == PathNamespaceEffect::DirectoryCreate)
+        );
+    }
+}
