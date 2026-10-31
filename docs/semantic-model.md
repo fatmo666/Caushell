@@ -172,6 +172,26 @@ operation effects, so it cannot erase a known control Deny. No service is
 queried or started to produce these facts, and unknown-command policy is not
 changed globally.
 
+`postconf` uses ordinary filesystem authority, without a service-state grant.
+Queries read configuration data; `-e`, positional `name=value`, `-X` and `-#`
+declare writes, including main/master configuration modes. The last two remove
+or comment settings by rewriting a file, rather than deleting filesystem paths.
+The write covers the configuration directory's temporary files and atomic
+replacement. A local path is therefore insufficient: bounded directory writes
+require a stable link-free namespace and closed sibling semantics, including
+future children absent from the entry snapshot. An opaque sibling invalidates
+that proof. Ordinary single-file compiler output contracts remain separate.
+
+The last explicit `-c` directory takes precedence over observed `MAIL_CONFIG`; an
+unobserved compiled default stays unknown. Existing write policy decides whether
+that path needs approval. `-o name=value` belongs to query overrides and cannot
+redirect the persistent edit target. `-h` and `-d` are output/default modes, not
+help/version exemptions. Values remain data; genuine shell substitutions retain
+their independent effects. Unsupported helper/plugin modes, late options,
+conflicting modes, empty configured paths and incomplete
+operands retain uncertainty. No configuration program is executed to infer
+paths, and configuration contents do not grant permission to start a daemon.
+
 `connection_verification` describes explicit connection peer-verification
 overrides, not persistent host configuration. Disabling verification is a
 `control` operation, handled by the existing state guard. curl declares direct,

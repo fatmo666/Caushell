@@ -1,0 +1,116 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: postconf, aliases: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix], shell_families: [], requires_features: []}
+
+forms:
+  - id: edit_configuration
+    selector:
+      kind: all
+      items:
+        - &one_view
+          kind: not
+          item:
+            kind: any
+            items:
+              - {kind: all, items: [{kind: has_modifier, modifier: master_view}, {kind: has_modifier, modifier: field_view}]}
+              - {kind: all, items: [{kind: has_modifier, modifier: master_view}, {kind: has_modifier, modifier: parameter_view}]}
+              - {kind: all, items: [{kind: has_modifier, modifier: field_view}, {kind: has_modifier, modifier: parameter_view}]}
+        - {kind: not, item: {kind: has_modifier, modifier: remove_or_comment}}
+        - &edit_requested
+          kind: any
+          items:
+            - {kind: has_modifier, modifier: edit}
+            # Modifier operands, in particular -o name=value, are already owned.
+            - {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '='}}
+    parameters:
+      - name: assignments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '^[^-=\s][^=\r\n]*=[\s\S]*$'}]
+    effects: &configuration_rewrite
+      # Includes the native temporary file and atomic replacement, not merely
+      # a direct write to main.cf. The path pass must close this whole family.
+      - kind: write_path
+        namespace_effect: directory_tree_write
+        target:
+          kind: configured_path
+          sources: [{slot: configuration_directory, projection: {kind: identity}}]
+          environment: {name: MAIL_CONFIG, empty_is_unset: false}
+          missing: unknown
+      - &read_main
+        kind: read_path
+        target:
+          kind: configured_path
+          sources: []
+          default_value: main.cf
+          relative_to: &configuration_anchor
+            slot: configuration_directory
+            environment: {name: MAIL_CONFIG, empty_is_unset: false}
+          missing: skip
+      - &read_master
+        kind: read_path
+        target:
+          kind: configured_path
+          sources: []
+          default_value: master.cf
+          relative_to: *configuration_anchor
+          missing: skip
+  - id: remove_or_comment_parameters
+    selector:
+      kind: all
+      items:
+        - *one_view
+        - {kind: has_modifier, modifier: remove_or_comment}
+        - {kind: not, item: *edit_requested}
+    parameters:
+      - {name: names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '^[^-=\s][^=\s]*$'}]}
+    # Removing a setting rewrites a file. It is not filesystem deletion.
+    effects: *configuration_rewrite
+  - id: query_configuration
+    selector:
+      kind: all
+      items:
+        - *one_view
+        - {kind: not, item: *edit_requested}
+        - {kind: not, item: {kind: has_modifier, modifier: remove_or_comment}}
+    parameters:
+      - {name: names, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: require_match, pattern: '^[^-=\s][^=\s]*$'}]}
+    effects: [*read_main, *read_master]
+
+modifiers:
+  - id: configuration
+    matcher: {kind: any_flag, flags: ['-c']}
+    parameters:
+      # The generic configured-path source takes the last applicable value,
+      # matching repeated native -c (each occurrence replaces MAIL_CONFIG).
+      - {name: configuration_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '^[\s\S]+$'}]}
+  - {id: edit, matcher: {kind: any_flag, flags: ['-e']}}
+  - {id: remove_or_comment, matcher: {kind: any_flag, flags: ['-X', '-#']}}
+  - {id: master_view, matcher: {kind: any_flag, flags: ['-M']}}
+  - {id: field_view, matcher: {kind: any_flag, flags: ['-F']}}
+  - {id: parameter_view, matcher: {kind: any_flag, flags: ['-P']}}
+  - id: query_override
+    matcher: {kind: any_flag, flags: ['-o']}
+    parameters:
+      - {name: overrides, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '^[^-=\s][^=\r\n]*=[\s\S]*$'}]}
+  - id: query_class
+    matcher: {kind: any_flag, flags: ['-C']}
+    parameters:
+      - {name: classes, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '^(builtin|service|user)(,(builtin|service|user))*$'}]}
+  # -h is values-only output, -d is compiled defaults: neither is a bypass.
+  - {id: query_format, matcher: {kind: any_flag, flags: ['-d', '-n', '-h', '-H', '-f', '-p', '-v', '-j', '-q', '-x']}}
+
+extensions:
+  caushell.profile/sources:
+    - https://www.postfix.org/postconf.1.html
+    - https://raw.githubusercontent.com/vdukhovni/postfix/master/postfix/src/postconf/postconf.c
+    - https://raw.githubusercontent.com/vdukhovni/postfix/master/postfix/src/postconf/postconf_edit.c
+  caushell.profile/scope:
+    - Pure queries are data reads. Explicit edits, positional assignments and removal/comment modes declare configuration-directory write families through ordinary filesystem authorization, without granting service control.
+    - An explicit -c directory precedes the observed MAIL_CONFIG environment. The compiled default is unknown. Query-only -o overrides cannot redirect the edit target; configuration values are data, not shell payloads.
+    - Atomic replacement requires a bounded, stable, link-free directory family and closed sibling semantics. Unknown paths, incomplete grammar and unsupported helper/plugin modes remain unresolved; independent Deny findings are preserved.
