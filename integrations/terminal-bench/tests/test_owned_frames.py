@@ -135,4 +135,41 @@ class OwningFrameTests(unittest.TestCase):
                         if process and process.poll() is None:process.kill();process.communicate(timeout=3)
                         life.close();journal.close()
 
+    def test_close_drains_the_cancelled_real_frame_before_its_journal_is_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);integration=Path(__file__).resolve().parents[1]
+            for name,source in [('owning-frame.bash',integration/'owning-frame.bash'),('capture.bash',integration.parent/'execution-frame/capture.bash')]:shutil.copy2(source,root/name)
+            entered,release,closed=threading.Event(),threading.Event(),threading.Event()
+            class PausedEngine(Engine):
+                def check_observed(self,*args,**kwargs):
+                    entered.set()
+                    if not release.wait(5):raise TimeoutError('Check fixture not released')
+                    return super().check_observed(*args,**kwargs)
+            journal=BufferedJournal(root/'events.jsonl');engine=PausedEngine('need_approval')
+            life=OwningFrameLifecycle('s',journal,engine,str(root/'owning-frame.bash'),[BINARY],address=('127.0.0.1',0),public_host='127.0.0.1')
+            process=None;closer=None
+            try:
+                payload=dict(session_id='s',tool_name='Bash',cwd=str(root),tool_input=dict(command='touch marker',run_in_background=True))
+                wrapped=life.before('tool',payload)['hookSpecificOutput']['updatedInput'];life.approve('tool','Bash',wrapped)
+                life.after('tool',dict(payload,tool_input=wrapped,tool_response=dict(backgroundTaskId='bg-tool')))
+                process=subprocess.Popen(['/bin/bash','--noprofile','--norc','-c',wrapped['command']],cwd=root,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                self.assertTrue(entered.wait(3))
+                def close():
+                    life.close();closed.set()
+                closer=threading.Thread(target=close);closer.start()
+                self.assertFalse(closed.wait(.1))
+                release.set();out,err=process.communicate(timeout=5);closer.join(3)
+                self.assertTrue(closed.is_set())
+                self.assertNotEqual(process.returncode,0,err)
+                self.assertFalse((root/'marker').exists());self.assertFalse(engine.authorizations)
+                journal.close()
+                rows=[json.loads(line) for line in (root/'events.jsonl').read_text().splitlines()]
+                self.assertTrue(any(row['kind']=='cancelled_frame_check' for row in rows))
+            finally:
+                release.set()
+                if process and process.poll() is None:process.kill();process.communicate(timeout=3)
+                if closer:closer.join(3)
+                life.close()
+                if not journal.stream.closed:journal.close()
+
 if __name__=='__main__':unittest.main()

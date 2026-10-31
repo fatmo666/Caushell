@@ -34,6 +34,9 @@ class FrameServer:
         self.pending={};self.inflight={};self.lock=lifecycle._state_lock;self.closed=False;self.instance_id="rq3-owning-executor-"+secrets.token_hex(16)
         outer=self
         class Handler(BaseHTTPRequestHandler):
+            def setup(self):
+                self.request.settimeout(10)
+                super().setup()
             def log_message(self,*args):pass
             def do_POST(self):
                 try:
@@ -46,7 +49,9 @@ class FrameServer:
                     outer.lifecycle.journal.emit('owning_frame_transport_rejected',error=repr(error))
                     response=dict(error='owning-frame request rejected');status=409
                 body=json.dumps(response).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-        self.server=ThreadingHTTPServer(address,Handler);self.server.daemon_threads=True
+        # Drain cancelled handlers before the owning journal/engine are closed.
+        # Socket reads and guard RPCs have their own deadlines.
+        self.server=ThreadingHTTPServer(address,Handler);self.server.daemon_threads=False
         self.endpoint=f'http://{public_host}:{self.server.server_port}/frame'
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
 
@@ -206,7 +211,7 @@ class OwningFrameLifecycle(Lifecycle):
                 self.background.apply(row)
                 return
             self.frames.cancel(tool_id)
-            if row['status'] in ('denied','rejected','awaiting_execution_frame'):
+            if row['status'] in ('denied','rejected','native_denied','executor_gate_failed','unresolved','awaiting_execution_frame'):
                 if not failed:raise ValueError('An unapproved action claims execution')
                 if row['status']=='awaiting_execution_frame':row['status']='executor_gate_failed'
                 row['tool_result']=deepcopy(payload);self.journal.emit('executor_block_reported',tool_use_id=tool_id,status=row['status'],result=payload);return
@@ -215,7 +220,9 @@ class OwningFrameLifecycle(Lifecycle):
                 if row.get('frame_status')!='authorized':raise ValueError('An unapproved action claims execution')
                 terminal='failed' if failed else 'completed'
                 old=row['native_task']['state']
-                if old in ('completed','failed','stopped') and old!=terminal:raise ValueError('Native task terminal state changed')
+                if old in ('completed','failed','stopped') and old!=terminal:
+                    if old=='stopped' and failed:terminal='stopped'
+                    else:raise ValueError('Native task terminal state changed')
                 row['native_task'].update(state=terminal,terminal_source='native_post_tool_use')
                 row['tool_result']=payload
                 self.background.apply(row)
@@ -230,6 +237,11 @@ class OwningFrameLifecycle(Lifecycle):
     def pending_background(self):
         with self._state_lock:return self.background.pending()
 
+    def cancel_pending(self):
+        with self._state_lock:
+            self._finished=True
+            self.frames.cancel_all()
+
     def native_denials(self,result):
         with self._state_lock:return self._native_denials(result)
 
@@ -243,7 +255,7 @@ class OwningFrameLifecycle(Lifecycle):
 
     def finish(self):
         with self._state_lock:
-            self._finished=True;self.frames.cancel_all()
+            self.cancel_pending()
             for row in self.actions.values():
                 if row['status']=='awaiting_execution_frame':
                     row['status']='unresolved'

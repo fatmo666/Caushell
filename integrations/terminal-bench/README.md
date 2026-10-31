@@ -115,6 +115,36 @@ Cancellation discards pending tickets; captures are never cached across actions.
 The channel assumes the native executor and read-only collector assets are trusted;
 its tickets are not a claim of isolation from every malicious-root attack.
 
+### Background task lifecycle
+
+A native Bash result containing `backgroundTaskId` acknowledges task allocation;
+it is not a completed command or an authorization. It may arrive before the frame
+capture or while the guard RPC is running. The adapter keeps that action's ticket
+pending and records the native task identity separately. Only the original check
+and, for Ask, a matching single-call receipt can release the pending Bash body.
+Cancellation invalidates both unconsumed tickets and checks already in flight.
+
+The adapter correlates native `task_started`, `task_updated`, and
+`task_notification` messages by session, task ID, and originating Bash tool-use ID.
+Foreground task notifications do not create background work. Terminal updates are
+idempotent; late progress cannot resurrect a completed task, and an unapproved
+completion cannot overwrite Deny or a declined approval. The native live-task list
+alone is not accepted as proof of completion. These message shapes are documented
+in the [native SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript#sdktasknotificationmessage)
+and have been checked against Claude Code 2.1.284.
+
+If a model turn finishes while a correlated background task is pending, the same
+native stream remains open for completion events and follow-up turns. The original
+task timeout still bounds the session. Missing completion evidence remains
+unresolved; it is never synthesized as a successful execution.
+
+`test_background_frames.py` controls callback/capture/authorization order with
+threading events. `test_owned_frames.py` also verifies the early-callback ordering
+with actual Bash bodies held behind the gate, including Allow, receipted Ask,
+Deny, and declined approval. `test_background_native_loop.py` drives native stdio
+fixtures through intermediate results and terminal task messages without calling
+a model.
+
 For the Bash/transport regression suite, set `CAUSHELL_TEST_HOST` to the compiled
 host example and `PYTHONPATH` to the pinned RQ3 runtime. These tests use a local
 engineering HTTP listener, not a model endpoint. Native-client integration tests

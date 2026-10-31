@@ -77,7 +77,10 @@ class BackgroundTasks:
                 if normalized in ('pending', 'running', 'paused'):
                     self.lifecycle.journal.emit('native_task_stale_update', tool_use_id=row['tool_use_id'], message=message)
                     return True
-                raise ValueError('Native task terminal state changed')
+                if {task['state'], normalized} == {'failed', 'stopped'}:
+                    normalized = 'stopped'
+                else:
+                    raise ValueError('Native task terminal state changed')
             task['state'] = normalized
             if normalized in ('completed', 'failed', 'stopped'):
                 task['terminal_source'] = kind
@@ -87,7 +90,12 @@ class BackgroundTasks:
         return True
 
     def pending(self):
-        return any(row.get('native_task', {}).get('backgrounded')
-                   and row['native_task']['state'] not in ('completed', 'failed', 'stopped')
-                   and row['status'] not in ('executor_gate_failed', 'unresolved', 'native_denied')
-                   for row in self.lifecycle.actions.values())
+        for row in self.lifecycle.actions.values():
+            if row['tool'] != 'Bash' or row['status'] in ('executor_gate_failed', 'unresolved', 'native_denied'):
+                continue
+            task = row.get('native_task')
+            if task and task['backgrounded'] and task['state'] not in ('completed', 'failed', 'stopped'):
+                return True
+            if not task and row['input'].get('run_in_background') is True and row.get('frame_status') in ('pending', 'checking'):
+                return True
+        return False

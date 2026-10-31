@@ -247,6 +247,45 @@ class BackgroundFrameTests(unittest.TestCase):
             self.assertFalse(life.engine.checked)
             self.assertFalse(life.engine.approvals)
 
+    def test_failure_callback_after_native_stop_keeps_the_gate_blocked(self):
+        with lifecycle('need_approval') as life:
+            request, post = prepare(life)
+            life.after('a', post)
+            notice(life, status='stopped')
+            life.after('a', dict(post, tool_response={}, error='cancelled'), failed=True)
+            self.assertEqual(life.actions['a']['status'], 'executor_gate_failed')
+            with self.assertRaises(ValueError):life.frames.accept(request)
+            self.assertFalse(life.engine.approvals)
+
+    def test_cancelled_authorized_background_task_accepts_late_failure_without_success(self):
+        with lifecycle() as life:
+            request, post = prepare(life)
+            life.after('a', post)
+            life.frames.accept(request)
+            notice(life, status='stopped')
+            life.after('a', dict(post, tool_response={}, error='stopped'), failed=True)
+            notice(life, status='failed')
+            self.assertEqual(life.actions['a']['status'], 'execution_failed')
+            self.assertEqual(life.actions['a']['native_task']['state'], 'stopped')
+
+    def test_wrong_tool_callback_and_unmapped_task_event_do_not_consume_a_ticket(self):
+        with lifecycle() as life:
+            request, post = prepare(life)
+            with self.assertRaises(ValueError):life.after('a', dict(post, tool_name='Read'))
+            self.assertFalse(life.observe_native(dict(type='system', subtype='task_updated', session_id='s',
+                                                      task_id='unknown', patch=dict(status='completed'))))
+            self.assertIn(request['ticket'], life.frames.pending)
+
+    def test_missing_or_cross_session_receipt_never_releases_the_frame(self):
+        for receipt in [None, dict(check_id=dict(session_id='other', sequence_no=1))]:
+            with self.subTest(receipt=receipt), lifecycle('need_approval') as life:
+                request, post = prepare(life)
+                life.after('a', post)
+                life.engine.check_observed = lambda *args, **kwargs: dict(decision='need_approval', check_receipt=receipt)
+                with self.assertRaises(ValueError):life.frames.accept(request)
+                self.assertFalse(life.engine.approvals)
+                self.assertEqual(life.actions['a']['status'], 'executor_gate_failed')
+
     def test_completed_notification_cannot_downgrade_deny(self):
         with lifecycle('deny') as life:
             request, post = prepare(life)
@@ -270,6 +309,13 @@ class BackgroundFrameTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 life.frames.accept(request)
             self.assertFalse(life.engine.checked)
+
+    def test_pending_background_gate_is_not_complete_before_allocation_is_observed(self):
+        with lifecycle() as life:
+            prepare(life)
+            self.assertTrue(life.pending_background())
+            life.finish()
+            self.assertFalse(life.pending_background())
 
     def test_background_identity_cannot_cross_actions_or_sessions(self):
         with lifecycle() as life:

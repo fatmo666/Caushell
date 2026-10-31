@@ -64,6 +64,9 @@ def run(folder, model, lifecycle, settings, timeout, home, workspace, sampler=No
     raw_log = StreamLog(folder / "claude.stdout.jsonl", "stdout", journal)
     input_log = StreamLog(folder / "claude.stdin.jsonl", "stdin", journal)
     result, terminal, buffer = None, "controller_error", b""
+    final_result = False
+    pending_background = getattr(lifecycle, "pending_background", lambda: False)
+    observe_task = getattr(lifecycle, "observe_native", None)
     began = time.monotonic()
 
     offset, streams = 0, {}
@@ -86,13 +89,13 @@ def run(folder, model, lifecycle, settings, timeout, home, workspace, sampler=No
                 break
             if not select.select([proc.stdout], [], [], .1)[0]:
                 if proc.poll() is not None:
-                    terminal = "process_exit"
+                    terminal = ("agent_error" if result.get("is_error") else "completed") if result is not None and not pending_background() else "process_exit"
                     break
                 continue
             part = os.read(proc.stdout.fileno(), 65536)
             observed = stamp()
             if not part:
-                terminal = "process_exit"
+                terminal = ("agent_error" if result.get("is_error") else "completed") if result is not None and not pending_background() else "process_exit"
                 break
             raw_log.write(part, observed)
             buffer += part
@@ -102,6 +105,8 @@ def run(folder, model, lifecycle, settings, timeout, home, workspace, sampler=No
                 raw, buffer = buffer.split(b"\n", 1)
                 message = json.loads(raw)
                 observe(journal, message, observed, offset, len(raw)+1, streams)
+                if observe_task is not None:
+                    observe_task(message)
                 offset += len(raw)+1
                 if message["type"] == "control_response" and message.get("response", {}).get("request_id") == initialize_id:
                     if message["response"]["subtype"] != "success":
@@ -140,14 +145,24 @@ def run(folder, model, lifecycle, settings, timeout, home, workspace, sampler=No
                 elif message["type"] == "result":
                     result = message
                     lifecycle.native_denials(message)
-                    terminal = "agent_error" if message.get("is_error") else "completed"
-                    break
-            if result is not None:
+                    if message.get("is_error") or not pending_background():
+                        terminal = "agent_error" if message.get("is_error") else "completed"
+                        final_result = True
+                        break
+                    # A turn result is not the end of native background work.
+                    # Keep the same stream alive for task completion and any
+                    # automatic follow-up turn, under the original task timeout.
+                    journal.emit("native_result_deferred", result_uuid=message.get("uuid"),
+                                 reason="native_background_tasks_pending")
+            if final_result:
                 break
         else:
             terminal = "timeout"
     finally:
         journal.emit("agent_loop_stopped", terminal=terminal)
+        cancel_pending = getattr(lifecycle, "cancel_pending", None)
+        if cancel_pending is not None:
+            cancel_pending()
         shutdown_began = stamp()
         if not proc.stdin.closed:
             proc.stdin.close()
