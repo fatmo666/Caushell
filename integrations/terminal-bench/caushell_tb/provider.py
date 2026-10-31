@@ -111,6 +111,7 @@ class Provider:
         folder.mkdir()
         self.journal = BufferedJournal(folder / "events.jsonl", dict(role="local_provider"))
         self.stopped = threading.Event()
+        self.stop_reason = None
         self.counts = dict(requests=0, settled=0, failed=0)
         self.lock = threading.Lock()
         self.connections = set()
@@ -232,6 +233,8 @@ class Provider:
 
     def close(self):
         # End only this trial's active transports; preserve partial SSE as failures.
+        if self.stop_reason is None:
+            self.stop_reason = "provider_closed"
         self.stopped.set()
         self.server.shutdown()
         with self.lock:

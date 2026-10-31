@@ -119,7 +119,9 @@ class TaskFaithfulClaude(ClaudeCode):
             worker=asyncio.create_task(asyncio.to_thread(native_loop.run,folder,model,lifecycle,{'hasCompletedOnboarding':True},c['agent_timeout'],Path(home),Path(c['host_workdir']),options=options))
             try:output=await asyncio.shield(worker)
             except asyncio.CancelledError:
-                journal.emit('harbor_cancelled_agent');model.stopped.set();output=await worker;output['native_loop_terminal']=output['terminal'];output['terminal']='harbor_cancelled';save(folder/'result.json',output);raise
+                # Publish the cause before waking the native loop so journal
+                # consumers and the final result retain the same attribution.
+                journal.emit('harbor_cancelled_agent');model.stop_reason='harbor_cancelled';model.stopped.set();output=await worker;output['native_loop_terminal']=output['terminal'];output['terminal']='harbor_cancelled';save(folder/'result.json',output);raise
             save(folder/'result.json',output)
             shutil.copyfile(folder/'claude.stdout.jsonl',self.logs_dir/'claude-code.txt')
             outcome=native_outcome(output)

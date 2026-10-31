@@ -58,7 +58,7 @@ def result(ident, is_error=False):
 
 
 class NativeBackgroundTests(unittest.TestCase):
-    def trial(self, messages, timeout=3):
+    def trial(self, messages, timeout=3, model=None):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             fixture = folder / 'native-protocol-fixture.py'
@@ -74,7 +74,7 @@ for line in sys.stdin:pass
             journal = BufferedJournal(folder / 'events.jsonl')
             life = Lifecycle(journal)
             try:
-                value = native_loop.run(folder, Model(), life, {}, timeout, folder, folder,
+                value = native_loop.run(folder, model or Model(), life, {}, timeout, folder, folder,
                                         options=dict(command_factory=command_factory))
             finally:
                 journal.close()
@@ -116,6 +116,19 @@ for line in sys.stdin:pass
         value, rows = self.trial([result('foreground')])
         self.assertEqual(value['terminal'], 'completed')
         self.assertFalse(any(r['kind'] == 'native_result_deferred' for r in rows))
+
+    def test_stop_event_preserves_explicit_cause_and_does_not_invent_a_budget(self):
+        for reason in [None, 'harbor_cancelled', 'provider_closed', 'budget_exhausted']:
+            with self.subTest(reason=reason):
+                model = Model()
+                model.stop_reason = reason
+                model.stopped.set()
+                value, rows = self.trial([], timeout=30, model=model)
+                expected = reason or 'stop_requested'
+                self.assertEqual(value['terminal'], expected)
+                self.assertLess(value['elapsed_seconds'], 5)
+                self.assertEqual([r['data']['terminal'] for r in rows
+                                  if r['kind'] == 'agent_loop_stopped'], [expected])
 
 
 if __name__ == '__main__':

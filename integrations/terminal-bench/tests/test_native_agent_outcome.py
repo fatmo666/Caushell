@@ -1,5 +1,6 @@
 """Agent-failure handoff fixtures: no Docker, native client, or model request."""
 import json
+import asyncio
 from pathlib import Path
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from harbor.trial.single_step import SingleStepTrial
 
 
 class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
-    async def exercise(self, terminal, native_result):
+    async def exercise(self, terminal, native_result, cancelled=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs = root / 'agent'
@@ -44,6 +45,10 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
 
             def native_loop(folder, *_args, **_kwargs):
                 (folder / 'claude.stdout.jsonl').write_text(json.dumps(native_result) + '\n')
+                if cancelled:
+                    if not model.stopped.wait(3):
+                        raise TimeoutError('Cancellation did not wake the worker')
+                    output['terminal'] = model.stop_reason
                 return output
 
             recorded = []
@@ -57,6 +62,8 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
                 _stop_agent_environment=AsyncMock(), _sync_agent_output=AsyncMock())
 
             async def phase(**_kwargs):
+                if cancelled:
+                    asyncio.get_running_loop().call_later(.05, asyncio.current_task().cancel)
                 await agent.run('fixture', environment, None)
 
             async def verifier():
@@ -77,7 +84,19 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(harbor_agent, 'Provider', return_value=model), \
                  patch.object(harbor_agent.native_loop, 'run', side_effect=native_loop), \
                  patch('harbor.trial.single_step.resolve_task_verifier_mode', return_value=VerifierEnvironmentMode.SHARED):
-                await SingleStepTrial._run(trial)
+                if cancelled:
+                    with self.assertRaises(asyncio.CancelledError):
+                        await SingleStepTrial._run(trial)
+                else:
+                    await SingleStepTrial._run(trial)
+            if cancelled:
+                self.assertEqual(closed, ['model', 'lifecycle', 'guard'])
+                self.assertEqual(order, [])
+                saved = json.loads((root / 'control/result.json').read_text())
+                self.assertEqual(saved['terminal'], 'harbor_cancelled')
+                self.assertEqual(saved['native_loop_terminal'], 'harbor_cancelled')
+                self.assertNotEqual(saved['terminal'], 'budget_exhausted')
+                return
             self.assertEqual(order, ['verifier'])
             self.assertEqual(trial.result.reward, 1)
             self.assertEqual(json.loads((root / 'control/result.json').read_text()), output)
@@ -99,6 +118,9 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_native_completion_has_no_agent_exception(self):
         self.assertEqual(await self.exercise('completed', dict(
             type='result', subtype='success', is_error=False)), [])
+
+    async def test_framework_cancellation_records_the_cause_before_stopping_native_worker(self):
+        await self.exercise('controller_error', None, cancelled=True)
 
     async def test_unfinished_session_cannot_become_success_from_an_earlier_turn(self):
         for terminal in ['process_exit', 'timeout', 'budget_exhausted', 'controller_error']:

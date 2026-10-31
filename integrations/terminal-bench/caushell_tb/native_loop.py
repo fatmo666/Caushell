@@ -85,7 +85,9 @@ def run(folder, model, lifecycle, settings, timeout, home, workspace, sampler=No
         initialized = False
         while timeout is None or time.monotonic() - began < timeout:
             if model.stopped.is_set():
-                terminal = "budget_exhausted"
+                # A stop event is transport/control state, not proof that a
+                # token, request or time budget was exhausted.
+                terminal = getattr(model, "stop_reason", None) or "stop_requested"
                 break
             if not select.select([proc.stdout], [], [], .1)[0]:
                 if proc.poll() is not None:
