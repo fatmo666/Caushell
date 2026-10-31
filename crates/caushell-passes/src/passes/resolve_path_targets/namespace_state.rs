@@ -15,11 +15,19 @@ pub(super) type Baseline = (
 
 pub(super) fn overlaps(input: &Input, baseline: &Baseline, root: Option<&str>) -> bool {
     let Some(root) = root else { return true };
-    input
-        .fact
-        .spelling
-        .as_deref()
-        .is_some_and(|path| super::spelling_visits(path, root))
+    // Families include descendants absent from the entry snapshot. Both
+    // mutation of an ancestor and creation of a future child can affect them.
+    let family_overlap = matches!(&baseline.0,
+        SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { roots, .. } }
+        if roots.iter().any(|anchor|
+            caushell_query::path_is_within_root(root, anchor)
+            || caushell_query::path_is_within_root(anchor, root)));
+    family_overlap
+        || input
+            .fact
+            .spelling
+            .as_deref()
+            .is_some_and(|path| super::spelling_visits(path, root))
         || baseline
             .1
             .iter()
@@ -39,10 +47,16 @@ pub(super) fn stable_producers(
     baselines: &[Baseline],
     writes: &[(usize, Option<String>)],
     comparisons: &mut usize,
+    closed_tree: bool,
 ) -> BTreeSet<usize> {
     let mut candidates: BTreeSet<_> = writes
         .iter()
         .filter_map(|(i, _)| {
+            if !closed_tree
+                && inputs[*i].namespace_effect != Some(PathNamespaceEffect::RegularFileWrite)
+            {
+                return None;
+            }
             scope_preservation(&inputs[*i], &baselines[*i], &baselines[*i]).map(|_| *i)
         })
         .collect();

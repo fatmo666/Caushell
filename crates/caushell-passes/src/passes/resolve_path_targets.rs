@@ -151,12 +151,14 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             })
             .collect();
         let mut comparisons = 0usize;
-        let stable_producers = if namespace_operations_complete(ctx) {
+        let closed_tree = namespace_operations_complete(ctx, true);
+        let stable_producers = if namespace_operations_complete(ctx, false) {
             namespace_state::stable_producers(
                 &inputs,
                 &baselines,
                 &namespace_writes,
                 &mut comparisons,
+                closed_tree,
             )
         } else {
             // An opaque sibling may have no declared mutation target at all.
@@ -209,6 +211,20 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     SemanticGapKind::NamespaceMutation,
                     "another effect in this action may change a target path component",
                 );
+            } else if !closed_tree
+                && matches!(
+                    &resolution,
+                    SemanticResolution::Resolved {
+                        value: PathResolution::BoundedPathSet { .. }
+                    }
+                )
+            {
+                // A current link-free snapshot is not a proof about an action
+                // containing an opaque sibling, even if it declares no writes.
+                resolution = unresolved(
+                    SemanticGapKind::UnresolvedOperation,
+                    "directory family cannot be closed over opaque action semantics",
+                );
             }
             inputs[index].fact.resolution = resolution;
             // A failed or budget-truncated proof must not leave a partial
@@ -246,17 +262,31 @@ impl SessionTransformPass for ResolvePathTargetsPass {
     }
 }
 
-fn namespace_operations_complete(ctx: &RunnerContext) -> bool {
+fn namespace_operations_complete(ctx: &RunnerContext, whole_tree: bool) -> bool {
     use caushell_profile::ResolveInvocationArtifactResult as Result;
     ctx.unresolved_dispatch_records().is_empty()
         && graph_backed_execution_resolve_records(ctx)
             .into_iter()
             .all(|record| match record.result() {
-                Result::Resolved(invocation) => !invocation.bound.operation_semantics_unresolved,
-                Result::NoProfile { .. } => matches!(
-                    crate::path::unmodeled_executable_path(record),
-                    Some(crate::path::ExecutableFileReference::Known(_))
-                ),
+                Result::Resolved(invocation) => {
+                    !invocation.bound.operation_semantics_unresolved
+                        && (!whole_tree
+                            || !invocation.bound.effects.iter().any(|effect| {
+                                effect.state_operation.is_some_and(|operation| {
+                                    operation.operation
+                                        == caushell_types::StateOperationKind::Opaque
+                                })
+                            }))
+                }
+                // Keep the existing single-leaf build/execute contract. A
+                // known executable path cannot certify a closed directory tree.
+                Result::NoProfile { .. } => {
+                    !whole_tree
+                        && matches!(
+                            crate::path::unmodeled_executable_path(record),
+                            Some(crate::path::ExecutableFileReference::Known(_))
+                        )
+                }
                 Result::MissingCommandName {
                     gap_kind: caushell_types::ResolveGapKind::MissingCommandName,
                 } => record.command().is_some_and(|command| {
