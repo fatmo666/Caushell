@@ -12,11 +12,14 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 from caushell_tb.contract import prepare_task,manifest,save,sha,overlay,validate_overlay,task_users,validate_native_client
 
 
+from caushell_tb.native_inventory import load as load_native_inventory
+
 def main():
     p=argparse.ArgumentParser()
     for name in ['source','output','assets','runtime-root','host-guard','guard-config']:p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--docker',default='/Users/huangyu/.docker/bin/docker');p.add_argument('--mode',choices=['offline','local'],default='offline')
     p.add_argument('--legacy-hooks',action='store_true',help='Keep observations unknown when no owning executor transport is supplied')
+    p.add_argument('--native-inventory',type=Path,help='Trusted closed-runtime deployment attestation, bound to the exact image')
     p.add_argument('--steps',type=Path);p.add_argument('--provider',type=Path);p.add_argument('--system-prompt',type=Path,required=True);p.add_argument('--authorize-local',action='store_true')
     a=p.parse_args();source=a.source.resolve();output=a.output.resolve();assets=a.assets.resolve();runtime=a.runtime_root.resolve()
     config=tomllib.loads((source/'task.toml').read_text());reference=config['environment'].get('docker_image')
@@ -54,6 +57,9 @@ def main():
       docker=a.docker,owner=owner,compose=str(output/'compose.json'),outputs=str(output/'outputs'),trial=owner,host_workdir=str(output),
       system_prompt=a.system_prompt.read_text(),agent_timeout=config.get('agent',{}).get('timeout_sec'),local_model_launch_authorized=a.authorize_local,
       fixture_steps=json.loads(a.steps.read_text()) if a.steps else [],model='fixture-model',native_max_tokens=32000)
+    if a.native_inventory:
+        load_native_inventory(a.native_inventory,image['Id'])
+        plan.update(native_inventory_path=str(a.native_inventory.resolve()),native_inventory_sha256=sha(a.native_inventory))
     if a.mode=='local':
         plan['provider']=json.loads(a.provider.read_text());plan['model']=plan['provider']['model']
     save(output/'plan.json',plan)

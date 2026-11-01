@@ -83,6 +83,10 @@ def validate_container(info, expected_image, assets, mount, evidence):
 
 
 def verify_plan(plan):
+    if plan.get('native_inventory_path'):
+        from .native_inventory import load
+        if sha(plan['native_inventory_path'])!=plan['native_inventory_sha256']:raise ValueError('Native implementation contract changed')
+        load(plan['native_inventory_path'],plan['image_id'])
     for name,digest in plan.get('execution_frame_files',{}).items():
         if sha(Path(plan['execution_frame_root'])/name)!=digest:raise ValueError('Execution-frame collector changed')
     for field in ['runtime_files','integration_files']:

@@ -171,3 +171,38 @@ host example and `PYTHONPATH` to the pinned RQ3 runtime. These tests use a local
 engineering HTTP listener, not a model endpoint. Native-client integration tests
 must additionally verify the framework's tool-result/cwd lifecycle in a disposable
 container.
+
+### Native implementation evidence
+
+New plans may supply `prepare.py --native-inventory TRUSTED_MANIFEST`. This is an
+operator-authored deployment contract, never model output, task metadata, a command
+name heuristic or a version probe. It is optional; no inventory means no positive
+native-family facts. Existing frozen plans are unchanged.
+
+The bounded JSON schema is `{schema: 1, image_id: "sha256:...", commands: {...}}`.
+Each command entry contains `variant`, an absolute `executable`, `closed_runtime:
+true`, and `files`, mapping absolute paths to `{sha256, size}`. The operator must
+attest the implementation family and a complete loading closure for that immutable
+image: pinned files must determine the implementation, with no unlisted ambient
+code-loading or output-control inputs. Merely knowing the executable hash, version
+text or image name does not justify `closed_runtime`. Dynamic loader dependencies
+and configuration must be included; unsupported closures must omit the entry.
+The manifest is SHA-pinned into the plan and rechecked before execution. Limits are
+16 command entries, 64 files per entry and 16 MiB total pinned bytes.
+
+At the existing paused Bash gate, builtin `type` observes actual command resolution,
+including hash-table state, functions, aliases and PATH. It never executes the
+selected program. Relative, missing, builtin or function/alias resolutions do not
+supply a native implementation fact. The protected namespace observer rechecks the
+pinned closure and actual execute permission; unknown or nonempty loader controls,
+missing files, changed bytes or incomplete observations omit the fact. These checks
+happen before release and are serialized with ordinary namespace observations.
+No extra shell, version command, model request or resource grant is introduced.
+Facts are scoped to the current execution frame; core invalidation after writes,
+prefix environment changes and unproven execution remains in force. An inventory
+failure never substitutes Allow for Ask or bypasses an independent Deny.
+
+`test_native_inventory.py` uses inert files and fabricated deployment contracts to
+check lookup and evidence wiring; it is not an attestation of a benchmark image.
+`test_owned_frames.py` covers the extended protocol through the actual approval
+gate. No deployment inventory was added to historical RQ3 runs.

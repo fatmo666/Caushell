@@ -29,7 +29,7 @@ class BridgeTests(unittest.TestCase):
         class Observer:
             stdin=io.BytesIO()
             def poll(self):return None
-        engine=ExternalEngine.__new__(ExternalEngine);engine.parent,client=socket.socketpair();engine.failed=None;engine.journal=Journal();engine.observer=Observer()
+        engine=ExternalEngine.__new__(ExternalEngine);engine.observer_lock=threading.Lock();engine.parent,client=socket.socketpair();engine.failed=None;engine.journal=Journal();engine.observer=Observer()
         r,w=os.pipe();engine.observer_reader=os.fdopen(r,'rb')
         request=dict(id=1,op='entry',path='/app/task',limit=None)
         wrong=dict(request, id=2)

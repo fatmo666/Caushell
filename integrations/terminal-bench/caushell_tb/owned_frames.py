@@ -18,10 +18,11 @@ _spec=importlib.util.spec_from_file_location('caushell_owned_frame_protocol',_pr
 protocol=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(protocol)
 
 
-def wrapped_command(command,gate,endpoint,ticket,nonce,names,observer,variables=()):
+def wrapped_command(command,gate,endpoint,ticket,nonce,names,observer,variables=(),natives=()):
     status='__caushell_status_'+secrets.token_hex(16)
     args=[endpoint,ticket,nonce,status]
-    source='builtin source '+shlex.quote(gate)+' '+' '.join(shlex.quote(x) for x in args)+' "$?" '+str(len(observer))+' '+' '.join(shlex.quote(x) for x in [*observer,str(len(names)),*names,*variables])
+    groups=['--native-v1',str(len(names)),str(len(variables)),str(len(natives)),*names,*variables,*natives] if natives else [str(len(names)),*names,*variables]
+    source='builtin source '+shlex.quote(gate)+' '+' '.join(shlex.quote(x) for x in args)+' "$?" '+str(len(observer))+' '+' '.join(shlex.quote(x) for x in [*observer,*groups])
     # Source returns after the gate; the user's code is not inside a function or
     # a sourced file. Conditional restoration preserves both $? and errexit.
     return (f'if {source}; then\nif ( builtin exit "${{{status}}}" ); then\n'
@@ -64,7 +65,8 @@ class FrameServer:
         plan=self.lifecycle.engine.plan(row['input']['command'],cwd,self.lifecycle.session,executor)
         names=protocol.planned_names(plan)
         variables=protocol.planned_variables(plan)
-        command=wrapped_command(row['input']['command'],self.gate,self.endpoint,ticket,nonce,names,self.observer,variables)
+        natives=protocol.planned_natives(plan)
+        command=wrapped_command(row['input']['command'],self.gate,self.endpoint,ticket,nonce,names,self.observer,variables,natives)
         with self.lock:
             if self.closed or len(self.pending)>=256:raise ValueError('Owning executor queue unavailable')
             self.pending[ticket]=dict(tool_id=tool_id,nonce=nonce,names=names,variables=variables,executor=executor,issued_ns=time.monotonic_ns())

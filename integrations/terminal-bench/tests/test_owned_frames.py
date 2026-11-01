@@ -16,9 +16,9 @@ BINARY=os.environ.get('CAUSHELL_TEST_HOST')
 class Engine:
     identity={'frame_submit_protocol':1}
     rpc_lock=threading.RLock()
-    def __init__(self,decision):self.decision=decision;self.frames=[];self.authorizations=[]
+    def __init__(self,decision):self.decision=decision;self.frames=[];self.authorizations=[];self.natives=[]
     def plan(self,command,cwd,session,executor):
-        return dict(binding=dict(executor_instance_id=executor),requirements=dict(environment_names=['HOME','TEST_VALUE','name','status'],variable_names=['LOCAL','PWD'],pathname=True))
+        return dict(binding=dict(executor_instance_id=executor),requirements=dict(environment_names=['HOME','TEST_VALUE','name','status'],variable_names=['LOCAL','PWD'],pathname=True,**(dict(native_command_names=self.natives) if self.natives else {})))
     def check_observed(self,command,cwd,session,executor,nonce,raw,names,decode,tool_use_id,observed_home=None):
         frame=decode(self.plan(command,cwd,session,executor),nonce,raw);frame['_observed_shell_home']=observed_home;self.frames.append(frame)
         return dict(decision=self.decision,check_receipt=dict(check_id=dict(session_id=session,sequence_no=1),state_revision=1))
@@ -36,11 +36,11 @@ class OwningFrameTests(unittest.TestCase):
         self.assertFalse(any(v['name']=='LOCAL' for v in facts[0]['environment']))
         self.assertEqual(row['status'],'executed')
 
-    def trial(self,command,*,prelude='',decision='allow',policy='approve',stdin=None,transport_failure=False):
+    def trial(self,command,*,prelude='',decision='allow',policy='approve',stdin=None,transport_failure=False,natives=()):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);integration=Path(__file__).resolve().parents[1]
             for name,source in [('owning-frame.bash',integration/'owning-frame.bash'),('capture.bash',integration.parent/'execution-frame/capture.bash')]:shutil.copy2(source,root/name)
-            journal=BufferedJournal(root/'events.jsonl');engine=Engine(decision)
+            journal=BufferedJournal(root/'events.jsonl');engine=Engine(decision);engine.natives=list(natives)
             lifecycle=OwningFrameLifecycle('s',journal,engine,str(root/'owning-frame.bash'),[BINARY],approval_policy=policy,address=('127.0.0.1',0),public_host='127.0.0.1')
             try:
                 if transport_failure:lifecycle.frames.endpoint='http://127.0.0.1:1/frame'
@@ -61,6 +61,15 @@ class OwningFrameTests(unittest.TestCase):
                 self.assertEqual(len(lifecycle.frames.pending),0)
                 return process,row,facts,engine.authorizations,marker
             finally:lifecycle.close();journal.close()
+
+    def test_extended_native_plan_passes_through_the_actual_owning_gate(self):
+        p,row,facts,approved,_=self.trial('builtin printf ok',natives=('printf','bash'))
+        self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(p.stdout,'ok')
+        lookups=facts[0]['_native_executables']
+        self.assertEqual(lookups['printf'],dict(kind='unavailable',path=''))
+        self.assertEqual(lookups['bash']['kind'],'file')
+        self.assertTrue(lookups['bash']['path'].startswith('/'))
+        self.assertEqual(approved,[])
 
     def test_real_owner_captures_shell_options_and_preserves_status(self):
         p,row,facts,_,_=self.trial('printf "%s|%s|%s" "$?" "$name" "$status"',prelude='set -f; shopt -s nullglob; (exit 7)')

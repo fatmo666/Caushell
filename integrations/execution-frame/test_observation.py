@@ -19,15 +19,17 @@ class PausedBash:
         self.home, self.cwd, self.setup = str(home), str(cwd), setup
         self.process = None
 
-    def capture(self, nonce, names, variables=()):
+    def capture(self, nonce, names, variables=(), natives=()):
+        capture_name='caushell_frame_capture_extended' if natives else 'caushell_frame_capture_plan'
+        group=[str(len(names)),str(len(variables)),str(len(natives)),*names,*variables,*natives] if natives else [str(len(names)),*names,*variables]
         script = (". " + shlex.quote(str(HERE / "capture.bash")) + "\n" + self.setup
-                  + '\ncaushell_frame_capture_plan "$@" || exit "$?"\nIFS= builtin read -r gate || :\n')
+                  + '\n'+capture_name+' "$@" || exit "$?"\nIFS= builtin read -r gate || :\n')
         self.process = subprocess.Popen(
-            ["/bin/bash", "--noprofile", "--norc", "-c", script, "owned-frame", nonce, str(len(names)), *names, *variables],
+            ["/bin/bash", "--noprofile", "--norc", "-c", script, "owned-frame", nonce, *group],
             cwd=self.cwd, env=dict(PATH="/usr/bin:/bin", HOME=self.home, LC_ALL="C"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         fields = []
-        for _ in range(21 + 3 * len(names) + (2 + 4 * len(variables) if variables else 0)):
+        for _ in range(21 + 3 * len(names) + (2 + 4 * len(variables) if variables else 0) + (2 + 3 * len(natives) if natives else 0)):
             value = bytearray()
             while True:
                 byte = self.process.stdout.read(1)

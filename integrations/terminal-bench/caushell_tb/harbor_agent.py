@@ -16,6 +16,7 @@ from .bridge import ExternalEngine,exec_prefix
 from .journal import BufferedJournal
 from . import native_loop
 from .provider import Provider
+from .native_inventory import load as load_native_inventory
 from .owned_frames import OwningFrameLifecycle
 
 class FixtureLedger:
@@ -106,7 +107,11 @@ class TaskFaithfulClaude(ClaudeCode):
         save(folder/'task-context.json',dict(identity=fields[0],home=home,path=path,cwd=cwd,agent_user=c['agent_user'],phase_environment_keys=sorted(task_env),task_config_sha256=c['task_config_sha256']))
         session=str(uuid.uuid4());engine=None;model=None;lifecycle=None
         try:
-            engine=ExternalEngine(docker,container,c['agent_user'],asset_command(c,'observer'),c['host_guard'],c['guard_config'],folder,journal,home,cwd)
+            inventory=None
+            if c.get('native_inventory_path'):
+                if sha(c['native_inventory_path'])!=c['native_inventory_sha256']:raise ValueError('Native implementation contract changed')
+                inventory=load_native_inventory(c['native_inventory_path'],c['image_id'])
+            engine=ExternalEngine(docker,container,c['agent_user'],asset_command(c,'observer'),c['host_guard'],c['guard_config'],folder,journal,home,cwd,native_inventory=inventory)
             lifecycle=OwningFrameLifecycle(session,journal,engine,c['asset_mount']+'/owning-frame.bash',asset_command(c,'observer')) if c.get('owning_frames') else Lifecycle(session,journal,engine)
             if c['mode']=='offline':
                 model=MockModel(c['fixture_steps'],FixtureLedger(),session,journal,address=('0.0.0.0',0))

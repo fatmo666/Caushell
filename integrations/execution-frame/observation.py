@@ -39,6 +39,14 @@ def planned_variables(plan):
     return tuple(names)
 
 
+def planned_natives(plan):
+    names=plan.get('requirements',{}).get('native_command_names',[])
+    if (not isinstance(names,list) or len(names)>16 or len(set(n for n in names if isinstance(n,str)))!=len(names)
+            or any(not isinstance(n,str) or not re.fullmatch(r'[A-Za-z0-9_.+-]{1,128}',n) for n in names)):
+        raise ObservationUnavailable('invalid native command plan')
+    return tuple(names)
+
+
 def decode(plan, nonce, raw):
     """Decode bytes from the trusted owning-frame channel, never tool_input."""
     names = planned_names(plan)
@@ -49,6 +57,19 @@ def decode(plan, nonce, raw):
         fields = raw[:-1].decode("utf-8", errors="strict").split("\0")
     except UnicodeError as e:
         raise ObservationUnavailable("capture is not representable as UTF-8") from e
+    natives=planned_natives(plan)
+    native_executables={}
+    if natives:
+        tail=2+3*len(natives)
+        if len(fields)<tail or fields[-tail]!='caushell-native-executables-v1' or fields[-1]!='END':
+            raise ObservationUnavailable('missing native executable channel')
+        rows=fields[-tail+1:-1]
+        for i,name in enumerate(natives):
+            got,kind,path=rows[3*i:3*i+3]
+            if got!=name or kind not in ('file','unavailable') or (kind=='unavailable' and path) or (kind=='file' and (not path.startswith('/') or len(path)>4096)):
+                raise ObservationUnavailable('invalid owning executable lookup')
+            native_executables[name]=dict(kind=kind,path=path)
+        fields=fields[:-tail]
     width = 3
     marker = 21 + 3 * len(names)
     if variables and len(fields) > marker and fields[marker] == "caushell-shell-scalars-v2":
@@ -113,6 +134,7 @@ def decode(plan, nonce, raw):
         result["variables"] = scalars
         if integers:
             result["integer_variables"] = integers
+    if natives:result["_native_executables"]=native_executables
     return result
 
 
@@ -121,6 +143,8 @@ def collect(plan, owning_executor_capture):
     names = planned_names(plan)
     variables = planned_variables(plan)
     nonce = secrets.token_hex(16)
+    natives=planned_natives(plan)
+    if natives:return decode(plan,nonce,owning_executor_capture(nonce,names,variables,natives))
     raw = (owning_executor_capture(nonce, names, variables) if variables
            else owning_executor_capture(nonce, names))
     return decode(plan, nonce, raw)

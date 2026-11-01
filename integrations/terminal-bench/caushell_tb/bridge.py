@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from .native_inventory import LOADER_NAMES, verified_variants
 import select
 import socket
 import subprocess
@@ -37,7 +38,10 @@ def exec_prefix(docker, container, user=None, cwd=None):
 
 
 class ExternalEngine:
-    def __init__(self,docker,container,user,observer_command,host_binary,config,folder,journal,home,workspace):
+    def __init__(self,docker,container,user,observer_command,host_binary,config,folder,journal,home,workspace,native_inventory=None):
+        self.native_inventory=native_inventory or {}
+        self.observer_lock=threading.Lock()
+        self.native_observation_id=0
         self.journal,self.home,self.workspace=journal,home,workspace
         self.buffer=b'';self.failed=None;self.closed=False;self.rpc_lock=threading.RLock()
         folder=Path(folder);folder.mkdir(exist_ok=True)
@@ -72,11 +76,7 @@ class ExternalEngine:
                 if len(raw)>MAX_PACKET or not raw.endswith(b'\n'):raise ValueError('Invalid guard observation frame')
                 request=json.loads(raw)
                 if set(request)!={'id','op','path','limit'} or request['op'] not in ALLOWED or not isinstance(request['id'],int):raise ValueError('Unrecognized observation request')
-                if self.observer.poll() is not None:raise EOFError('Namespace observer exited')
-                began=time.monotonic_ns();self.observer.stdin.write(raw);self.observer.stdin.flush()
-                response=line(self.observer_reader)
-                if response.get('request')!=request:raise ValueError('Cross-request observation response')
-                self.journal.emit('namespace_observation',request=request,response=response,elapsed_ns=time.monotonic_ns()-began)
+                response=self._observe(request)
                 writer.write(json.dumps(response).encode()+b'\n');writer.flush()
         except BaseException as error:
             self.failed=repr(error)
@@ -84,6 +84,21 @@ class ExternalEngine:
             try:self.parent.shutdown(socket.SHUT_RDWR)
             except OSError:pass
         finally:reader.close();writer.close()
+
+    def _observe(self,request):
+        with self.observer_lock:
+            if self.observer.poll() is not None:raise EOFError('Namespace observer exited')
+            began=time.monotonic_ns()
+            self.observer.stdin.write(json.dumps(request).encode()+b'\n');self.observer.stdin.flush()
+            response=line(self.observer_reader)
+            if response.get('request')!=request:raise ValueError('Cross-request observation response')
+            self.journal.emit('namespace_observation',request=request,response=response,elapsed_ns=time.monotonic_ns()-began)
+            return response
+
+    def _native_file(self,path):
+        self.native_observation_id+=1
+        response=self._observe(dict(id=(1<<63)+self.native_observation_id,op='runtime_file',path=path,limit=None))
+        return response.get('value',{})
 
     def call(self, request, tool_use_id=None):
         with self.rpc_lock:return self._call(request,tool_use_id)
@@ -110,7 +125,14 @@ class ExternalEngine:
     def plan(self,command,cwd,session,executor,home=None,home_is_actual=False):
         request=self.request(command,cwd,session)
         if home_is_actual:request['home']=home
-        return self.call(dict(kind='execution_frame_plan',payload=dict(request=request,executor_instance_id=executor)))
+        plan=self.call(dict(kind='execution_frame_plan',payload=dict(request=request,executor_instance_id=executor)))
+        inventory=getattr(self,'native_inventory',{})
+        if inventory.get('commands'):
+            names=sorted(set(plan['requirements']['environment_names'])|set(LOADER_NAMES))
+            if len(names)<=128:
+                plan['requirements']['environment_names']=names
+                plan['requirements']['native_command_names']=sorted(inventory['commands'])
+        return plan
 
     def check(self,command,cwd,session,intent='propose_for_execution',tool_use_id=None):
         # Legacy hooks still preserve unknown facts; they never probe another Shell.
@@ -123,6 +145,12 @@ class ExternalEngine:
             request=self.request(command,cwd,session);request['home']=observed_home
             try:
                 frame=decode(plan,nonce,raw)
+                lookups=frame.pop('_native_executables',{})
+                inventory=getattr(self,'native_inventory',{})
+                if inventory.get('commands'):
+                    verified=verified_variants(inventory,frame,lookups,self._native_file)
+                    self.journal.emit('native_implementation_evidence',tool_use_id=tool_use_id,verified=verified,requested=sorted(inventory['commands']))
+                    if verified:frame['native_variants']=verified
                 if native_variants:frame['native_variants']=dict(native_variants)
                 request['shell_state_before']['execution_frame']=frame
             except ValueError as error:

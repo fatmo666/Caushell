@@ -85,3 +85,26 @@ caushell_frame_capture_plan() (
         builtin printf 'END\0'
     fi
 )
+
+# Optional extended plan: nonce, env count, scalar count, native count, groups.
+# Builtin type reads this owning frame's functions, aliases, hash table and PATH;
+# it never executes the selected program. Missing/relative/ambiguous lookup is unknown.
+caushell_frame_capture_extended() (
+    [[ $2 =~ ^[0-9]+$ && $3 =~ ^[0-9]+$ && $4 =~ ^[0-9]+$ && $2 -le 128 && $3 -le 128 && $4 -le 16 && $# -eq $((4+$2+$3+$4)) ]] || exit 64
+    caushell_frame_capture_plan "$1" "$2" "${@:5:$(( $2+$3 ))}" || exit 64
+    shift "$((4+$2+$3))"
+    builtin printf 'caushell-native-executables-v1\0'
+    while (( $# )); do
+        [[ $1 =~ ^[a-zA-Z0-9_.+-]+$ && ${#1} -le 128 ]] || exit 64
+        builtin printf '%s\0' "$1"
+        if [[ $(builtin type -t -- "$1" 2>/dev/null) == file ]]; then
+            set -- "$1" "$(builtin type -p -- "$1" 2>/dev/null)" "${@:2}"
+            if [[ $2 == /* && $2 != *$'\n'* ]]; then
+                builtin printf 'file\0%s\0' "$2"
+            else builtin printf 'unavailable\0\0'; fi
+            shift
+        else builtin printf 'unavailable\0\0'; fi
+        shift
+    done
+    builtin printf 'END\0'
+)
