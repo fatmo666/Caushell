@@ -477,6 +477,7 @@ modifiers:
             .find(|p| p.name.as_str() == "output")
             .unwrap();
         parameter.projected_values = Some(vec![caushell_profile::ProjectedSemanticValue {
+            path_domain: None,
             source_index: 0,
             preserves_source: false,
             resolution: SemanticValueResolution::Known("/outside/a'$VAR".into()),
@@ -618,6 +619,7 @@ modifiers:
         // source operand. Reuse the semantic view, not a second text parser.
         bound.bound_parameters[0].projected_values =
             Some(vec![caushell_profile::ProjectedSemanticValue {
+                path_domain: None,
                 source_index: 0,
                 preserves_source: false,
                 resolution: SemanticValueResolution::Known("/outside/a.py".into()),

@@ -236,6 +236,10 @@ fn semantic_path_resolution(
     home: Option<&str>,
 ) -> (PathResolution, bool) {
     match value {
+        SemanticValueRef::Projected { value, .. } if value.path_domain.is_some() => (
+            runtime_input_path_resolution(&"native payload", value.path_domain.as_ref(), cwd),
+            runtime_input_path_depends_on_cwd(value.path_domain.as_ref()),
+        ),
         SemanticValueRef::Projected { source, value } => match &value.resolution {
             SemanticValueResolution::Known(text) => (
                 PathResolution::Concrete {

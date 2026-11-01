@@ -527,6 +527,7 @@ fn emit_value(
         .as_mut()
         .unwrap()
         .push(ProjectedSemanticValue {
+            path_domain: None,
             source_index,
             preserves_source,
             resolution,

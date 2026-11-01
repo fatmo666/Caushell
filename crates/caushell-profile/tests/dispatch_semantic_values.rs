@@ -275,6 +275,7 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
         }),
     };
     parameter.projected_values = Some(vec![ProjectedSemanticValue {
+        path_domain: None,
         source_index: 0,
         preserves_source: false,
         resolution: SemanticValueResolution::Unknown(ProjectionUnknownReason::DynamicArgument),

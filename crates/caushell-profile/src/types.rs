@@ -990,6 +990,9 @@ pub enum SemanticValueResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedSemanticValue {
+    /// A path-only overapproximation from a complete native payload decoder.
+    /// It grants no scalar bytes, argv ownership, namespace fact or authority.
+    pub path_domain: Option<caushell_types::RuntimeArgumentDomain>,
     /// Index into the untouched BoundParameter::values; retains spans,
     /// binding source and materialization provenance without copying them.
     pub source_index: usize,

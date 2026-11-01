@@ -1,7 +1,7 @@
 //! Bounded AWK syntax/effect decoding. Regexes and programs are never evaluated.
 //! A complete supported program is required before returning any effects.
 use crate::ProjectionUnknownReason;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 type Result<T> = std::result::Result<T, ProjectionUnknownReason>;
 fn invalid<T>() -> Result<T> {
@@ -14,6 +14,8 @@ pub(crate) struct AwkTargets {
     pub writes: Vec<(usize, Option<String>)>,
     pub executions: Vec<usize>,
     pub stdout_emissions: Vec<usize>,
+    pub read_domains: Vec<(usize, caushell_types::RuntimeArgumentDomain)>,
+    pub write_domains: Vec<(usize, caushell_types::RuntimeArgumentDomain)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -259,6 +261,62 @@ impl Lexer<'_> {
 #[derive(Default)]
 struct Value {
     literal: Option<String>,
+    // A native numeric conversion, or a counter joined with its default empty
+    // initial value. Never an exact value or an assertion about record count.
+    numeric: bool,
+    variable: Option<String>,
+    template: Option<(String, String)>,
+}
+impl Value {
+    fn number() -> Self {
+        Self {
+            numeric: true,
+            ..Self::default()
+        }
+    }
+    fn concat(self, other: Self) -> Self {
+        let a = self.literal.as_ref().map(|s| (s.clone(), String::new()));
+        let b = other.literal.as_ref().map(|s| (String::new(), s.clone()));
+        let template = match (&self.template, &other.template, &a, &b) {
+            (Some((p, s)), _, _, Some((_, b))) => Some((p.clone(), format!("{s}{b}"))),
+            (_, Some((p, s)), Some((a, _)), _) => Some((format!("{a}{p}"), s.clone())),
+            _ if self.literal.is_some() && other.numeric => {
+                Some((self.literal.clone().unwrap(), String::new()))
+            }
+            _ if self.numeric && other.literal.is_some() => {
+                Some((String::new(), other.literal.clone().unwrap()))
+            }
+            _ => None,
+        };
+        Self {
+            literal: self.literal.zip(other.literal).map(|(a, b)| a + &b),
+            template,
+            ..Self::default()
+        }
+    }
+    fn path_domain(&self) -> Option<caushell_types::RuntimeArgumentDomain> {
+        let (prefix, suffix) = self.template.as_ref()?;
+        if prefix.len() + suffix.len() > 4096
+            || prefix.contains('\0')
+            || suffix.contains(['/', '\0'])
+        {
+            return None;
+        }
+        let (parent, leaf) = prefix.rsplit_once('/').unwrap_or((".", prefix));
+        // The default, uninitialized value can be empty. Retain a real leaf
+        // and never turn that case into '.', '..', or the bounding directory.
+        if !leaf.chars().chain(suffix.chars()).any(|c| c != '.') {
+            return None;
+        }
+        Some(caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: vec![if parent.is_empty() {
+                "/".into()
+            } else {
+                parent.into()
+            }],
+            may_escape: false,
+        })
+    }
 }
 struct Parser<'a> {
     lexer: Lexer<'a>,
@@ -268,8 +326,18 @@ struct Parser<'a> {
     targets: AwkTargets,
     functions: BTreeSet<String>,
     calls: Vec<(usize, String)>,
+    numeric_variables: BTreeSet<String>,
+    writes: BTreeMap<String, bool>,
 }
 impl Parser<'_> {
+    fn write_variable(&mut self, value: &Value, numeric: bool) {
+        if let Some(name) = &value.variable {
+            self.writes
+                .entry(name.clone())
+                .and_modify(|n| *n &= numeric)
+                .or_insert(numeric);
+        }
+    }
     fn next(&mut self) -> Result<()> {
         let (t, o) = self.lexer.token()?;
         self.token = t;
@@ -480,6 +548,11 @@ impl Parser<'_> {
         if self.op(">") || self.op(">>") {
             self.next()?;
             let target = self.expr(0, false)?;
+            if let Some(domain) = target.path_domain() {
+                self.targets
+                    .write_domains
+                    .push((self.targets.writes.len(), domain));
+            }
             self.targets.writes.push((offset, target.literal));
         } else if self.op("|") || self.op("|&") {
             self.next()?;
@@ -500,6 +573,7 @@ impl Parser<'_> {
         let mut lhs = self.primary()?;
         loop {
             if self.op("[") {
+                self.write_variable(&lhs, false);
                 self.next()?;
                 self.expr(0, false)?;
                 while self.op(",") {
@@ -511,8 +585,17 @@ impl Parser<'_> {
                 continue;
             }
             if self.op("++") || self.op("--") {
+                let old_numeric = lhs.numeric;
+                self.write_variable(&lhs, true);
                 self.next()?;
-                lhs = Value::default();
+                // The update establishes a numeric variable, but the returned
+                // old value must not inherit that proof before the whole-
+                // program join has ruled out a pre-existing string value.
+                lhs = if old_numeric {
+                    Value::number()
+                } else {
+                    Value::default()
+                };
                 continue;
             }
             if print_arg && (self.op(">") || self.op(">>") || self.op("|") || self.op("|&")) {
@@ -550,12 +633,7 @@ impl Parser<'_> {
                 _ => {
                     if min <= 8 && self.starts_primary() {
                         let rhs = self.expr(9, print_arg)?;
-                        lhs = Value {
-                            literal: match (lhs.literal, rhs.literal) {
-                                (Some(a), Some(b)) => Some(a + &b),
-                                _ => None,
-                            },
-                        };
+                        lhs = lhs.concat(rhs);
                         continue;
                     }
                     break;
@@ -564,10 +642,21 @@ impl Parser<'_> {
             if bp < min {
                 break;
             }
+            let numeric = !matches!(&self.token, Token::Op("="));
+            let assignment = matches!(
+                &self.token,
+                Token::Op("=" | "+=" | "-=" | "*=" | "/=" | "%=" | "^=")
+            );
+            if matches!(&self.token, Token::Name(v) if v == "in") {
+                self.write_variable(&lhs, false);
+            }
             self.next()?;
             self.newline()?;
-            self.expr(if right { bp } else { bp + 1 }, print_arg)?;
-            lhs = Value::default();
+            let rhs = self.expr(if right { bp } else { bp + 1 }, print_arg)?;
+            if assignment {
+                self.write_variable(&lhs, numeric || rhs.numeric);
+            }
+            lhs = if numeric { Value::number() } else { rhs };
         }
         Ok(lhs)
     }
@@ -606,11 +695,14 @@ impl Parser<'_> {
         match self.token.clone() {
             Token::String(s) => {
                 self.next()?;
-                Ok(Value { literal: Some(s) })
+                Ok(Value {
+                    literal: Some(s),
+                    ..Value::default()
+                })
             }
             Token::Number => {
                 self.next()?;
-                Ok(Value::default())
+                Ok(Value::number())
             }
             Token::Op("/") => {
                 self.lexer.regex_tail()?;
@@ -630,10 +722,17 @@ impl Parser<'_> {
                 self.need(")")?;
                 Ok(value)
             }
-            Token::Op("!" | "+" | "-" | "++" | "--" | "$") => {
+            Token::Op(op @ ("!" | "+" | "-" | "++" | "--" | "$")) => {
                 self.next()?;
-                self.expr(12, false)?;
-                Ok(Value::default())
+                let value = self.expr(12, false)?;
+                if matches!(op, "++" | "--") {
+                    self.write_variable(&value, true);
+                }
+                Ok(if op == "$" {
+                    Value::default()
+                } else {
+                    Value::number()
+                })
             }
             Token::Name(n) if n == "getline" => self.getline(false),
             Token::Name(n) => {
@@ -645,21 +744,44 @@ impl Parser<'_> {
                     self.targets.reads.push((offset, None));
                 }
                 if self.op("(") {
-                    self.calls.push((offset, n));
+                    self.calls.push((offset, n.clone()));
                     self.next()?;
                     self.newline()?;
                     if !self.op(")") {
-                        self.expr(0, false)?;
+                        let value = self.expr(0, false)?;
+                        if matches!(
+                            n.as_str(),
+                            "sub" | "gsub" | "split" | "patsplit" | "asort" | "asorti" | "match"
+                        ) {
+                            self.write_variable(&value, false);
+                        }
                         while self.op(",") {
                             self.next()?;
                             self.newline()?;
-                            self.expr(0, false)?;
+                            let value = self.expr(0, false)?;
+                            if matches!(
+                                n.as_str(),
+                                "sub"
+                                    | "gsub"
+                                    | "split"
+                                    | "patsplit"
+                                    | "asort"
+                                    | "asorti"
+                                    | "match"
+                            ) {
+                                self.write_variable(&value, false);
+                            }
                         }
                     }
                     self.newline()?;
                     self.need(")")?;
+                    return Ok(Value::default());
                 }
-                Ok(Value::default())
+                Ok(Value {
+                    numeric: self.numeric_variables.contains(&n),
+                    variable: Some(n),
+                    ..Value::default()
+                })
             }
             _ => invalid(),
         }
@@ -667,7 +789,8 @@ impl Parser<'_> {
     fn getline(&mut self, pipe: bool) -> Result<Value> {
         let offset = self.offset;
         self.next()?;
-        if matches!(self.token, Token::Name(_)) {
+        if let Token::Name(name) = &self.token {
+            self.writes.insert(name.clone(), false);
             self.next()?;
             while self.op("[") {
                 self.next()?;
@@ -685,6 +808,11 @@ impl Parser<'_> {
         if !pipe && self.op("<") {
             self.next()?;
             let file = self.expr(8, false)?;
+            if let Some(domain) = file.path_domain() {
+                self.targets
+                    .read_domains
+                    .push((self.targets.reads.len(), domain));
+            }
             self.targets.reads.push((offset, file.literal));
         }
         Ok(Value::default())
@@ -731,6 +859,15 @@ fn pure_builtin(n: &str) -> bool {
     )
 }
 pub(crate) fn decode(text: &str, max_bytes: usize, max_operations: usize) -> Result<AwkTargets> {
+    decode_with_variables(text, max_bytes, max_operations, true)
+}
+
+pub(crate) fn decode_with_variables(
+    text: &str,
+    max_bytes: usize,
+    max_operations: usize,
+    infer_variables: bool,
+) -> Result<AwkTargets> {
     if text.len() > max_bytes {
         return Err(ProjectionUnknownReason::PayloadBudgetExceeded);
     }
@@ -750,9 +887,88 @@ pub(crate) fn decode(text: &str, max_bytes: usize, max_operations: usize) -> Res
         targets: AwkTargets::default(),
         functions: BTreeSet::new(),
         calls: Vec::new(),
+        numeric_variables: BTreeSet::new(),
+        writes: BTreeMap::new(),
     };
     p.next()?;
     p.program()?;
+    // A whole-program join, not a guessed execution order. Any nonnumeric
+    // write poisons a variable across branches, loops, records and -e pieces.
+    // Functions/local scopes and custom number formats remain opaque here.
+    let numeric = if infer_variables
+        && p.functions.is_empty()
+        && !p.writes.keys().any(|n| {
+            matches!(
+                n.as_str(),
+                "CONVFMT" | "OFMT" | "SYMTAB" | "FUNCTAB" | "ARGV" | "ARGC" | "PROCINFO"
+            )
+        }) {
+        p.writes
+            .iter()
+            .filter(|(name, numeric)| {
+                **numeric
+                    && !matches!(
+                        name.as_str(),
+                        "ARGC"
+                            | "ARGV"
+                            | "ENVIRON"
+                            | "FILENAME"
+                            | "FS"
+                            | "RS"
+                            | "OFS"
+                            | "ORS"
+                            | "SUBSEP"
+                            | "CONVFMT"
+                            | "OFMT"
+                            | "IGNORECASE"
+                            | "TEXTDOMAIN"
+                            | "BINMODE"
+                            | "PROCINFO"
+                            | "LINT"
+                            | "FPAT"
+                            | "FIELDWIDTHS"
+                            | "RT"
+                            | "RSTART"
+                            | "RLENGTH"
+                            | "NF"
+                            | "NR"
+                            | "FNR"
+                            | "ERRNO"
+                            | "FUNCTAB"
+                            | "SYMTAB"
+                    )
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    if !numeric.is_empty() {
+        let remaining = max_operations.saturating_sub(p.lexer.count);
+        p.lexer.pos = 0;
+        p.lexer.count = 0;
+        p.lexer.limit = remaining;
+        p.targets = AwkTargets::default();
+        p.calls.clear();
+        p.functions.clear();
+        p.writes.clear();
+        p.numeric_variables = numeric;
+        p.next()?;
+        p.program()?;
+    }
+    // Arithmetic expressions can also carry path bounds without variables;
+    // custom formatting invalidates these in either parsing pass.
+    if !p.functions.is_empty()
+        || p.writes.keys().any(|n| {
+            matches!(
+                n.as_str(),
+                "CONVFMT" | "OFMT" | "SYMTAB" | "FUNCTAB" | "ARGV" | "ARGC" | "PROCINFO"
+            )
+        })
+    {
+        p.targets.read_domains.clear();
+        p.targets.write_domains.clear();
+    }
     Ok(p.targets)
 }
 

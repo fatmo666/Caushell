@@ -468,6 +468,7 @@ mod tests {
                 .with_value(source);
         for preserves_source in [false, true] {
             parameter.projected_values = Some(vec![ProjectedSemanticValue {
+                path_domain: None,
                 source_index: 0,
                 preserves_source,
                 resolution: SemanticValueResolution::Unknown(

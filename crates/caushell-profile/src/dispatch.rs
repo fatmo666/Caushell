@@ -674,6 +674,7 @@ fn joined_command_argument(
     Some((
         source,
         crate::ProjectedSemanticValue {
+            path_domain: None,
             source_index: 0,
             preserves_source: false,
             resolution: crate::SemanticValueResolution::Known(text),

@@ -89,7 +89,23 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             }
             PayloadInputSource::Stdin => vec![missing_input()],
         };
-        let targets = decode_targets(projection, &sources, complete_stdin);
+        let mut targets = decode_targets(projection, &sources, complete_stdin);
+        // Native -v/assignment operands can seed variables between records.
+        // Until those values are modeled, do not infer a default numeric state.
+        if projection.format == PayloadFormat::AwkProgram
+            && bound.bound_parameters.iter().any(|p| {
+                matches!(p.semantic, SemanticType::StructuredValue(_)) && !p.values.is_empty()
+            })
+        {
+            if let Ok(t) = &mut targets {
+                t.read_domains.clear();
+                t.write_domains.clear();
+            }
+        }
+        let (read_domains, write_domains) = targets
+            .as_ref()
+            .map(|t| (t.read_domains.clone(), t.write_domains.clone()))
+            .unwrap_or_default();
         let (reads, mut writes, deletes, moves, executions, stdout_emissions) = match targets {
             Ok(targets) => (
                 targets.reads,
@@ -135,10 +151,21 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             (&projection.writes, PathRole::Write, writes),
             (&projection.deletes, PathRole::Target, deletes),
         ] {
-            generated.push(target_parameter(name, role, &sources, values));
+            let domains = match role {
+                PathRole::Read => &read_domains,
+                PathRole::Write => &write_domains,
+                _ => &Vec::new(),
+            };
+            generated.push(target_parameter(name, role, &sources, values, domains));
         }
         if let Some(name) = &projection.moves {
-            generated.push(target_parameter(name, PathRole::Target, &sources, moves));
+            generated.push(target_parameter(
+                name,
+                PathRole::Target,
+                &sources,
+                moves,
+                &[],
+            ));
         }
         if let Some(name) = &projection.executions {
             let mut p = BoundParameter::new(
@@ -180,6 +207,8 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
 type Resolutions = Vec<(usize, SemanticValueResolution)>;
 #[derive(Default)]
 struct Targets {
+    read_domains: Vec<(usize, caushell_types::RuntimeArgumentDomain)>,
+    write_domains: Vec<(usize, caushell_types::RuntimeArgumentDomain)>,
     reads: Resolutions,
     writes: Resolutions,
     deletes: Resolutions,
@@ -255,6 +284,7 @@ fn decode_targets(
                 moves: known(t.moves),
                 executions: vec![],
                 stdout_emissions: vec![],
+                ..Default::default()
             })
         }
         PayloadFormat::SedProgram => {
@@ -272,6 +302,7 @@ fn decode_targets(
                 moves: vec![],
                 executions: t.executions.into_iter().map(index).collect(),
                 stdout_emissions: t.stdout_emissions.into_iter().map(index).collect(),
+                ..Default::default()
             })
         }
         PayloadFormat::AwkProgram => {
@@ -292,6 +323,8 @@ fn decode_targets(
                     .collect()
             };
             Ok(Targets {
+                read_domains: t.read_domains,
+                write_domains: t.write_domains,
                 reads: values(t.reads),
                 writes: values(t.writes),
                 deletes: vec![],
@@ -335,6 +368,7 @@ fn target_parameter(
     role: PathRole,
     sources: &[BoundValue],
     resolutions: Resolutions,
+    domains: &[(usize, caushell_types::RuntimeArgumentDomain)],
 ) -> BoundParameter {
     let mut parameter = BoundParameter::new(
         name.clone(),
@@ -348,11 +382,18 @@ fn target_parameter(
     parameter.projected_values = Some(
         resolutions
             .into_iter()
-            .map(|(source_index, resolution)| ProjectedSemanticValue {
-                source_index,
-                preserves_source: false,
-                resolution,
-            })
+            .enumerate()
+            .map(
+                |(ordinal, (source_index, resolution))| ProjectedSemanticValue {
+                    path_domain: domains
+                        .iter()
+                        .find(|(i, _)| *i == ordinal)
+                        .map(|(_, d)| d.clone()),
+                    source_index,
+                    preserves_source: false,
+                    resolution,
+                },
+            )
             .collect(),
     );
     parameter.payload_generated = true;

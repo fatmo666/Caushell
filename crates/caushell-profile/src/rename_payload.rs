@@ -719,6 +719,7 @@ fn add_path(p: &mut BoundParameter, source: BoundValue, known: Option<String>) {
         .as_mut()
         .unwrap()
         .push(ProjectedSemanticValue {
+            path_domain: None,
             source_index: index,
             preserves_source: known.is_none(),
             resolution: known.map(SemanticValueResolution::Known).unwrap_or(
@@ -733,6 +734,7 @@ fn unknown_path(p: &mut BoundParameter, source: &BoundValue, reason: ProjectionU
         .as_mut()
         .unwrap()
         .push(ProjectedSemanticValue {
+            path_domain: None,
             source_index: index,
             // An unknown transform is NOT the original path. Keep its evidence,
             // but do not inherit containment or invent a stdin dependency.
