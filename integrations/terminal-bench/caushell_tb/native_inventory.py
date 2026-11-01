@@ -11,6 +11,10 @@ import re
 
 LOADER_NAMES = ('LD_PRELOAD','LD_AUDIT','LD_LIBRARY_PATH','LD_DEBUG','LD_DEBUG_OUTPUT',
                 'LD_TRACE_LOADED_OBJECTS','LD_PROFILE','LD_PROFILE_OUTPUT',
+                'LD_SHOW_AUXV','LD_VERBOSE','LD_WARN','LD_TRACE_PRELINKING',
+                'LD_BIND_NOW','LD_BIND_NOT','LD_ASSUME_KERNEL','LD_ORIGIN_PATH',
+                'LD_USE_LOAD_BIAS','LD_DYNAMIC_WEAK','LD_HWCAP_MASK',
+                'LD_PREFER_MAP_32BIT_EXEC','LD_POINTER_GUARD','GCONV_PATH',
                 'GLIBC_TUNABLES','DYLD_INSERT_LIBRARIES','DYLD_LIBRARY_PATH',
                 'DYLD_FRAMEWORK_PATH','DYLD_FALLBACK_LIBRARY_PATH','DYLD_ROOT_PATH')
 
@@ -67,6 +71,7 @@ def verified_variants(inventory, frame, lookups, observe):
             if not isinstance(identity,dict):complete=False;break
             if (content.get('status')!='complete' or content.get('path')!=path
                     or content.get('source')!='current_process'
+                    or content.get('byte_limit')!=33_554_432
                     or content.get('sha256')!=pin['sha256']
                     or content.get('bytes_observed')!=pin['size']
                     or identity.get('size')!=pin['size']

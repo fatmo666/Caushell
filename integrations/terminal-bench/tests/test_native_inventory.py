@@ -34,9 +34,9 @@ class NativeInventoryTests(unittest.TestCase):
     def test_closed_pins_are_facts_and_missing_loader_or_file_proof_stays_unknown(self):
         frame=dict(environment=[dict(name=n,value=dict(status='absent')) for n in LOADER_NAMES])
         lookups={'clock':dict(kind='file',path='/sealed/clock')}
-        observed=dict(executable=True,content=dict(source='current_process',status='complete',path='/sealed/clock',sha256='b'*64,bytes_observed=9,identity=dict(size=9)))
+        observed=dict(executable=True,content=dict(source='current_process',byte_limit=33_554_432,status='complete',path='/sealed/clock',sha256='b'*64,bytes_observed=9,identity=dict(size=9)))
         self.assertEqual(verified_variants(inventory(),frame,lookups,lambda p:observed),{'clock':'gnu_coreutils'})
-        for bad in [dict(observed,executable=False),dict(observed,content=dict(observed['content'],status='changed')),dict(observed,content=dict(observed['content'],sha256='d'*64)),None,dict(observed,content=None),dict(observed,content=dict(observed['content'],identity=None))]:
+        for bad in [dict(observed,executable=False),dict(observed,content=dict(observed['content'],status='changed')),dict(observed,content=dict(observed['content'],sha256='d'*64)),dict(observed,content=dict(observed['content'],byte_limit=9)),None,dict(observed,content=None),dict(observed,content=dict(observed['content'],identity=None))]:
             self.assertEqual(verified_variants(inventory(),frame,lookups,lambda p:bad),{})
         self.assertEqual(verified_variants(inventory(),dict(environment=[]),lookups,lambda p:observed),{})
         frame['environment'][0]['value']=dict(status='present',value='loader.so')
