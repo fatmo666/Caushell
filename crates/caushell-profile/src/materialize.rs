@@ -37,6 +37,8 @@ pub enum ShellArrayKind {
 /// Static frame facts, separate from observed or materialized variable bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ShellVariableFacts {
+    /// Nonempty signed decimal scalar, without claiming its current value.
+    pub integer_scalar: bool,
     pub scalar_shape: Option<crate::StdoutScalarShape>,
     pub array_kind: Option<ShellArrayKind>,
     pub element_shape: Option<crate::StdoutScalarShape>,
@@ -44,6 +46,7 @@ pub struct ShellVariableFacts {
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionBindings {
+    native_variants: BTreeMap<String, String>,
     pathname_options: Option<caushell_types::ShellPathnameSnapshot>,
     pathname_fields: Vec<caushell_types::PathnameFieldsEvidence>,
     entry_variables: Option<SessionSummary>,
@@ -91,6 +94,7 @@ impl PartialEq for SessionBindings {
             ($($field:ident),* $(,)?) => { true $(&& self.$field == other.$field)* };
         }
         same!(
+            native_variants,
             pathname_options,
             pathname_fields,
             shell_kind,
@@ -202,6 +206,17 @@ impl SessionBindings {
 
     pub fn forget_all_variable_facts(&mut self) {
         self.variable_facts.clear();
+        self.native_variants.clear();
+    }
+
+    pub fn has_native_variants(&self) -> bool {
+        !self.native_variants.is_empty()
+    }
+    pub fn native_variant(&self, command: &str) -> Option<&str> {
+        self.native_variants.get(command).map(String::as_str)
+    }
+    pub fn forget_native_variants(&mut self) {
+        self.native_variants.clear();
     }
 
     pub fn has_variable_facts(&self) -> bool {
@@ -300,6 +315,7 @@ impl SessionBindings {
     }
 
     pub fn forget_variable_presence(&mut self) {
+        self.native_variants.clear();
         self.variables_complete = false;
         let names = self
             .variable_presence
@@ -571,7 +587,18 @@ impl SessionBindings {
                 if let Some(value) = value {
                     bindings.session_variables.insert(name.clone(), value);
                 }
+                if frame.integer_variables.contains(name) {
+                    bindings.set_variable_facts(
+                        name,
+                        ShellVariableFacts {
+                            integer_scalar: true,
+                            scalar_shape: Some(crate::StdoutScalarShape::ArithmeticText),
+                            ..Default::default()
+                        },
+                    );
+                }
             }
+            bindings.native_variants = frame.native_variants.clone();
         }
         bindings.pathname_options = crate::pathname::snapshot(shell_state);
 
@@ -614,6 +641,9 @@ impl SessionBindings {
     }
 
     pub fn insert_exact_scalar(&mut self, name: &str, value: impl Into<String>) {
+        if name == "PATH" {
+            self.native_variants.clear();
+        }
         self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
@@ -630,6 +660,9 @@ impl SessionBindings {
         value: impl Into<String>,
         kind: RuntimeProducedValueKind,
     ) {
+        if name == "PATH" {
+            self.native_variants.clear();
+        }
         self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
@@ -643,6 +676,9 @@ impl SessionBindings {
     }
 
     pub fn insert_opaque_dynamic(&mut self, name: &str, repr: impl Into<String>) {
+        if name == "PATH" {
+            self.native_variants.clear();
+        }
         self.mark_variable_presence_unknown(name);
         let repr = repr.into();
         self.update_exported_value(name, SessionValue::opaque_dynamic(repr.clone()));
@@ -765,6 +801,7 @@ impl SessionBindings {
     }
 
     pub fn remove(&mut self, name: &str) {
+        self.native_variants.clear();
         self.forget_variable_facts(name);
         self.argument_domains.remove(name);
         self.variable_presence
@@ -840,6 +877,7 @@ impl SessionBindings {
     }
 
     pub fn forget_environment(&mut self) {
+        self.native_variants.clear();
         self.child_environment.clear();
         self.entry_environment = None;
         self.child_environment_complete = false;
@@ -848,6 +886,7 @@ impl SessionBindings {
     /// Enter a child process after a wrapper resets (or obscures) its env.
     /// Its old shell locals must not survive as facts for a nested shell.
     pub fn reset_child_environment(&mut self, complete: bool) {
+        self.native_variants.clear();
         self.argument_domains.clear();
         self.functions.clear();
         self.variable_presence.clear();
@@ -861,6 +900,7 @@ impl SessionBindings {
     }
 
     pub fn set_environment_value(&mut self, name: &str, value: SessionValue) {
+        self.native_variants.clear();
         self.child_environment.insert(name.into(), Some(value));
     }
 
@@ -889,6 +929,21 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        // Only a proof about exported scalar bytes can cross this boundary.
+        // Shell array attributes and unexported frame locals cannot.
+        let exported_scalars: std::collections::BTreeSet<_> = self
+            .variable_fact_entries()
+            .filter(|(name, facts)| {
+                facts.array_kind.is_none()
+                    && self.get(name).is_some_and(|b| {
+                        self.environment_value(name) == EnvironmentValueRef::Present(b.value)
+                    })
+            })
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        self.variable_facts
+            .retain(|name, _| exported_scalars.contains(name));
+        self.native_variants.clear();
         self.pathname_options = None;
         self.pathname_fields.clear();
         self.aliases.clear();
@@ -931,6 +986,12 @@ impl SessionBindings {
     }
 
     fn update_exported_value(&mut self, name: &str, value: SessionValue) {
+        if matches!(
+            self.environment_value(name),
+            EnvironmentValueRef::Present(_)
+        ) {
+            self.native_variants.clear();
+        }
         if matches!(
             self.environment_value(name),
             EnvironmentValueRef::Present(_)
@@ -2187,11 +2248,13 @@ pub fn materialize_projected_invocation(
             .unwrap_or(std::slice::from_ref(original))
         {
             if arg.word_context == crate::WordContext::ShellArgument
-                && let Some(domain) = materialize_argument_domain(arg, bindings)
+                && let Some(domain) = integer_argument_domain(arg, bindings)
+                    .or_else(|| materialize_argument_domain(arg, bindings))
             {
                 let source = if matches!(
                     domain,
                     caushell_types::RuntimeArgumentDomain::GeneratedFileName { .. }
+                        | caushell_types::RuntimeArgumentDomain::TextTemplate { .. }
                 ) {
                     ImplicitInputSource::InheritedEnvironment
                 } else {
@@ -2267,6 +2330,64 @@ pub fn materialize_projected_invocation(
         arg_resolutions,
         shell_expansion_unresolved,
     }
+}
+
+fn integer_argument_domain(
+    arg: &ProjectedArg,
+    bindings: &SessionBindings,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    if arg.runtime_data
+        || arg.implicit_input_source.is_some()
+        || arg.word_context != crate::WordContext::ShellArgument
+    {
+        return None;
+    }
+    // Quotes suppress splitting. Otherwise require the actual owning IFS, not
+    // an assumption based on a missing observation. Decimal integers contain
+    // no glob syntax, and literal affixes with glob syntax are rejected below.
+    let quoted = arg.quoted && arg.node_kind == "string";
+    let safe_ifs = bindings.variable_presence("IFS") == VariablePresence::Absent
+        || bindings.get("IFS").is_some_and(|b| {
+            matches!(b.value, SessionValue::ExactScalar(v)
+            if !v.chars().any(|c| c.is_ascii_digit() || matches!(c, '+' | '-')))
+        });
+    if !quoted && !safe_ifs {
+        return None;
+    }
+    let parts = caushell_parse::scalar_word_parts(&arg.text, arg.quoted, &arg.node_kind, true)?;
+    let mut prefix = String::new();
+    let mut suffix = String::new();
+    let mut dynamic = false;
+    for part in parts {
+        match part {
+            caushell_parse::ScalarArgumentPart::Literal(value) => {
+                if value.contains(['*', '?', '[', '~']) {
+                    return None;
+                }
+                if dynamic {
+                    suffix.push_str(&value);
+                } else {
+                    prefix.push_str(&value);
+                }
+            }
+            caushell_parse::ScalarArgumentPart::Parameter(text) => {
+                let ShellParameterReference::Variable(name) =
+                    exact_shell_parameter_reference(&text)?
+                else {
+                    return None;
+                };
+                if !bindings.variable_facts(&name).integer_scalar {
+                    return None;
+                }
+                // A second unknown number keeps only outer affixes. Never
+                // concatenate an internal literal into an exact numeric value.
+                suffix.clear();
+                dynamic = true;
+            }
+            _ => return None,
+        }
+    }
+    dynamic.then_some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix })
 }
 
 pub fn materialize_argument_domain(

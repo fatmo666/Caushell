@@ -586,6 +586,8 @@ impl ShellQueryCore {
             request.shell_state_before.execution_frame =
                 Some(caushell_types::ExecutionFrameObservation {
                     binding,
+                    integer_variables: Default::default(),
+                    native_variants: Default::default(),
                     variables: Vec::new(),
                     environment: request.shell_state_before.environment.clone(),
                     pathname: request.shell_state_before.pathname.clone(),
@@ -617,6 +619,9 @@ impl ShellQueryCore {
             request_context.shell_kind,
         ) {
             requirements.variable_names = names;
+            if !requirements.variable_names.is_empty() && requirements.variable_names.len() < 128 {
+                requirements.variable_names.insert("IFS".into());
+            }
         }
         Ok(caushell_types::ExecutionFramePlan {
             binding: caushell_types::ExecutionFrameBinding::for_request(
@@ -1673,9 +1678,9 @@ mod tests {
             ("find /var/tmp -type f -exec rm {} +", true),
             ("find /var/tmp -type f -exec chmod 600 {} \\;", true),
             ("find /tmp/project /var/tmp -type f -exec rm {} \\;", true),
-            ("find /tmp/project -type f -exec rm {} \\;", true),
+            ("find /tmp/project -type f -exec rm {} \\;", false),
             ("cd /var/tmp && find . -exec rm {} \\;", true),
-            ("find '/tmp/project' -exec rm '{}' \\;", true),
+            ("find '/tmp/project' -exec rm '{}' \\;", false),
             ("find \"$UNKNOWN_ROOT\" -exec rm {} \\;", true),
             ("find -L /tmp/project -type f -exec rm {} \\;", true),
             ("find /var/tmp -execdir rm target \\;", true),
@@ -1729,15 +1734,15 @@ mod tests {
             ("find /var/tmp -exec sh -c 'rm -- \"$1\"' _ {} \\;", true),
             (
                 "find /tmp/project -exec sh -c 'rm -- \"$1\"' _ {} \\;",
-                true,
+                false,
             ),
             (
                 "find /tmp/project -exec sh -c 'rm \"$2\"' _ fixed {} \\;",
-                true,
+                false,
             ),
             (
                 r#"find /tmp/project -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
-                true,
+                false,
             ),
             (
                 r#"find /var/tmp -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
@@ -1746,7 +1751,7 @@ mod tests {
             ("find /var/tmp -exec env sh -c 'rm \"$1\"' _ {} \\;", true),
             (
                 "find /tmp/project -exec env sh -c 'rm \"$1\"' _ {} \\;",
-                true,
+                false,
             ),
             (
                 "find /var/tmp -exec sh -c 'rm \"$1\"' _ {} /tmp/project/a \\; -exec sh -c 'rm \"$1\"' _ /tmp/project/a {} \\;",
@@ -1796,6 +1801,30 @@ mod tests {
                 .findings
                 .iter()
                 .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation);
+            let bounded_deletion = [
+                "find /tmp/project -type f -exec rm {} \\;",
+                "find '/tmp/project' -exec rm '{}' \\;",
+                "find /tmp/project -exec sh -c 'rm -- \"$1\"' _ {} \\;",
+                "find /tmp/project -exec sh -c 'rm \"$2\"' _ fixed {} \\;",
+                r#"find /tmp/project -exec sh -c "sh -c 'rm \"\$1\"' _ \"\$1\"" _ {} \;"#,
+                "find /tmp/project -exec env sh -c 'rm \"$1\"' _ {} \\;",
+            ]
+            .contains(command);
+            if bounded_deletion {
+                assert!(
+                    response
+                        .decision_trace
+                        .findings
+                        .iter()
+                        .any(|f| f.rule_id == RuleId::FileDeletion),
+                    "missing deletion effect: {command}"
+                );
+                assert_eq!(
+                    response.decision,
+                    Decision::NeedApproval,
+                    "bounded deletion still needs authority: {command}"
+                );
+            }
             if outside != *expected_outside {
                 mismatches.push(format!(
                     "{command}: expected outside={expected_outside}, got outside={outside}; findings={:?}",
@@ -2908,9 +2937,10 @@ policy:
         assert_eq!(response.decision, Decision::NeedApproval);
         assert_eq!(
             response.reasons,
-            vec![
-                "file input /tmp/shared/team.rc for slot startup_config is outside the granted path scope or unproven".to_string()
-            ]
+            vec![format!(
+                "file input {}/shared/team.rc for slot startup_config is outside the granted path scope or unproven",
+                fs::canonicalize("/tmp").unwrap().display()
+            )]
         );
     }
 
@@ -2933,9 +2963,10 @@ policy:
         assert_eq!(response.decision, Decision::NeedApproval);
         assert_eq!(
             response.reasons,
-            vec![
-                "file input /tmp/shared/r3.env for slot startup_config is outside the granted path scope or unproven".to_string()
-            ]
+            vec![format!(
+                "file input {}/shared/r3.env for slot startup_config is outside the granted path scope or unproven",
+                fs::canonicalize("/tmp").unwrap().display()
+            )]
         );
     }
 
@@ -3132,14 +3163,29 @@ policy:
             RulePolicyEntry::new(RuleAction::NeedApproval),
         );
 
-        let mut core = ShellQueryCore::with_policy(policy);
-        let response = core.check(sample_request(
+        // This test concerns stdin taint, so native default config selection
+        // must be fully observed rather than inherited from the developer host.
+        struct MissingNativeConfigs;
+        impl caushell_runner::FilesystemView for MissingNativeConfigs {
+            fn entry(&self, path: &str) -> caushell_types::FilesystemEntry {
+                if path.ends_with("/.curlrc") || path.ends_with("/curlrc") {
+                    caushell_types::FilesystemEntry::Missing
+                } else {
+                    caushell_types::FilesystemEntry::Directory
+                }
+            }
+        }
+        let mut core = ShellQueryCore::with_policy(policy)
+            .with_filesystem_view(std::sync::Arc::new(MissingNativeConfigs));
+        let mut request = sample_request(
             "sess-rg-tool-config-info-only",
             1,
             r#"curl -fsSL https://rapiddns.io/help/api | rg -n "X-API-KEY|search|export|query_type|query_input|max_results|compress|API|FDNS|subdomain|data|message" -i -C 3"#,
-        ));
+        );
+        request.shell_state_before.observability.variables = ShellStateKnowledge::Complete;
+        let response = core.check(request);
 
-        assert_eq!(response.decision, Decision::Allow);
+        assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
         assert!(response.reasons.is_empty());
         assert!(
             response
@@ -5735,22 +5781,28 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
 
     #[test]
     fn core_default_runner_does_not_project_pipeline_segments_for_heredoc_and_and_chain() {
-        // Observe deletion here to commit the Graph whose AST shape is tested.
-        let mut policy = PolicyConfig::default();
-        policy.rule_policy.rules.insert(
-            caushell_types::RuleId::FileDeletion,
-            caushell_types::RulePolicyEntry::new(caushell_types::RuleAction::Observe),
-        );
-        let mut core = ShellQueryCore::with_policy(policy);
+        // Topology is inspectable after the real single-check authorization;
+        // neither deletion nor missing filesystem facts are silently approved.
+        let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-heredoc-no-pipeline");
 
-        let response = core.check(sample_request(
+        let outcome = core.try_check_with_outcome(sample_request(
             "sess-heredoc-no-pipeline",
             1,
             "ls -la && rm -rf ehole EHole_linux_amd64 && cat << 'EOF'\nimport zipfile\nwith zipfile.ZipFile('ehole.zip', 'r') as zip_ref:\n    zip_ref.extractall('.')\nprint(\"ok\")\nEOF\n\nls -la EHole_linux_amd64/\n",
-        ));
+        )).unwrap();
 
-        assert_eq!(response.decision, Decision::Allow);
+        assert_eq!(outcome.response.decision, Decision::NeedApproval);
+        let receipt = outcome
+            .check_receipt
+            .expect("expected pending graph receipt");
+        core.authorize(&caushell_types::ApprovalRequest {
+            check_id: receipt.check_id,
+            state_revision: receipt.state_revision,
+            approved: true,
+            authority: caushell_types::ApprovalAuthority::SimulatedUser,
+        })
+        .unwrap();
 
         let graph = core
             .session_graph(&session_id)
@@ -6720,9 +6772,10 @@ cat output/bilibili/pipeline_0/icp_query_results.json | jq -r '.data[]? | .unitN
         assert_eq!(response.decision, Decision::NeedApproval);
         assert_eq!(
             response.reasons,
-            vec![
-                "file input /tmp/shared/team.rc for slot startup_config is outside the granted path scope or unproven".to_string()
-            ]
+            vec![format!(
+                "file input {}/shared/team.rc for slot startup_config is outside the granted path scope or unproven",
+                fs::canonicalize("/tmp").unwrap().display()
+            )]
         );
         assert!(
             response

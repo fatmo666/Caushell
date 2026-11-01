@@ -8,6 +8,32 @@ use caushell_types::{PathResolution, RuntimeArgumentDomain};
 
 /// A proof about every possible member, independent of the path-domain
 /// approximation below. PathSet roots are anchors, not exact scalar values.
+pub(super) fn integer_iteration(
+    iteration: &ForLoopFact,
+    bindings: &SessionBindings,
+    shell_kind: caushell_types::ShellKind,
+) -> bool {
+    if bindings.runtime_variable_target_is_unresolved(&iteration.variable) {
+        return false;
+    }
+    let Some(items) = &iteration.items else {
+        return false;
+    };
+    if items.is_empty() || items.len() > 256 {
+        return false;
+    }
+    let materialized =
+        materialize_projected_invocation(&iteration_projection(items, shell_kind), bindings);
+    !materialized.shell_expansion_unresolved
+        && !materialized.invocation.args.is_empty()
+        && materialized.invocation.args.len() <= 256
+        && materialized.invocation.args.iter().all(|arg| {
+            caushell_profile::argument_structure(arg)
+                .exact_value()
+                .is_some_and(super::variable_facts::integer_text)
+        })
+}
+
 pub(super) fn numeric_iteration(
     iteration: &ForLoopFact,
     bindings: &SessionBindings,

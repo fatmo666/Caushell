@@ -10,6 +10,19 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from caushell_tb.bridge import ExternalEngine
 
 class BridgeTests(unittest.TestCase):
+    def test_native_inventory_is_explicit_private_and_does_not_authorize(self):
+        engine=ExternalEngine.__new__(ExternalEngine);engine.rpc_lock=threading.RLock();engine.home='/home/user';engine.workspace='/app'
+        engine.plan=lambda *args,**kwargs:dict(requirements=dict(environment_names=[]))
+        requests=[]
+        engine.call=lambda request,tool_id:requests.append(request) or dict(decision='need_approval')
+        inventory={'date':'gnu_coreutils'}
+        response=engine.check_observed('echo $((x))','/app','s','e','n',b'',[],lambda *args:dict(environment=[]),'tool',native_variants=inventory)
+        self.assertEqual(response['decision'],'need_approval')
+        frame=requests[0]['payload']['shell_state_before']['execution_frame']
+        self.assertEqual(frame['native_variants'],inventory)
+        inventory.clear()
+        self.assertEqual(frame['native_variants'],{'date':'gnu_coreutils'})
+
     def test_cross_request_reply_closes_guard_channel(self):
         class Journal:
             def emit(self,*args,**kwargs):pass

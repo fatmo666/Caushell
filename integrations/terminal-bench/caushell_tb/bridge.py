@@ -116,12 +116,15 @@ class ExternalEngine:
         # Legacy hooks still preserve unknown facts; they never probe another Shell.
         return self.call(dict(kind='check',payload=self.request(command,cwd,session,intent)),tool_use_id)
 
-    def check_observed(self,command,cwd,session,executor,nonce,raw,names,decode,tool_use_id,observed_home=None):
+    def check_observed(self,command,cwd,session,executor,nonce,raw,names,decode,tool_use_id,observed_home=None,native_variants=None):
         with self.rpc_lock:
             plan=self.plan(command,cwd,session,executor,home=observed_home,home_is_actual=True)
             if tuple(plan['requirements']['environment_names'])!=tuple(names):raise ValueError('Execution-frame requirements changed while paused')
             request=self.request(command,cwd,session);request['home']=observed_home
-            try:request['shell_state_before']['execution_frame']=decode(plan,nonce,raw)
+            try:
+                frame=decode(plan,nonce,raw)
+                if native_variants:frame['native_variants']=dict(native_variants)
+                request['shell_state_before']['execution_frame']=frame
             except ValueError as error:
                 # Discard invalid facts. Still analyze the registered original
                 # command so independent Deny and missing-fact Ask remain visible.

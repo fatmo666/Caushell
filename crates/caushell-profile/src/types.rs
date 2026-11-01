@@ -1103,6 +1103,7 @@ pub struct Form {
     pub stdout_growth: Option<StreamGrowthContract>,
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
+    pub stdout_scalar_native_variant: Option<String>,
     pub stdout_scalar_inputs: Vec<SlotName>,
     pub extensions: ExtensionMap,
 }
@@ -1122,6 +1123,7 @@ impl Form {
             stdout_growth: None,
             stdout_records: None,
             stdout_scalar: None,
+            stdout_scalar_native_variant: None,
             stdout_scalar_inputs: Vec::new(),
             extensions: ExtensionMap::new(),
         }
@@ -2070,6 +2072,7 @@ pub struct BoundInvocation {
     pub stdout_growth_complete: bool,
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
+    pub stdout_scalar_native_variant: Option<String>,
     pub stdout_scalar_inputs: Vec<SlotName>,
     pub stdout_scalar_complete: bool,
     pub bound_parameters: Vec<BoundParameter>,
@@ -2128,6 +2131,7 @@ impl BoundInvocation {
             stdout_growth_complete: false,
             stdout_records: None,
             stdout_scalar: None,
+            stdout_scalar_native_variant: None,
             stdout_scalar_inputs: Vec::new(),
             stdout_scalar_complete: false,
             bound_parameters: Vec::new(),

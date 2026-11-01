@@ -113,6 +113,8 @@ fn rejected_frame_preserves_the_proposal_receipt_and_replays_after_restart() {
     binding.protocol = 2;
     invalid.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
         binding,
+        integer_variables: Default::default(),
+        native_variants: Default::default(),
         variables: Vec::new(),
         environment: vec![ShellEnvironmentSnapshot {
             name: "TAR_OPTIONS".into(),
@@ -164,6 +166,8 @@ fn rejected_frame_preserves_the_proposal_receipt_and_replays_after_restart() {
     );
     let mut fresh = request;
     fresh.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+        integer_variables: Default::default(),
+        native_variants: Default::default(),
         binding: ExecutionFrameBinding::for_request(
             &fresh.clone().into_check_request(CommandSequenceNo(3)),
             "fresh-executor",

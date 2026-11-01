@@ -607,6 +607,7 @@ pub fn bind_invocation(
     bound.stdout_growth = selection.form.stdout_growth.clone();
     bound.stdout_records = selection.form.stdout_records.clone();
     bound.stdout_scalar = selection.form.stdout_scalar;
+    bound.stdout_scalar_native_variant = selection.form.stdout_scalar_native_variant.clone();
     bound.stdout_scalar_inputs = selection.form.stdout_scalar_inputs.clone();
     bound.argument_regions = selection
         .option_scope

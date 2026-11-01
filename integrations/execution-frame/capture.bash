@@ -18,6 +18,15 @@ caushell_frame_value() (
     fi
 )
 
+caushell_frame_integer() (
+    set -- "$(builtin declare -p "$1" 2>/dev/null)"
+    if [[ $1 =~ ^declare\ -[^\ ]*i[^\ ]*\  && ! $1 =~ ^declare\ -[^\ ]*[aAn][^\ ]*\  && $1 == *=* && $1 != *'=""' ]]; then
+        builtin printf '1\0'
+    else
+        builtin printf '0\0'
+    fi
+)
+
 caushell_frame_capture() (
     # $1 is a private correlation nonce, remaining arguments are planned names.
     [[ $1 =~ ^[a-f0-9]{32}$ && $# -le 129 ]] || exit 64
@@ -65,10 +74,11 @@ caushell_frame_capture_plan() (
     caushell_frame_capture "$1" "${@:3:$2}" || exit 64
     shift "$((2+$2))"
     if (( $# )); then
-        builtin printf 'caushell-shell-scalars-v1\0'
+        builtin printf 'caushell-shell-scalars-v2\0'
         while (( $# )); do
             [[ $1 =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && ${#1} -le 256 ]] || exit 64
             builtin printf '%s\0' "$1"
+            caushell_frame_integer "$1"
             caushell_frame_value "$1" shell
             shift
         done

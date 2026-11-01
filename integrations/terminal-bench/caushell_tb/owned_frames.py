@@ -29,8 +29,11 @@ def wrapped_command(command,gate,endpoint,ticket,nonce,names,observer,variables=
 
 
 class FrameServer:
-    def __init__(self,lifecycle,gate,observer,address=('0.0.0.0',0),public_host='host.docker.internal'):
+    def __init__(self,lifecycle,gate,observer,address=('0.0.0.0',0),public_host='host.docker.internal',native_variants=None):
         self.lifecycle=lifecycle;self.gate=gate;self.observer=observer
+        # Optional trusted immutable-executor inventory, never request input or
+        # task environment. Empty by default: a tool name does not prove dialect.
+        self.native_variants=dict(native_variants or {})
         self.pending={};self.inflight={};self.lock=lifecycle._state_lock;self.closed=False;self.instance_id="rq3-owning-executor-"+secrets.token_hex(16)
         outer=self
         class Handler(BaseHTTPRequestHandler):
@@ -108,7 +111,8 @@ class FrameServer:
         with engine.rpc_lock:
             with self.lock:
                 if not self._active(request,pending):return self._answer(request,pending,False,None,began)
-            guard=engine.check_observed(row['input']['command'],request['cwd'],self.lifecycle.session,pending['executor'],pending['nonce'],capture,pending['names'],protocol.decode,pending['tool_id'],observed_home=shell_home)
+            inventory=dict(native_variants=self.native_variants) if self.native_variants else {}
+            guard=engine.check_observed(row['input']['command'],request['cwd'],self.lifecycle.session,pending['executor'],pending['nonce'],capture,pending['names'],protocol.decode,pending['tool_id'],observed_home=shell_home,**inventory)
             with self.lock:
                 if not self._active(request,pending):
                     self.lifecycle.journal.emit('cancelled_frame_check',tool_use_id=pending['tool_id'],response=guard)

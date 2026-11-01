@@ -88,6 +88,28 @@ forms:
       - {kind: target_path, target: {kind: slot, name: reference_operand}}
       - {kind: transform_data, target: {kind: none}}
 
+  - id: print_native_numeric_date
+    selector:
+      kind: all
+      items:
+        - *running
+        - {kind: not, item: *explicit_set}
+        - {kind: not, item: *no_set}
+        - {kind: not, item: *date_operand}
+        - {kind: not, item: *format_override}
+        - {kind: not, item: *numeric_format}
+        - &native_numeric_format {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^\+(%[sNYmdHMS]|[0-9+ -])+$'}}
+    parameters: *operands
+    remaining_selector: {kind: no_positional_args}
+    stdout_scalar: arithmetic_text
+    stdout_scalar_native_variant: gnu_coreutils
+    stdout_scalar_inputs: [format_or_dates]
+    stream_contract: *conversion_stream
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: file_or_format}}
+      - {kind: target_path, target: {kind: slot, name: reference_operand}}
+      - {kind: transform_data, target: {kind: none}}
+
   - id: print_or_parse_date
     selector:
       kind: all
@@ -99,7 +121,7 @@ forms:
             modifier: set_date
         - {kind: not, item: *no_set}
         - {kind: not, item: *date_operand}
-        - {kind: any, items: [{kind: not, item: *numeric_format}, *format_override]}
+        - {kind: any, items: [{kind: all, items: [{kind: not, item: *numeric_format}, {kind: not, item: *native_numeric_format}]}, *format_override]}
     parameters: *operands
     remaining_selector: {kind: no_positional_args}
     stream_contract: *conversion_stream

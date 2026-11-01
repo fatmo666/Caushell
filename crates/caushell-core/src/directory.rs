@@ -72,14 +72,10 @@ fn read_with(path: &str, limits: DirectoryReadLimits, after_scan: impl FnOnce())
                 break;
             }
             let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
-            if matches!(name.to_bytes(), b"." | b"..") {
-                continue;
-            }
-            let Ok(text) = name.to_str() else {
-                return failed(
-                    DirectoryReadStatus::NonUtf8,
-                    "directory name is not UTF-8".into(),
-                );
+            let text = match entry_name(name) {
+                Ok(Some(text)) => text,
+                Ok(None) => continue,
+                Err(status) => return failed(status, "directory name is not UTF-8".into()),
             };
             bytes = match bytes.checked_add(text.len()) {
                 Some(n) if n <= limits.max_name_bytes => n,
@@ -148,6 +144,16 @@ fn read_with(path: &str, limits: DirectoryReadLimits, after_scan: impl FnOnce())
             "directory observation is unavailable on this platform".into(),
         )
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn entry_name(name: &std::ffi::CStr) -> Result<Option<&str>, DirectoryReadStatus> {
+    if matches!(name.to_bytes(), b"." | b"..") {
+        return Ok(None);
+    }
+    name.to_str()
+        .map(Some)
+        .map_err(|_| DirectoryReadStatus::NonUtf8)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -321,13 +327,31 @@ mod tests {
 
     #[test]
     fn non_utf8_names_are_reported_without_lossy_replacement() {
+        // Exercise the exact native-name boundary even on filesystems that
+        // reject these bytes at creation time. No lossy replacement or empty
+        // complete enumeration may stand in for NonUtf8.
+        let raw = std::ffi::CStr::from_bytes_with_nul(b"a\xff\0").unwrap();
+        assert_eq!(entry_name(raw), Err(DirectoryReadStatus::NonUtf8));
+        assert_eq!(entry_name(c"a b"), Ok(Some("a b")));
+        assert_eq!(entry_name(c"."), Ok(None));
+        assert_eq!(entry_name(c".."), Ok(None));
+    }
+
+    #[test]
+    fn native_filesystem_preserves_or_rejects_non_utf8_names() {
         use std::os::unix::ffi::OsStringExt;
         let root = Fixture::new();
-        fs::write(
+        let created = fs::write(
             root.0.join(std::ffi::OsString::from_vec(vec![b'a', 0xff])),
             b"data",
-        )
-        .unwrap();
+        );
+        if let Err(error) = created {
+            // macOS native filesystems may reject invalid Unicode at open(2),
+            // before readdir can supply any name. Unexpected errors still fail.
+            assert!(cfg!(target_os = "macos"), "{error}");
+            assert_eq!(error.raw_os_error(), Some(libc::EILSEQ));
+            return;
+        }
         assert_eq!(
             read(root.path(), DirectoryReadLimits::default())
                 .observation

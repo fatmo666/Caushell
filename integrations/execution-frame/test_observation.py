@@ -27,7 +27,7 @@ class PausedBash:
             cwd=self.cwd, env=dict(PATH="/usr/bin:/bin", HOME=self.home, LC_ALL="C"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         fields = []
-        for _ in range(21 + 3 * len(names) + (2 + 3 * len(variables) if variables else 0)):
+        for _ in range(21 + 3 * len(names) + (2 + 4 * len(variables) if variables else 0)):
             value = bytearray()
             while True:
                 byte = self.process.stdout.read(1)
@@ -58,6 +58,42 @@ def plan(names):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_integer_attribute_is_observed_without_freezing_volatile_values(self):
+        p = plan([])
+        p['requirements']['variable_names'] = ['SECONDS', 'RANDOM', 'number', 'plain', 'ARRAY', 'empty']
+        with tempfile.TemporaryDirectory() as d:
+            owner = PausedBash(d, d, 'declare -i number=42; plain=42; declare -ai ARRAY=(1); declare -i empty')
+            try:
+                frame = collect(p, owner.capture)
+            finally:
+                owner.close()
+        self.assertEqual(set(frame['integer_variables']), {'SECONDS', 'RANDOM', 'number'})
+        values = {v['name']:v['value'] for v in frame['variables']}
+        self.assertEqual(values['SECONDS'], dict(status='unknown'))
+        self.assertEqual(values['number'], dict(status='present', value='42'))
+        with tempfile.TemporaryDirectory() as d:
+            owner = PausedBash(d, d, 'unset SECONDS; SECONDS=untrusted')
+            try:
+                frame = collect(p, owner.capture)
+            finally:
+                owner.close()
+        self.assertNotIn('SECONDS', frame.get('integer_variables', []))
+
+    def test_integer_protocol_is_bounded_and_legacy_capture_remains_compatible(self):
+        p = plan([])
+        p['requirements']['variable_names'] = ['number']
+        with tempfile.TemporaryDirectory() as d:
+            owner = PausedBash(d, d, 'declare -i number=42')
+            try:
+                raw = owner.capture('0'*32, (), ('number',))
+            finally:
+                owner.close()
+        self.assertEqual(decode(p, '0'*32, raw)['integer_variables'], ['number'])
+        with self.assertRaises(ObservationUnavailable):
+            decode(p, '0'*32, raw.replace(b'number\x001\x00', b'number\x002\x00'))
+        legacy = raw.replace(b'caushell-shell-scalars-v2', b'caushell-shell-scalars-v1').replace(b'number\x001\x00', b'number\x00')
+        self.assertNotIn('integer_variables', decode(p, '0'*32, legacy))
+
     def test_local_scalars_have_their_own_partial_channel(self):
         p = plan(["LOCAL", "EMPTY", "ARRAY"])
         p["requirements"]["variable_names"] = ["LOCAL", "EMPTY", "ARRAY", "MISSING", "RANDOM"]

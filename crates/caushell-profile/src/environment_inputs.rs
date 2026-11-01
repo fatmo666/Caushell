@@ -12,6 +12,19 @@ pub(crate) fn attach(
     command: &caushell_parse::CommandFact,
     bindings: &SessionBindings,
 ) -> BoundInvocation {
+    // This fact is supplied by the owning executor, not guessed from a name,
+    // host platform, task environment, or a version probe before approval.
+    if let Some(required) = &bound.stdout_scalar_native_variant {
+        if !command.prefix_assignments.is_empty()
+            || command
+                .command_name
+                .as_deref()
+                .and_then(|n| bindings.native_variant(n))
+                != Some(required.as_str())
+        {
+            bound.stdout_scalar_complete = false;
+        }
+    }
     bound.archive_extraction = profile.archive_extraction;
     if let Some(input) = &profile.option_environment {
         let prefix = crate::materialize_prefix_environment(command, bindings);

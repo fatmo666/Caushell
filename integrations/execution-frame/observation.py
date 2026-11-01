@@ -49,7 +49,11 @@ def decode(plan, nonce, raw):
         fields = raw[:-1].decode("utf-8", errors="strict").split("\0")
     except UnicodeError as e:
         raise ObservationUnavailable("capture is not representable as UTF-8") from e
-    if len(fields) != 21 + 3 * len(names) + (2 + 3 * len(variables) if variables else 0):
+    width = 3
+    marker = 21 + 3 * len(names)
+    if variables and len(fields) > marker and fields[marker] == "caushell-shell-scalars-v2":
+        width = 4
+    if len(fields) != 21 + 3 * len(names) + (2 + width * len(variables) if variables else 0):
         raise ObservationUnavailable("capture field count differs from the plan")
     if fields[:2] != ["caushell-bash-frame-v1", nonce] or fields[-1] != "END":
         raise ObservationUnavailable("capture protocol or executor nonce mismatch")
@@ -83,15 +87,23 @@ def decode(plan, nonce, raw):
     if fields[position] != "END":
         raise ObservationUnavailable("unexpected capture tail")
     scalars = []
+    integers = []
     if variables:
         position += 1
-        if fields[position] != "caushell-shell-scalars-v1":
+        if fields[position] not in ("caushell-shell-scalars-v1", "caushell-shell-scalars-v2"):
             raise ObservationUnavailable("missing shell scalar channel")
         position += 1
         for expected in variables:
             if fields[position] != expected:
                 raise ObservationUnavailable("unexpected shell scalar name")
             position += 1
+            if width == 4:
+                integer = fields[position]
+                position += 1
+                if integer not in ("0", "1"):
+                    raise ObservationUnavailable("invalid integer scalar tag")
+                if integer == "1":
+                    integers.append(expected)
             scalars.append(dict(name=expected, value=value()))
     if position != len(fields) - 1:
         raise ObservationUnavailable("unexpected capture tail")
@@ -99,6 +111,8 @@ def decode(plan, nonce, raw):
                   pathname=pathname if plan["requirements"]["pathname"] else None)
     if variables:
         result["variables"] = scalars
+        if integers:
+            result["integer_variables"] = integers
     return result
 
 

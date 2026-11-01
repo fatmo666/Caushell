@@ -223,6 +223,7 @@ pub struct RawForm {
     pub stdout_growth: Option<crate::StreamGrowthContract>,
     pub stdout_records: Option<RawStdoutRecordContract>,
     pub stdout_scalar: Option<crate::StdoutScalarShape>,
+    pub stdout_scalar_native_variant: Option<String>,
     pub stdout_scalar_inputs: Vec<String>,
     pub extensions: BTreeMap<String, JsonValue>,
 }

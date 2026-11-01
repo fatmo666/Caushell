@@ -1322,6 +1322,7 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .map(normalize_stdout_records)
             .transpose()?,
         stdout_scalar: raw.stdout_scalar,
+        stdout_scalar_native_variant: raw.stdout_scalar_native_variant,
         stdout_scalar_inputs: raw
             .stdout_scalar_inputs
             .into_iter()
@@ -1333,6 +1334,19 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
 
 fn validate_stdout_scalars(forms: &[Form]) -> Result<(), NormalizeError> {
     for form in forms {
+        if let Some(variant) = &form.stdout_scalar_native_variant {
+            if form.stdout_scalar.is_none()
+                || variant.is_empty()
+                || variant.len() > 128
+                || !variant
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            {
+                return Err(NormalizeError::InvalidStdoutScalar(
+                    "native variant requires a scalar contract and a bounded identifier".into(),
+                ));
+            }
+        }
         if form.stdout_scalar == Some(crate::StdoutScalarShape::AbsolutePath)
             && !form
                 .stream_contract
@@ -4440,6 +4454,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_native_variant: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4642,6 +4657,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_native_variant: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4766,6 +4782,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_native_variant: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4867,6 +4884,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_native_variant: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4961,6 +4979,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_native_variant: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -5126,6 +5145,7 @@ mod tests {
                 stdout_growth: None,
                 stdout_records: None,
                 stdout_scalar: None,
+                stdout_scalar_native_variant: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],

@@ -23,6 +23,92 @@ pub(super) fn arithmetic_text(text: &str) -> bool {
         .all(|c| c.is_ascii_digit() || c.is_ascii_whitespace() || matches!(c, '+' | '-'))
 }
 
+pub(super) fn integer_text(text: &str) -> bool {
+    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn pure_native_effects(bound: &caushell_profile::BoundInvocation) -> bool {
+    !bound.operation_semantics_unresolved
+        && bound.effects.iter().all(|effect| {
+            matches!(
+                effect.kind,
+                caushell_profile::EffectKind::ReadPath
+                    | caushell_profile::EffectKind::TargetPath
+                    | caushell_profile::EffectKind::TransformData
+                    | caushell_profile::EffectKind::ConsumeStdin
+                    | caushell_profile::EffectKind::ConsumeAuxiliaryValue
+                    | caushell_profile::EffectKind::ConsumeAuxiliaryEnvironment
+            )
+        })
+}
+
+/// Substitution bodies are not top-level CommandFacts. Inspect their declared
+/// effects before retaining an entry executable contract after them. A bounded
+/// single producer is sufficient; other programs remain unknown, never run.
+pub(super) fn invalidate_native_substitutions(
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    target: usize,
+    registry: Option<&ProfileRegistry>,
+    bindings: &mut SessionBindings,
+) {
+    if !bindings.has_native_variants() {
+        return;
+    }
+    let substitutions: Vec<_> = parsed
+        .commands
+        .iter()
+        .flat_map(|c| {
+            c.tokens
+                .iter()
+                .flat_map(|t| &t.command_substitutions)
+                .chain(
+                    c.prefix_assignments
+                        .iter()
+                        .flat_map(|a| &a.value.command_substitutions),
+                )
+        })
+        .chain(parsed.assignment_commands.iter().flat_map(|c| {
+            c.assignments
+                .iter()
+                .flat_map(|a| &a.value.command_substitutions)
+        }))
+        .chain(parsed.declaration_commands.iter().flat_map(|c| {
+            c.assignments
+                .iter()
+                .flat_map(|a| &a.value.command_substitutions)
+        }))
+        .chain(
+            parsed
+                .shell_evaluations
+                .iter()
+                .flat_map(|site| &site.input.command_substitutions),
+        )
+        .chain(parsed.for_loops.iter().flat_map(|l| {
+            l.items
+                .iter()
+                .flatten()
+                .flat_map(|t| &t.command_substitutions)
+        }))
+        .filter(|s| s.span.end_byte <= target)
+        .collect();
+    let preserves = substitutions.len() <= 128 && substitutions.iter().all(|s| {
+        let Some(registry) = registry else { return false; };
+        if s.body_text.len() > 8192 { return false; }
+        let Ok(body) = caushell_parse::parse_command(&s.body_text, parsed.shell_kind) else { return false; };
+        let Some(command) = super::substitution_shape::plain_single_producer(&body) else { return false; };
+        if command.tokens.iter().any(|t| !t.command_substitutions.is_empty()) { return false; }
+        let Some(name) = command.command_name.as_deref() else { return false; };
+        if bindings.function_binding(name).is_some() || bindings.profile_has_alias_shadow(name) { return false; }
+        matches!(caushell_profile::resolve_invocation_artifact_with_bindings(registry, command,
+            caushell_profile::InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind), bindings),
+            caushell_profile::ResolveInvocationArtifactResult::Resolved(r) if pure_native_effects(&r.bound))
+    });
+    if !preserves {
+        bindings.forget_native_variants();
+    }
+}
+
 pub(super) fn assignment(
     value: &AssignmentValueFact,
     bindings: &SessionBindings,
@@ -33,6 +119,12 @@ pub(super) fn assignment(
     if value.text.len() > 8192 {
         return result;
     }
+    result.integer_scalar = materialize_shell_assignment_value(&value.text, value.quoted, &value.node_kind, bindings)
+        .is_some_and(|v| integer_text(&v)) || value.node_kind == "arithmetic_expansion"
+        || (!matches!(value.node_kind.as_str(), "raw_string" | "ansi_c_string")
+            && caushell_profile::exact_shell_parameter_reference(&value.text).is_some_and(|r| {
+                matches!(r, caushell_profile::ShellParameterReference::Variable(name) if bindings.variable_facts(&name).integer_scalar)
+            }));
     let numeric =
         materialize_shell_assignment_value(&value.text, value.quoted, &value.node_kind, bindings)
             .is_some_and(|v| arithmetic_text(&v))
@@ -205,6 +297,7 @@ pub(super) fn invalidate_evaluation(
     use caushell_parse::{ArithmeticReference as R, ShellEvaluationKind as K};
     if let K::ArrayElementAssignment { name, .. } = &site.kind {
         let mut facts = bindings.variable_facts(name);
+        facts.integer_scalar = false;
         facts.scalar_shape = None;
         facts.element_shape = None;
         bindings.mark_unresolved_runtime_variable_target(name);
@@ -274,6 +367,35 @@ pub(super) fn invalidate_command(
     registry: Option<&ProfileRegistry>,
     bindings: &mut SessionBindings,
 ) {
+    // Earlier commands in child/substitution scopes can also change executable
+    // files. This proof is about resolution, not caller-shell variable writes.
+    if matches!(
+        command.command_name.as_deref(),
+        Some("cd" | "pushd" | "popd" | "export" | "eval" | "source" | "." | "alias" | "unalias")
+    ) || !command.prefix_assignments.is_empty()
+        || parsed
+            .redirections
+            .iter()
+            .any(|r| r.parent_command_span.as_ref() == Some(&command.span))
+    {
+        bindings.forget_native_variants();
+    }
+    if bindings.has_native_variants() {
+        let preserves = registry.is_some_and(|registry| {
+            let result = caushell_profile::resolve_invocation_artifact_with_bindings(
+                registry,
+                command,
+                caushell_profile::InvocationRuntimeContext::default()
+                    .with_shell_kind(parsed.shell_kind),
+                bindings,
+            );
+            matches!(result, caushell_profile::ResolveInvocationArtifactResult::Resolved(r)
+                if pure_native_effects(&r.bound))
+        });
+        if !preserves {
+            bindings.forget_native_variants();
+        }
+    }
     if !bindings.has_variable_facts() || !super::runtime_write_visible(command, parsed, target) {
         return;
     }

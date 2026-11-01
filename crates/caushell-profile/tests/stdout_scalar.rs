@@ -45,6 +45,22 @@ fn incompatible_or_unknown_declarations_are_rejected() {
 }
 
 #[test]
+fn native_variant_contracts_are_declarative_and_cannot_stand_alone() {
+    for source in [
+        SOURCE.replace(
+            "    stdout_scalar: absolute_path",
+            "    stdout_scalar_native_variant: gnu_coreutils",
+        ),
+        SOURCE.replace(
+            "    stdout_scalar: absolute_path",
+            "    stdout_scalar: absolute_path\n    stdout_scalar_native_variant: ''",
+        ),
+    ] {
+        assert!(load_command_profile_from_str(&source).is_err());
+    }
+}
+
+#[test]
 fn a_shape_proof_is_not_a_concrete_value_or_path_root() {
     let parsed = parse_command(
         "consumer \"$(arbitrary_absolute_producer)\"",

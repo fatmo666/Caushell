@@ -64,6 +64,14 @@ pub trait ExecutionFrameObserver {
     fn variable(&self, _name: &str) -> ShellEnvironmentValue {
         ShellEnvironmentValue::Unknown
     }
+    fn variable_is_integer(&self, _name: &str) -> bool {
+        false
+    }
+    /// Positive native-family contracts from a trusted, immutable executor
+    /// inventory. Never infer these from OS, PATH spelling or task variables.
+    fn native_variants(&self) -> std::collections::BTreeMap<String, String> {
+        Default::default()
+    }
     fn pathname(&self) -> Option<ShellPathnameSnapshot>;
 }
 
@@ -75,6 +83,10 @@ pub struct ExecutionFrameObservation {
     /// A partial, frame-local scalar view; never a child-environment grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<ShellEnvironmentSnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub integer_variables: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub native_variants: std::collections::BTreeMap<String, String>,
     pub pathname: Option<ShellPathnameSnapshot>,
 }
 
@@ -96,6 +108,13 @@ impl ExecutionFrameObservation {
         }
         let observation = Self {
             binding,
+            integer_variables: requirements
+                .variable_names
+                .iter()
+                .filter(|n| observer.variable_is_integer(n))
+                .cloned()
+                .collect(),
+            native_variants: observer.native_variants(),
             variables: requirements
                 .variable_names
                 .iter()
@@ -140,6 +159,37 @@ impl ExecutionFrameObservation {
             }
         }
         for observation in &self.variables {
+            if self.integer_variables.contains(&observation.name)
+                && self
+                    .environment
+                    .iter()
+                    .chain(&request.shell_state_before.environment)
+                    .any(|env| {
+                        env.name == observation.name
+                            && matches!(&env.value, ShellEnvironmentValue::Present { value } if {
+                                let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+                                digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit())
+                            })
+                    })
+            {
+                return Err("integer proof conflicts with environment bytes".into());
+            }
+            if self.integer_variables.contains(&observation.name)
+                && request.shell_state_before.variables.iter().any(|legacy| {
+                    legacy.name == observation.name
+                        && match &legacy.value {
+                            crate::ShellValueSnapshot::Structured { .. } => true,
+                            crate::ShellValueSnapshot::ExactScalar { value }
+                            | crate::ShellValueSnapshot::RuntimeProduced { value, .. } => {
+                                let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+                                digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit())
+                            }
+                            _ => false,
+                        }
+                })
+            {
+                return Err("integer proof conflicts with legacy scalar observation".into());
+            }
             if request.shell_state_before.variables.iter().any(|legacy| {
                 legacy.name == observation.name
                     && match (&legacy.value, &observation.value) {
@@ -197,11 +247,44 @@ impl ExecutionFrameObservation {
             || !b.command_sha256.bytes().all(|b| b.is_ascii_hexdigit())
             || self.environment.len() > 128
             || self.variables.len() > 128
+            || self.integer_variables.len() > 128
+            || self.native_variants.len() > 128
         {
             return Err("execution frame binding or payload exceeds its bounds".into());
         }
         let mut names = BTreeSet::new();
         let mut bytes = 0;
+        for name in &self.integer_variables {
+            let Some(value) = self.variables.iter().find(|v| &v.name == name) else {
+                return Err("integer proof has no scalar observation".into());
+            };
+            match &value.value {
+                ShellEnvironmentValue::Absent => {
+                    return Err("absent scalar has an integer proof".into());
+                }
+                ShellEnvironmentValue::Present { value } => {
+                    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+                    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err("integer proof conflicts with observed bytes".into());
+                    }
+                }
+                ShellEnvironmentValue::Unknown => {}
+            }
+        }
+        for (name, variant) in &self.native_variants {
+            if name.is_empty()
+                || name.len() > 4096
+                || name.contains(['\0', '\n'])
+                || variant.is_empty()
+                || variant.len() > 128
+                || !variant
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            {
+                return Err("invalid native variant contract".into());
+            }
+            bytes += name.len() + variant.len();
+        }
         for (channel, entry) in self
             .environment
             .iter()
@@ -281,9 +364,64 @@ mod tests {
     }
 
     #[test]
+    fn integer_proofs_are_positive_bounded_and_request_local() {
+        let request = request();
+        let frame = ExecutionFrameObservation {
+            binding: ExecutionFrameBinding::for_request(&request, "owner"),
+            environment: vec![],
+            pathname: None,
+            variables: vec![ShellEnvironmentSnapshot {
+                name: "counter".into(),
+                value: ShellEnvironmentValue::Unknown,
+            }],
+            integer_variables: ["counter".into()].into(),
+            native_variants: [("date".into(), "gnu_coreutils".into())].into(),
+        };
+        assert!(frame.validate(&request, None).is_ok());
+        for value in [
+            ShellEnvironmentValue::Absent,
+            ShellEnvironmentValue::Present { value: "".into() },
+            ShellEnvironmentValue::Present {
+                value: "a[$(payload)]".into(),
+            },
+        ] {
+            let mut f = frame.clone();
+            f.variables[0].value = value;
+            assert!(f.validate(&request, None).is_err());
+        }
+        let mut f = frame.clone();
+        f.variables.clear();
+        assert!(f.validate(&request, None).is_err());
+        let mut f = frame.clone();
+        f.environment.push(ShellEnvironmentSnapshot {
+            name: "counter".into(),
+            value: ShellEnvironmentValue::Present {
+                value: "unsafe".into(),
+            },
+        });
+        assert!(f.validate(&request, None).is_err());
+        let mut f = frame.clone();
+        f.native_variants
+            .insert("date".into(), "unknown value".into());
+        assert!(f.validate(&request, None).is_err());
+        let mut f = frame.clone();
+        f.binding.sequence_no = CommandSequenceNo(2);
+        assert!(f.validate(&request, None).is_err());
+        // Missing metadata remains backward compatible, never a positive fact.
+        let mut old = serde_json::to_value(frame).unwrap();
+        old.as_object_mut().unwrap().remove("integer_variables");
+        old.as_object_mut().unwrap().remove("native_variants");
+        let old: ExecutionFrameObservation = serde_json::from_value(old).unwrap();
+        assert!(old.integer_variables.is_empty());
+        assert!(old.native_variants.is_empty());
+    }
+
+    #[test]
     fn payload_bounds_and_names_are_checked_before_use() {
         let request = request();
         let frame = ExecutionFrameObservation {
+            integer_variables: Default::default(),
+            native_variants: Default::default(),
             variables: Vec::new(),
             binding: ExecutionFrameBinding::for_request(&request, "executor"),
             environment: vec![ShellEnvironmentSnapshot {
@@ -348,6 +486,8 @@ mod tests {
     fn scalar_channel_is_partial_bounded_and_conflict_checked() {
         let request = request();
         let mut frame = ExecutionFrameObservation {
+            integer_variables: Default::default(),
+            native_variants: Default::default(),
             binding: ExecutionFrameBinding::for_request(&request, "executor"),
             environment: vec![],
             pathname: None,
@@ -406,6 +546,8 @@ mod tests {
         .unwrap();
         assert_eq!(frame.variables[0].value, ShellEnvironmentValue::Unknown);
         let legacy = serde_json::to_value(&ExecutionFrameObservation {
+            integer_variables: Default::default(),
+            native_variants: Default::default(),
             variables: vec![],
             ..frame
         })

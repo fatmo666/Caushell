@@ -61,6 +61,8 @@ fn options() -> ShellPathnameSnapshot {
 }
 fn observed(mut request: CheckRequest) -> CheckRequest {
     request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+        integer_variables: Default::default(),
+        native_variants: Default::default(),
         binding: ExecutionFrameBinding::for_request(&request, "executor-a"),
         variables: Vec::new(),
         environment: vec![

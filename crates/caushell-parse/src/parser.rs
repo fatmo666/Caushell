@@ -395,6 +395,17 @@ pub fn scalar_argument_parts(
     quoted: bool,
     node_kind: &str,
 ) -> Option<Vec<ScalarArgumentPart>> {
+    scalar_word_parts(text, quoted, node_kind, false)
+}
+
+/// Decompose scalar parameters even when unquoted. The caller must separately
+/// prove field splitting and pathname generation cannot change argv width.
+pub fn scalar_word_parts(
+    text: &str,
+    quoted: bool,
+    node_kind: &str,
+    allow_unquoted_parameters: bool,
+) -> Option<Vec<ScalarArgumentPart>> {
     fn parameter(text: &str) -> bool {
         let name = text
             .strip_prefix("${")
@@ -413,6 +424,7 @@ pub fn scalar_argument_parts(
         source: &[u8],
         out: &mut Vec<ScalarArgumentPart>,
         budget: &mut usize,
+        allow_unquoted_parameters: bool,
     ) -> Option<()> {
         *budget = budget.checked_sub(1)?;
         match node.kind() {
@@ -426,7 +438,7 @@ pub fn scalar_argument_parts(
                     if child.start_byte() != cursor {
                         return None;
                     }
-                    parts(child, source, out, budget)?;
+                    parts(child, source, out, budget, allow_unquoted_parameters)?;
                     cursor = child.end_byte();
                 }
                 if cursor != node.end_byte() {
@@ -466,6 +478,13 @@ pub fn scalar_argument_parts(
                     tail, true, "string",
                 )?));
             }
+            "simple_expansion" | "expansion"
+                if allow_unquoted_parameters && parameter(node.utf8_text(source).ok()?) =>
+            {
+                out.push(ScalarArgumentPart::Parameter(
+                    node.utf8_text(source).ok()?.into(),
+                ));
+            }
             _ => out.push(ScalarArgumentPart::Literal(decode_static_word_node(
                 node, source,
             )?)),
@@ -477,14 +496,16 @@ pub fn scalar_argument_parts(
     }
     let source = if quoted && node_kind == "string" {
         format!("\"{text}\"")
-    } else if matches!(node_kind, "concatenation" | "word") {
+    } else if matches!(node_kind, "concatenation" | "word")
+        || allow_unquoted_parameters && matches!(node_kind, "simple_expansion" | "expansion")
+    {
         text.to_owned()
     } else {
         return None;
     };
     with_single_argument(&source, |node, source| {
         let mut out = Vec::new();
-        parts(node, source, &mut out, &mut 256)?;
+        parts(node, source, &mut out, &mut 256, allow_unquoted_parameters)?;
         Some(out)
     })
 }

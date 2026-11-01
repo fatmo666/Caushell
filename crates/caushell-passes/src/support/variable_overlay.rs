@@ -65,6 +65,20 @@ pub(super) fn apply_variable_overlay(
     capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
 ) -> super::runtime_variable_overlay::RuntimeVariableOverlay {
     bindings.set_shell_kind(parsed.shell_kind);
+    super::variable_facts::invalidate_native_substitutions(
+        parsed,
+        span_start_byte,
+        registry,
+        &mut bindings,
+    );
+    // Assignment-only commands may carry redirections without CommandFact.
+    if parsed
+        .redirections
+        .iter()
+        .any(|r| r.span.end_byte <= span_start_byte)
+    {
+        bindings.forget_native_variants();
+    }
     let mut events = Vec::new();
     let mut touched = std::collections::BTreeSet::new();
     let mut positional_state = None;
@@ -125,6 +139,7 @@ pub(super) fn apply_variable_overlay(
         }
         if (runtime.is_some()
             || bindings.has_variable_facts()
+            || bindings.has_native_variants()
             || !parsed.declaration_commands.is_empty()
             || !parsed.assignment_commands.is_empty())
             && command.span.end_byte <= span_start_byte
@@ -186,6 +201,8 @@ pub(super) fn apply_variable_overlay(
                 );
                 let domain =
                     super::loop_overlay::iteration_domain(iteration, &bindings, parsed.shell_kind);
+                let integer_scalar =
+                    super::loop_overlay::integer_iteration(iteration, &bindings, parsed.shell_kind);
                 if let Some(domain) = domain {
                     bindings.insert_argument_domain(&iteration.variable, domain);
                 } else {
@@ -198,6 +215,7 @@ pub(super) fn apply_variable_overlay(
                     bindings.set_variable_facts(
                         &iteration.variable,
                         caushell_profile::ShellVariableFacts {
+                            integer_scalar,
                             scalar_shape: Some(caushell_profile::StdoutScalarShape::ArithmeticText),
                             ..Default::default()
                         },
@@ -997,7 +1015,7 @@ pub(super) fn apply_variable_overlay(
                 }
             }
             VariableOverlayEvent::RuntimeCommand(command) => {
-                if bindings.has_variable_facts() {
+                if bindings.has_variable_facts() || bindings.has_native_variants() {
                     let old: Vec<_> = bindings
                         .variable_fact_entries()
                         .map(|(n, f)| (n.to_owned(), f))

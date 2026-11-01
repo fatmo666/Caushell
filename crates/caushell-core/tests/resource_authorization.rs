@@ -76,6 +76,8 @@ fn request(sequence: u64, command: &str) -> CheckRequest {
         workspace_root: Some("/tmp".into()),
     };
     request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+        integer_variables: Default::default(),
+        native_variants: Default::default(),
         binding: ExecutionFrameBinding::for_request(&request, owner().executor_instance_id),
         variables: Vec::new(),
         environment: [

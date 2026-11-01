@@ -37,6 +37,34 @@ Shell variables are not child-environment values. Unavailable observations remai
 unknown. Existing external hooks without an owning-executor observation channel
 continue without these facts; they do not synthesize defaults.
 
+Referenced shell scalars have a separate `variables` channel. The planner also
+requests `IFS` when scalar expansions need it. `integer_variables` is an optional
+set of positive nonempty signed-decimal proofs, separate from concrete bytes.
+The Bash collector reads the scalar's `declare -i` attribute using a builtin,
+excluding arrays, references and empty/uninitialized values. Volatile values such
+as `SECONDS` remain `unknown`; their current integer attribute can still prove a
+numeric alphabet. `unset SECONDS` removes that attribute, so its spelling alone
+never supplies a proof. Scalar capture v2 carries the attribute; v1 captures stay
+compatible without inventing positive type facts.
+
+Integer proofs propagate through supported scalar copies, arithmetic results and
+closed numeric loop lists. Unquoted argv expansion additionally requires observed
+IFS that cannot split the numeric alphabet. This yields only argument width and
+literal affixes, never a selected loop member or invented filename. Writes and
+unknown scope changes invalidate the facts. New interpreters inherit only proven
+exported scalar bytes, not unexported locals or shell array attributes.
+
+`native_variants` is an optional request-bound map from exact executable spelling
+to a trusted executor's immutable native-family inventory. A profile can require
+`stdout_scalar_native_variant`; for example, GNU `date` supports numeric `%N`,
+whereas an unknown/BSD implementation must not acquire that proof. The runtime
+does not launch a version probe or infer a family from the OS, PATH or tool name.
+The Terminal-Bench `FrameServer` accepts this inventory only as a private host
+constructor argument; it is empty by default. Hosts must not populate it from
+model/tool input or mutable unverified installations. Environment, cwd, shadowing
+and executable mutation invalidate applicable facts, and frames are not reused
+across requests. This metadata grants no read, write, delete or execution authority.
+
 The plan also includes environment dependencies of implicit configuration search,
 configured outputs and anchors, listener endpoints, and manager-owned dispatch
 environments. These names come from declarations, including subcommands and

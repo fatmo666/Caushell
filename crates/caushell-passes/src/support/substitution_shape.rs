@@ -123,7 +123,7 @@ pub(crate) fn substitution_shapes(
         .collect()
 }
 
-fn plain_single_producer(parsed: &ParsedCommandArtifact) -> Option<&CommandFact> {
+pub(super) fn plain_single_producer(parsed: &ParsedCommandArtifact) -> Option<&CommandFact> {
     if parsed.status != ParseStatus::Complete
         || !parsed.diagnostics.is_empty()
         || parsed.commands.len() != 1
