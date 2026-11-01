@@ -11,6 +11,12 @@ pub enum RecursivePayloadOrigin {
     Parameter {
         slot: SlotName,
     },
+    /// A generated tool-decoded Shell program crosses a native runtime first.
+    /// Caller variables/functions and that runtime's mutations are not facts
+    /// about the child environment until a separate transfer proof exists.
+    NativeChildShell {
+        slot: SlotName,
+    },
     FormImplicitInput,
     ConfigDefinedTask {
         config_path: String,
@@ -160,8 +166,14 @@ pub fn collect_recursive_payload_candidates(
             candidates.push(RecursivePayloadCandidate {
                 language,
                 source,
-                origin: RecursivePayloadOrigin::Parameter {
-                    slot: parameter.name.clone(),
+                origin: if parameter.payload_generated && language.is_shell() {
+                    RecursivePayloadOrigin::NativeChildShell {
+                        slot: parameter.name.clone(),
+                    }
+                } else {
+                    RecursivePayloadOrigin::Parameter {
+                        slot: parameter.name.clone(),
+                    }
                 },
                 input: RecursivePayloadInput::ArgumentFragments { fragments },
             });

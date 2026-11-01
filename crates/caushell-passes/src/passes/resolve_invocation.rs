@@ -1403,6 +1403,22 @@ fn source_payload_cwd(
     .unwrap_or(caushell_runner::EffectiveCwd::Unknown)
 }
 
+fn native_payload_bindings(
+    candidate: &RecursivePayloadCandidate,
+    base: &SessionBindings,
+) -> SessionBindings {
+    if matches!(
+        candidate.origin,
+        RecursivePayloadOrigin::NativeChildShell { .. }
+    ) {
+        // The native runtime may modify ENVIRON or other process state. Do not
+        // import caller locals, aliases, functions, positionals or native facts.
+        SessionBindings::new()
+    } else {
+        base.clone()
+    }
+}
+
 fn materialize_frontier_entry(
     entry: &FrontierEntry,
 ) -> caushell_profile::MaterializedRecursivePayloadCandidate {
@@ -6023,7 +6039,15 @@ fn expanded_recursive_payload_children(
 
     let mut children = Vec::new();
     for (candidate_index, candidate) in candidates.drain(..).enumerate() {
-        let materialized = materialize_recursive_payload_candidate(&candidate, &entry.bindings);
+        let payload_bindings = native_payload_bindings(&candidate, &entry.bindings);
+        let mut child_inherited_scope = entry.inherited_scope.clone();
+        if matches!(
+            candidate.origin,
+            RecursivePayloadOrigin::NativeChildShell { .. }
+        ) {
+            child_inherited_scope.static_input_cwd_unproven = true;
+        }
+        let materialized = materialize_recursive_payload_candidate(&candidate, &payload_bindings);
         let record_id = NestedPayloadRecordId(first_payload_id + unresolved_payloads.len());
         let parent_ref = NestedPayloadParentRef::DerivedInvocation {
             node_id: entry.source_node_id.clone(),
@@ -6040,7 +6064,7 @@ fn expanded_recursive_payload_children(
                 parent_ref,
                 root_command_index: entry.root_command_index,
                 depth: entry.depth.saturating_add(1),
-                bindings: entry.bindings.clone(),
+                bindings: payload_bindings.clone(),
                 resolution: NestedPayloadResolution::from_unresolved_materialization(
                     materialized.resolution.clone(),
                 ),
@@ -6056,7 +6080,7 @@ fn expanded_recursive_payload_children(
                 parent_ref,
                 root_command_index: entry.root_command_index,
                 depth: entry.depth.saturating_add(1),
-                bindings: entry.bindings.clone(),
+                bindings: payload_bindings.clone(),
                 resolution: NestedPayloadResolution::TruncatedByDepthBudget {
                     max_depth: max_nested_parse_depth,
                     next_candidate_count: 1,
@@ -6075,7 +6099,7 @@ fn expanded_recursive_payload_children(
                 parent_ref,
                 entry.root_command_index,
                 entry.depth.saturating_add(1),
-                entry.bindings.clone(),
+                payload_bindings.clone(),
                 materialized,
                 parse_result,
             ));
@@ -6089,7 +6113,7 @@ fn expanded_recursive_payload_children(
                 request,
                 syntax_scopes,
                 &parsed,
-                &entry.bindings,
+                &payload_bindings,
                 entry.source_node_id.clone(),
                 None,
                 ExecutionUnitOriginKind::RecursivePayload,
@@ -6105,7 +6129,7 @@ fn expanded_recursive_payload_children(
             let command_bindings = apply_runtime_variable_bindings_before_span(
                 registry,
                 request,
-                entry.bindings.clone(),
+                payload_bindings.clone(),
                 &parsed,
                 command.span.start_byte,
                 request.sequence_no,
@@ -6134,14 +6158,14 @@ fn expanded_recursive_payload_children(
                     parsed_scope: parsed.clone(),
                     command_index,
                     bindings: command_bindings,
-                    scope_base_bindings: entry.bindings.clone(),
+                    scope_base_bindings: payload_bindings.clone(),
                     stdin_is_parent_output: false,
                 },
                 history_anchor_node_id: entry.history_anchor_node_id.clone(),
                 origin_kind: ExecutionUnitOriginKind::RecursivePayload,
                 origin_index: command_index,
                 origin_locator: ExecutionUnitOriginLocator::None,
-                inherited_scope: entry.inherited_scope.clone(),
+                inherited_scope: child_inherited_scope.clone(),
             });
         }
     }
@@ -9892,6 +9916,11 @@ fn nested_origin_evidence(
     origin: &caushell_profile::RecursivePayloadOrigin,
 ) -> NestedPayloadOriginEvidence {
     match origin {
+        caushell_profile::RecursivePayloadOrigin::NativeChildShell { slot } => {
+            NestedPayloadOriginEvidence::NativeChildShell {
+                slot_name: slot.as_str().to_string(),
+            }
+        }
         caushell_profile::RecursivePayloadOrigin::Parameter { slot } => {
             NestedPayloadOriginEvidence::Parameter {
                 slot_name: slot.as_str().to_string(),
@@ -9913,6 +9942,7 @@ fn nested_origin_evidence(
 fn nested_origin_kind_string(origin: &caushell_profile::RecursivePayloadOrigin) -> String {
     match origin {
         caushell_profile::RecursivePayloadOrigin::Parameter { .. } => "parameter",
+        caushell_profile::RecursivePayloadOrigin::NativeChildShell { .. } => "native_child_shell",
         caushell_profile::RecursivePayloadOrigin::FormImplicitInput => "form_implicit_input",
         caushell_profile::RecursivePayloadOrigin::ConfigDefinedTask { .. } => "config_defined_task",
     }
@@ -9921,7 +9951,8 @@ fn nested_origin_kind_string(origin: &caushell_profile::RecursivePayloadOrigin) 
 
 fn nested_origin_slot(origin: &caushell_profile::RecursivePayloadOrigin) -> Option<String> {
     match origin {
-        caushell_profile::RecursivePayloadOrigin::Parameter { slot } => {
+        caushell_profile::RecursivePayloadOrigin::Parameter { slot }
+        | caushell_profile::RecursivePayloadOrigin::NativeChildShell { slot } => {
             Some(slot.as_str().to_string())
         }
         caushell_profile::RecursivePayloadOrigin::FormImplicitInput => None,
@@ -10122,6 +10153,7 @@ fn unresolved_execution_payload_subtype(
     if matches!(
         record.candidate.candidate.origin,
         RecursivePayloadOrigin::ConfigDefinedTask { .. }
+            | RecursivePayloadOrigin::NativeChildShell { .. }
     ) {
         return Some(UnresolvedExecutionPayloadSubtype::UnknownPayloadShape);
     }
@@ -10488,8 +10520,22 @@ fn collect_nested_payload_records(
         source_contexts.insert(
             nested_payload_node_id(&request.session_id, request.sequence_no, record_id.0),
             ProgramSourceContext {
-                entry_cwd: entry.scope_entry_cwd.clone(),
-                source_scopes: entry.source_scopes.clone(),
+                entry_cwd: if matches!(
+                    entry.candidate.origin,
+                    RecursivePayloadOrigin::NativeChildShell { .. }
+                ) {
+                    caushell_runner::EffectiveCwd::Unknown
+                } else {
+                    entry.scope_entry_cwd.clone()
+                },
+                source_scopes: if matches!(
+                    entry.candidate.origin,
+                    RecursivePayloadOrigin::NativeChildShell { .. }
+                ) {
+                    Vec::new()
+                } else {
+                    entry.source_scopes.clone()
+                },
             },
         );
 
@@ -10499,11 +10545,18 @@ fn collect_nested_payload_records(
             | ValueMaterialization::ResolvedRuntimeProduced { .. }
             | ValueMaterialization::ResolvedShellWord { .. } => {
                 let parse_result = parse_recursive_payload_candidate(&materialized.candidate);
-                let record_bindings = entry
-                    .positional_args
-                    .as_deref()
-                    .map(|args| shell_payload_session_bindings(&entry.bindings, args))
-                    .unwrap_or_else(|| entry.bindings.clone());
+                let record_bindings = if matches!(
+                    entry.candidate.origin,
+                    RecursivePayloadOrigin::NativeChildShell { .. }
+                ) {
+                    SessionBindings::new()
+                } else {
+                    entry
+                        .positional_args
+                        .as_deref()
+                        .map(|args| shell_payload_session_bindings(&entry.bindings, args))
+                        .unwrap_or_else(|| entry.bindings.clone())
+                };
                 let mut record = NestedPayloadRecord::from_parse_result(
                     record_id,
                     entry.parent_ref,
@@ -10518,6 +10571,11 @@ fn collect_nested_payload_records(
                     RecursivePayloadOrigin::ConfigDefinedTask { .. }
                 ) {
                     record.execution_cwd = Some(entry.scope_entry_cwd.clone());
+                } else if matches!(
+                    materialized.candidate.origin,
+                    RecursivePayloadOrigin::NativeChildShell { .. }
+                ) {
+                    record.execution_cwd = Some(caushell_runner::EffectiveCwd::Unknown);
                 }
 
                 if let NestedPayloadResolution::Parsed { parsed, .. } = &mut record.resolution {

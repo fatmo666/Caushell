@@ -840,6 +840,9 @@ pub enum NestedPayloadSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NestedPayloadOrigin {
+    NativeChildShell {
+        slot_name: String,
+    },
     Parameter {
         slot_name: String,
     },
@@ -961,6 +964,11 @@ impl NestedPayloadOrigin {
     pub fn from_storage(kind: &str, slot: Option<&str>) -> Result<Self, NestedPayloadDecodeError> {
         match kind {
             "parameter" => Ok(Self::Parameter {
+                slot_name: slot
+                    .ok_or(NestedPayloadDecodeError::MissingOriginSlot)?
+                    .to_string(),
+            }),
+            "native_child_shell" => Ok(Self::NativeChildShell {
                 slot_name: slot
                     .ok_or(NestedPayloadDecodeError::MissingOriginSlot)?
                     .to_string(),
@@ -3094,6 +3102,33 @@ mod tests {
                 source: ImplicitInputSource::StdinPayload,
             }
         );
+    }
+
+    #[test]
+    fn native_child_shell_origin_keeps_its_storage_and_json_identity() {
+        let origin =
+            NestedPayloadOrigin::from_storage("native_child_shell", Some("program.shell.0"))
+                .unwrap();
+        assert_eq!(
+            origin,
+            NestedPayloadOrigin::NativeChildShell {
+                slot_name: "program.shell.0".into()
+            }
+        );
+        let json = serde_json::to_value(&origin).unwrap();
+        assert_eq!(json["kind"], "native_child_shell");
+        assert_eq!(
+            serde_json::from_value::<NestedPayloadOrigin>(json).unwrap(),
+            origin
+        );
+        assert_eq!(
+            NestedPayloadOrigin::from_storage("native_child_shell", None),
+            Err(NestedPayloadDecodeError::MissingOriginSlot)
+        );
+        assert!(matches!(
+            NestedPayloadOrigin::from_storage("parameter", Some("program")).unwrap(),
+            NestedPayloadOrigin::Parameter { .. }
+        ));
     }
 
     #[test]

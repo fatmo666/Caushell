@@ -344,6 +344,7 @@ fn unresolved_execution_payload_evidence(
                 if matches!(
                     parsed.context.origin,
                     caushell_types::NestedPayloadOriginEvidence::Parameter { .. }
+                        | caushell_types::NestedPayloadOriginEvidence::NativeChildShell { .. }
                         | caushell_types::NestedPayloadOriginEvidence::FormImplicitInput
                         | caushell_types::NestedPayloadOriginEvidence::ConfigDefinedTask { .. }
                 ) =>
@@ -366,6 +367,7 @@ fn unresolved_execution_payload_evidence(
                     && matches!(
                         unresolved.context.origin,
                         caushell_types::NestedPayloadOriginEvidence::Parameter { .. }
+                            | caushell_types::NestedPayloadOriginEvidence::NativeChildShell { .. }
                             | caushell_types::NestedPayloadOriginEvidence::FormImplicitInput
                             | caushell_types::NestedPayloadOriginEvidence::ConfigDefinedTask { .. }
                     ) =>
@@ -414,6 +416,9 @@ fn nested_payload_owner_key(context: &caushell_types::NestedPayloadContextEviden
 
 fn nested_payload_origin_key(origin: &caushell_types::NestedPayloadOriginEvidence) -> String {
     match origin {
+        caushell_types::NestedPayloadOriginEvidence::NativeChildShell { slot_name } => {
+            format!("native_child_shell:{slot_name}")
+        }
         caushell_types::NestedPayloadOriginEvidence::Parameter { slot_name } => {
             format!("parameter:{slot_name}")
         }

@@ -3180,3 +3180,11 @@ Explicit `--cache-dir` is modeled conservatively as a possible write even alongs
 `--no-cache-dir`; this does not claim the cache is necessarily used. Complete native
 INI discovery, option precedence and default output/cache resolution remain an
 unsupported precision boundary and retain Ask, rather than a grant of authority.
+
+Generated native Shell payloads carry a distinct `NativeChildShell` origin. Their
+analysis starts without caller variables, exported values, aliases, functions,
+positionals or native implementation facts: the intervening runtime can change
+its environment, and no transfer proof is supplied yet. The owning cwd is also
+unproven for these generated entries. The ordinary Shell/eval/source transfer
+rules are unchanged. Literal absolute hazards remain visible; unresolved child
+state never becomes a concrete resource fact.

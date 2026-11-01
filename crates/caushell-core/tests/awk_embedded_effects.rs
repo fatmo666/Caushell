@@ -327,3 +327,21 @@ fn literal_system_children_add_shell_hazards_without_granting_execution() {
         Decision::Allow,
     );
 }
+
+#[test]
+fn native_child_frames_do_not_inherit_caller_shell_or_guess_runtime_mutations() {
+    for command in [
+        r#"destination=/; awk 'BEGIN{system("rm -rf \"$destination\"")}'"#,
+        r#"export destination=/; awk 'BEGIN{ENVIRON["destination"]="/workspace/out";system("rm -rf \"$destination\"")}'"#,
+        r#"f(){ local destination=/; awk 'BEGIN{system("rm -rf \"$destination\"")}'; }; f"#,
+    ] {
+        expect(command, Decision::NeedApproval);
+    }
+    for command in [
+        r#"rm(){ printf harmless; }; awk 'BEGIN{system("rm -rf /")}'"#,
+        r#"alias rm='printf harmless'; awk 'BEGIN{system("rm -rf /")}'"#,
+        r#"destination=/; awk 'BEGIN{system("printf ok")}'; rm -rf /"#,
+    ] {
+        expect(command, Decision::Deny);
+    }
+}
