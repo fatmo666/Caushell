@@ -108,6 +108,51 @@ fn incomplete_grammar_and_budgets_fail_closed() {
 }
 
 #[test]
+fn native_data_lists_and_disabled_leaf_caches_do_not_disable_safety_effects() {
+    let config = merge(
+        r#"
+        APT::NeverAutoRemove { "^linux-image"; "^firmware"; };
+        APT::VersionedKernelPackages { "linux-.*"; };
+        APT::Never-MarkAuto-Sections { "metapackages"; };
+        APT::Move-Autobit-Sections { "oldlibs"; };
+        APT::AutoRemove::SuggestsImportant "false";
+        Acquire::Changelogs::AlwaysOnline "true";
+        Acquire::GzipIndexes "true";
+        Acquire::CompressionTypes::Order { "xz"; "gz"; };
+        Acquire::Languages { "none"; };
+        APT::Periodic::Enable "0";
+        Dir::Cache::pkgcache "";
+        Dir::Cache::srcpkgcache "";
+    "#,
+    );
+    assert!(config.errors.is_empty(), "{config:?}");
+    assert!(config.package_outputs("install", "/workspace").is_none());
+    assert_eq!(
+        config.path("dir::cache::pkgcache", "/workspace"),
+        Some(String::new())
+    );
+    assert!(
+        config
+            .package_outputs("update", "/workspace")
+            .unwrap()
+            .iter()
+            .all(|p| !p.is_empty())
+    );
+    for bad in [
+        "Dir::Cache=",
+        "Dir::State=",
+        "Dir::Cache::Archives=",
+        "Acquire::CompressionTypes::Order::=custom-helper",
+        "APT::Update::Post-Invoke::=id",
+        "Acquire::http::User-Agent=secret",
+    ] {
+        let mut invalid = config.clone();
+        invalid.apply(bad);
+        assert!(!invalid.errors.is_empty(), "{bad}");
+    }
+}
+
+#[test]
 fn native_configuration_contract_rejects_incompatible_option_grammars() {
     let native = include_str!("../profiles/apt-get.yaml");
     assert!(caushell_profile::load_command_profile_from_str(native).is_ok());

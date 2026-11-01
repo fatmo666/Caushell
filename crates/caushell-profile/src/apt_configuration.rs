@@ -274,12 +274,40 @@ impl AptConfiguration {
                 | "apt::install-suggests"
                 | "debug::nolocking"
                 | "apt::color"
+                | "acquire::changelogs::alwaysonline"
+                | "acquire::gzipindexes"
+                | "apt::autoremove::suggestsimportant"
+                | "apt::protect-kernels"
         );
-        let numeric = key == "acquire::retries";
-        if (!path && !boolean && !numeric)
+        let numeric = matches!(
+            key.as_str(),
+            "acquire::retries" | "apt::periodic::enable" | "apt::neverautoremove::kernelcount"
+        );
+        // Native data selectors cannot erase independent import/deletion effects.
+        let data_list = matches!(
+            key.trim_end_matches("::"),
+            "apt::neverautoremove"
+                | "apt::versionedkernelpackages"
+                | "apt::never-markauto-sections"
+                | "apt::move-autobit-sections"
+                | "acquire::languages"
+        );
+        let compression_order = key.trim_end_matches("::") == "acquire::compressiontypes::order"
+            && matches!(
+                value,
+                "gz" | "bz2" | "xz" | "lzma" | "lz4" | "zst" | "uncompressed"
+            );
+        let disabled_cache = value.is_empty()
+            && matches!(
+                key.as_str(),
+                "dir::cache::pkgcache" | "dir::cache::srcpkgcache"
+            );
+        if (!path && !boolean && !numeric && !data_list && !compression_order)
             || (boolean && bool_value(value).is_none())
             || (numeric && value.parse::<u32>().ok().filter(|v| *v <= 1000).is_none())
-            || (path && value.is_empty())
+            || (path && value.is_empty() && !disabled_cache)
+            || ((data_list || compression_order)
+                && (value.len() > 4096 || value.contains(['\n', '\r'])))
             || value.contains('\0')
             || value.len() > 16384
         {
