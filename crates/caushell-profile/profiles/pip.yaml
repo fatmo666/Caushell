@@ -34,6 +34,12 @@ modifiers:
     parameters: [{name: log_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
     effects: [{kind: write_path, target: {kind: slot, name: log_path}}]
 
+  - id: cache_directory
+    matcher: {kind: any_flag, flags: [--cache-dir]}
+    parameters: [{name: cache_directory, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+    effects: [{kind: write_path, target: {kind: slot, name: cache_directory}}]
+  - {id: disable_cache, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
+
 subcommands:
   roots:
     - name: list
@@ -44,14 +50,28 @@ subcommands:
           parameters: []
           # Without native config evidence, update checks retain unknown network/cache effects.
           effects:
+            - {kind: load_config, target: {kind: none}}
             - {kind: network_endpoint, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
         - id: inspect_without_update_check
           selector: {kind: has_modifier, modifier: disable_version_check}
           parameters: []
+          # Disabling update checks does not disable native config/env log paths.
+          effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
         - id: output_format
           matcher: {kind: any_flag, flags: [--format, --exclude]}
@@ -72,6 +92,7 @@ subcommands:
           parameters: [{name: packages, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
           # Without native config evidence, update checks retain unknown network/cache effects.
           effects:
+            - {kind: load_config, target: {kind: none}}
             - {kind: network_endpoint, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
@@ -79,7 +100,19 @@ subcommands:
           selector: {kind: has_modifier, modifier: disable_version_check}
           parameters: [{name: packages, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+          effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
         - id: output_format
           matcher: {kind: any_flag, flags: [--format, --exclude]}
@@ -100,14 +133,28 @@ subcommands:
           parameters: []
           # Without native config evidence, update checks retain unknown network/cache effects.
           effects:
+            - {kind: load_config, target: {kind: none}}
             - {kind: network_endpoint, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
         - id: inspect_without_update_check
           selector: {kind: has_modifier, modifier: disable_version_check}
           parameters: []
+          # Disabling update checks does not disable native config/env log paths.
+          effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
         - id: output_format
           matcher: {kind: any_flag, flags: [--format, --exclude]}
@@ -128,14 +175,28 @@ subcommands:
           parameters: []
           # Without native config evidence, update checks retain unknown network/cache effects.
           effects:
+            - {kind: load_config, target: {kind: none}}
             - {kind: network_endpoint, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
         - id: inspect_without_update_check
           selector: {kind: has_modifier, modifier: disable_version_check}
           parameters: []
+          # Disabling update checks does not disable native config/env log paths.
+          effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
         - id: output_format
           matcher: {kind: any_flag, flags: [--format, --exclude]}
@@ -156,14 +217,28 @@ subcommands:
           parameters: []
           # Without native config evidence, update checks retain unknown network/cache effects.
           effects:
+            - {kind: load_config, target: {kind: none}}
             - {kind: network_endpoint, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
         - id: inspect_without_update_check
           selector: {kind: has_modifier, modifier: disable_version_check}
           parameters: []
+          # Disabling update checks does not disable native config/env log paths.
+          effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - {id: reporting, matcher: {kind: any_flag, flags: [--local, --user, --editable, --exclude-editable, --include-editable, --not-required, --all, --files, -f, --verbose, -v, --quiet, -q]}}
         - id: output_format
           matcher: {kind: any_flag, flags: [--format, --exclude]}
@@ -191,6 +266,8 @@ subcommands:
               binding: {kind: remaining_positionals}
               cardinality: optional_many
           effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
             - {kind: import_package, target: {kind: slot, name: package_specs}}
             - {kind: execute_imported_package_logic, target: {kind: slot, name: package_specs}}
         - id: install_packages
@@ -206,6 +283,8 @@ subcommands:
                   - {kind: has_modifier, modifier: editable_package}
           parameters: *package_parameters
           effects:
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
             - kind: write_path
               target:
                 kind: configured_path
@@ -224,6 +303,15 @@ subcommands:
                 kind: slot
                 name: package_specs
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - id: report
           matcher: {kind: any_flag, flags: [--report]}
           parameters:
@@ -231,9 +319,9 @@ subcommands:
           effects: [{kind: write_path, target: {kind: slot, name: report_path}}]
         - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
         - {id: preview, matcher: {kind: any_flag, flags: [--dry-run]}}
-        - {id: install_flags, matcher: {kind: any_flag, flags: [--break-system-packages, --user, --no-user, --no-deps, --upgrade, -U, --force-reinstall, --ignore-installed, --no-build-isolation, --no-compile, --compile, --require-hashes, --no-cache-dir, --quiet, -q, --verbose, -v, --no-index]}}
+        - {id: install_flags, matcher: {kind: any_flag, flags: [--break-system-packages, --user, --no-user, --no-deps, --upgrade, -U, --force-reinstall, --ignore-installed, --no-build-isolation, --no-compile, --compile, --require-hashes, --quiet, -q, --verbose, -v, --no-index]}}
         - id: install_values
-          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --constraint, -c, --config-settings, -C, --only-binary, --no-binary, --cache-dir, --python, --platform, --python-version]}
+          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --constraint, -c, --config-settings, -C, --only-binary, --no-binary, --python, --platform, --python-version]}
           parameters: [{name: install_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
         - id: prefix_directory
           matcher: {kind: any_flag, flags: [--prefix]}
@@ -328,7 +416,6 @@ subcommands:
           selector: {kind: has_modifier, modifier: information}
           parameters: [{name: information_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
         - id: collect_distributions
-          operation_semantics_unresolved: true
           selector: {kind: not, item: {kind: has_modifier, modifier: information}}
           parameters: *package_parameters
           effects:
@@ -346,14 +433,23 @@ subcommands:
             - {kind: load_config, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - id: output_directory
           matcher: {kind: any_flag, flags: [-d, --dest]}
           parameters: [{name: output_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 
         - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
-        - {id: package_flags, matcher: {kind: any_flag, flags: [--no-deps, --pre, --prefer-binary, --require-hashes, --no-require-hashes, --no-build-isolation, --check-build-dependencies, --ignore-requires-python, --no-clean, --no-cache-dir, --no-index, --quiet, -q, --verbose, -v, --no-input, --disable-pip-version-check]}}
+        - {id: package_flags, matcher: {kind: any_flag, flags: [--no-deps, --pre, --prefer-binary, --require-hashes, --no-require-hashes, --no-build-isolation, --check-build-dependencies, --ignore-requires-python, --no-clean, --no-index, --quiet, -q, --verbose, -v, --no-input, --disable-pip-version-check]}}
         - id: package_options
-          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --only-binary, --no-binary, --config-settings, -C, --platform, --python-version, --implementation, --abi, --progress-bar, --src, --cache-dir, --trusted-host, --timeout, --retries, --cert, --client-cert, --proxy]}
+          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --only-binary, --no-binary, --config-settings, -C, --platform, --python-version, --implementation, --abi, --progress-bar, --src, --trusted-host, --timeout, --retries, --cert, --client-cert, --proxy]}
           parameters: [{name: package_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
         - id: requirement_files
           matcher: {kind: any_flag, flags: [-r, --requirement, -c, --constraint, --build-constraint]}
@@ -380,7 +476,6 @@ subcommands:
           selector: {kind: has_modifier, modifier: information}
           parameters: [{name: information_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
         - id: build_wheels
-          operation_semantics_unresolved: true
           selector: {kind: not, item: {kind: has_modifier, modifier: information}}
           parameters: *package_parameters
           effects:
@@ -398,14 +493,23 @@ subcommands:
             - {kind: load_config, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - id: output_directory
           matcher: {kind: any_flag, flags: [-w, --wheel-dir]}
           parameters: [{name: output_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 
         - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
-        - {id: package_flags, matcher: {kind: any_flag, flags: [--no-deps, --pre, --prefer-binary, --require-hashes, --no-require-hashes, --no-build-isolation, --check-build-dependencies, --ignore-requires-python, --no-clean, --no-cache-dir, --no-index, --quiet, -q, --verbose, -v, --no-input, --disable-pip-version-check]}}
+        - {id: package_flags, matcher: {kind: any_flag, flags: [--no-deps, --pre, --prefer-binary, --require-hashes, --no-require-hashes, --no-build-isolation, --check-build-dependencies, --ignore-requires-python, --no-clean, --no-index, --quiet, -q, --verbose, -v, --no-input, --disable-pip-version-check]}}
         - id: package_options
-          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --only-binary, --no-binary, --config-settings, -C, --platform, --python-version, --implementation, --abi, --progress-bar, --src, --cache-dir, --trusted-host, --timeout, --retries, --cert, --client-cert, --proxy]}
+          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --only-binary, --no-binary, --config-settings, -C, --platform, --python-version, --implementation, --abi, --progress-bar, --src, --trusted-host, --timeout, --retries, --cert, --client-cert, --proxy]}
           parameters: [{name: package_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
         - id: requirement_files
           matcher: {kind: any_flag, flags: [-r, --requirement, -c, --constraint, --build-constraint]}
@@ -430,6 +534,15 @@ subcommands:
       aliases: []
       forms: []
       modifiers:
+        - id: native_cache_tail
+          matcher: {kind: any_flag, flags: [--cache-dir]}
+          parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_cache_tail}}]
+        - id: native_log_tail
+          matcher: {kind: any_flag, flags: [--log]}
+          parameters: [{name: native_log_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects: [{kind: write_path, target: {kind: slot, name: native_log_tail}}]
+        - {id: native_no_cache_tail, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
         - {id: file_scope, matcher: {kind: any_flag, flags: [--user, --global, --site]}}
         - id: editor
           matcher: {kind: any_flag, flags: [--editor]}
@@ -442,7 +555,19 @@ subcommands:
               selector: {kind: all, items: []}
               parameters: [{name: configuration_keys, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
               stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
-          modifiers: []
+              effects:
+                - {kind: load_config, target: {kind: none}}
+                - {kind: write_path, target: {kind: none}}
+          modifiers:
+            - id: native_cache_leaf
+              matcher: {kind: any_flag, flags: [--cache-dir]}
+              parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_cache_leaf}}]
+            - id: native_log_leaf
+              matcher: {kind: any_flag, flags: [--log]}
+              parameters: [{name: native_log_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_log_leaf}}]
+            - {id: native_no_cache_leaf, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
           children: []
           default_behavior: reject_unknown
           extensions: {}
@@ -452,7 +577,19 @@ subcommands:
               selector: {kind: all, items: []}
               parameters: [{name: configuration_keys, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
               stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
-          modifiers: []
+              effects:
+                - {kind: load_config, target: {kind: none}}
+                - {kind: write_path, target: {kind: none}}
+          modifiers:
+            - id: native_cache_leaf
+              matcher: {kind: any_flag, flags: [--cache-dir]}
+              parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_cache_leaf}}]
+            - id: native_log_leaf
+              matcher: {kind: any_flag, flags: [--log]}
+              parameters: [{name: native_log_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_log_leaf}}]
+            - {id: native_no_cache_leaf, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
           children: []
           default_behavior: reject_unknown
           extensions: {}
@@ -462,7 +599,19 @@ subcommands:
               selector: {kind: all, items: []}
               parameters: [{name: configuration_keys, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
               stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
-          modifiers: []
+              effects:
+                - {kind: load_config, target: {kind: none}}
+                - {kind: write_path, target: {kind: none}}
+          modifiers:
+            - id: native_cache_leaf
+              matcher: {kind: any_flag, flags: [--cache-dir]}
+              parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_cache_leaf}}]
+            - id: native_log_leaf
+              matcher: {kind: any_flag, flags: [--log]}
+              parameters: [{name: native_log_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_log_leaf}}]
+            - {id: native_no_cache_leaf, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
           children: []
           default_behavior: reject_unknown
           extensions: {}
@@ -470,7 +619,6 @@ subcommands:
           option_scope: permuted_options
           forms:
             - id: rewrite_configuration
-              operation_semantics_unresolved: true
               selector: {kind: exact_positional_count, count: 2}
               parameters: [{name: configuration_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
               # Selection depends on native user/global/site configuration and
@@ -479,6 +627,15 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - id: native_cache_leaf
+              matcher: {kind: any_flag, flags: [--cache-dir]}
+              parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_cache_leaf}}]
+            - id: native_log_leaf
+              matcher: {kind: any_flag, flags: [--log]}
+              parameters: [{name: native_log_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_log_leaf}}]
+            - {id: native_no_cache_leaf, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
             - {id: file_scope, matcher: {kind: any_flag, flags: [--user, --global, --site]}}
           children: []
           default_behavior: reject_unknown
@@ -487,7 +644,6 @@ subcommands:
           option_scope: permuted_options
           forms:
             - id: rewrite_configuration
-              operation_semantics_unresolved: true
               selector: {kind: exact_positional_count, count: 1}
               parameters: [{name: configuration_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
               # Selection depends on native user/global/site configuration and
@@ -496,6 +652,15 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - id: native_cache_leaf
+              matcher: {kind: any_flag, flags: [--cache-dir]}
+              parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_cache_leaf}}]
+            - id: native_log_leaf
+              matcher: {kind: any_flag, flags: [--log]}
+              parameters: [{name: native_log_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_log_leaf}}]
+            - {id: native_no_cache_leaf, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
             - {id: file_scope, matcher: {kind: any_flag, flags: [--user, --global, --site]}}
           children: []
           default_behavior: reject_unknown
@@ -506,11 +671,21 @@ subcommands:
             - id: edit_configuration
               selector: {kind: all, items: []}
               effects:
+                - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
                 # pip invokes the editor string using shell=True. The config
                 # filename is runtime-selected; do not invent a local path.
                 - {kind: dispatch_command, target: {kind: dispatch, command_string: {slot: editor_command, syntax: posix_shell}}}
-          modifiers: []
+          modifiers:
+            - id: native_cache_leaf
+              matcher: {kind: any_flag, flags: [--cache-dir]}
+              parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_cache_leaf}}]
+            - id: native_log_leaf
+              matcher: {kind: any_flag, flags: [--log]}
+              parameters: [{name: native_log_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+              effects: [{kind: write_path, target: {kind: slot, name: native_log_leaf}}]
+            - {id: native_no_cache_leaf, matcher: {kind: any_flag, flags: [--no-cache-dir]}}
           children: []
           default_behavior: reject_unknown
           extensions: {}
@@ -519,6 +694,7 @@ subcommands:
 
 extensions:
   caushell.profile/known_limitations:
+    - Explicit cache/log/output operands remain separate resource facts; missing native configuration discovery retains unknown effects. Disabling version checks or passing --isolated does not prove all configuration effects absent.
     - Install, download, wheel and configuration mutation forms retain native package/backend and unknown config/cache effects. Download is not a guarantee of no build execution; --no-deps is not a backend-execution disable switch.
     - Config set/unset select native files; --user/--global/--site and PIP_CONFIG_FILE do not prove a filesystem destination. Unsupported controls retain partial effects and approval.
     - Explicit target/root/prefix bounds are modeled; default interpreter installation discovery remains unknown. --break-system-packages is permission to bypass an environment check, not proof of a system destination. No interpreter or environment is probed.

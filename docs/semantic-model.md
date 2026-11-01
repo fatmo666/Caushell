@@ -3161,3 +3161,22 @@ so discovering an ordinary child command does not grant permission to execute AW
 Dynamic arguments, unknown functions, unsupported grammar, program-file payloads
 and AWK pipes retain their existing unknown execution boundaries. No AWK program
 or child command is executed by this analysis.
+
+### Pip known operands and unknown native configuration
+
+Pip's explicit output, cache and log operands are resource facts even while native
+configuration discovery is incomplete. Collection/build forms retain separate
+unknown configuration writes and imported-package/backend execution effects;
+configuration mutation retains a native-selected unknown destination. They do not
+mark every independently known CLI path as unresolved operation semantics. Unknown
+options still poison the incomplete invocation in the ordinary way.
+
+All non-information Pip forms preserve unknown native configuration/log writes.
+`--disable-pip-version-check` disables an update check, not configuration loading;
+`--isolated` does not prove system/site configuration absent. `PIP_CONFIG_FILE`
+is not a proof of a `pip config set/unset` destination, and `VIRTUAL_ENV` is not a
+proof of the interpreter's actual prefix. No default user/site/cache path is guessed.
+Explicit `--cache-dir` is modeled conservatively as a possible write even alongside
+`--no-cache-dir`; this does not claim the cache is necessarily used. Complete native
+INI discovery, option precedence and default output/cache resolution remain an
+unsupported precision boundary and retain Ask, rather than a grant of authority.

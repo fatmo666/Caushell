@@ -1152,6 +1152,8 @@ extensions: {}
         assert_eq!(
             effect_kinds,
             vec![
+                EffectKind::LoadConfig,
+                EffectKind::WritePath,
                 EffectKind::WritePath,
                 EffectKind::ImportPackage,
                 EffectKind::ExecuteImportedPackageLogic,
@@ -1160,7 +1162,10 @@ extensions: {}
         let write = form
             .effects
             .iter()
-            .find(|effect| effect.kind == EffectKind::WritePath)
+            .find(|effect| {
+                effect.kind == EffectKind::WritePath
+                    && matches!(effect.target, EffectTarget::ConfiguredPath(_))
+            })
             .unwrap();
         match &write.target {
             EffectTarget::ConfiguredPath(target) => {

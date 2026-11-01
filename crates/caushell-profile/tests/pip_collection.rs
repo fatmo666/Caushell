@@ -47,8 +47,8 @@ fn collection_and_build_keep_backend_execution_and_native_unknowns() {
         let r = resolve(command);
         assert!(r.form_id.as_str().ends_with(form), "{command}: {r:#?}");
         assert!(
-            r.operation_semantics_unresolved,
-            "native config/cache/backend behavior is still unobserved"
+            !r.operation_semantics_unresolved,
+            "known CLI facts are independent of the explicit unknown config/backend effects"
         );
         for kind in [
             EffectKind::ImportPackage,
@@ -96,7 +96,7 @@ fn config_rewrite_is_not_a_query_or_filesystem_deletion() {
         "pip config --site unset global.timeout",
     ] {
         let r = resolve(command);
-        assert!(r.operation_semantics_unresolved, "{command}");
+        assert!(!r.operation_semantics_unresolved, "{command}");
         assert!(
             r.effects
                 .iter()
@@ -119,9 +119,7 @@ fn config_rewrite_is_not_a_query_or_filesystem_deletion() {
         assert!(
             !r.effects.iter().any(|e| matches!(
                 e.kind,
-                EffectKind::WritePath
-                    | EffectKind::ExecuteImportedPackageLogic
-                    | EffectKind::DeletePath
+                EffectKind::ExecuteImportedPackageLogic | EffectKind::DeletePath
             )),
             "{command}: {r:#?}"
         );
@@ -143,7 +141,7 @@ fn partial_collection_still_exposes_hazards() {
         "pip wheel -e /workspace/src",
     ] {
         let r = resolve(command);
-        assert!(r.operation_semantics_unresolved, "{command}");
+        assert!(!r.operation_semantics_unresolved, "{command}");
         assert!(
             r.effects
                 .iter()

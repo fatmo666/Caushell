@@ -1248,11 +1248,23 @@ mod tests {
     }
 
     fn assert_pip_install_effects(invocation: &BoundInvocation, package_slot: &str) {
-        assert_eq!(invocation.effects.len(), 3);
+        assert_eq!(invocation.effects.len(), 5);
+        for kind in [EffectKind::LoadConfig, EffectKind::WritePath] {
+            assert!(
+                invocation
+                    .effects
+                    .iter()
+                    .any(|e| e.kind == kind && e.target == EffectTarget::None),
+                "native configuration remains unknown independently of the install target"
+            );
+        }
         let write = invocation
             .effects
             .iter()
-            .find(|effect| effect.kind == EffectKind::WritePath)
+            .find(|effect| {
+                effect.kind == EffectKind::WritePath
+                    && matches!(effect.target, EffectTarget::ConfiguredPath(_))
+            })
             .expect("expected installation write effect");
         match &write.target {
             EffectTarget::ConfiguredPath(target) => {

@@ -30,11 +30,18 @@ fn read_queries_do_not_borrow_mutator_authority() {
         assert!(
             !b.effects.iter().any(|e| matches!(
                 e.kind,
-                EffectKind::WritePath | EffectKind::ExecutePayload | EffectKind::DispatchCommand
+                EffectKind::ExecutePayload | EffectKind::DispatchCommand
             )),
             "{c}: {b:?}"
         );
     }
+    let rewrite = resolve("pip config set global.index-url x").unwrap();
+    assert!(
+        rewrite
+            .effects
+            .iter()
+            .any(|e| e.kind == EffectKind::WritePath && e.target == EffectTarget::None)
+    );
     let default = resolve("pip list").unwrap();
     assert!(
         default
@@ -43,7 +50,6 @@ fn read_queries_do_not_borrow_mutator_authority() {
             .any(|e| e.kind == EffectKind::WritePath)
     );
     for c in [
-        "pip config set global.index-url x",
         "pip list --outdated",
         "pip list --unknown",
         "R CMD arbitrary-script",
