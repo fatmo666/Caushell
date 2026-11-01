@@ -320,10 +320,117 @@ subcommands:
       default_behavior: reject_unknown
       extensions: {}
 
+
+    - name: download
+      option_scope: permuted_options
+      forms:
+        - id: show_help
+          selector: {kind: has_modifier, modifier: information}
+          parameters: [{name: information_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+        - id: collect_distributions
+          operation_semantics_unresolved: true
+          selector: {kind: not, item: {kind: has_modifier, modifier: information}}
+          parameters: *package_parameters
+          effects:
+            - {kind: import_package, target: {kind: slot, name: package_specs}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: package_specs}}
+            - kind: write_path
+              target:
+                kind: configured_path
+                sources: [{slot: output_directory, projection: {kind: identity}}]
+                environment: {name: PIP_DEST, empty_is_unset: true}
+                missing: unknown
+            # Metadata/backend execution and native config/cache effects are
+            # independent of the requested output directory. Never infer that
+            # a download avoids code execution or that --no-deps disables it.
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+      modifiers:
+        - id: output_directory
+          matcher: {kind: any_flag, flags: [-d, --dest]}
+          parameters: [{name: output_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+        - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
+        - {id: package_flags, matcher: {kind: any_flag, flags: [--no-deps, --pre, --prefer-binary, --require-hashes, --no-require-hashes, --no-build-isolation, --check-build-dependencies, --ignore-requires-python, --no-clean, --no-cache-dir, --no-index, --quiet, -q, --verbose, -v, --no-input, --disable-pip-version-check]}}
+        - id: package_options
+          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --only-binary, --no-binary, --config-settings, -C, --platform, --python-version, --implementation, --abi, --progress-bar, --src, --cache-dir, --trusted-host, --timeout, --retries, --cert, --client-cert, --proxy]}
+          parameters: [{name: package_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: requirement_files
+          matcher: {kind: any_flag, flags: [-r, --requirement, -c, --constraint, --build-constraint]}
+          parameters: [{name: requirement_files, semantic: {kind: package_locator, manager: pip, locator_kinds: [requirement_file, direct_url, unknown_dynamic]}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects:
+            - {kind: import_package, target: {kind: slot, name: requirement_files}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: requirement_files}}
+          effects_when: {unless_modifiers: [information]}
+        - id: editable_packages
+          matcher: {kind: any_flag, flags: [-e, --editable]}
+          parameters: [{name: editable_specs, semantic: {kind: package_locator, manager: pip, locator_kinds: [local_path, vcs_url, direct_url, unknown_dynamic]}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects:
+            - {kind: import_package, target: {kind: slot, name: editable_specs}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: editable_specs}}
+          effects_when: {unless_modifiers: [information]}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: wheel
+      option_scope: permuted_options
+      forms:
+        - id: show_help
+          selector: {kind: has_modifier, modifier: information}
+          parameters: [{name: information_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+        - id: build_wheels
+          operation_semantics_unresolved: true
+          selector: {kind: not, item: {kind: has_modifier, modifier: information}}
+          parameters: *package_parameters
+          effects:
+            - {kind: import_package, target: {kind: slot, name: package_specs}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: package_specs}}
+            - kind: write_path
+              target:
+                kind: configured_path
+                sources: [{slot: output_directory, projection: {kind: identity}}]
+                environment: {name: PIP_WHEEL_DIR, empty_is_unset: true}
+                missing: unknown
+            # Metadata/backend execution and native config/cache effects are
+            # independent of the requested output directory. Never infer that
+            # a download avoids code execution or that --no-deps disables it.
+            - {kind: load_config, target: {kind: none}}
+            - {kind: write_path, target: {kind: none}}
+      modifiers:
+        - id: output_directory
+          matcher: {kind: any_flag, flags: [-w, --wheel-dir]}
+          parameters: [{name: output_directory, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+
+        - {id: information, matcher: {kind: any_flag, flags: [-h, --help]}}
+        - {id: package_flags, matcher: {kind: any_flag, flags: [--no-deps, --pre, --prefer-binary, --require-hashes, --no-require-hashes, --no-build-isolation, --check-build-dependencies, --ignore-requires-python, --no-clean, --no-cache-dir, --no-index, --quiet, -q, --verbose, -v, --no-input, --disable-pip-version-check]}}
+        - id: package_options
+          matcher: {kind: any_flag, flags: [--index-url, -i, --extra-index-url, --find-links, -f, --only-binary, --no-binary, --config-settings, -C, --platform, --python-version, --implementation, --abi, --progress-bar, --src, --cache-dir, --trusted-host, --timeout, --retries, --cert, --client-cert, --proxy]}
+          parameters: [{name: package_option_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+        - id: requirement_files
+          matcher: {kind: any_flag, flags: [-r, --requirement, -c, --constraint, --build-constraint]}
+          parameters: [{name: requirement_files, semantic: {kind: package_locator, manager: pip, locator_kinds: [requirement_file, direct_url, unknown_dynamic]}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects:
+            - {kind: import_package, target: {kind: slot, name: requirement_files}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: requirement_files}}
+          effects_when: {unless_modifiers: [information]}
+        - id: editable_packages
+          matcher: {kind: any_flag, flags: [-e, --editable]}
+          parameters: [{name: editable_specs, semantic: {kind: package_locator, manager: pip, locator_kinds: [local_path, vcs_url, direct_url, unknown_dynamic]}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+          effects:
+            - {kind: import_package, target: {kind: slot, name: editable_specs}}
+            - {kind: execute_imported_package_logic, target: {kind: slot, name: editable_specs}}
+          effects_when: {unless_modifiers: [information]}
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
     - name: config
+      option_scope: permuted_options
       aliases: []
       forms: []
       modifiers:
+        - {id: file_scope, matcher: {kind: any_flag, flags: [--user, --global, --site]}}
         - id: editor
           matcher: {kind: any_flag, flags: [--editor]}
           parameters:
@@ -359,6 +466,40 @@ subcommands:
           children: []
           default_behavior: reject_unknown
           extensions: {}
+        - name: set
+          option_scope: permuted_options
+          forms:
+            - id: rewrite_configuration
+              operation_semantics_unresolved: true
+              selector: {kind: exact_positional_count, count: 2}
+              parameters: [{name: configuration_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+              # Selection depends on native user/global/site configuration and
+              # virtualenv file existence. PIP_CONFIG_FILE is not a write path.
+              effects:
+                - {kind: load_config, target: {kind: none}}
+                - {kind: write_path, target: {kind: none}}
+          modifiers:
+            - {id: file_scope, matcher: {kind: any_flag, flags: [--user, --global, --site]}}
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: unset
+          option_scope: permuted_options
+          forms:
+            - id: rewrite_configuration
+              operation_semantics_unresolved: true
+              selector: {kind: exact_positional_count, count: 1}
+              parameters: [{name: configuration_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}]
+              # Selection depends on native user/global/site configuration and
+              # virtualenv file existence. PIP_CONFIG_FILE is not a write path.
+              effects:
+                - {kind: load_config, target: {kind: none}}
+                - {kind: write_path, target: {kind: none}}
+          modifiers:
+            - {id: file_scope, matcher: {kind: any_flag, flags: [--user, --global, --site]}}
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
         - name: edit
           aliases: []
           forms:
@@ -378,5 +519,6 @@ subcommands:
 
 extensions:
   caushell.profile/known_limitations:
-    - This first slice models `pip install <package_specs...>`, `pip install -r/--requirement <file>`, editable installs, and explicit --target writes.
+    - Install, download, wheel and configuration mutation forms retain native package/backend and unknown config/cache effects. Download is not a guarantee of no build execution; --no-deps is not a backend-execution disable switch.
+    - Config set/unset select native files; --user/--global/--site and PIP_CONFIG_FILE do not prove a filesystem destination. Unsupported controls retain partial effects and approval.
     - Explicit target/root/prefix bounds are modeled; default interpreter installation discovery remains unknown. --break-system-packages is permission to bypass an environment check, not proof of a system destination. No interpreter or environment is probed.
