@@ -281,6 +281,14 @@ pub(crate) fn scan_leading_options(
         }
         let token = projection.args[index].text.as_str();
         if prefixes.is_terminator(token) {
+            if permuted && result.error.is_some() {
+                // A preceding unknown arity may consume this word as data.
+                // Retain hazards in either possible tail; do not certify a
+                // terminator or treat the following words as proven operands.
+                index += 1;
+                result.scope.end_index = index;
+                continue;
+            }
             result.terminator = Some(index);
             result.scope.end_index = index + 1;
             return result;
@@ -439,7 +447,18 @@ pub(crate) fn scan_leading_options(
                         .extend(token_flags.into_iter().map(|name| (index, name)));
                     result.scope.end_index = index + 1;
                 }
-                result.error = Some(error);
+                result.error.get_or_insert(error);
+                if permuted {
+                    // Recover only possible modifier effects in a permuted
+                    // argv grammar. An unknown option's arity cannot certify
+                    // ownership, but must not erase later declared hazards.
+                    // The original error still prevents complete analysis
+                    // and all namespace/operand ownership certificates.
+                    result.ownership_unresolved = true;
+                    index += 1;
+                    result.scope.end_index = index;
+                    continue;
+                }
                 break;
             }
         };
@@ -477,7 +496,15 @@ pub(crate) fn scan_leading_options(
                         )
                     )))
         {
-            result.error = Some(format!("unsupported inline operand in {token:?}"));
+            result
+                .error
+                .get_or_insert_with(|| format!("unsupported inline operand in {token:?}"));
+            if permuted {
+                result.ownership_unresolved = true;
+                index += 1;
+                result.scope.end_index = index;
+                continue;
+            }
             break;
         }
         let extra = if inline {
@@ -536,7 +563,10 @@ pub(crate) fn scan_leading_options(
                 && (operand.may_start_with("-")
                     || prefixes == OptionPrefixPolicy::DashAndPlus && operand.may_start_with("+"));
         }
-        index += 1 + extra;
+        // After a gap, a preceding option may consume the apparent owner of
+        // the next value. Scan those argv words as possible controls too. A
+        // known operand/terminator before the gap keeps its exact boundary.
+        index += if result.error.is_some() { 1 } else { 1 + extra };
         result.scope.end_index = index;
         if ends {
             return result;

@@ -467,7 +467,25 @@ pub fn select_invocation<'a>(
         &profile.exact_option_words,
         &profile.trailing_option_words,
     );
-    ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
+    // A permuted grammar has no opaque child boundary. After a failed scan,
+    // known controls can still select one possible form so its declared
+    // hazards (including recursive dispatch) remain visible. Preserve the
+    // failure as an operation gap; this does not certify ownership or effects.
+    let recovery_error = (profile.opaque_on_unresolved
+        && !profile.read_only_control_surface
+        && profile.option_scope == crate::OptionScopePolicy::PermutedOptions)
+        .then(|| {
+            option_scope.as_ref().and_then(|o| {
+                // Invalid declarations fail before argv scanning starts.
+                (o.scope.end_index > o.scope.start_index)
+                    .then(|| o.error.clone())
+                    .flatten()
+            })
+        })
+        .flatten();
+    if recovery_error.is_none() {
+        ensure_option_scope(profile.primary_name(), option_scope.as_ref())?;
+    }
     let modifiers = if let Some(options) = &option_scope {
         match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
     } else {
@@ -497,24 +515,31 @@ pub fn select_invocation<'a>(
         profile.option_matching,
     )?;
 
+    let mut residuals = Vec::new();
+    if let Some(error) = recovery_error {
+        residuals.push(Residual::new(
+            ResidualKind::UnboundControlSurface,
+            ResidualSurface::Control,
+            format!("native option ownership is unresolved: {error}"),
+        ));
+    }
+    if option_scope
+        .as_ref()
+        .is_some_and(|o| o.ownership_unresolved)
+    {
+        residuals.push(Residual::new(
+            ResidualKind::UnboundControlSurface,
+            ResidualSurface::Control,
+            "argument region ownership is unresolved; known child effects are partial",
+        ));
+    }
     Ok(InvocationSelection {
         option_matching: profile.option_matching,
         form,
         form_scope: scope,
         modifiers,
         subcommand_path: Vec::new(),
-        residuals: if option_scope
-            .as_ref()
-            .is_some_and(|o| o.ownership_unresolved)
-        {
-            vec![Residual::new(
-                ResidualKind::UnboundControlSurface,
-                ResidualSurface::Control,
-                "argument region ownership is unresolved; known child effects are partial",
-            )]
-        } else {
-            Vec::new()
-        },
+        residuals,
         option_terminators: option_scope
             .as_ref()
             .and_then(|options| options.terminator)
@@ -769,8 +794,12 @@ pub fn bind_invocation(
             !(profile.read_only_control_surface
                 && residual.kind == ResidualKind::UnboundControlSurface)
         });
-    bound.operation_semantics_unresolved |=
-        state.binding_boundary_unresolved || selection.form.operation_semantics_unresolved;
+    bound.operation_semantics_unresolved |= state.binding_boundary_unresolved
+        || selection.form.operation_semantics_unresolved
+        || selection
+            .option_scope
+            .as_ref()
+            .is_some_and(|o| o.error.is_some());
     bound
 }
 
@@ -7715,9 +7744,15 @@ modifiers:
         let mut profile = built_in_profile("tar");
         let artifact = parse_command("tar -x -qf /backup/archive.tar", ShellKind::Bash).unwrap();
         let projection = project_invocation(&artifact.commands[0], InvocationRuntimeContext::new());
-        // Scoped parsing rejects an unknown prefix before binding, rather than
-        // manufacturing an archive operand from the rest of the cluster.
-        assert!(select_invocation(&profile, &projection).is_err());
+        // Possible extraction effects may survive, but the unknown prefix
+        // cannot manufacture an archive operand from the rest of its cluster.
+        let selection = select_invocation(&profile, &projection).unwrap();
+        let bound = bind_invocation(&profile, &projection, &selection);
+        assert!(bound.operation_semantics_unresolved);
+        assert!(!bound.residuals.is_empty());
+        assert!(bound.bound_parameters.iter()
+            .filter(|p| p.name.as_str() == "archive_operand")
+            .all(|p| p.values.is_empty()));
 
         profile.modifiers.push(
             Modifier::new("conflicting_f")
