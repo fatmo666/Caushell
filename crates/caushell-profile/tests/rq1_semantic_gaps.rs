@@ -183,12 +183,15 @@ fn prefix_assignments_expand_in_order_without_changing_ordinary_argv_or_caller_f
     let command = &parsed.commands[0];
     let prefix = materialize_prefix_environment(command, &bindings);
     assert_eq!(
-        prefix,
-        [
-            ("fixture_value".into(), SessionValue::exact_scalar("new")),
-            ("FIXTURE_PROGRAM".into(), SessionValue::exact_scalar("new")),
-            ("fixture_value".into(), SessionValue::exact_scalar("last")),
-        ]
+        prefix[0],
+        ("fixture_value".into(), SessionValue::exact_scalar("new"))
+    );
+    assert_eq!(
+        prefix[2],
+        ("fixture_value".into(), SessionValue::exact_scalar("last"))
+    );
+    assert!(
+        matches!(&prefix[1], (name, SessionValue::OpaqueDynamic {..}) if name == "FIXTURE_PROGRAM")
     );
     let argv = materialize_projected_invocation(
         &project_invocation(command, InvocationRuntimeContext::new()),
@@ -206,7 +209,13 @@ fn prefix_assignments_expand_in_order_without_changing_ordinary_argv_or_caller_f
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert_eq!(output.stdout, b"last|new");
+    assert!(
+        matches!(output.stdout.as_slice(), b"last|old" | b"last|new"),
+        "unexpected native order: {:?}",
+        output.stdout
+    );
+    // Both native outcomes are represented by the unknown environment value;
+    // never pick the build host's result as a fact for another execution frame.
 }
 
 #[test]

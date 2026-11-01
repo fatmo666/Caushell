@@ -1436,12 +1436,37 @@ pub fn materialize_shell_assignment_value(
     )
 }
 
-/// Command-prefix assignments expand in source order, unlike the command's
-/// ordinary argv words. Return child-environment facts without mutating the
-/// caller's variable frame or consulting the host environment.
+/// Join the supported entry-frame and sequential prefix-assignment semantics.
+/// Bash dialects differ here; ShellKind alone is not a proof of one order.
+/// Ordinary argv still uses the caller frame, and this never mutates it.
 pub fn materialize_prefix_environment(
     command: &caushell_parse::CommandFact,
     bindings: &SessionBindings,
+) -> Vec<(String, SessionValue)> {
+    let sequential = materialize_prefix_in_order(command, bindings, true);
+    let entry = materialize_prefix_in_order(command, bindings, false);
+    sequential
+        .into_iter()
+        .zip(entry)
+        .map(|((name, a), (_, b))| {
+            (
+                name,
+                if a == b {
+                    a
+                } else {
+                    SessionValue::opaque_dynamic(
+                        "prefix assignment depends on unobserved shell evaluation order",
+                    )
+                },
+            )
+        })
+        .collect()
+}
+
+fn materialize_prefix_in_order(
+    command: &caushell_parse::CommandFact,
+    bindings: &SessionBindings,
+    sequential: bool,
 ) -> Vec<(String, SessionValue)> {
     if command.prefix_assignments.is_empty() {
         return Vec::new();
@@ -1458,7 +1483,7 @@ pub fn materialize_prefix_environment(
                         &assignment.value.text,
                         assignment.value.quoted,
                         &assignment.value.node_kind,
-                        &rhs,
+                        if sequential { &rhs } else { bindings },
                     )
                 }
             })

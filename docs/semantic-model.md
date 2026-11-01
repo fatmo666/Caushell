@@ -2852,8 +2852,10 @@ environment_inputs:
 ```
 
 Only supplied environment facts or this command's prefix assignments activate
-these operands. Prefix assignments expand in source order in a temporary RHS
-frame without changing ordinary argv expansion or caller bindings; exported values
+these operands. Prefix assignments join entry-frame and sequential temporary RHS
+evaluation: only values identical under both orders become concrete. A dependency
+on the unobserved order remains unknown. Neither order changes ordinary argv
+expansion or caller bindings; exported values
 and tool-decoded environment overlays remain data and are not shell-expanded
 again. Explicit unknown values retain an unknown payload. Proven unset/empty
 values and unexported locals do not activate a loader, and missing ambient
