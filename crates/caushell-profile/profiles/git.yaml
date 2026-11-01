@@ -1074,6 +1074,127 @@ subcommands:
         caushell.profile/known_limitations:
           - Without an explicit -- separator, git diff positionals are left as plain revision args to avoid misclassifying commit names or blobs as filesystem paths.
 
+    - name: reflog
+      option_scope: leading_options
+      aliases: []
+      forms: &reflog_query_forms
+        - id: inspect_reflog_no_pager
+          selector: {kind: has_modifier, modifier: no_pager}
+          parameters: &reflog_refs
+            - name: reflog_refs
+              semantic: {kind: plain_value}
+              binding: {kind: remaining_positionals}
+              cardinality: optional_many
+              # In default-show routing, a later option-looking word is not
+              # certified by the leading subcommand boundary. Never turn a
+              # native output/helper option into harmless reference data.
+              value_constraints: [{kind: require_match, pattern: '[^-\x00\r\n][^\x00\r\n]*'}]
+          effects: &reflog_read_effects
+            - {kind: read_path, target: {kind: none}}
+            - {kind: transform_data, target: {kind: none}}
+          stream_contract: &reflog_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+        - id: inspect_reflog
+          selector: {kind: not, item: {kind: has_modifier, modifier: no_pager}}
+          parameters: *reflog_refs
+          effects:
+            - {kind: read_path, target: {kind: none}}
+            - {kind: transform_data, target: {kind: none}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+          stream_contract: *reflog_stream
+      modifiers: &reflog_query_modifiers
+        - {id: reflog_display, matcher: {kind: any_flag, flags: [--oneline, --abbrev-commit, --no-abbrev-commit, --no-decorate, --all, -g, --walk-reflogs]}}
+        - {id: reflog_count_digits, matcher: {kind: any_flag, flags: ['-0', '-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9']}}
+        - id: reflog_count
+          matcher: {kind: any_flag, flags: [-n, --max-count]}
+          parameters:
+            - {name: count, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '[0-9]+'}]}
+        - id: reflog_date
+          matcher: {kind: any_flag, flags: [--date]}
+          parameters:
+            - {name: date_format, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many, value_constraints: [{kind: require_match, pattern: '[^\x00\r\n]+'}]}
+        - id: reflog_time_filter
+          matcher: {kind: any_flag, flags: [--since, --after, --until, --before]}
+          parameters:
+            - {name: time_filter, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+      children:
+        - name: show
+          option_scope: permuted_options
+          forms: *reflog_query_forms
+          modifiers: *reflog_query_modifiers
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: list
+          forms:
+            - id: list_reflogs
+              selector: {kind: no_positional_args}
+              parameters: []
+              effects: *reflog_read_effects
+              stream_contract: *reflog_stream
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: exists
+          forms:
+            - id: check_reflog_exists
+              parameters:
+                - {name: reflog_ref, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_one}
+              effects: *reflog_read_effects
+              stream_contract: *reflog_stream
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        # Native mutating subcommands must shadow default "show". The exact
+        # repository storage/backend and effects of their options are unproved.
+        - name: delete
+          option_scope: all_arguments
+          forms: &reflog_mutation_forms
+            - id: mutate_reflog_entries
+              operation_semantics_unresolved: true
+              parameters:
+                - {name: mutation_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+              effects:
+                - {kind: delete_path, target: {kind: tool_convention_path, path: .git/logs, convention: git.reflogs, purpose: generic_operand}}
+                - {kind: write_path, target: {kind: tool_convention_path, path: .git, convention: git.repository_metadata, purpose: generic_operand}}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: expire
+          option_scope: all_arguments
+          forms: *reflog_mutation_forms
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: drop
+          option_scope: all_arguments
+          forms: *reflog_mutation_forms
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+        - name: write
+          option_scope: all_arguments
+          forms:
+            - id: append_reflog_entry
+              operation_semantics_unresolved: true
+              parameters:
+                - {name: mutation_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+              effects:
+                - {kind: write_path, target: {kind: tool_convention_path, path: .git/logs, convention: git.reflogs, purpose: generic_operand}}
+          modifiers: []
+          children: []
+          default_behavior: reject_unknown
+          extensions: {}
+      default_behavior: reject_unknown
+      extensions:
+        caushell.profile/known_limitations:
+          - Query references are native repository labels, not host source paths. History paging is independent; only the global --no-pager disables it. Deletion, expiry, dropping and appending retain unresolved storage/backend semantics and known mutation effects. Unsupported log output/helper controls remain unresolved.
+
+
     - name: log
       option_scope: permuted_options
       aliases: [whatchanged]
@@ -5419,6 +5540,8 @@ subcommands:
       extensions: {}
 extensions:
   caushell.profile/sources:
+    - https://git-scm.com/docs/git-reflog
+    - https://github.com/git/git/blob/v2.51.1/builtin/reflog.c
     - https://git-scm.com/docs/git-bundle
     - https://git-scm.com/docs/git-ls-tree
     - https://git-scm.com/docs/git-rev-list

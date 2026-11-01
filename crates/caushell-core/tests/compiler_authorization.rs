@@ -1,4 +1,77 @@
 //! Static policy checks: no submitted program or compiler command is executed.
+
+#[test]
+fn native_compile_operands_reuse_path_authority_without_option_gaps() {
+    for flags in [
+        "-DRELEASE=1 -UOLD -Iheaders -Llib -xc++ -v",
+        "-D RELEASE=1 -U OLD -I headers -L lib -x c++ -v",
+        "-Wl,-Bstatic -Wl,-Bdynamic",
+        "-Wl,--push-state,--as-needed,--pop-state",
+    ] {
+        let command = format!("gcc {flags} input.c -obuild/tool && ./build/tool");
+        let result = with_namespace().check(request(&command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .decision_trace
+                .path_targets
+                .iter()
+                .any(|p| !p.namespace_proofs.is_empty())
+        );
+    }
+    assert_eq!(
+        with_namespace().check(request("gcc -v", 1)).decision,
+        Decision::Allow
+    );
+}
+#[test]
+fn native_compile_operands_keep_unknown_libraries_deletion_and_deny_separate() {
+    for command in [
+        "gcc -DRELEASE input.c -o /outside/tool",
+        "gcc -DRELEASE -Wl,-Map,/outside/map input.c -o build/tool",
+        "gcc -Wl,-plugin,/outside/plugin.so input.c -o build/tool",
+        "gcc -lstdc++ input.c -o build/tool",
+        "gcc -xunknown input.c -o build/tool",
+        "gcc -L=lib input.c -o build/tool",
+        "gcc -DRELEASE -fplugin=/outside/plugin.so input.c -o build/tool",
+        "gcc -DRELEASE input.c -o build/tool; rm build/tool",
+    ] {
+        let result = with_namespace().check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    for command in [
+        "gcc -DRELEASE -Wl,-Bstatic input.c -o build/tool; rm -rf /",
+        "gcc -Wl,-unknown input.c -o build/tool; rm -rf /",
+        "printf '%s\\n' 'rm -rf /' | gcc -DRELEASE -wrapper /bin/sh,-s input.c",
+        "gcc -D\"$(rm -rf /)\" input.c -o build/tool",
+    ] {
+        let result = with_namespace().check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::Deny,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    let result = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem))
+        .check(request(
+            "gcc -DRELEASE input.c -o build/tool && ./build/tool",
+            1,
+        ));
+    assert_eq!(result.decision, Decision::NeedApproval);
+}
+
 use caushell_core::ShellQueryCore;
 use caushell_runner::FilesystemView;
 use caushell_types::*;
@@ -563,6 +636,8 @@ fn declared_code_load_deny_cannot_become_unknown_option_ask() {
         "gcc --version -fplugin=/outside/plugin.so",
         "gcc --unknown-mode -fplugin=/outside/plugin.so source.c -o build/tool",
         "gcc -fplugin=/outside/plugin.so --unknown-mode source.c -o build/tool",
+        "gcc --unknown-mode -D -fplugin=/outside/plugin.so source.c -o build/tool",
+        "gcc --unknown-mode -- -fplugin=/outside/plugin.so source.c -o build/tool",
     ] {
         let r = ShellQueryCore::with_policy(policy.clone())
             .with_filesystem_view(Arc::new(Namespace::default()))

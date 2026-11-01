@@ -15,6 +15,7 @@ trust:
 
 # GCC uses whole single-prefix option words, not POSIX short-option clusters.
 option_matching: exact_names
+option_scope: permuted_options
 opaque_on_unresolved: true
 
 argument_files:
@@ -29,6 +30,16 @@ platform:
   requires_features: []
 
 forms:
+  - id: show_verbose_information
+    selector: &verbose_information
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: verbose}
+        - {kind: no_positional_args}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '-v'}}
+        - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^'}}}
+    parameters: []
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: independent, stderr_dependency: independent}
   - id: show_version
     selector:
       kind: all
@@ -188,6 +199,7 @@ forms:
     selector:
       kind: all
       items:
+        - {kind: not, item: *verbose_information}
         - {kind: not, item: {kind: has_modifier, modifier: version}}
         - {kind: not, item: {kind: has_modifier, modifier: print_search_dirs}}
         - {kind: not, item: {kind: has_modifier, modifier: output_path}}
@@ -219,6 +231,54 @@ forms:
 
 modifiers:
   - {id: version, matcher: {kind: any_flag, flags: ["--version"]}}
+  - {id: verbose, matcher: {kind: any_flag, flags: [-v]}}
+  - id: define_macro
+    matcher: {kind: any_flag, flags: [-D]}
+    parameters:
+      - name: macro_definitions
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '[A-Za-z_][A-Za-z0-9_]*(?:\([^()\r\n]*\))?(?:=[^\r\n]*)?'}]
+  - id: undefine_macro
+    matcher: {kind: any_flag, flags: [-U]}
+    parameters:
+      - name: macro_undefinitions
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '[A-Za-z_][A-Za-z0-9_]*'}]
+  # -Wl, is a complete option prefix whose own suffix is comma-separated
+  # linker argv. Only closed mode words are covered; paths, response files,
+  # plugins and other forwarded options retain an operation gap.
+  - id: linker_modes
+    matcher: {kind: any_flag, flags: ['-Wl,']}
+    parameters:
+      - name: linker_modes
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: word_attached}
+        cardinality: required_many
+        value_constraints:
+          - kind: require_match
+            pattern: '(?:-Bstatic|-Bdynamic|--as-needed|--no-as-needed|--whole-archive|--no-whole-archive|--start-group|--end-group|--push-state|--pop-state)(?:,(?:-Bstatic|-Bdynamic|--as-needed|--no-as-needed|--whole-archive|--no-whole-archive|--start-group|--end-group|--push-state|--pop-state))*'
+  - id: link_library
+    matcher: {kind: any_flag, flags: [-l]}
+    parameters:
+      - name: library_names
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: ':?[A-Za-z0-9_+.-]+'}]
+    # A library selector is not a host path. Native search may select an ld
+    # script or LTO input; without resolved search/content evidence its control
+    # input stays unknown, independently of lexical argv ownership.
+    effects:
+      - kind: load_config
+        target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}
+      # A selected ld script can redirect outputs. Retain that possible write
+      # until native library search and the selected content are established.
+      - kind: write_path
+        target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}
   # GCC 13.3 documented optimization modes are complete single-prefix words.
   # No operand or short-option cluster is owned by these flags; in particular,
   # bare -O leaves the next filename alone. Resource effects are unchanged.
@@ -281,8 +341,9 @@ modifiers:
     parameters:
       - name: language_name
         semantic: {kind: plain_value}
-        binding: {kind: following_matched_flag, operand_mode: next_arg}
-        cardinality: required_one
+        binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '(?:c|c\+\+|cpp-output|c\+\+-cpp-output|objective-c|objective-c\+\+|objective-c-cpp-output|objective-c\+\+-cpp-output|assembler|assembler-with-cpp|none)'}]
 
   - id: output_path
     matcher:
@@ -297,7 +358,7 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: next_arg
+          operand_mode: word_attached_or_next_arg
         cardinality: required_one
         value_constraints: [{kind: exclude_literal, value: '-'}]
     effects:
@@ -321,8 +382,11 @@ modifiers:
           purpose: generic_operand
         binding:
           kind: following_matched_flag
-          operand_mode: next_arg
-        cardinality: optional_many
+          operand_mode: word_attached_or_next_arg
+        cardinality: required_many
+        value_constraints:
+          - {kind: require_match, pattern: '[^=$][^\x00\r\n]*'}
+          - {kind: exclude_literal, value: '-'}
     effects:
       - kind: read_path
         target:
@@ -420,6 +484,11 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Preprocessor-Options.html
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Overall-Options.html
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Directory-Options.html
+    - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Link-Options.html
+    - https://sourceware.org/binutils/docs-2.40/ld/Options.html
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Optimize-Options.html
     - https://github.com/gcc-mirror/gcc/blob/releases/gcc-13.3.0/gcc/opts.cc
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Instrumentation-Options.html
@@ -427,6 +496,7 @@ extensions:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
+    - Attached native operands use declared whole-word grammars, never short clusters. Unknown languages, linker options and incomplete operands remain unresolved. Library selectors retain unknown native control-input paths until actual search/content evidence is available; option recognition does not authorize library loading or output execution.
     - The nine documented -O optimization modes are modeled as complete option words. Other numeric spellings or levels, unknown/partial words, individual -f optimizations, profile/LTO and extra-output controls remain unresolved. Optimization does not establish build success, generated-code safety or additional resource authority.
     - Sanitizer operands admit nonempty lists of documented GCC 13.3 mode names, in any order and with repetitions. Enabling all, unknown modes, missing/partial values and unmodeled sanitizer suboptions remain unresolved. This models command effects, not whether GCC accepts a target-specific combination or whether the build succeeds.
     - Ordinary -g levels, GDB and DWARF formats are modeled without granting write or execution authority. Split debug files and other undeclared debug controls remain unresolved.

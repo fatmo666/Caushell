@@ -7750,9 +7750,13 @@ modifiers:
         let bound = bind_invocation(&profile, &projection, &selection);
         assert!(bound.operation_semantics_unresolved);
         assert!(!bound.residuals.is_empty());
-        assert!(bound.bound_parameters.iter()
-            .filter(|p| p.name.as_str() == "archive_operand")
-            .all(|p| p.values.is_empty()));
+        assert!(
+            bound
+                .bound_parameters
+                .iter()
+                .filter(|p| p.name.as_str() == "archive_operand")
+                .all(|p| p.values.is_empty())
+        );
 
         profile.modifiers.push(
             Modifier::new("conflicting_f")
