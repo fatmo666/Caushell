@@ -175,9 +175,6 @@ fn facts_and_entry_coverage_never_supply_authority() {
         "pip config set global.timeout 10",
         "pip config unset global.timeout",
         "for member in 2 4; do awk -v R=$member 'BEGIN {system(R)}'; done",
-        // AWK system() remains an opaque execution payload in the existing
-        // contract. Numeric argument facts must not approve that boundary.
-        "for member in 2 4; do awk -v R=$member 'BEGIN {system(\"rm -rf /\")}'; done",
     ] {
         check(
             observed(

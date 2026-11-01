@@ -110,7 +110,6 @@ fn output_paths_reuse_workspace_and_temporary_mutation_policy() {
 #[test]
 fn inline_execution_and_untrusted_programs_remain_approval_boundaries() {
     for cmd in [
-        "awk 'BEGIN{system(\"rm -rf /\")}'",
         "awk '{print $0 | \"sh\"}' file",
         "awk 'BEGIN{\"date\" | getline d;print d}'",
         "awk 'BEGIN{print |& \"/inet/tcp/0/host/80\"}'",
@@ -170,8 +169,6 @@ fn nested_entries_do_not_drop_awk_effects_or_unknown_execution() {
         expect(cmd, Decision::Allow);
     }
     for cmd in [
-        "echo $(awk 'BEGIN{system(\"rm -rf /\")}')",
-        "printf '%s\\n' \"$(awk 'BEGIN{system(\"rm -rf /\")}')\"",
         "cat <(awk 'BEGIN{system(\"date\")}')",
         r#"find . -exec awk 'BEGIN{system("date")}' {} \;"#,
         "printf file | xargs awk 'BEGIN{system(\"date\")}'",
@@ -290,7 +287,7 @@ fn multiple_derived_unresolved_records_have_distinct_ids_and_restore_cleanly() {
     let r = core.check(request(
         "echo \"$(awk 'BEGIN{system(\"date\")}')\" \"$(awk 'BEGIN{system(\"id\")}')\"",
     ));
-    assert_eq!(r.decision, Decision::Allow, "{r:#?}");
+    assert_eq!(r.decision, Decision::NeedApproval, "{r:#?}");
     assert_eq!(r.decision_trace.nested_payloads.len(), 2, "{r:#?}");
     assert_ne!(
         r.decision_trace.nested_payloads[0].record_id,
@@ -301,4 +298,32 @@ fn multiple_derived_unresolved_records_have_distinct_ids_and_restore_cleanly() {
     let restored = caushell_core::SessionState::from_snapshot(snapshot.clone()).unwrap();
     core.insert_session_state(id.clone(), restored);
     assert_eq!(core.session_snapshot(&id, 0).unwrap(), snapshot);
+}
+
+#[test]
+fn literal_system_children_add_shell_hazards_without_granting_execution() {
+    for command in [
+        r#"awk 'BEGIN{system("rm -rf /")}'"#,
+        r#"awk 'BEGIN{system("rm " "-rf /")}'"#,
+        r#"gawk 'BEGIN{system("rm -rf /")}'"#,
+        r#"echo $(awk 'BEGIN{system("rm -rf /")}')"#,
+        r#"f(){ awk 'BEGIN{system("rm -rf /")}'; }; f"#,
+        r#"for item in 3 7; do awk -v R=$item 'BEGIN{system("rm -rf /")}'; done"#,
+    ] {
+        expect(command, Decision::Deny);
+    }
+    for command in [
+        r#"awk 'BEGIN{system("printf ok")}'"#,
+        r#"awk 'BEGIN{system($0)}'"#,
+        r#"awk -v x='rm -rf /' 'BEGIN{system(x)}'"#,
+        r#"awk 'BEGIN{system("rm -rf /", ignored)}'"#,
+        r#"awk 'BEGIN{system("\qrm -rf /")}'"#,
+        r#"awk 'BEGIN{system("rm -rf /")} @load "extra"'"#,
+    ] {
+        expect(command, Decision::NeedApproval);
+    }
+    expect(
+        r#"awk 'BEGIN{print "system(\"rm -rf /\")"}'"#,
+        Decision::Allow,
+    );
 }

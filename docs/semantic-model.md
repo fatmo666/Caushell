@@ -3148,3 +3148,16 @@ Historical Python evidence types remain readable for saved records.
 - [How Caushell works](how-it-works.md)
 - [Security model: risk analysis, decisions, and the execution boundary](security-model.md)
 - [Configuration](configuration.md)
+
+### Bounded AWK child Shell entry
+
+A completely decoded AWK `system()` call with one constant string argument adds
+an independent `sh` recursive payload. Constant concatenation and supported AWK
+string escapes are decoded as native data, with the original program span retained;
+they are not unquoted as outer Shell source again. Each child is a separate
+program. This allows the ordinary Shell hazard passes to retain a known Deny,
+including catastrophic deletion. The original opaque execution effect remains,
+so discovering an ordinary child command does not grant permission to execute AWK.
+Dynamic arguments, unknown functions, unsupported grammar, program-file payloads
+and AWK pipes retain their existing unknown execution boundaries. No AWK program
+or child command is executed by this analysis.

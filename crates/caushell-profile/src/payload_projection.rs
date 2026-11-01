@@ -102,6 +102,10 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
                 t.write_domains.clear();
             }
         }
+        let shells = targets
+            .as_ref()
+            .map(|t| t.shell_executions.clone())
+            .unwrap_or_default();
         let (read_domains, write_domains) = targets
             .as_ref()
             .map(|t| (t.read_domains.clone(), t.write_domains.clone()))
@@ -187,6 +191,42 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
             }
             p.payload_generated = true;
             generated.push(p);
+            // Add child Shell analysis without removing the original opaque
+            // execution boundary. Constants are decoded AWK data, not re-quoted
+            // outer Shell source; each child is a separate program.
+            for (ordinal, (index, text)) in shells.into_iter().enumerate() {
+                let mut child = BoundParameter::new(
+                    SlotName::new(format!("{}.shell.{ordinal}", name.as_str())),
+                    SemanticType::Payload(PayloadSemantic {
+                        language: PayloadLanguage::Sh,
+                        source: PayloadSource::InlineString,
+                        recursive: true,
+                    }),
+                );
+                let span = match &sources[index] {
+                    BoundValue::Argument { span, .. } => span.clone(),
+                    _ => caushell_parse::SourceSpan {
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_row: 0,
+                        end_row: 0,
+                        start_column: 0,
+                        end_column: 0,
+                    },
+                };
+                child.values.push(
+                    BoundValue::argument_with_node_kind(
+                        text,
+                        true,
+                        "native_data",
+                        span,
+                        crate::ArgumentBindingSource::RemainingArg,
+                    )
+                    .with_materialization(crate::BoundArgumentMaterialization::RuntimeData),
+                );
+                child.payload_generated = true;
+                generated.push(child);
+            }
         }
         if let Some(name) = &projection.stdout_emissions {
             let mut p = BoundParameter::new(name.clone(), SemanticType::PlainValue);
@@ -214,6 +254,7 @@ struct Targets {
     deletes: Resolutions,
     moves: Resolutions,
     executions: Vec<usize>,
+    shell_executions: Vec<(usize, String)>,
     stdout_emissions: Vec<usize>,
 }
 
@@ -323,6 +364,11 @@ fn decode_targets(
                     .collect()
             };
             Ok(Targets {
+                shell_executions: t
+                    .shell_executions
+                    .into_iter()
+                    .map(|(offset, text)| (index(offset), text))
+                    .collect(),
                 read_domains: t.read_domains,
                 write_domains: t.write_domains,
                 reads: values(t.reads),

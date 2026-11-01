@@ -13,6 +13,7 @@ pub(crate) struct AwkTargets {
     pub reads: Vec<(usize, Option<String>)>,
     pub writes: Vec<(usize, Option<String>)>,
     pub executions: Vec<usize>,
+    pub shell_executions: Vec<(usize, String)>,
     pub stdout_emissions: Vec<usize>,
     pub read_domains: Vec<(usize, caushell_types::RuntimeArgumentDomain)>,
     pub write_domains: Vec<(usize, caushell_types::RuntimeArgumentDomain)>,
@@ -325,7 +326,7 @@ struct Parser<'a> {
     depth: usize,
     targets: AwkTargets,
     functions: BTreeSet<String>,
-    calls: Vec<(usize, String)>,
+    calls: Vec<(usize, String, Option<String>)>,
     numeric_variables: BTreeSet<String>,
     writes: BTreeMap<String, bool>,
 }
@@ -418,9 +419,14 @@ impl Parser<'_> {
             }
             self.separators()?;
         }
-        for (offset, name) in &self.calls {
+        for (offset, name, shell) in &self.calls {
             if !self.functions.contains(name) && !pure_builtin(name) {
                 self.targets.executions.push(*offset);
+                if name == "system" {
+                    if let Some(text) = shell {
+                        self.targets.shell_executions.push((*offset, text.clone()));
+                    }
+                }
             }
         }
         Ok(())
@@ -744,11 +750,14 @@ impl Parser<'_> {
                     self.targets.reads.push((offset, None));
                 }
                 if self.op("(") {
-                    self.calls.push((offset, n.clone()));
+                    let mut shell = None;
                     self.next()?;
                     self.newline()?;
                     if !self.op(")") {
                         let value = self.expr(0, false)?;
+                        if n == "system" {
+                            shell = value.literal.clone();
+                        }
                         if matches!(
                             n.as_str(),
                             "sub" | "gsub" | "split" | "patsplit" | "asort" | "asorti" | "match"
@@ -756,6 +765,7 @@ impl Parser<'_> {
                             self.write_variable(&value, false);
                         }
                         while self.op(",") {
+                            shell = None;
                             self.next()?;
                             self.newline()?;
                             let value = self.expr(0, false)?;
@@ -775,6 +785,7 @@ impl Parser<'_> {
                     }
                     self.newline()?;
                     self.need(")")?;
+                    self.calls.push((offset, n.clone(), shell));
                     return Ok(Value::default());
                 }
                 Ok(Value {
