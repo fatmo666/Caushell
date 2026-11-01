@@ -89,6 +89,7 @@ impl Client {
         };
         request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
             binding: plan.binding,
+            variables: Vec::new(),
             environment: request.shell_state_before.environment.clone(),
             pathname: None,
         });

@@ -586,6 +586,7 @@ impl ShellQueryCore {
             request.shell_state_before.execution_frame =
                 Some(caushell_types::ExecutionFrameObservation {
                     binding,
+                    variables: Vec::new(),
                     environment: request.shell_state_before.environment.clone(),
                     pathname: request.shell_state_before.pathname.clone(),
                 });
@@ -610,12 +611,19 @@ impl ShellQueryCore {
         request: caushell_types::ExecutionFramePlanRequest,
     ) -> Result<caushell_types::ExecutionFramePlan, ShellQueryCoreInitError> {
         let request_context = self.materialize_runtime_request(request.request);
+        let mut requirements = self.execution_frame_requirements.clone();
+        if let Ok(names) = caushell_parse::referenced_shell_variables(
+            &request_context.command,
+            request_context.shell_kind,
+        ) {
+            requirements.variable_names = names;
+        }
         Ok(caushell_types::ExecutionFramePlan {
             binding: caushell_types::ExecutionFrameBinding::for_request(
                 &request_context,
                 request.executor_instance_id,
             ),
-            requirements: self.execution_frame_requirements.clone(),
+            requirements,
         })
     }
 
@@ -1314,6 +1322,7 @@ mod tests {
     fn frame_plans_read_the_requirements_owned_by_the_core() {
         let mut core = ShellQueryCore::new();
         core.execution_frame_requirements = caushell_types::ExecutionFrameRequirements {
+            variable_names: Default::default(),
             environment_names: ["PROFILE_TEST_INPUT".to_owned()].into_iter().collect(),
             pathname: false,
         };

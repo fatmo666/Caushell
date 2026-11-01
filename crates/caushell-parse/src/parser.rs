@@ -562,6 +562,53 @@ pub fn parse_command(
     Ok(artifact)
 }
 
+/// Plan a bounded, partial scalar observation. This walks grammar nodes, never
+/// shell-looking text in single quotes, comments, or embedded tool programs.
+/// Omitted names and indirect/array values must remain unknown to consumers.
+pub fn referenced_shell_variables(
+    raw: &str,
+    shell: ShellKind,
+) -> Result<std::collections::BTreeSet<String>, ParseError> {
+    if raw.len() > 1_048_576 {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    let mut parser = Parser::new();
+    parser
+        .set_language(&language_for(shell)?)
+        .map_err(|e| ParseError::LanguageInit(e.to_string()))?;
+    let tree = parser.parse(raw, None).ok_or(ParseError::ParseCancelled)?;
+    let mut names = std::collections::BTreeSet::new();
+    let mut pending = vec![tree.root_node()];
+    let mut visited = 0;
+    while let Some(node) = pending.pop() {
+        visited += 1;
+        if visited > 100_000 || names.len() >= 128 {
+            break;
+        }
+        if node.kind() == "variable_name" {
+            if node.parent().is_some_and(|p| {
+                p.kind() == "variable_assignment"
+                    && p.child_by_field_name("name")
+                        .is_some_and(|n| n.byte_range() == node.byte_range())
+            }) {
+                continue;
+            }
+            let text = &raw[node.byte_range()];
+            if text.len() <= 256
+                && !text.is_empty()
+                && text.bytes().enumerate().all(|(i, b)| {
+                    b == b'_' || b.is_ascii_alphabetic() || i > 0 && b.is_ascii_digit()
+                })
+            {
+                names.insert(text.to_owned());
+            }
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    Ok(names)
+}
+
 struct DescriptorProjection {
     span: SourceSpan,
     operator_byte: usize,

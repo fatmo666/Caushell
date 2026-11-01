@@ -9,7 +9,7 @@ builtin printf -v "$4" '%s' "$5" || return 125
     builtin source "${BASH_SOURCE[0]%/*}/capture.bash" || exit 125
     builtin printf 'caushell-owning-context-v1\0'
     caushell_frame_value HOME shell
-    caushell_frame_capture "$3" "${@:$((7+$6))}"
+    caushell_frame_capture_plan "$3" "${@:$((7+$6))}"
 ) | (
     set -- "$1" "$2" "$3" "$(builtin pwd -P)" "$6" "${@:7}"
     exec "${@:6:$5}" frame-submit "$1" "$2" "$3" "$4"

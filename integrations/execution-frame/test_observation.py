@@ -19,15 +19,15 @@ class PausedBash:
         self.home, self.cwd, self.setup = str(home), str(cwd), setup
         self.process = None
 
-    def capture(self, nonce, names):
+    def capture(self, nonce, names, variables=()):
         script = (". " + shlex.quote(str(HERE / "capture.bash")) + "\n" + self.setup
-                  + '\ncaushell_frame_capture "$@" || exit "$?"\nIFS= builtin read -r gate || :\n')
+                  + '\ncaushell_frame_capture_plan "$@" || exit "$?"\nIFS= builtin read -r gate || :\n')
         self.process = subprocess.Popen(
-            ["/bin/bash", "--noprofile", "--norc", "-c", script, "owned-frame", nonce, *names],
+            ["/bin/bash", "--noprofile", "--norc", "-c", script, "owned-frame", nonce, str(len(names)), *names, *variables],
             cwd=self.cwd, env=dict(PATH="/usr/bin:/bin", HOME=self.home, LC_ALL="C"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         fields = []
-        for _ in range(21 + 3 * len(names)):
+        for _ in range(21 + 3 * len(names) + (2 + 3 * len(variables) if variables else 0)):
             value = bytearray()
             while True:
                 byte = self.process.stdout.read(1)
@@ -58,6 +58,24 @@ def plan(names):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_local_scalars_have_their_own_partial_channel(self):
+        p = plan(["LOCAL", "EMPTY", "ARRAY"])
+        p["requirements"]["variable_names"] = ["LOCAL", "EMPTY", "ARRAY", "MISSING", "RANDOM"]
+        with tempfile.TemporaryDirectory() as d:
+            owner = PausedBash(d, d, 'LOCAL=private; EMPTY=""; declare -a ARRAY=(one two)')
+            try:
+                frame = collect(p, owner.capture)
+            finally:
+                owner.close()
+        env = {v["name"]:v["value"] for v in frame["environment"]}
+        vals = {v["name"]:v["value"] for v in frame["variables"]}
+        self.assertEqual(env["LOCAL"], dict(status="absent"))
+        self.assertEqual(vals["LOCAL"], dict(status="present", value="private"))
+        self.assertEqual(vals["EMPTY"], dict(status="present", value=""))
+        self.assertEqual(vals["MISSING"], dict(status="absent"))
+        self.assertEqual(vals["ARRAY"], dict(status="unknown"))
+        self.assertEqual(vals["RANDOM"], dict(status="unknown"))
+
     def capture(self, names, setup=""):
         with tempfile.TemporaryDirectory() as directory:
             owner=PausedBash(directory, directory, setup)
@@ -106,6 +124,24 @@ class CollectorTests(unittest.TestCase):
 
 
 class GuardEndToEnd(unittest.TestCase):
+    def test_real_local_values_resolve_argv_without_authorizing_external_writes(self):
+        for command, setup, expected in [
+            ('printf safe > "$DEST"', 'DEST=local.data', 'allow'),
+            ('printf safe > "$DEST"', 'DEST=/opt/shared.data', 'need_approval'),
+            ('printf safe > "$PWD/out"', 'PWD=/opt', 'need_approval'),
+            ('rm "$DEST"', 'DEST=local.data', 'need_approval'),
+            ('rm -rf /; printf "%s" "$DEST"', 'DEST=local.data', 'deny'),
+            ('printf safe > "$DEST"', 'declare -a DEST=(local.data)', 'need_approval'),
+        ]:
+            request = self.request(command, command + setup)
+            frame, owner = self.observed(request, setup)
+            try:
+                request['shell_state_before']['execution_frame'] = frame
+                self.assertEqual(self.rpc('check', request)['decision'], expected, (command, setup))
+            finally:
+                owner.close()
+        self.assertFalse((self.work/'local.data').exists())
+
     def setUp(self):
         self.binary=os.environ.get("CAUSHELL_TEST_BINARY")
         if not self.binary:self.skipTest("set CAUSHELL_TEST_BINARY to the separately built test binary")

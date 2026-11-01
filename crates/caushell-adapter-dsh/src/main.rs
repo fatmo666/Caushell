@@ -418,6 +418,7 @@ mod tests {
                 &base.into_check_request(caushell_types::CommandSequenceNo(1)),
                 "owned-executor",
             ),
+            variables: Vec::new(),
             environment: vec![caushell_types::ShellEnvironmentSnapshot {
                 name: "LC_ALL".into(),
                 value: caushell_types::ShellEnvironmentValue::Unknown,

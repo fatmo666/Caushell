@@ -6,6 +6,7 @@ pub fn execution_frame_requirements<'a>(
     profiles: impl IntoIterator<Item = &'a CommandProfile>,
 ) -> ExecutionFrameRequirements {
     let mut requirements = ExecutionFrameRequirements {
+        variable_names: Default::default(),
         environment_names: ["LC_ALL", "LC_CTYPE", "LANG"]
             .into_iter()
             .map(str::to_owned)

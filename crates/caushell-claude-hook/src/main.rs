@@ -2020,6 +2020,7 @@ mod tests {
                 &base.into_check_request(caushell_types::CommandSequenceNo(1)),
                 "owned-executor",
             ),
+            variables: Vec::new(),
             environment: vec![],
             pathname: None,
         };

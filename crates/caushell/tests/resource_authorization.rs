@@ -62,6 +62,7 @@ fn check(
     };
     request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
         binding: plan.binding.clone(),
+        variables: Vec::new(),
         environment: plan
             .requirements
             .environment_names

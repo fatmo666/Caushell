@@ -18,7 +18,7 @@ class Engine:
     rpc_lock=threading.RLock()
     def __init__(self,decision):self.decision=decision;self.frames=[];self.authorizations=[]
     def plan(self,command,cwd,session,executor):
-        return dict(binding=dict(executor_instance_id=executor),requirements=dict(environment_names=['HOME','TEST_VALUE','name','status'],pathname=True))
+        return dict(binding=dict(executor_instance_id=executor),requirements=dict(environment_names=['HOME','TEST_VALUE','name','status'],variable_names=['LOCAL','PWD'],pathname=True))
     def check_observed(self,command,cwd,session,executor,nonce,raw,names,decode,tool_use_id,observed_home=None):
         frame=decode(self.plan(command,cwd,session,executor),nonce,raw);frame['_observed_shell_home']=observed_home;self.frames.append(frame)
         return dict(decision=self.decision,check_receipt=dict(check_id=dict(session_id=session,sequence_no=1),state_revision=1))
@@ -27,6 +27,15 @@ class Engine:
 
 @unittest.skipUnless(BINARY,'explicit compiled frame-submit host required')
 class OwningFrameTests(unittest.TestCase):
+    def test_local_scalar_channel_is_captured_at_the_owning_gate(self):
+        p,row,facts,approved,_=self.trial('printf "%s" "$LOCAL"',prelude='LOCAL=private; export -n LOCAL')
+        self.assertEqual(p.returncode,0,p.stderr)
+        values={v['name']:v['value'] for v in facts[0]['variables']}
+        self.assertEqual(values['LOCAL'],dict(status='present',value='private'))
+        self.assertEqual(values['PWD']['status'],'present')
+        self.assertFalse(any(v['name']=='LOCAL' for v in facts[0]['environment']))
+        self.assertEqual(row['status'],'executed')
+
     def trial(self,command,*,prelude='',decision='allow',policy='approve',stdin=None,transport_failure=False):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);integration=Path(__file__).resolve().parents[1]

@@ -75,6 +75,7 @@ impl Fixture {
         };
         request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
             binding: ExecutionFrameBinding::for_request(&request, "executor-instance"),
+            variables: Vec::new(),
             environment: request.shell_state_before.environment.clone(),
             pathname: None,
         });

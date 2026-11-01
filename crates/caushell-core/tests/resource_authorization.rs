@@ -77,6 +77,7 @@ fn request(sequence: u64, command: &str) -> CheckRequest {
     };
     request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
         binding: ExecutionFrameBinding::for_request(&request, owner().executor_instance_id),
+        variables: Vec::new(),
         environment: [
             "http_proxy",
             "HTTP_PROXY",

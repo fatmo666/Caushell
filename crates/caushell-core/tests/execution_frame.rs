@@ -62,6 +62,7 @@ fn options() -> ShellPathnameSnapshot {
 fn observed(mut request: CheckRequest) -> CheckRequest {
     request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
         binding: ExecutionFrameBinding::for_request(&request, "executor-a"),
+        variables: Vec::new(),
         environment: vec![
             ShellEnvironmentSnapshot {
                 name: "LC_ALL".into(),
@@ -364,4 +365,51 @@ fn cached_requirements_do_not_cache_observed_environment_or_decisions() {
         core.check(observed(w.request(3, command))).decision,
         Decision::Allow
     );
+}
+
+#[test]
+fn frame_scalar_names_and_values_are_partial_expiring_and_not_environment_grants() {
+    let work = Workspace::new();
+    let mut request =
+        observed(work.request(1, "ln -s \"$PWD/report.data\" /usr/local/bin/frame-fixture"));
+    request
+        .shell_state_before
+        .execution_frame
+        .as_mut()
+        .unwrap()
+        .variables
+        .push(ShellEnvironmentSnapshot {
+            name: "PWD".into(),
+            value: ShellEnvironmentValue::Present {
+                value: work.0.to_str().unwrap().into(),
+            },
+        });
+    let mut core = ShellQueryCore::new();
+    let response = core.check(request.clone());
+    assert!(accepted(&response));
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(response.decision_trace.path_targets.iter().any(|t| t.slot_name == "link_path" &&
+        matches!(&t.lexical,PathResolution::Concrete {path} if path=="/usr/local/bin/frame-fixture")));
+    assert!(
+        !response
+            .reasons
+            .iter()
+            .any(|r| r.contains("argument region ownership")),
+        "{:?}",
+        response.reasons
+    );
+    let later = core.check(work.request(2, "printf x > \"$PWD/new.data\""));
+    assert_eq!(
+        later.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        later.reasons
+    );
+
+    let mut frame = request.shell_state_before.execution_frame.unwrap();
+    frame.variables.push(frame.variables[0].clone());
+    assert!(frame.validate(&request_without_frame(&work), None).is_err());
+}
+fn request_without_frame(work: &Workspace) -> CheckRequest {
+    work.request(1, "ln -s \"$PWD/report.data\" /usr/local/bin/frame-fixture")
 }

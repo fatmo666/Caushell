@@ -39,6 +39,9 @@ impl ExecutionFrameBinding {
 #[serde(deny_unknown_fields)]
 pub struct ExecutionFrameRequirements {
     pub environment_names: BTreeSet<String>,
+    /// Referenced shell scalars, independently of their export attribute.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub variable_names: BTreeSet<String>,
     pub pathname: bool,
 }
 
@@ -58,6 +61,9 @@ pub struct ExecutionFramePlan {
 /// Implemented at the executor boundary. Unavailable facts remain Unknown/None.
 pub trait ExecutionFrameObserver {
     fn environment(&self, name: &str) -> ShellEnvironmentValue;
+    fn variable(&self, _name: &str) -> ShellEnvironmentValue {
+        ShellEnvironmentValue::Unknown
+    }
     fn pathname(&self) -> Option<ShellPathnameSnapshot>;
 }
 
@@ -66,6 +72,9 @@ pub trait ExecutionFrameObserver {
 pub struct ExecutionFrameObservation {
     pub binding: ExecutionFrameBinding,
     pub environment: Vec<ShellEnvironmentSnapshot>,
+    /// A partial, frame-local scalar view; never a child-environment grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<ShellEnvironmentSnapshot>,
     pub pathname: Option<ShellPathnameSnapshot>,
 }
 
@@ -76,15 +85,25 @@ impl ExecutionFrameObservation {
         observer: &impl ExecutionFrameObserver,
     ) -> Result<Self, String> {
         if requirements.environment_names.len() > 128
+            || requirements.variable_names.len() > 128
             || requirements
                 .environment_names
                 .iter()
+                .chain(&requirements.variable_names)
                 .any(|name| !valid_name(name))
         {
             return Err("execution frame requirements exceed their bounds".into());
         }
         let observation = Self {
             binding,
+            variables: requirements
+                .variable_names
+                .iter()
+                .map(|name| ShellEnvironmentSnapshot {
+                    name: name.clone(),
+                    value: observer.variable(name),
+                })
+                .collect(),
             environment: requirements
                 .environment_names
                 .iter()
@@ -120,6 +139,31 @@ impl ExecutionFrameObservation {
                 return Err("execution frame conflicts with named environment observation".into());
             }
         }
+        for observation in &self.variables {
+            if request.shell_state_before.variables.iter().any(|legacy| {
+                legacy.name == observation.name
+                    && match (&legacy.value, &observation.value) {
+                        (
+                            crate::ShellValueSnapshot::ExactScalar { value: a }
+                            | crate::ShellValueSnapshot::RuntimeProduced { value: a, .. },
+                            ShellEnvironmentValue::Present { value: b },
+                        ) => a != b,
+                        (
+                            crate::ShellValueSnapshot::Structured { .. },
+                            ShellEnvironmentValue::Present { .. },
+                        ) => true,
+                        (_, ShellEnvironmentValue::Absent) => true,
+                        _ => false,
+                    }
+            }) || self.environment.iter().any(|env| {
+                env.name == observation.name
+                    && matches!(env.value, ShellEnvironmentValue::Present { .. })
+                    && observation.value != ShellEnvironmentValue::Unknown
+                    && env.value != observation.value
+            }) {
+                return Err("execution frame conflicts with shell variable observation".into());
+            }
+        }
         if let (Some(a), Some(b)) = (&self.pathname, &request.shell_state_before.pathname) {
             if a != b {
                 return Err("execution frame conflicts with pathname observation".into());
@@ -152,13 +196,19 @@ impl ExecutionFrameObservation {
             || b.command_sha256.len() != 64
             || !b.command_sha256.bytes().all(|b| b.is_ascii_hexdigit())
             || self.environment.len() > 128
+            || self.variables.len() > 128
         {
             return Err("execution frame binding or payload exceeds its bounds".into());
         }
         let mut names = BTreeSet::new();
         let mut bytes = 0;
-        for entry in &self.environment {
-            if !valid_name(&entry.name) || !names.insert(&entry.name) {
+        for (channel, entry) in self
+            .environment
+            .iter()
+            .map(|e| (0, e))
+            .chain(self.variables.iter().map(|e| (1, e)))
+        {
+            if !valid_name(&entry.name) || !names.insert((channel, &entry.name)) {
                 return Err("execution frame environment names are invalid or duplicated".into());
             }
             bytes += entry.name.len();
@@ -234,6 +284,7 @@ mod tests {
     fn payload_bounds_and_names_are_checked_before_use() {
         let request = request();
         let frame = ExecutionFrameObservation {
+            variables: Vec::new(),
             binding: ExecutionFrameBinding::for_request(&request, "executor"),
             environment: vec![ShellEnvironmentSnapshot {
                 name: "DECLARED_INPUT".into(),
@@ -292,5 +343,79 @@ mod tests {
         requirements.environment_names = (0..129).map(|n| format!("INPUT_{n}")).collect();
         assert!(ExecutionFrameObservation::collect(binding, &requirements, &observer).is_err());
         assert_eq!(observer.0.get(), 0);
+    }
+    #[test]
+    fn scalar_channel_is_partial_bounded_and_conflict_checked() {
+        let request = request();
+        let mut frame = ExecutionFrameObservation {
+            binding: ExecutionFrameBinding::for_request(&request, "executor"),
+            environment: vec![],
+            pathname: None,
+            variables: vec![ShellEnvironmentSnapshot {
+                name: "VALUE".into(),
+                value: ShellEnvironmentValue::Present {
+                    value: "/opt/file".into(),
+                },
+            }],
+        };
+        assert!(frame.validate(&request, None).is_ok());
+        frame.environment.push(ShellEnvironmentSnapshot {
+            name: "VALUE".into(),
+            value: ShellEnvironmentValue::Absent,
+        });
+        assert!(frame.validate(&request, None).is_ok()); // an unexported local
+        frame.environment[0].value = ShellEnvironmentValue::Present {
+            value: "different".into(),
+        };
+        assert!(frame.validate(&request, None).is_err());
+        frame.variables[0].value = ShellEnvironmentValue::Unknown;
+        assert!(frame.validate(&request, None).is_ok());
+        frame.variables.push(frame.variables[0].clone());
+        assert!(frame.validate(&request, None).is_err());
+        frame.variables.pop();
+        frame.variables[0].name = "BAD[0]".into();
+        assert!(frame.validate(&request, None).is_err());
+        frame.variables[0].name = "VALUE".into();
+        frame.variables[0].value = ShellEnvironmentValue::Present {
+            value: "x".repeat(65536),
+        };
+        assert!(frame.validate(&request, None).is_err());
+    }
+
+    #[test]
+    fn legacy_observers_do_not_invent_shell_local_values() {
+        struct Legacy;
+        impl ExecutionFrameObserver for Legacy {
+            fn environment(&self, _: &str) -> ShellEnvironmentValue {
+                ShellEnvironmentValue::Absent
+            }
+            fn pathname(&self) -> Option<ShellPathnameSnapshot> {
+                None
+            }
+        }
+        let requirements = ExecutionFrameRequirements {
+            environment_names: BTreeSet::new(),
+            variable_names: ["LOCAL".into()].into_iter().collect(),
+            pathname: false,
+        };
+        let frame = ExecutionFrameObservation::collect(
+            ExecutionFrameBinding::for_request(&request(), "executor"),
+            &requirements,
+            &Legacy,
+        )
+        .unwrap();
+        assert_eq!(frame.variables[0].value, ShellEnvironmentValue::Unknown);
+        let legacy = serde_json::to_value(&ExecutionFrameObservation {
+            variables: vec![],
+            ..frame
+        })
+        .unwrap();
+        assert!(legacy.get("variables").is_none());
+        assert!(
+            serde_json::from_value::<ExecutionFrameObservation>(legacy)
+                .unwrap()
+                .variables
+                .is_empty()
+        );
     }
 }

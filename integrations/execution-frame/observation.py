@@ -29,16 +29,27 @@ def planned_names(plan):
     return tuple(names)
 
 
+def planned_variables(plan):
+    names = plan.get("requirements", {}).get("variable_names", [])
+    if (not isinstance(names, list) or len(names) > 128
+            or len(set(n for n in names if isinstance(n, str))) != len(names)
+            or any(not isinstance(n, str) or len(n) > 256
+                   or not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", n) for n in names)):
+        raise ObservationUnavailable("invalid shell scalar plan")
+    return tuple(names)
+
+
 def decode(plan, nonce, raw):
     """Decode bytes from the trusted owning-frame channel, never tool_input."""
     names = planned_names(plan)
+    variables = planned_variables(plan)
     if not isinstance(raw, bytes) or len(raw) > MAX_BYTES or not raw.endswith(b"\0"):
         raise ObservationUnavailable("capture is missing, truncated, or oversized")
     try:
         fields = raw[:-1].decode("utf-8", errors="strict").split("\0")
     except UnicodeError as e:
         raise ObservationUnavailable("capture is not representable as UTF-8") from e
-    if len(fields) != 21 + 3 * len(names):
+    if len(fields) != 21 + 3 * len(names) + (2 + 3 * len(variables) if variables else 0):
         raise ObservationUnavailable("capture field count differs from the plan")
     if fields[:2] != ["caushell-bash-frame-v1", nonce] or fields[-1] != "END":
         raise ObservationUnavailable("capture protocol or executor nonce mismatch")
@@ -69,15 +80,33 @@ def decode(plan, nonce, raw):
             raise ObservationUnavailable("unexpected, reordered, or duplicate name")
         position += 1
         environment.append(dict(name=expected, value=value()))
+    if fields[position] != "END":
+        raise ObservationUnavailable("unexpected capture tail")
+    scalars = []
+    if variables:
+        position += 1
+        if fields[position] != "caushell-shell-scalars-v1":
+            raise ObservationUnavailable("missing shell scalar channel")
+        position += 1
+        for expected in variables:
+            if fields[position] != expected:
+                raise ObservationUnavailable("unexpected shell scalar name")
+            position += 1
+            scalars.append(dict(name=expected, value=value()))
     if position != len(fields) - 1:
         raise ObservationUnavailable("unexpected capture tail")
-    return dict(binding=copy.deepcopy(plan["binding"]), environment=environment,
-                pathname=pathname if plan["requirements"]["pathname"] else None)
+    result = dict(binding=copy.deepcopy(plan["binding"]), environment=environment,
+                  pathname=pathname if plan["requirements"]["pathname"] else None)
+    if variables:
+        result["variables"] = scalars
+    return result
 
 
 def collect(plan, owning_executor_capture):
     """Pause/collect through the owning executor; never start a probe Shell."""
     names = planned_names(plan)
+    variables = planned_variables(plan)
     nonce = secrets.token_hex(16)
-    raw = owning_executor_capture(nonce, names)
+    raw = (owning_executor_capture(nonce, names, variables) if variables
+           else owning_executor_capture(nonce, names))
     return decode(plan, nonce, raw)

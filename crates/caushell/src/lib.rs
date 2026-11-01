@@ -6782,6 +6782,7 @@ policy:
                         .into_check_request(caushell_types::CommandSequenceNo(1)),
                     "executor",
                 ),
+                variables: Vec::new(),
                 environment: Vec::new(),
                 pathname: None,
             });

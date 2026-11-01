@@ -545,6 +545,34 @@ impl SessionBindings {
         for (name, value) in crate::environment_observations(shell_state) {
             bindings.child_environment.insert(name, value);
         }
+        // These are partial scalar facts from the owning execution frame.
+        // Never infer export status or a child-program default from this view.
+        if let Some(frame) = &shell_state.execution_frame {
+            for variable in &frame.variables {
+                let name = &variable.name;
+                bindings.forget_variable_facts(name);
+                bindings.argument_domains.remove(name);
+                bindings.session_variables.remove(name);
+                bindings.inherited_environment.remove(name);
+                let (presence, value) = match &variable.value {
+                    caushell_types::ShellEnvironmentValue::Present { value } => (
+                        VariablePresence::Present,
+                        Some(SessionValue::exact_scalar(value)),
+                    ),
+                    caushell_types::ShellEnvironmentValue::Absent => {
+                        (VariablePresence::Absent, None)
+                    }
+                    caushell_types::ShellEnvironmentValue::Unknown => (
+                        VariablePresence::Unknown,
+                        Some(SessionValue::opaque_dynamic("shell scalar is unobserved")),
+                    ),
+                };
+                bindings.variable_presence.insert(name.clone(), presence);
+                if let Some(value) = value {
+                    bindings.session_variables.insert(name.clone(), value);
+                }
+            }
+        }
         bindings.pathname_options = crate::pathname::snapshot(shell_state);
 
         if shell_state.observability.positional_parameters == ShellStateKnowledge::Complete {

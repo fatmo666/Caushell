@@ -104,6 +104,14 @@ are discarded, leaving facts unknown; they cannot bypass the original check or
 the approval receipt required by that check.
 Facts and approvals are distinct records; a known path/hostname never grants access.
 
+The plan also names a bounded, partial set of scalar variables referenced by
+the command's shell grammar. Their values use a separate owning-frame channel;
+an unexported local is never promoted to a child-process environment value.
+Empty, absent and unknown remain distinct. Arrays, namerefs and volatile values
+stay unknown. A scalar `PWD` is observed as data rather than inferred from cwd.
+These facts expire with the action and cannot authorize an external write,
+deletion, or an otherwise incomplete operation.
+
 The inserted gate preserves stdin, caller positional parameters, `$?`, cwd updates
 and `errexit`. The native client's own cwd reset policy still applies. Scratch
 helper functions stay in subshells; only an unexported,

@@ -57,3 +57,21 @@ caushell_frame_capture() (
     done
     builtin printf 'END\0'
 )
+
+# nonce, environment count, environment names, then partial shell scalar names.
+# The separate channel must never promote unexported values into child env.
+caushell_frame_capture_plan() (
+    [[ $2 =~ ^[0-9]+$ && $2 -le 128 && $# -ge $((2+$2)) && $# -le $((130+$2)) ]] || exit 64
+    caushell_frame_capture "$1" "${@:3:$2}" || exit 64
+    shift "$((2+$2))"
+    if (( $# )); then
+        builtin printf 'caushell-shell-scalars-v1\0'
+        while (( $# )); do
+            [[ $1 =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && ${#1} -le 256 ]] || exit 64
+            builtin printf '%s\0' "$1"
+            caushell_frame_value "$1" shell
+            shift
+        done
+        builtin printf 'END\0'
+    fi
+)
