@@ -580,7 +580,15 @@ impl SessionBindings {
                     }
                     caushell_types::ShellEnvironmentValue::Unknown => (
                         VariablePresence::Unknown,
-                        Some(SessionValue::opaque_dynamic("shell scalar is unobserved")),
+                        Some(if frame.integer_variables.contains(name) {
+                            SessionValue::opaque_dynamic("integer scalar value is unobserved")
+                        } else {
+                            SessionValue::structured(
+                                caushell_types::StructuredShellValue::Unknown {
+                                    reason: "shell variable attributes are unobserved".into(),
+                                },
+                            )
+                        }),
                     ),
                 };
                 bindings.variable_presence.insert(name.clone(), presence);
@@ -588,6 +596,62 @@ impl SessionBindings {
                     bindings.session_variables.insert(name.clone(), value);
                 }
                 if frame.integer_variables.contains(name) {
+                    bindings.set_variable_facts(
+                        name,
+                        ShellVariableFacts {
+                            integer_scalar: true,
+                            scalar_shape: Some(crate::StdoutScalarShape::ArithmeticText),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            // Current typed facts replace only their own names. Unknown is an
+            // explicit invalidation, never a fallback to a historical value.
+            // Do not update child_environment or infer resource permissions.
+            for variable in &frame.variable_values {
+                use caushell_types::ExecutionFrameVariableValue as V;
+                let name = &variable.name;
+                bindings.forget_variable_facts(name);
+                bindings.argument_domains.remove(name);
+                bindings.session_variables.remove(name);
+                bindings.inherited_environment.remove(name);
+                let presence = match variable.value {
+                    V::Absent => VariablePresence::Absent,
+                    V::Unknown | V::Unsupported => VariablePresence::Unknown,
+                    _ => VariablePresence::Present,
+                };
+                bindings.variable_presence.insert(name.clone(), presence);
+                let value = if matches!(variable.value, V::Unknown)
+                    && frame.integer_variables.contains(name)
+                {
+                    Some(SessionValue::opaque_dynamic(
+                        "integer scalar value is unobserved",
+                    ))
+                } else {
+                    variable.value.session_value()
+                };
+                if let Some(value) = value {
+                    bindings.session_variables.insert(name.clone(), value);
+                }
+                let array_kind = match &variable.value {
+                    V::IndexedArray { .. } => Some(ShellArrayKind::Indexed),
+                    V::AssociativeArray { .. } => Some(ShellArrayKind::Associative),
+                    _ => None,
+                };
+                if let Some(array_kind) = array_kind {
+                    bindings.set_variable_facts(
+                        name,
+                        ShellVariableFacts {
+                            array_kind: Some(array_kind),
+                            ..Default::default()
+                        },
+                    );
+                }
+                if matches!(variable.value, V::Scalar { integer: true, .. })
+                    || matches!(variable.value, V::Unknown)
+                        && frame.integer_variables.contains(name)
+                {
                     bindings.set_variable_facts(
                         name,
                         ShellVariableFacts {

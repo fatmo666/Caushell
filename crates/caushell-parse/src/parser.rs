@@ -590,6 +590,23 @@ pub fn referenced_shell_variables(
     raw: &str,
     shell: ShellKind,
 ) -> Result<std::collections::BTreeSet<String>, ParseError> {
+    planned_shell_variables(raw, shell, false)
+}
+
+/// Attribute observations also include write targets: an assignment can follow
+/// a nameref or apply integer/case conversion before the later read occurs.
+pub fn observed_shell_variables(
+    raw: &str,
+    shell: ShellKind,
+) -> Result<std::collections::BTreeSet<String>, ParseError> {
+    planned_shell_variables(raw, shell, true)
+}
+
+fn planned_shell_variables(
+    raw: &str,
+    shell: ShellKind,
+    include_writes: bool,
+) -> Result<std::collections::BTreeSet<String>, ParseError> {
     if raw.len() > 1_048_576 {
         return Ok(std::collections::BTreeSet::new());
     }
@@ -607,11 +624,13 @@ pub fn referenced_shell_variables(
             break;
         }
         if node.kind() == "variable_name" {
-            if node.parent().is_some_and(|p| {
-                p.kind() == "variable_assignment"
-                    && p.child_by_field_name("name")
-                        .is_some_and(|n| n.byte_range() == node.byte_range())
-            }) {
+            if !include_writes
+                && node.parent().is_some_and(|p| {
+                    p.kind() == "variable_assignment"
+                        && p.child_by_field_name("name")
+                            .is_some_and(|n| n.byte_range() == node.byte_range())
+                })
+            {
                 continue;
             }
             let text = &raw[node.byte_range()];
@@ -1926,6 +1945,22 @@ fn extract_shell_evaluations(
             });
         };
         match node.kind() {
+            "simple_expansion" | "expansion"
+                if node
+                    .named_child(0)
+                    .is_some_and(|n| n.kind() == "variable_name")
+                    && !all_children(node)
+                        .iter()
+                        .any(|c| matches!(c.kind(), ":=" | "=")) =>
+            {
+                add(
+                    K::ParameterReference {
+                        name: source_text(node.named_child(0).unwrap(), source),
+                    },
+                    node,
+                    None,
+                );
+            }
             "expansion"
                 if all_children(node)
                     .iter()

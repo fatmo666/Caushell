@@ -6776,6 +6776,7 @@ policy:
         let mut request = sample_request("printf hello");
         request.shell_state_before.execution_frame =
             Some(caushell_types::ExecutionFrameObservation {
+                variable_values: Vec::new(),
                 integer_variables: Default::default(),
                 native_variants: Default::default(),
                 binding: caushell_types::ExecutionFrameBinding::for_request(

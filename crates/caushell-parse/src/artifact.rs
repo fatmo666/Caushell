@@ -255,6 +255,10 @@ pub enum ShellEvaluationKind {
         redirection_index: usize,
         unresolved: bool,
     },
+    /// Reading a parameter can follow a nameref into an executable subscript.
+    ParameterReference {
+        name: String,
+    },
     ParameterAssignment {
         name: Option<String>,
         array_element: bool,

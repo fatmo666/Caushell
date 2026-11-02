@@ -39,7 +39,8 @@ impl ExecutionFrameBinding {
 #[serde(deny_unknown_fields)]
 pub struct ExecutionFrameRequirements {
     pub environment_names: BTreeSet<String>,
-    /// Referenced shell scalars, independently of their export attribute.
+    /// Referenced variable roots, independently of their export attribute.
+    /// An observer may supply a bounded literal nameref closure as typed values.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub variable_names: BTreeSet<String>,
     pub pathname: bool,
@@ -67,6 +68,9 @@ pub trait ExecutionFrameObserver {
     fn variable_is_integer(&self, _name: &str) -> bool {
         false
     }
+    fn variable_values(&self, _names: &BTreeSet<String>) -> Vec<crate::ExecutionFrameVariable> {
+        Vec::new()
+    }
     /// Positive native-family contracts from a trusted, immutable executor
     /// inventory. Never infer these from OS, PATH spelling or task variables.
     fn native_variants(&self) -> std::collections::BTreeMap<String, String> {
@@ -83,6 +87,10 @@ pub struct ExecutionFrameObservation {
     /// A partial, frame-local scalar view; never a child-environment grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<ShellEnvironmentSnapshot>,
+    /// Typed values plus the explicitly observed closure of literal namerefs.
+    /// Legacy captures omit this field and retain their conservative behavior.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variable_values: Vec<crate::ExecutionFrameVariable>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub integer_variables: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -108,6 +116,7 @@ impl ExecutionFrameObservation {
         }
         let observation = Self {
             binding,
+            variable_values: observer.variable_values(&requirements.variable_names),
             integer_variables: requirements
                 .variable_names
                 .iter()
@@ -214,6 +223,48 @@ impl ExecutionFrameObservation {
                 return Err("execution frame conflicts with shell variable observation".into());
             }
         }
+        for entry in &self.variable_values {
+            use crate::ExecutionFrameVariableValue as V;
+            for env in request
+                .shell_state_before
+                .environment
+                .iter()
+                .filter(|v| v.name == entry.name)
+            {
+                if let ShellEnvironmentValue::Present { value } = &env.value {
+                    match &entry.value {
+                        V::Unknown | V::Unsupported => {}
+                        V::Scalar { value: current, .. } if current == value => {}
+                        _ => return Err("typed variable conflicts with legacy environment".into()),
+                    }
+                }
+            }
+            for legacy in request
+                .shell_state_before
+                .variables
+                .iter()
+                .filter(|v| v.name == entry.name)
+            {
+                let compatible = match (&entry.value, &legacy.value) {
+                    (V::Unknown | V::Unsupported, _) => true,
+                    (
+                        V::Scalar { value, .. },
+                        crate::ShellValueSnapshot::ExactScalar { value: old }
+                        | crate::ShellValueSnapshot::RuntimeProduced { value: old, .. },
+                    ) => value == old,
+                    (_, crate::ShellValueSnapshot::Structured { value }) => {
+                        entry.value.session_value()
+                            == Some(crate::SessionVariableValue::structured(value.clone()))
+                    }
+                    (V::Absent, _) => false,
+                    (_, crate::ShellValueSnapshot::OpaqueDynamic { .. }) => true,
+                    _ => false,
+                };
+                if !compatible {
+                    return Err("typed variable conflicts with legacy shell observation".into());
+                }
+            }
+        }
         if let (Some(a), Some(b)) = (&self.pathname, &request.shell_state_before.pathname) {
             if a != b {
                 return Err("execution frame conflicts with pathname observation".into());
@@ -253,7 +304,7 @@ impl ExecutionFrameObservation {
             return Err("execution frame binding or payload exceeds its bounds".into());
         }
         let mut names = BTreeSet::new();
-        let mut bytes = 0;
+        let mut bytes = self.validate_variable_values()?;
         for name in &self.integer_variables {
             let Some(value) = self.variables.iter().find(|v| &v.name == name) else {
                 return Err("integer proof has no scalar observation".into());
@@ -325,7 +376,7 @@ impl ExecutionFrameObservation {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 256
         && name
@@ -374,6 +425,7 @@ mod tests {
                 name: "counter".into(),
                 value: ShellEnvironmentValue::Unknown,
             }],
+            variable_values: Vec::new(),
             integer_variables: ["counter".into()].into(),
             native_variants: [("date".into(), "gnu_coreutils".into())].into(),
         };
@@ -420,6 +472,7 @@ mod tests {
     fn payload_bounds_and_names_are_checked_before_use() {
         let request = request();
         let frame = ExecutionFrameObservation {
+            variable_values: Vec::new(),
             integer_variables: Default::default(),
             native_variants: Default::default(),
             variables: Vec::new(),
@@ -486,6 +539,7 @@ mod tests {
     fn scalar_channel_is_partial_bounded_and_conflict_checked() {
         let request = request();
         let mut frame = ExecutionFrameObservation {
+            variable_values: Vec::new(),
             integer_variables: Default::default(),
             native_variants: Default::default(),
             binding: ExecutionFrameBinding::for_request(&request, "executor"),
@@ -546,6 +600,7 @@ mod tests {
         .unwrap();
         assert_eq!(frame.variables[0].value, ShellEnvironmentValue::Unknown);
         let legacy = serde_json::to_value(&ExecutionFrameObservation {
+            variable_values: Vec::new(),
             integer_variables: Default::default(),
             native_variants: Default::default(),
             variables: vec![],

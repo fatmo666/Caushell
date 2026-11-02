@@ -2016,6 +2016,7 @@ mod tests {
         assert!(base.shell_state_before.environment.is_empty());
         assert!(base.shell_state_before.pathname.is_none());
         let frame = caushell_types::ExecutionFrameObservation {
+            variable_values: Vec::new(),
             integer_variables: Default::default(),
             native_variants: Default::default(),
             binding: caushell_types::ExecutionFrameBinding::for_request(

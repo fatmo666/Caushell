@@ -88,6 +88,7 @@ impl Client {
             panic!()
         };
         request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+            variable_values: Vec::new(),
             integer_variables: Default::default(),
             native_variants: Default::default(),
             binding: plan.binding,

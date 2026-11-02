@@ -20,10 +20,31 @@ caushell_frame_value() (
 
 caushell_frame_integer() (
     set -- "$(builtin declare -p "$1" 2>/dev/null)"
-    if [[ $1 =~ ^declare\ -[^\ ]*i[^\ ]*\  && ! $1 =~ ^declare\ -[^\ ]*[aAn][^\ ]*\  && $1 == *=* && $1 != *'=""' ]]; then
+    if [[ $1 =~ ^declare\ -[ix]*i[ix]*\  && $1 == *=* && $1 != *'=""' ]]; then
         builtin printf '1\0'
     else
         builtin printf '0\0'
+    fi
+)
+
+# Literal declarations only. No eval, indirect array lookup, arithmetic subscript
+# or nameref dereference is executed. Plain reference names form a bounded closure.
+caushell_frame_declaration() (
+    # A repeated literal name closes a cycle; the decoder preserves Unknown.
+    if [[ "|${3-}|" == *"|$1|"* ]]; then exit; fi
+    case "$1" in
+        _|BASHPID|BASH_SUBSHELL|BASH_COMMAND|BASH_LINENO|FUNCNAME|BASH_ARGV|BASH_ARGC|LINENO|RANDOM|SRANDOM|SECONDS|EPOCHSECONDS|EPOCHREALTIME|BASH_REMATCH|PIPESTATUS|BASH_SOURCE|BASH_ALIASES|BASH_CMDS|DIRSTACK)
+            builtin printf '%s\0unknown\0\0' "$1"; exit ;;
+    esac
+    if (( $2 >= 16 )); then builtin printf '%s\0unknown\0\0' "$1"; exit; fi
+    if ! builtin declare -p "$1" >/dev/null 2>&1; then
+        builtin printf '%s\0absent\0\0' "$1"; exit
+    fi
+    set -- "$1" "$2" "$(builtin declare -p "$1" 2>/dev/null)" "${3-}"
+    if (( ${#3} > 8192 )); then builtin printf '%s\0unknown\0\0' "$1"; exit; fi
+    builtin printf '%s\0declaration\0%s\0' "$1" "$3"
+    if [[ $3 =~ ^declare\ -[a-zA-Z]*n[a-zA-Z]*\ [a-zA-Z_][a-zA-Z0-9_]*=\"([a-zA-Z_][a-zA-Z0-9_]*)\"$ ]]; then
+        caushell_frame_declaration "${BASH_REMATCH[1]}" "$(( $2 + 1 ))" "$4|$1"
     fi
 )
 
@@ -75,11 +96,19 @@ caushell_frame_capture_plan() (
     shift "$((2+$2))"
     if (( $# )); then
         builtin printf 'caushell-shell-scalars-v2\0'
+        (
+            while (( $# )); do
+                [[ $1 =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && ${#1} -le 256 ]] || exit 64
+                builtin printf '%s\0' "$1"
+                caushell_frame_integer "$1"
+                caushell_frame_value "$1" shell
+                shift
+            done
+            builtin printf 'END\0'
+        ) || exit 64
+        builtin printf 'caushell-shell-declarations-v1\0'
         while (( $# )); do
-            [[ $1 =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ && ${#1} -le 256 ]] || exit 64
-            builtin printf '%s\0' "$1"
-            caushell_frame_integer "$1"
-            caushell_frame_value "$1" shell
+            caushell_frame_declaration "$1" 0 || exit 64
             shift
         done
         builtin printf 'END\0'

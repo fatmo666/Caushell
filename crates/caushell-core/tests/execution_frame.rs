@@ -61,6 +61,7 @@ fn options() -> ShellPathnameSnapshot {
 }
 fn observed(mut request: CheckRequest) -> CheckRequest {
     request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+        variable_values: Vec::new(),
         integer_variables: Default::default(),
         native_variants: Default::default(),
         binding: ExecutionFrameBinding::for_request(&request, "executor-a"),
@@ -90,6 +91,299 @@ fn rejected(response: &CheckResponse) -> bool {
         matches!(&e.kind,
         EvidenceKind::ExecutionFrame(frame) if !frame.accepted)
     })
+}
+
+fn typed(mut request: CheckRequest, values: Vec<ExecutionFrameVariable>) -> CheckRequest {
+    request = observed(request);
+    let frame = request.shell_state_before.execution_frame.as_mut().unwrap();
+    frame.variables = vec![ShellEnvironmentSnapshot {
+        name: "ROOT".into(),
+        value: ShellEnvironmentValue::Unknown,
+    }];
+    frame.variable_values = values;
+    request
+}
+fn typed_value(name: &str, value: ExecutionFrameVariableValue) -> ExecutionFrameVariable {
+    ExecutionFrameVariable {
+        name: name.into(),
+        value,
+    }
+}
+fn array(path: &str) -> Vec<ExecutionFrameVariable> {
+    vec![typed_value(
+        "ROOT",
+        ExecutionFrameVariableValue::IndexedArray {
+            elements: vec![(3, path.into())],
+            complete: true,
+        },
+    )]
+}
+
+#[test]
+fn typed_array_and_reference_facts_resolve_paths_without_granting_destructive_effects() {
+    let w = Workspace::new();
+    for (command, target, expected) in [
+        ("printf data > \"${ROOT[3]}\"", "new.data", Decision::Allow),
+        (
+            "printf data > \"${ROOT[3]}\"",
+            "/opt/ungranted.data",
+            Decision::NeedApproval,
+        ),
+        (
+            "rm -- \"${ROOT[3]}\"",
+            "report.data",
+            Decision::NeedApproval,
+        ),
+        (
+            "rm -rf /; printf '%s' \"${ROOT[3]}\"",
+            "new.data",
+            Decision::Deny,
+        ),
+    ] {
+        let result = ShellQueryCore::new().check(typed(w.request(1, command), array(target)));
+        assert_eq!(result.decision, expected, "{result:#?}");
+        assert!(accepted(&result));
+    }
+    let values = vec![
+        typed_value(
+            "ROOT",
+            ExecutionFrameVariableValue::NameReference {
+                target: "NEXT".into(),
+            },
+        ),
+        typed_value(
+            "NEXT",
+            ExecutionFrameVariableValue::NameReference {
+                target: "VALUE".into(),
+            },
+        ),
+        typed_value(
+            "VALUE",
+            ExecutionFrameVariableValue::Scalar {
+                value: "new.data".into(),
+                integer: false,
+            },
+        ),
+    ];
+    let result =
+        ShellQueryCore::new().check(typed(w.request(1, "printf data > \"$ROOT\""), values));
+    assert_eq!(result.decision, Decision::Allow, "{result:#?}");
+    assert!(!w.0.join("new.data").exists());
+}
+
+#[test]
+fn unknown_partial_absent_or_cross_frame_values_do_not_fall_back_to_history() {
+    let w = Workspace::new();
+    let mut core = ShellQueryCore::new();
+    assert_eq!(
+        core.check(w.request(1, "ROOT=(one two three report.data)"))
+            .decision,
+        Decision::Allow
+    );
+    let command = "printf data > \"${ROOT[3]}\"";
+    for (index, value) in [
+        ExecutionFrameVariableValue::Unknown,
+        ExecutionFrameVariableValue::IndexedArray {
+            elements: vec![],
+            complete: false,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = core.check(typed(
+            w.request(2 + index as u64, command),
+            vec![typed_value("ROOT", value)],
+        ));
+        assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+    }
+    let mut request = typed(w.request(4, command), array("report.data"));
+    request
+        .shell_state_before
+        .execution_frame
+        .as_mut()
+        .unwrap()
+        .binding
+        .executor_instance_id = "different-owner".into();
+    assert_eq!(core.check(request).decision, Decision::NeedApproval);
+    let mut request = typed(w.request(5, command), array("report.data"));
+    request
+        .shell_state_before
+        .execution_frame
+        .as_mut()
+        .unwrap()
+        .binding
+        .sequence_no = CommandSequenceNo(4);
+    assert_eq!(core.check(request).decision, Decision::NeedApproval);
+}
+
+#[test]
+fn nameref_cycles_missing_targets_and_detached_observations_fail_closed() {
+    let w = Workspace::new();
+    for values in [
+        vec![typed_value(
+            "ROOT",
+            ExecutionFrameVariableValue::NameReference {
+                target: "ROOT".into(),
+            },
+        )],
+        vec![typed_value(
+            "ROOT",
+            ExecutionFrameVariableValue::NameReference {
+                target: "MISSING".into(),
+            },
+        )],
+        vec![typed_value(
+            "OTHER",
+            ExecutionFrameVariableValue::Scalar {
+                value: "safe".into(),
+                integer: false,
+            },
+        )],
+    ] {
+        let result = ShellQueryCore::new().check(typed(
+            w.request(1, "printf data > \"$ROOT\""),
+            values.clone(),
+        ));
+        assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+        assert!(rejected(&result));
+        let catastrophic = ShellQueryCore::new().check(typed(w.request(1, "rm -rf /"), values));
+        assert_eq!(
+            catastrophic.decision,
+            Decision::Deny,
+            "{:?}",
+            catastrophic.reasons
+        );
+    }
+}
+
+#[test]
+fn associative_keys_are_known_but_expansion_order_is_not_invented() {
+    let w = Workspace::new();
+    let values = vec![typed_value(
+        "ROOT",
+        ExecutionFrameVariableValue::AssociativeArray {
+            elements: vec![("destination".into(), "new.data".into())],
+        },
+    )];
+    for (command, expected) in [
+        ("printf data > \"${ROOT[destination]}\"", Decision::Allow),
+        ("printf data > \"${ROOT[missing]}\"", Decision::NeedApproval),
+        ("touch -- \"${ROOT[@]}\"", Decision::NeedApproval),
+    ] {
+        let result = ShellQueryCore::new().check(typed(w.request(1, command), values.clone()));
+        assert_eq!(result.decision, expected, "{command}: {:?}", result.reasons);
+    }
+}
+
+#[test]
+fn unknown_attributes_are_not_overwritten_into_false_scalar_proofs() {
+    let w = Workspace::new();
+    for value in [
+        ExecutionFrameVariableValue::Unknown,
+        ExecutionFrameVariableValue::Unsupported,
+    ] {
+        let read = typed(
+            w.request(1, "printf '%s' \"$ROOT\""),
+            vec![typed_value("ROOT", value.clone())],
+        );
+        let read_result = ShellQueryCore::new().check(read);
+        assert_eq!(
+            read_result.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            read_result.reasons
+        );
+        for (command, expected) in [
+            ("printf '%s' '$ROOT'", Decision::Allow),
+            ("rm -rf /; printf '%s' \"$ROOT\"", Decision::Deny),
+        ] {
+            let result = ShellQueryCore::new().check(typed(
+                w.request(1, command),
+                vec![typed_value("ROOT", value.clone())],
+            ));
+            assert_eq!(result.decision, expected, "{command}: {:?}", result.reasons);
+        }
+        let request = typed(
+            w.request(1, "ROOT=inside.data; printf data > \"$ROOT\""),
+            vec![typed_value("ROOT", value)],
+        );
+        let result = ShellQueryCore::new().check(request);
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            result.reasons
+        );
+    }
+    let scalar = typed_value(
+        "ROOT",
+        ExecutionFrameVariableValue::Scalar {
+            value: "array[$(touch marker)]".into(),
+            integer: false,
+        },
+    );
+    let result =
+        ShellQueryCore::new().check(typed(w.request(1, "printf '%s' \"$ROOT\""), vec![scalar]));
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(!w.0.join("marker").exists());
+}
+
+#[test]
+fn typed_facts_expire_and_do_not_create_remote_authority_or_evaluate_arithmetic_payloads() {
+    let w = Workspace::new();
+    let mut core = ShellQueryCore::new();
+    let command = "printf data > \"${ROOT[3]}\"";
+    assert_eq!(
+        core.check(typed(w.request(1, command), array("new.data")))
+            .decision,
+        Decision::Allow
+    );
+    let mut missing = typed(w.request(2, command), vec![]);
+    missing
+        .shell_state_before
+        .execution_frame
+        .as_mut()
+        .unwrap()
+        .variable_values
+        .clear();
+    assert_eq!(core.check(missing).decision, Decision::NeedApproval);
+    let values = vec![
+        typed_value(
+            "ROOT",
+            ExecutionFrameVariableValue::NameReference {
+                target: "PAYLOAD".into(),
+            },
+        ),
+        typed_value(
+            "PAYLOAD",
+            ExecutionFrameVariableValue::Scalar {
+                value: "$(touch marker)".into(),
+                integer: false,
+            },
+        ),
+    ];
+    let result = ShellQueryCore::new().check(typed(w.request(1, "echo $((ROOT))"), values));
+    assert_eq!(
+        result.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        result.reasons
+    );
+    let result = ShellQueryCore::new().check(typed(
+        w.request(
+            1,
+            "curl -q --noproxy '*' --upload-file report.data --url \"${ROOT[3]}\"",
+        ),
+        array("http://127.0.0.1:18080/results"),
+    ));
+    assert_eq!(
+        result.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        result.reasons
+    );
+    assert!(!w.0.join("marker").exists());
 }
 
 #[test]

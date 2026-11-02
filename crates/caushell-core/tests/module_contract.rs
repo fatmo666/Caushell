@@ -74,6 +74,7 @@ impl Fixture {
             workspace_root: Some(self.work.to_str().unwrap().into()),
         };
         request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+            variable_values: Vec::new(),
             integer_variables: Default::default(),
             native_variants: Default::default(),
             binding: ExecutionFrameBinding::for_request(&request, "executor-instance"),

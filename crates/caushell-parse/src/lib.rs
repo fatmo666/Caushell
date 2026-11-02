@@ -19,7 +19,8 @@ pub use error::ParseError;
 pub use parser::{
     ScalarArgumentPart, array_assignment_entries, assignment_dominates_use,
     command_success_required_before, concatenated_argument_is_scalar, decode_static_shell_argument,
-    exhaustive_case_assignment_values, parse_arithmetic_references, parse_command,
-    parse_command_substitutions, parse_process_substitutions, referenced_shell_variables,
-    scalar_argument_parts, scalar_word_parts, static_array_entry_values, static_array_values,
+    exhaustive_case_assignment_values, observed_shell_variables, parse_arithmetic_references,
+    parse_command, parse_command_substitutions, parse_process_substitutions,
+    referenced_shell_variables, scalar_argument_parts, scalar_word_parts,
+    static_array_entry_values, static_array_values,
 };

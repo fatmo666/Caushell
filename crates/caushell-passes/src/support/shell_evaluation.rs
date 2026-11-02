@@ -54,7 +54,27 @@ pub(crate) fn evaluate(
     };
     match &site.kind {
         ShellEvaluationKind::RedirectionExpansion { .. } => unreachable!(),
-        ShellEvaluationKind::ParameterAssignment { .. } => {}
+        ShellEvaluationKind::ParameterReference { name }
+        | ShellEvaluationKind::ParameterAssignment {
+            name: Some(name), ..
+        } => {
+            // Unknown bytes of a proven scalar are inert data. Unknown
+            // attributes can conceal a nameref whose subscript is executable;
+            // retain that uncertainty only at a consuming expansion site.
+            use caushell_types::StructuredShellValue as V;
+            if matches!(
+                bindings.get(name).map(|b| b.value),
+                Some(SessionValue::Structured(
+                    V::NameReference { .. } | V::Unknown { .. }
+                ))
+            ) {
+                evaluator.result.unresolved |=
+                    caushell_profile::resolve_shell_container(bindings, name).map_or(true, |v| {
+                        matches!(v.value, SessionValue::Structured(V::Unknown { .. }))
+                    });
+            }
+        }
+        ShellEvaluationKind::ParameterAssignment { name: None, .. } => {}
         ShellEvaluationKind::ArrayElementAssignment { .. } => {}
         ShellEvaluationKind::Arithmetic => evaluator.expression(&site.input.text, true, 0),
         ShellEvaluationKind::UnresolvedArithmetic => evaluator.result.unresolved = true,

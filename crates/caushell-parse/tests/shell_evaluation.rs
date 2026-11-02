@@ -87,9 +87,15 @@ fn array_literal_query_does_not_expand_elements() {
 #[test]
 fn builtin_words_and_nested_arithmetic_keep_their_grammar() {
     let parsed = parse_command("unset array[2] array[$RANDOM%4]", ShellKind::Bash).unwrap();
-    assert_eq!(parsed.shell_evaluations.len(), 2);
-    assert_eq!(parsed.shell_evaluations[0].input.text, "array[2]");
-    assert_eq!(parsed.shell_evaluations[1].input.text, "array[$RANDOM%4]");
+    let operands: Vec<_> = parsed
+        .shell_evaluations
+        .iter()
+        .filter(|s| matches!(s.kind, ShellEvaluationKind::UnsetOperand { .. }))
+        .map(|s| s.input.text.as_str())
+        .collect();
+    assert_eq!(operands, ["array[2]", "array[$RANDOM%4]"]);
+    assert!(parsed.shell_evaluations.iter().any(|s| matches!(&s.kind,
+        ShellEvaluationKind::ParameterReference { name } if name == "RANDOM")));
     assert!(
         matches!(parse_arithmetic_references("$((i+1))").unwrap().as_slice(), [ArithmeticReference::ArithmeticExpansion(s)] if s == "i+1")
     );

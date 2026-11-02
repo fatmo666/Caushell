@@ -37,7 +37,8 @@ Shell variables are not child-environment values. Unavailable observations remai
 unknown. Existing external hooks without an owning-executor observation channel
 continue without these facts; they do not synthesize defaults.
 
-Referenced shell scalars have a separate `variables` channel. The planner also
+Shell variable roots read or written by the pending action have a separate
+`variables` channel. The planner also
 requests `IFS` when scalar expansions need it. `integer_variables` is an optional
 set of positive nonempty signed-decimal proofs, separate from concrete bytes.
 The Bash collector reads the scalar's `declare -i` attribute using a builtin,
@@ -46,6 +47,25 @@ as `SECONDS` remain `unknown`; their current integer attribute can still prove a
 numeric alphabet. `unset SECONDS` removes that attribute, so its spelling alone
 never supplies a proof. Scalar capture v2 carries the attribute; v1 captures stay
 compatible without inventing positive type facts.
+
+The optional `variable_values` channel preserves scalar types, sparse indexed
+arrays, associative key/value facts, and literal-identifier name references.
+The collector reads only bounded `declare -p` literals, including a bounded
+closure of reference targets in the same owning frame. It never evaluates the
+declarations or reads an executable subscript. The decoder distinguishes
+`absent`, `unknown`, and `unsupported`; current unknown facts invalidate earlier
+values instead of falling back to history. Dependencies outside that closure,
+contradictory channels, duplicate keys and invalid bindings are rejected.
+
+Indexed arrays retain their assigned indexes and completeness. Associative
+observations support keyed lookup without claiming a Bash iteration order or a
+complete expansion. Reference cycles, subscript references and unsupported
+attributes (including readonly and case transformation) remain unknown. Unknown
+attributes survive subsequent assignments and require approval when consumed,
+including an otherwise read-only expansion that could follow a name reference
+into an executable subscript. Proven ordinary scalar bytes remain inert data.
+These values are request-local facts, not child-environment exports or resource
+permissions; child shells do not inherit unexported arrays or references.
 
 Integer proofs propagate through supported scalar copies, arithmetic results and
 closed numeric loop lists. Unquoted argv expansion additionally requires observed
@@ -87,8 +107,9 @@ unknown observations and Ask where those facts are required.
 
 Collection uses subshell scratch space and positional parameters instead of
 overwriting requested target variables. Unexported variables remain absent from
-the child environment, while pathname variables are captured separately. Arrays,
-namerefs and volatile values remain unknown. Partial, oversized, non-UTF-8,
+the child environment, while pathname variables are captured separately. Supported
+arrays and name references use the typed declaration channel; volatile values
+remain unknown. Partial, oversized, non-UTF-8,
 misdelivered or malformed captures are rejected; callers must not substitute
 their own environment or guessed defaults. The nonce detects channel mixups;
 it is not authentication of an untrusted executor.

@@ -21,6 +21,8 @@ pub use file_content::{
 };
 mod execution;
 mod execution_frame;
+mod execution_frame_variable;
+pub use execution_frame_variable::{ExecutionFrameVariable, ExecutionFrameVariableValue};
 mod resource;
 pub use execution_frame::{
     ExecutionFrameBinding, ExecutionFrameEvidence, ExecutionFrameObservation,

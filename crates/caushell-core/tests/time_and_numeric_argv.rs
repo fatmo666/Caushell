@@ -39,6 +39,7 @@ fn observed(
                 value: ifs,
             },
         ],
+        variable_values: Vec::new(),
         integer_variables: if integer {
             ["SECONDS".into()].into()
         } else {

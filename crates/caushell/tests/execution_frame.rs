@@ -113,6 +113,7 @@ fn rejected_frame_preserves_the_proposal_receipt_and_replays_after_restart() {
     binding.protocol = 2;
     invalid.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
         binding,
+        variable_values: Vec::new(),
         integer_variables: Default::default(),
         native_variants: Default::default(),
         variables: Vec::new(),
@@ -166,6 +167,7 @@ fn rejected_frame_preserves_the_proposal_receipt_and_replays_after_restart() {
     );
     let mut fresh = request;
     fresh.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+        variable_values: Vec::new(),
         integer_variables: Default::default(),
         native_variants: Default::default(),
         binding: ExecutionFrameBinding::for_request(

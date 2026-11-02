@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
-from observation import collect, decode, ObservationUnavailable
+from observation import collect, decode, ObservationUnavailable, _declaration
 
 HERE = Path(__file__).resolve().parent
 
@@ -23,13 +23,13 @@ class PausedBash:
         capture_name='caushell_frame_capture_extended' if natives else 'caushell_frame_capture_plan'
         group=[str(len(names)),str(len(variables)),str(len(natives)),*names,*variables,*natives] if natives else [str(len(names)),*names,*variables]
         script = (". " + shlex.quote(str(HERE / "capture.bash")) + "\n" + self.setup
-                  + '\n'+capture_name+' "$@" || exit "$?"\nIFS= builtin read -r gate || :\n')
+                  + '\n'+capture_name+' "$@" || exit "$?"\nbuiltin printf "caushell-capture-done\\0%s\\0" "$1"\nIFS= builtin read -r gate || :\n')
         self.process = subprocess.Popen(
-            ["/bin/bash", "--noprofile", "--norc", "-c", script, "owned-frame", nonce, *group],
+            [os.environ.get('CAUSHELL_TEST_BASH', '/bin/bash'), "--noprofile", "--norc", "-c", script, "owned-frame", nonce, *group],
             cwd=self.cwd, env=dict(PATH="/usr/bin:/bin", HOME=self.home, LC_ALL="C"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         fields = []
-        for _ in range(21 + 3 * len(names) + (2 + 4 * len(variables) if variables else 0) + (2 + 3 * len(natives) if natives else 0)):
+        for _ in range(65536):
             value = bytearray()
             while True:
                 byte = self.process.stdout.read(1)
@@ -39,7 +39,9 @@ class PausedBash:
                     break
                 value.extend(byte)
             fields.append(bytes(value))
-        return b"\0".join(fields) + b"\0"
+            if len(fields)>=2 and fields[-2:]==[b'caushell-capture-done',nonce.encode()]:
+                return b"\0".join(fields[:-2]) + b"\0"
+        raise ObservationUnavailable('capture fixture exceeded field budget')
 
     def close(self):
         if self.process:
@@ -60,6 +62,74 @@ def plan(names):
 
 
 class CollectorTests(unittest.TestCase):
+    def typed_capture(self, setup, variables):
+        p=plan([]);p['requirements']['variable_names']=variables
+        with tempfile.TemporaryDirectory() as d:
+            owner=PausedBash(d,d,setup)
+            try:return collect(p,owner.capture)
+            finally:owner.close()
+
+    def test_sparse_array_bytes_and_empty_elements_are_owned_facts(self):
+        frame=self.typed_capture('declare -a slots=([2]="a b" [7]=$\'line\\nnext\' [9]="")',['slots'])
+        observed={x['name']:x['value'] for x in frame['variable_values']}
+        self.assertEqual(observed['slots'],dict(kind='indexed_array',elements=[[2,'a b'],[7,'line\nnext'],[9,'']],complete=True))
+        self.assertEqual(frame['variables'][0]['value'],dict(status='unknown'))
+        self.assertEqual(frame['environment'],[])
+
+    def test_declaration_parser_never_evaluates_expansions_or_executable_indices(self):
+        for text in ['declare -a slots=([$(touch marker)]="data")',
+                     'declare -a slots=([1+2]="data")',
+                     'declare -- slots="$(touch marker)"',
+                     'declare -n slots="other[$(touch marker)]"',
+                     'declare -a slots=([1]="one" [1]="two")',
+                     'declare -ai slots=([1]="3")',
+                     'declare -r slots="outside.data"',
+                     'declare -ar slots=([1]="outside.data")',
+                     'declare -nr slots="other"']:
+            self.assertIn(_declaration('slots','declaration',text)['kind'],('unknown','unsupported'),text)
+        self.assertEqual(_declaration('slots','declaration',r'declare -- slots="\$(not_code)"'),
+                         dict(kind='scalar',value='$(not_code)',integer=False))
+
+    def test_unrepresentable_or_oversized_declarations_remain_unknown(self):
+        self.assertEqual(_declaration('slots','declaration',r"declare -a slots=([0]=$'\377')"),dict(kind='unknown'))
+        elements=' '.join(f'[{i}]="x"' for i in range(257))
+        self.assertEqual(_declaration('slots','declaration','declare -a slots=('+elements+')'),dict(kind='unknown'))
+
+    def test_actual_nameref_chain_is_captured_without_flattening_or_export(self):
+        bash=os.environ.get('CAUSHELL_TEST_BASH','/bin/bash')
+        if subprocess.run([bash,'-c','declare -n ref=target'],capture_output=True).returncode:
+            self.skipTest('nameref requires Bash 4.3 or later; also tested in Linux Bash')
+        frame=self.typed_capture('value="safe.data"; declare -n ref=value; declare -n outer=ref',['outer'])
+        values={x['name']:x['value'] for x in frame['variable_values']}
+        self.assertEqual(values['outer'],dict(kind='name_reference',target='ref'))
+        self.assertEqual(values['ref'],dict(kind='name_reference',target='value'))
+        self.assertEqual(values['value'],dict(kind='scalar',value='safe.data',integer=False))
+        self.assertEqual(frame['environment'],[])
+
+    def test_nameref_cycle_and_subscript_do_not_execute_during_capture(self):
+        bash=os.environ.get('CAUSHELL_TEST_BASH','/bin/bash')
+        if subprocess.run([bash,'-c','declare -n ref=target'],capture_output=True).returncode:
+            self.skipTest('nameref requires Bash 4.3 or later; also tested in Linux Bash')
+        cycle=self.typed_capture('declare -n first=second; declare -n second=first',['first'])
+        self.assertEqual(cycle['variable_values'],[dict(name='first',value=dict(kind='unknown'))])
+        with tempfile.TemporaryDirectory() as d:
+            p=plan([]);p['requirements']['variable_names']=['ref']
+            owner=PausedBash(d,d,'declare -n ref=\'data[$(touch marker)]\'')
+            try:frame=collect(p,owner.capture)
+            finally:owner.close()
+            self.assertEqual(frame['variable_values'][0]['value'],dict(kind='unsupported'))
+            self.assertFalse((Path(d)/'marker').exists())
+
+    def test_associative_declarations_are_keyed_facts_without_an_order_claim(self):
+        bash=os.environ.get('CAUSHELL_TEST_BASH','/bin/bash')
+        if subprocess.run([bash,'-c','declare -A table'],capture_output=True).returncode:
+            self.skipTest('associative arrays require Bash 4 or later; also tested in Linux Bash')
+        frame=self.typed_capture('declare -A table=(["space key"]="value data" [other]="two")',['table'])
+        value=frame['variable_values'][0]['value']
+        self.assertEqual(value['kind'],'associative_array')
+        self.assertEqual(dict(value['elements']),{'space key':'value data','other':'two'})
+        self.assertNotIn('complete',value)
+
     def test_integer_attribute_is_observed_without_freezing_volatile_values(self):
         p = plan([])
         p['requirements']['variable_names'] = ['SECONDS', 'RANDOM', 'number', 'plain', 'ARRAY', 'empty']
@@ -93,7 +163,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(decode(p, '0'*32, raw)['integer_variables'], ['number'])
         with self.assertRaises(ObservationUnavailable):
             decode(p, '0'*32, raw.replace(b'number\x001\x00', b'number\x002\x00'))
-        legacy = raw.replace(b'caushell-shell-scalars-v2', b'caushell-shell-scalars-v1').replace(b'number\x001\x00', b'number\x00')
+        legacy = raw.split(b'caushell-shell-declarations-v1\0',1)[0].replace(b'caushell-shell-scalars-v2', b'caushell-shell-scalars-v1').replace(b'number\x001\x00', b'number\x00')
         self.assertNotIn('integer_variables', decode(p, '0'*32, legacy))
 
     def test_local_scalars_have_their_own_partial_channel(self):
@@ -169,7 +239,7 @@ class GuardEndToEnd(unittest.TestCase):
             ('printf safe > "$PWD/out"', 'PWD=/opt', 'need_approval'),
             ('rm "$DEST"', 'DEST=local.data', 'need_approval'),
             ('rm -rf /; printf "%s" "$DEST"', 'DEST=local.data', 'deny'),
-            ('printf safe > "$DEST"', 'declare -a DEST=(local.data)', 'need_approval'),
+            ('printf safe > "$DEST"', 'declare -a DEST=(local.data)', 'allow'),
         ]:
             request = self.request(command, command + setup)
             frame, owner = self.observed(request, setup)
@@ -179,6 +249,53 @@ class GuardEndToEnd(unittest.TestCase):
             finally:
                 owner.close()
         self.assertFalse((self.work/'local.data').exists())
+
+    def test_compound_facts_reach_the_guard_without_running_pending_actions(self):
+        for command,setup,expected in [
+            ('printf data > "${dest[3]}"','declare -a dest=([3]=inside.data)','allow'),
+            ('printf data > "${dest[3]}"','declare -a dest=([3]=/opt/outside.data)','need_approval'),
+            ('rm -- "${dest[3]}"','declare -a dest=([3]=input.data)','need_approval'),
+            ('rm -rf /; printf "%s" "${dest[@]}"','declare -a dest=(inside.data)','deny'),
+            ('printf data > "${dest[3]}"','declare -ai dest=([3]=7)','need_approval'),
+            ('mkdir -- "${dest[@]}"','declare -a dest=([2]=first-dir [7]=second-dir)','allow'),
+            ('mkdir -- "${dest[@]}"','declare -a dest=([2]=first-dir [7]=/opt/outside-dir)','need_approval'),
+            ('curl -q --noproxy \'*\' "${flags[@]}" -I https://fixture.invalid/',
+             'declare -a flags=(--cacert input.data)','allow'),
+            ('git --no-optional-locks -C . "${verb[@]}" -- input.data','declare -a verb=(diff)','allow'),
+        ]:
+            request=self.request(command,command+setup)
+            frame,owner=self.observed(request,setup)
+            try:
+                request['shell_state_before']['execution_frame']=frame
+                self.assertEqual(self.rpc('check',request)['decision'],expected,(command,frame))
+            finally:owner.close()
+        self.assertFalse((self.work/'inside.data').exists())
+
+    def test_nameref_and_associative_values_reach_the_guard_with_safe_boundaries(self):
+        bash=os.environ.get('CAUSHELL_TEST_BASH','/bin/bash')
+        if subprocess.run([bash,'-c','declare -n ref=target; declare -A table'],capture_output=True).returncode:
+            self.skipTest('full compound fixture requires Bash 4.3 or later')
+        for command,setup,expected in [
+            ('printf data > "$outer"','dest=inside.data; declare -n ref=dest; declare -n outer=ref','allow'),
+            ('printf data > "${outer[3]}"','declare -a dest=([3]=inside.data); declare -n outer=dest','allow'),
+            ('printf data > "${table[destination]}"','declare -A table=([destination]=inside.data)','allow'),
+            ('printf data > "$outer"','dest=/opt/outside.data; declare -n outer=dest','need_approval'),
+            ('rm "$outer"','dest=input.data; declare -n outer=dest','need_approval'),
+            ('printf data > "$outer"','declare -n outer=ref; declare -n ref=outer','need_approval'),
+            ('dest=inside.data; printf data > "$dest"','declare -u dest=previous','need_approval'),
+            ('dest=inside.data; printf data > "$dest"','declare -r dest=/opt/outside.data','need_approval'),
+            ('printf "%s" "$outer"',
+             f"declare -a dest=(); declare -n outer='dest[$(touch {self.work}/index-marker)]'",'need_approval'),
+            ('rm -rf /; printf "%s" "$outer"',
+             f"declare -a dest=(); declare -n outer='dest[$(touch {self.work}/index-marker)]'",'deny'),
+        ]:
+            request=self.request(command,command+setup);frame,owner=self.observed(request,setup)
+            try:
+                request['shell_state_before']['execution_frame']=frame
+                self.assertEqual(self.rpc('check',request)['decision'],expected,(command,frame))
+            finally:owner.close()
+        self.assertFalse((self.work/'inside.data').exists())
+        self.assertFalse((self.work/'index-marker').exists())
 
     def setUp(self):
         self.binary=os.environ.get("CAUSHELL_TEST_BINARY")

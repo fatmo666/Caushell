@@ -586,6 +586,7 @@ impl ShellQueryCore {
             request.shell_state_before.execution_frame =
                 Some(caushell_types::ExecutionFrameObservation {
                     binding,
+                    variable_values: Vec::new(),
                     integer_variables: Default::default(),
                     native_variants: Default::default(),
                     variables: Vec::new(),
@@ -614,7 +615,7 @@ impl ShellQueryCore {
     ) -> Result<caushell_types::ExecutionFramePlan, ShellQueryCoreInitError> {
         let request_context = self.materialize_runtime_request(request.request);
         let mut requirements = self.execution_frame_requirements.clone();
-        if let Ok(names) = caushell_parse::referenced_shell_variables(
+        if let Ok(names) = caushell_parse::observed_shell_variables(
             &request_context.command,
             request_context.shell_kind,
         ) {
