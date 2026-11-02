@@ -18,6 +18,7 @@ pub struct RawCommandProfile {
     pub archive_extraction: Option<crate::ArchiveExtraction>,
     pub implicit_config_files: Vec<crate::ImplicitConfigFile>,
     pub configuration_files: Option<crate::ConfigurationFileContract>,
+    pub native_configuration: Option<crate::NativeConfigurationSyntax>,
     pub argument_regions: Vec<RawArgumentRegion>,
     pub argument_control_vocabulary: Option<RawArgumentControlVocabulary>,
     pub selection_failure_effects: Vec<RawEffect>,

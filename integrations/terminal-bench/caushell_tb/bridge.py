@@ -38,7 +38,7 @@ def exec_prefix(docker, container, user=None, cwd=None):
 
 
 class ExternalEngine:
-    def __init__(self,docker,container,user,observer_command,host_binary,config,folder,journal,home,workspace,native_inventory=None):
+    def __init__(self,docker,container,user,observer_command,host_binary,config,folder,journal,home,workspace,native_inventory=None,pip_runtime_layout=None):
         self.native_inventory=native_inventory or {}
         self.observer_lock=threading.Lock()
         self.native_observation_id=0
@@ -59,7 +59,12 @@ class ExternalEngine:
             self.journal.emit('observer_ready',identity=self.identity)
             parent,child=socket.socketpair();self.parent=parent
             try:
-                self.process=subprocess.Popen([str(host_binary),'serve',str(child.fileno()),str(config),str(folder/'guard-store')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.stderr,pass_fds=[child.fileno()])
+                host_args=[str(host_binary),'serve',str(child.fileno()),str(config),str(folder/'guard-store')]
+                # Private deployment metadata, not a model/tool request. The
+                # host requires a retained config snapshot lease and verified
+                # native identity before these layout facts affect a decision.
+                if pip_runtime_layout is not None:host_args.append(str(pip_runtime_layout))
+                self.process=subprocess.Popen(host_args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.stderr,pass_fds=[child.fileno()])
             finally:child.close()
             self.thread=threading.Thread(target=self._observations,daemon=True);self.thread.start()
             if self.call(dict(kind='ping'))['approval_protocol']!=1:raise ValueError('Guard approval protocol unavailable')

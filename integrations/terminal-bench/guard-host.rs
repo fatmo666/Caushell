@@ -50,6 +50,7 @@ fn failed(path: &str, limit: usize, detail: &str) -> FileContentRead {
 #[cfg(unix)]
 struct Remote {
     channel: Mutex<(BufReader<UnixStream>, UnixStream, u64)>,
+    pip_runtimes: std::collections::BTreeMap<String, PipRuntimeLayout>,
 }
 #[cfg(unix)]
 impl Remote {
@@ -68,6 +69,9 @@ impl Remote {
 }
 #[cfg(unix)]
 impl FilesystemView for Remote {
+    fn pip_runtime(&self, command: &str) -> Option<PipRuntimeLayout> {
+        self.pip_runtimes.get(command).cloned()
+    }
     fn source(&self) -> FilesystemObservationSource {
         FilesystemObservationSource::SuppliedView
     }
@@ -261,9 +265,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(unix)]
     {
-        if args.len() != 4 || args[0] != "serve" {
-            return Err("usage: trusted-filesystem-host observe | serve FD CONFIG STORE".into());
+        if !matches!(args.len(), 4 | 5) || args[0] != "serve" {
+            return Err("usage: trusted-filesystem-host observe | serve FD CONFIG STORE [PRIVATE_PIP_LAYOUT_JSON]".into());
         }
+        // Deployment-only data, never read from stdin or a task's tool request.
+        // The operator must protect this file and attest the immutable startup.
+        let pip_runtimes: std::collections::BTreeMap<String, PipRuntimeLayout> = if args.len() == 5
+        {
+            let read = LocalFilesystem.read_file(&args[4], 65536);
+            let bytes = read
+                .complete_bytes(&args[4], 65536)
+                .ok_or("private Pip layout is not a stable bounded regular file")?;
+            let rows: std::collections::BTreeMap<String, PipRuntimeLayout> =
+                serde_json::from_slice(bytes)?;
+            if rows.len() > 16 {
+                return Err("private Pip layout count exceeds budget".into());
+            }
+            for (name, row) in &rows {
+                if name.is_empty() || name.len() > 4096 || name.contains(['\0', '\n']) {
+                    return Err("invalid Pip command identity".into());
+                }
+                row.validate()?;
+            }
+            rows
+        } else {
+            Default::default()
+        };
         let fd: i32 = args[1].parse()?;
         if fd < 3 {
             return Err("private observation FD must not be stdio".into());
@@ -273,6 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
         let view = Remote {
             channel: Mutex::new((BufReader::new(stream.try_clone()?), stream, 0)),
+            pip_runtimes,
         };
         if view.execution_account().is_none() {
             return Err("execution account observation unavailable".into());

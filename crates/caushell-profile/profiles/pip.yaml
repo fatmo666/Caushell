@@ -2,6 +2,7 @@ dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: leading_options
 opaque_on_unresolved: true
+native_configuration: pip25_3_linux
 
 identity:
   canonical_name: pip
@@ -63,6 +64,8 @@ subcommands:
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -104,6 +107,8 @@ subcommands:
             - {kind: load_config, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -146,6 +151,8 @@ subcommands:
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -188,6 +195,8 @@ subcommands:
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -230,6 +239,8 @@ subcommands:
             - {kind: write_path, target: {kind: none}}
           stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -303,6 +314,8 @@ subcommands:
                 kind: slot
                 name: package_specs
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -433,6 +446,8 @@ subcommands:
             - {kind: load_config, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -493,6 +508,8 @@ subcommands:
             - {kind: load_config, target: {kind: none}}
             - {kind: write_path, target: {kind: none}}
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -534,6 +551,8 @@ subcommands:
       aliases: []
       forms: []
       modifiers:
+        - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+        - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
         - id: native_cache_tail
           matcher: {kind: any_flag, flags: [--cache-dir]}
           parameters: [{name: native_cache_tail, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -559,6 +578,8 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+            - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
             - id: native_cache_leaf
               matcher: {kind: any_flag, flags: [--cache-dir]}
               parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -581,6 +602,8 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+            - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
             - id: native_cache_leaf
               matcher: {kind: any_flag, flags: [--cache-dir]}
               parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -603,6 +626,8 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+            - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
             - id: native_cache_leaf
               matcher: {kind: any_flag, flags: [--cache-dir]}
               parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -627,6 +652,8 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+            - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
             - id: native_cache_leaf
               matcher: {kind: any_flag, flags: [--cache-dir]}
               parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -652,6 +679,8 @@ subcommands:
                 - {kind: load_config, target: {kind: none}}
                 - {kind: write_path, target: {kind: none}}
           modifiers:
+            - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+            - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
             - id: native_cache_leaf
               matcher: {kind: any_flag, flags: [--cache-dir]}
               parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -677,6 +706,8 @@ subcommands:
                 # filename is runtime-selected; do not invent a local path.
                 - {kind: dispatch_command, target: {kind: dispatch, command_string: {slot: editor_command, syntax: posix_shell}}}
           modifiers:
+            - {id: disable_version_check, matcher: {kind: any_flag, flags: [--disable-pip-version-check]}}
+            - {id: native_read_switches, matcher: {kind: any_flag, flags: [--isolated, --no-color, --no-input]}}
             - id: native_cache_leaf
               matcher: {kind: any_flag, flags: [--cache-dir]}
               parameters: [{name: native_cache_leaf, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]

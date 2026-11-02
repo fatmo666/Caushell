@@ -11,6 +11,8 @@ mod binding_map;
 mod brace_expansion;
 mod builtin;
 mod configuration;
+mod pip_configuration;
+pub use pip_configuration::{PIP_CONFIGURATION_ENVIRONMENT, PipConfiguration, pip_boolean};
 mod dispatch;
 mod dispatch_string;
 mod environment_inputs;
@@ -23,7 +25,7 @@ pub use configuration::{
     parse_configuration,
 };
 pub use option_environment::option_environment_observation;
-pub use types::{ConfigurationFileContract, ConfigurationSyntax};
+pub use types::{ConfigurationFileContract, ConfigurationSyntax, NativeConfigurationSyntax};
 mod loader;
 mod lookup;
 mod materialize;

@@ -2083,6 +2083,9 @@ pub struct BoundInvocation {
     /// Matched parameter-bearing modifier flags, including bare optional
     /// operands. Retains validated ownership/order even when no value binds.
     pub modifier_parameter_flags: Vec<ArgumentBindingSource>,
+    /// Exact flag occurrences owned by the selected native command grammar,
+    /// including switches without parameters. Data operands are excluded.
+    pub owned_option_flags: Vec<ArgumentBindingSource>,
     pub effects: Vec<Effect>,
     pub residuals: Vec<Residual>,
     /// Effect-indexed filename records. Absent means unknown; Paths(empty)
@@ -2140,6 +2143,7 @@ impl BoundInvocation {
             bound_implicit_inputs: Vec::new(),
             applied_modifiers: Vec::new(),
             modifier_parameter_flags: Vec::new(),
+            owned_option_flags: Vec::new(),
             effects: Vec::new(),
             residuals: Vec::new(),
             bound_path_lists: std::collections::BTreeMap::new(),
@@ -2200,6 +2204,7 @@ pub struct CommandProfile {
     pub archive_extraction: Option<ArchiveExtraction>,
     pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub configuration_files: Option<ConfigurationFileContract>,
+    pub native_configuration: Option<NativeConfigurationSyntax>,
     pub argument_regions: Vec<ArgumentRegion>,
     /// Opt-in finite outer control vocabulary. Unknown dash words are invalid
     /// in the tool, not new actions. Valid but unmodeled controls stay opaque.
@@ -2280,6 +2285,7 @@ impl CommandProfile {
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
+            native_configuration: None,
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
@@ -2370,6 +2376,12 @@ pub struct ConfigurationFileContract {
 pub enum ConfigurationSyntax {
     Curl,
     Apt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeConfigurationSyntax {
+    Pip25_3Linux,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]

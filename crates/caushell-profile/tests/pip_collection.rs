@@ -21,6 +21,43 @@ fn resolve(command: &str) -> BoundInvocation {
 }
 
 #[test]
+fn parameterless_options_retain_scoped_ownership_and_never_rescan_operands() {
+    for command in [
+        "pip --isolated --disable-pip-version-check list",
+        "pip list --isolated --disable-pip-version-check",
+    ] {
+        let bound = resolve(command);
+        for name in ["--isolated", "--disable-pip-version-check"] {
+            assert!(bound.owned_option_flags.iter().any(|source|matches!(source,ArgumentBindingSource::FollowingFlag{flag_name,..} if flag_name.as_str()==name)),"{command}: {bound:#?}");
+        }
+    }
+    let bound = resolve("pip --log --isolated show package");
+    assert!(!bound.owned_option_flags.iter().any(|source|matches!(source,ArgumentBindingSource::FollowingFlag{flag_name,..} if flag_name.as_str()=="--isolated")));
+    assert!(
+        bound
+            .bound_parameters
+            .iter()
+            .flat_map(|p| &p.values)
+            .any(|v| matches!(v,BoundValue::Argument{text,..} if text=="--isolated"))
+    );
+    let names = execution_frame_requirements(ProfileRegistry::built_in().unwrap().profiles())
+        .environment_names;
+    assert!(
+        names.len() + 28 <= 128,
+        "{} names leave insufficient native-loader budget",
+        names.len()
+    );
+    for name in [
+        "PIP_CONFIG_FILE",
+        "PIP_LOG",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONWARNINGS",
+    ] {
+        assert!(names.contains(name));
+    }
+}
+
+#[test]
 fn collection_and_build_keep_backend_execution_and_native_unknowns() {
     for (command, form, destination) in [
         (

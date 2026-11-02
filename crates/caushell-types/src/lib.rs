@@ -22,7 +22,9 @@ pub use file_content::{
 mod execution;
 mod execution_frame;
 mod execution_frame_variable;
+mod pip_runtime;
 pub use execution_frame_variable::{ExecutionFrameVariable, ExecutionFrameVariableValue};
+pub use pip_runtime::{PIP_25_3_LINUX_VARIANT, PipRuntimeLayout};
 mod resource;
 pub use execution_frame::{
     ExecutionFrameBinding, ExecutionFrameEvidence, ExecutionFrameObservation,

@@ -33,6 +33,11 @@ impl PartialEq for FilesystemViewHandle {
 impl Eq for FilesystemViewHandle {}
 
 pub trait FilesystemView: Send + Sync {
+    /// Optional operator-attested native layout on the private host boundary.
+    /// No process probe is permitted; ordinary request transports supply none.
+    fn pip_runtime(&self, _command: &str) -> Option<caushell_types::PipRuntimeLayout> {
+        None
+    }
     /// A namespace-side Shell lookup, including its command hash state.
     fn shell_executable(
         &self,

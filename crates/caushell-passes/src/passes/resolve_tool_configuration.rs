@@ -1,4 +1,5 @@
 mod apt;
+mod pip;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -45,6 +46,7 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
     }
 
     fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
+        pip::run(&self.registry, session, ctx);
         let records = graph_backed_execution_resolve_records(ctx);
         let mut inputs_by_node: BTreeMap<&str, Vec<&caushell_types::ToolConfigInputEvidence>> =
             BTreeMap::new();

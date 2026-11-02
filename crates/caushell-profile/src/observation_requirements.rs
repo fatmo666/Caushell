@@ -14,6 +14,13 @@ pub fn execution_frame_requirements<'a>(
         pathname: true,
     };
     for profile in profiles {
+        if profile.native_configuration.is_some() {
+            requirements.environment_names.extend(
+                crate::PIP_CONFIGURATION_ENVIRONMENT
+                    .iter()
+                    .map(|s| (*s).into()),
+            );
+        }
         add_resource_inputs(&profile.forms, &profile.modifiers, &mut requirements);
         for over in &profile.dispatch_overrides {
             add_resource_inputs(&over.forms, &over.modifiers, &mut requirements);

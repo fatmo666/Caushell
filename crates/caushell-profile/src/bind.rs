@@ -681,6 +681,7 @@ pub fn bind_invocation(
 
     bind_runtime_argument_sources(&mut bound, projection);
     bound.modifier_parameter_flags = state.modifier_parameter_flags.clone();
+    bound.owned_option_flags = owned_option_flags(projection, &selection.modifiers);
     crate::structured_projection::project_parameters(
         &mut bound,
         targets
@@ -1093,6 +1094,8 @@ pub(crate) fn bind_modifier_only_invocation(
     }
 
     bind_runtime_argument_sources(&mut bound, projection);
+    bound.modifier_parameter_flags = state.modifier_parameter_flags.clone();
+    bound.owned_option_flags = owned_option_flags(projection, &modifiers);
     crate::structured_projection::project_parameters(
         &mut bound,
         targets
@@ -1128,6 +1131,35 @@ pub(crate) fn bind_modifier_only_invocation(
 
     bound.residuals = residuals;
     Some(bound)
+}
+
+/// Preserve scanner ownership for parameterless switches as well as options
+/// with operands. A selected root modifier keeps its own scope after dispatch
+/// into a subcommand; operand text is never rescanned as a flag.
+fn owned_option_flags(
+    projection: &ProjectedInvocation,
+    modifiers: &[SelectedModifier<'_>],
+) -> Vec<ArgumentBindingSource> {
+    let mut occurrences = modifiers
+        .iter()
+        .filter_map(|modifier| modifier.option_flag_occurrences.as_ref())
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    occurrences.sort();
+    occurrences.dedup();
+    occurrences
+        .into_iter()
+        .filter_map(|(index, flag_name)| {
+            projection
+                .args
+                .get(index)
+                .map(|arg| ArgumentBindingSource::FollowingFlag {
+                    flag_name,
+                    flag_span: arg.span.clone(),
+                })
+        })
+        .collect()
 }
 
 fn bind_runtime_argument_sources(bound: &mut BoundInvocation, projection: &ProjectedInvocation) {
