@@ -112,6 +112,8 @@ forms:
       - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: key_path}, rule: {kind: append_suffix, suffix: ".pub"}, purpose: generic_operand}}
 
 modifiers:
+  # OpenSSH ssh-keygen(1): -q only silences diagnostic output.
+  - {id: quiet, matcher: {kind: any_flag, flags: ["-q"]}}
   - {id: hash_hosts, matcher: {kind: any_flag, flags: ["-H"]}}
   - {id: passphrase, matcher: {kind: any_flag, flags: ["-p"]}}
   - id: host_lookup

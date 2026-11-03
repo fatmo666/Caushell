@@ -300,6 +300,10 @@ modifiers:
   # Exact diagnostic controls, not a -W* wildcard (which would also own -Wl,).
   - id: diagnostic_controls
     matcher: {kind: any_flag, flags: ["-Wall", "-Wextra", "-pedantic", "-Wpedantic", "-pedantic-errors", "-Werror", "-Wfatal-errors", "-w"]}
+  # GCC Code-Gen-Options: tentative-definition placement in the normal object
+  # output. Exact spellings do not cover plugins or additional output controls.
+  - id: common_symbol_placement
+    matcher: {kind: any_flag, flags: [-fcommon, -fno-common]}
   # Debug information stays in the normal output. Options producing additional
   # files (notably -gsplit-dwarf) are deliberately not covered by a -g* prefix.
   - id: debug_information
