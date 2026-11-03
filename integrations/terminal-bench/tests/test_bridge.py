@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import threading
 import unittest
@@ -10,6 +11,37 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from caushell_tb.bridge import ExternalEngine
 
 class BridgeTests(unittest.TestCase):
+    def test_cleanup_distinguishes_prior_sigkill_from_forced_shutdown(self):
+        class Journal:
+            def __init__(self):self.rows=[]
+            def emit(self,kind,**data):self.rows.append((kind,data))
+        class Process:
+            def __init__(self,pid,code,force=False):
+                self.pid,self.returncode,self.force=pid,code,force
+                self.stdin,self.stdout=io.BytesIO(),io.BytesIO()
+                self.killed=False
+            def poll(self):return self.returncode
+            def wait(self,timeout):
+                if self.force and not self.killed:raise subprocess.TimeoutExpired('fixture',timeout)
+                return self.returncode
+            def terminate(self):pass
+            def kill(self):self.killed=True;self.returncode=-9
+        for forced in [False,True]:
+            with self.subTest(forced_by_cleanup=forced):
+                engine=ExternalEngine.__new__(ExternalEngine)
+                engine.closed=False;engine.failed=None;engine.parent=None;engine.thread=None
+                engine.process=Process(101,None if forced else -9,forced)
+                engine.observer=Process(102,0)
+                engine.observer_reader,engine.stderr,engine.observer_stderr=io.BytesIO(),io.BytesIO(),io.BytesIO()
+                engine.journal=Journal()
+                with self.assertRaisesRegex(RuntimeError,'transport exit -9'):engine.close()
+                exits=[row for kind,row in engine.journal.rows if kind=='observation_transport_process_exit']
+                self.assertEqual([r['role'] for r in exits],['guard','observer'])
+                self.assertEqual(exits[0],dict(role='guard',pid=101,returncode=-9,
+                    already_exited=not forced,forced_by_cleanup=forced))
+                self.assertEqual(exits[1]['returncode'],0)
+                self.assertTrue(engine.stderr.closed)
+
     def test_native_inventory_is_explicit_private_and_does_not_authorize(self):
         engine=ExternalEngine.__new__(ExternalEngine);engine.rpc_lock=threading.RLock();engine.home='/home/user';engine.workspace='/app'
         engine.plan=lambda *args,**kwargs:dict(requirements=dict(environment_names=[]))

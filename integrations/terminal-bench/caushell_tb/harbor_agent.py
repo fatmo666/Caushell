@@ -105,7 +105,7 @@ class TaskFaithfulClaude(ClaudeCode):
         image_env=dict(x.split('=',1) for x in info['Config'].get('Env',[]) if '=' in x)
         if any(task_env.get(k,image_env.get(k)) for k in ['LD_PRELOAD','LD_AUDIT']):raise ValueError('This native client asset cannot preserve custom loader instrumentation; do not silently remove it')
         save(folder/'task-context.json',dict(identity=fields[0],home=home,path=path,cwd=cwd,agent_user=c['agent_user'],phase_environment_keys=sorted(task_env),task_config_sha256=c['task_config_sha256']))
-        session=str(uuid.uuid4());engine=None;model=None;lifecycle=None
+        session=str(uuid.uuid4());engine=None;model=None;lifecycle=None;primary_error=None
         try:
             inventory=None
             if c.get('native_inventory_path'):
@@ -134,7 +134,12 @@ class TaskFaithfulClaude(ClaudeCode):
             journal.emit('native_agent_outcome',**outcome)
             if not outcome['success']:
                 raise NativeAgentFailure('Native session did not complete: '+json.dumps(outcome,sort_keys=True))
+        except BaseException as error:
+            primary_error=error
+            raise
         finally:
+            # A cleanup failure must not replace Harbor's recoverable failure
+            # handoff or a user/framework cancellation already in flight.
             cleanup_errors=[]
             try:
                 for name,resource in [('model',model),('frame_gate',lifecycle if hasattr(lifecycle,'close') else None),('guard',engine)]:
@@ -142,14 +147,30 @@ class TaskFaithfulClaude(ClaudeCode):
                         try:resource.close()
                         except Exception as error:
                             cleanup_errors.append(name+': '+repr(error))
-                capture=folder.parent/'artifacts';capture.mkdir(exist_ok=True)
                 for name,source in [('native-session',c['state_dir']),('workspace',cwd)]:
                     if source=='/':continue
-                    copied=subprocess.run([docker,'cp',container+':'+source,str(capture/name)],text=True,capture_output=True)
-                    save(folder/(name+'-capture.json'),dict(exit_code=copied.returncode,stderr=copied.stderr))
-                    if copied.returncode:cleanup_errors.append(name+' capture failed')
+                    try:
+                        capture=folder.parent/'artifacts';capture.mkdir(exist_ok=True)
+                        copied=subprocess.run([docker,'cp',container+':'+source,str(capture/name)],text=True,capture_output=True)
+                        save(folder/(name+'-capture.json'),dict(exit_code=copied.returncode,stderr=copied.stderr))
+                        if copied.returncode:cleanup_errors.append(name+' capture failed')
+                    except Exception as error:cleanup_errors.append(name+' capture: '+repr(error))
                 # Preserve upstream services and verifier lifecycle. No blanket root-PID cleanup.
-                journal.emit('agent_phase_finished',original_task_config_preserved=True,cleanup_errors=cleanup_errors)
+                try:journal.emit('agent_phase_finished',original_task_config_preserved=True,cleanup_errors=cleanup_errors)
+                except Exception as error:cleanup_errors.append('journal emit: '+repr(error))
             finally:
-                journal.close();save(folder/'journal-overhead.json',journal.overhead())
-            if cleanup_errors:raise RuntimeError('; '.join(cleanup_errors))
+                try:journal.close()
+                except Exception as error:cleanup_errors.append('journal close: '+repr(error))
+                try:save(folder/'journal-overhead.json',journal.overhead())
+                except Exception as error:cleanup_errors.append('journal overhead: '+repr(error))
+            if cleanup_errors:
+                try:save(folder/'cleanup-errors.json',dict(errors=cleanup_errors,
+                    primary_exception_type=type(primary_error).__name__ if primary_error else None))
+                except Exception as error:cleanup_errors.append('cleanup evidence: '+repr(error))
+                message='Agent cleanup failed: '+'; '.join(cleanup_errors)
+                if primary_error is not None:
+                    primary_error.add_note(message)
+                else:
+                    # Keep verification reachable, while recording the cleanup
+                    # fault as an agent error rather than silently succeeding.
+                    raise NativeAgentFailure(message)

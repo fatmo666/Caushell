@@ -66,6 +66,8 @@ class ExternalEngine:
                 if pip_runtime_layout is not None:host_args.append(str(pip_runtime_layout))
                 self.process=subprocess.Popen(host_args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.stderr,pass_fds=[child.fileno()])
             finally:child.close()
+            self.journal.emit('observation_transport_started',guard_pid=self.process.pid,
+                              observer_transport_pid=self.observer.pid)
             self.thread=threading.Thread(target=self._observations,daemon=True);self.thread.start()
             if self.call(dict(kind='ping'))['approval_protocol']!=1:raise ValueError('Guard approval protocol unavailable')
         except BaseException:
@@ -171,16 +173,22 @@ class ExternalEngine:
         if self.closed:return
         self.closed=True
         errors=[]
-        for process in [self.process,self.observer]:
+        for role,process in [('guard',self.process),('observer',self.observer)]:
             if not process:continue
+            already_exited=process.poll() is not None
+            forced=False
             try:
                 if process.stdin and not process.stdin.closed:process.stdin.close()
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                forced=True
                 process.terminate()
                 try:process.wait(timeout=5)
                 except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
                 errors.append('transport forced to stop')
+            self.journal.emit('observation_transport_process_exit',role=role,pid=process.pid,
+                              returncode=process.returncode,already_exited=already_exited,
+                              forced_by_cleanup=forced)
             if process.returncode:errors.append('transport exit '+str(process.returncode))
         if self.parent:
             try:self.parent.shutdown(socket.SHUT_RDWR)

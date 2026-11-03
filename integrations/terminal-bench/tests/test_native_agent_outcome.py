@@ -17,7 +17,8 @@ from harbor.trial.single_step import SingleStepTrial
 
 
 class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
-    async def exercise(self, terminal, native_result, cancelled=False):
+    async def exercise(self, terminal, native_result, cancelled=False,
+                       guard_cleanup_error=None, capture_error=None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             logs = root / 'agent'
@@ -39,7 +40,11 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
                 _merge_env=lambda _: {})
             closed = []
             model = SimpleNamespace(stopped=threading.Event(), close=lambda: closed.append('model'))
-            guard = SimpleNamespace(close=lambda: closed.append('guard'))
+            def close_guard():
+                closed.append('guard')
+                if guard_cleanup_error:
+                    raise RuntimeError(guard_cleanup_error)
+            guard = SimpleNamespace(close=close_guard)
             lifecycle = SimpleNamespace(close=lambda: closed.append('lifecycle'))
             output = dict(terminal=terminal, result=native_result, actions=[], confirmations=0)
 
@@ -78,7 +83,9 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
             trial._run_verifier = verifier
             with patch.object(harbor_agent, 'validate_container'), \
                  patch.object(harbor_agent.subprocess, 'check_output', return_value='[{"Config":{"Env":[]}}]'), \
-                 patch.object(harbor_agent.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stderr='')), \
+                 patch.object(harbor_agent.subprocess, 'run',
+                              side_effect=capture_error,
+                              return_value=SimpleNamespace(returncode=0, stderr='')), \
                  patch.object(harbor_agent, 'ExternalEngine', return_value=guard), \
                  patch.object(harbor_agent, 'Lifecycle', return_value=lifecycle), \
                  patch.object(harbor_agent, 'Provider', return_value=model), \
@@ -96,14 +103,26 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(saved['terminal'], 'harbor_cancelled')
                 self.assertEqual(saved['native_loop_terminal'], 'harbor_cancelled')
                 self.assertNotEqual(saved['terminal'], 'budget_exhausted')
+                if guard_cleanup_error:
+                    cleanup = json.loads((root / 'control/cleanup-errors.json').read_text())
+                    self.assertEqual(cleanup['primary_exception_type'], 'CancelledError')
                 return
             self.assertEqual(order, ['verifier'])
             self.assertEqual(trial.result.reward, 1)
             self.assertEqual(json.loads((root / 'control/result.json').read_text()), output)
             self.assertTrue((logs / 'claude-code.txt').exists())
-            self.assertTrue((root / 'control/workspace-capture.json').exists())
+            if not capture_error:
+                self.assertTrue((root / 'control/workspace-capture.json').exists())
             outcome = json.loads((root / 'control/native-outcome.json').read_text())
-            self.assertEqual(outcome['success'], not recorded)
+            self.assertEqual(outcome, harbor_agent.native_outcome(output))
+            if guard_cleanup_error or capture_error:
+                cleanup = json.loads((root / 'control/cleanup-errors.json').read_text())
+                self.assertTrue(cleanup['errors'])
+                self.assertEqual(len(recorded), 1)
+                self.assertIsInstance(recorded[0], NonZeroAgentExitCodeError)
+                if terminal != 'completed':
+                    self.assertIn('Native session did not complete', str(recorded[0]))
+                    self.assertTrue(any('cleanup' in note for note in recorded[0].__notes__))
             events = [json.loads(line) for line in (root / 'control/events.jsonl').read_text().splitlines()]
             self.assertEqual(events[-1]['kind'], 'agent_phase_finished')
             return recorded
@@ -118,6 +137,29 @@ class NativeAgentOutcomeTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_native_completion_has_no_agent_exception(self):
         self.assertEqual(await self.exercise('completed', dict(
             type='result', subtype='success', is_error=False)), [])
+
+    async def test_guard_cleanup_failure_keeps_original_failure_and_verifier(self):
+        await self.exercise('process_exit', None,
+                            guard_cleanup_error='transport exit -9')
+
+    async def test_cleanup_failure_after_native_success_is_recoverable_and_recorded(self):
+        errors = await self.exercise('completed', dict(type='result', is_error=False),
+                                     guard_cleanup_error='transport exit -9')
+        self.assertIn('cleanup', str(errors[0]))
+
+    async def test_callers_handled_exception_does_not_hide_a_new_cleanup_failure(self):
+        try:
+            raise ValueError('unrelated caller context')
+        except ValueError:
+            await self.exercise('completed', dict(type='result', is_error=False),
+                                guard_cleanup_error='transport exit -9')
+
+    async def test_capture_exception_keeps_original_failure_and_verifier(self):
+        await self.exercise('process_exit', None, capture_error=OSError('capture unavailable'))
+
+    async def test_cleanup_failure_does_not_replace_user_cancellation(self):
+        await self.exercise('controller_error', None, cancelled=True,
+                            guard_cleanup_error='transport exit -9')
 
     async def test_framework_cancellation_records_the_cause_before_stopping_native_worker(self):
         await self.exercise('controller_error', None, cancelled=True)
