@@ -3,6 +3,23 @@ import json
 from pathlib import Path
 import shutil
 import stat
+import subprocess
+
+
+def inspect_image_configuration(docker, reference, platform='linux/amd64'):
+    """Resolve the selected platform's manifest, never an OCI index as an ABI."""
+    if platform not in ('linux/amd64', 'linux/arm64'):
+        raise ValueError('Unsupported native client platform')
+    images=json.loads(subprocess.check_output(
+        [docker,'image','inspect','--platform',platform,reference],text=True))
+    if len(images)!=1:raise ValueError('Expected exactly one image configuration')
+    image=images[0];system,architecture=platform.split('/')
+    if image.get('Os')!=system or image.get('Architecture')!=architecture:
+        raise ValueError('Selected image configuration does not match '+platform)
+    identity=image.get('Id','')
+    if not identity.startswith('sha256:') or len(identity)!=71:
+        raise ValueError('Full immutable platform image identity required')
+    return image
 
 
 def save(path, value):

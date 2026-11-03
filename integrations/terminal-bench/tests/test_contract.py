@@ -5,11 +5,38 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from caushell_tb.contract import prepare_task,manifest,overlay,validate_overlay,task_users,validate_container,admit_model,sha,save,validate_native_client
 from caushell_tb.bridge import exec_prefix,line
+from caushell_tb.contract import inspect_image_configuration
 
 class ContractTests(unittest.TestCase):
+    def test_platform_inspection_selects_manifest_instead_of_empty_index_metadata(self):
+        index=dict(Id='sha256:'+'a'*64,Architecture='',Os='')
+        selected=dict(Id='sha256:'+'b'*64,Architecture='amd64',Os='linux',Config=dict(User='1001'))
+        calls=[]
+        def inspect(argv,**kwargs):
+            calls.append(argv)
+            return json.dumps([selected if '--platform' in argv else index])
+        with patch('caushell_tb.contract.subprocess.check_output',side_effect=inspect):
+            result=inspect_image_configuration('docker','original:tag')
+        self.assertEqual(result,selected)
+        self.assertEqual(calls,[['docker','image','inspect','--platform','linux/amd64','original:tag']])
+        self.assertEqual(result['Config']['User'],'1001')
+
+    def test_platform_inspection_rejects_ambiguous_or_wrong_architecture(self):
+        for architecture,system in [('', ''),('arm64','linux'),('amd64','windows')]:
+            with self.subTest(architecture=architecture,system=system):
+                image=dict(Id='sha256:'+'a'*64,Architecture=architecture,Os=system)
+                with patch('caushell_tb.contract.subprocess.check_output',return_value=json.dumps([image])):
+                    with self.assertRaises(ValueError):inspect_image_configuration('docker','original:tag')
+
+    def test_platform_inspection_cannot_turn_a_tag_into_an_immutable_identity(self):
+        image=dict(Id='mutable:tag',Architecture='amd64',Os='linux')
+        with patch('caushell_tb.contract.subprocess.check_output',return_value=json.dumps([image])):
+            with self.assertRaises(ValueError):inspect_image_configuration('docker','original:tag')
+
     def test_task_is_byte_identical_including_omitted_defaults_and_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);src=root/'source';src.mkdir()
