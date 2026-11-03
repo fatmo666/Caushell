@@ -20,7 +20,7 @@ from rq3.records import stamp
 
 
 class MessageStream:
-    """Inspect native SSE without changing anything delivered to the client."""
+    """Inspect native Messages responses without changing client-visible bytes."""
     def __init__(self):
         self.data = []
         self.events = Counter()
@@ -89,6 +89,31 @@ class MessageStream:
             raise ValueError("No authoritative output usage in native stream")
         return dict(role="assistant", content=[self.blocks[i] for i in sorted(self.blocks)])
 
+    def message(self, raw):
+        """Consume an authoritative nonstream response, including native fallback."""
+        message = json.loads(raw)
+        if (not isinstance(message, dict) or message.get("type") != "message"
+                or message.get("role") != "assistant" or not message.get("id")
+                or not isinstance(message.get("stop_reason"), str) or not message["stop_reason"]
+                or not isinstance(message.get("content"), list)
+                or not isinstance(message.get("usage"), dict)):
+            raise ValueError("Incomplete native Messages response")
+        blocks = message["content"]
+        if not all(isinstance(block, dict) and isinstance(block.get("type"), str) for block in blocks):
+            raise ValueError("Invalid native Messages content blocks")
+        self.message_id = message["id"]
+        self.model = message.get("model")
+        self.stop_reason = message.get("stop_reason")
+        self.usage = deepcopy(message["usage"])
+        output = self.usage.get("output_tokens")
+        if not isinstance(output, int) or isinstance(output, bool) or output < 0:
+            raise ValueError("No authoritative output usage in native response")
+        self.blocks = {i: deepcopy(block) for i, block in enumerate(blocks)}
+        self.closed = set(self.blocks)
+        self.complete = True
+        self.events["nonstream_message"] += 1
+        self.finish()
+
     def summary(self):
         return dict(events=dict(self.events), message_id=self.message_id, model=self.model,
                     stop_reason=self.stop_reason, usage=self.usage, complete=self.complete,
@@ -128,9 +153,11 @@ class Provider:
                     self.send_error(404)
                     return
                 ident = str(uuid.uuid4())
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                raw_body = self.rfile.read(int(self.headers["Content-Length"]))
+                (folder / (ident + "-request.raw")).write_bytes(raw_body)
+                body = json.loads(raw_body)
                 save(folder / (ident + "-request.json"), body)
-                if (body.get("model") != outer.config["model"] or not body.get("stream")
+                if (body.get("model") != outer.config["model"] or not isinstance(body.get("stream", False), bool)
                         or body.get("thinking", {}).get("type") == "disabled"):
                     outer.journal.emit("invalid_configuration", request_id=ident,
                                        model=body.get("model"), thinking=body.get("thinking"))
@@ -159,7 +186,7 @@ class Provider:
                         raise RuntimeError("Trial already ended")
                     # Request and response bodies remain native Anthropic data.
                     connection.request("POST", outer.config.get("messages_path", "/v1/messages"),
-                                       body=json.dumps(body).encode(), headers={
+                                       body=raw_body, headers={
                                            "anthropic-version": "2023-06-01", "Content-Type": "application/json"})
                     response = connection.getresponse()
                     status = response.status
@@ -170,15 +197,17 @@ class Provider:
                     self.send_header("Cache-Control", "no-cache")
                     self.end_headers()
                     headers_sent = True
-                    with (folder / (ident + "-response.sse")).open("xb") as transcript:
-                        for line in response:
+                    streaming = body.get("stream", False)
+                    response_path = folder / (ident + ("-response.sse" if streaming else "-response.json"))
+                    with response_path.open("xb") as transcript:
+                        for line in response if streaming else iter(lambda: response.read(65536), b""):
                             transcript.write(line)
                             at = stamp()
                             if "first_byte_ns" not in marks:
                                 marks["first_byte_ns"] = at["monotonic_ns"] - began["monotonic_ns"]
                                 outer.journal.emit("provider_first_byte", _stamp=at, request_id=ident,
                                                    elapsed_ns=marks["first_byte_ns"])
-                            event = inspection.line(line) if status == 200 else None
+                            event = inspection.line(line) if status == 200 and streaming else None
                             if event:
                                 if event["type"] == "content_block_delta":
                                     if "first_content_ns" not in marks:
@@ -202,7 +231,12 @@ class Provider:
                                     outer.journal.emit("client_disconnected", request_id=ident)
                     if status != 200:
                         raise ValueError(f"Local provider HTTP {status}")
-                    inspection.finish()
+                    if streaming:
+                        inspection.finish()
+                    else:
+                        inspection.message(response_path.read_bytes())
+                    outer.journal.emit("provider_response_complete", request_id=ident,
+                                       streaming=streaming, response_path=response_path.name)
                     settled = dict(request_id=ident, message_id=inspection.message_id, usage=inspection.usage,
                                    elapsed_ns=time.monotonic_ns() - began["monotonic_ns"],
                                    response_model=inspection.model, timing=marks, stream=inspection.summary())
