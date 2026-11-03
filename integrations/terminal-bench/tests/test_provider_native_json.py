@@ -36,7 +36,8 @@ class NativeJSON(unittest.TestCase):
    with self.subTest(raw=raw[:30]),self.assertRaises(ValueError):provider.MessageStream().message(raw)
  def test_real_relay_forwards_original_nonstream_bytes_without_extra_calls(self):
   Connection.calls=[]
-  with tempfile.TemporaryDirectory() as d,patch.object(provider.http.client,'HTTPSConnection',Connection):
+  def account(_config,path):provider.save(path,dict(fixture=True,model_requests=0))
+  with tempfile.TemporaryDirectory() as d,patch.object(provider.http.client,'HTTPSConnection',Connection),patch.object(provider,'load_key',return_value='fixture-not-a-secret',create=True),patch.object(provider,'account_snapshot',side_effect=account,create=True):
    folder=Path(d)/'provider';p=provider.Provider(folder,dict(base_url='https://fixture.invalid',model='deepseek-flash'))
    u=urlsplit(p.url.replace('host.docker.internal','127.0.0.1')+'/v1/messages')
    c=http.client.HTTPConnection(u.hostname,u.port,timeout=5)
