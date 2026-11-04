@@ -5822,7 +5822,8 @@ mod tests {
             select_invocation(&profile, &projection).expect("expected command_string form");
 
         assert_eq!(selection.form.id.as_str(), "command_string");
-        assert!(selection.modifiers.is_empty());
+        assert_eq!(selection.modifiers.len(), 1);
+        assert_eq!(selection.modifiers[0].id.as_str(), "command_string_mode");
     }
 
     #[test]
@@ -5883,7 +5884,8 @@ mod tests {
             .collect();
 
         assert_eq!(selection.form.id.as_str(), "command_string");
-        assert_eq!(modifier_ids, vec!["rcfile"]);
+        assert_eq!(modifier_ids.len(), 2);
+        assert!(modifier_ids.contains(&"rcfile") && modifier_ids.contains(&"command_string_mode"));
     }
 
     #[test]
@@ -7941,18 +7943,18 @@ modifiers:
         assert_eq!(invocation.form_id.as_str(), "command_string");
         assert_eq!(first_argument_text(payload), "echo ok");
         assert_eq!(first_argument_text(startup_config), "./team.rc");
-        assert_eq!(modifier_ids, vec!["rcfile"]);
+        assert_eq!(modifier_ids, vec!["command_string_mode", "rcfile"]);
         assert_eq!(invocation.effects.len(), 2);
         assert_eq!(invocation.effects[0].kind, EffectKind::ExecutePayload);
         assert_eq!(invocation.effects[1].kind, EffectKind::LoadConfig);
         assert!(invocation.residuals.is_empty());
 
-        match first_argument_binding_source(payload) {
-            ArgumentBindingSource::FollowingFlag { flag_name, .. } => {
-                assert_eq!(flag_name.as_str(), "-c");
+        assert!(matches!(
+            first_argument_binding_source(payload),
+            ArgumentBindingSource::Positional {
+                kind: crate::PositionalBindingSource::NextPositional
             }
-            other => panic!("unexpected payload binding source: {other:?}"),
-        }
+        ));
 
         match first_argument_binding_source(startup_config) {
             ArgumentBindingSource::MatchedModifierFlag {
@@ -7984,12 +7986,12 @@ modifiers:
         assert_eq!(first_argument_text(payload), "echo ok");
         assert!(invocation.residuals.is_empty());
 
-        match first_argument_binding_source(payload) {
-            ArgumentBindingSource::FollowingFlag { flag_name, .. } => {
-                assert_eq!(flag_name.as_str(), "-c");
+        assert!(matches!(
+            first_argument_binding_source(payload),
+            ArgumentBindingSource::Positional {
+                kind: crate::PositionalBindingSource::NextPositional
             }
-            other => panic!("unexpected payload binding source: {other:?}"),
-        }
+        ));
     }
 
     #[test]
@@ -8070,7 +8072,14 @@ modifiers:
             select_invocation(&profile, &projection).expect("expected successful selection");
 
         assert_eq!(selection.form.id.as_str(), "command_string");
-        assert!(selection.modifiers.is_empty());
+        assert_eq!(
+            selection
+                .modifiers
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["command_string_mode", "stdin_script_mode"]
+        );
     }
 
     #[test]

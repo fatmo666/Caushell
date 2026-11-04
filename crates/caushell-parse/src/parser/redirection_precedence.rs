@@ -6,28 +6,34 @@ use super::*;
 
 struct Site {
     span: SourceSpan,
-    owner: Option<SourceSpan>,
+    owner: Option<(SourceSpan, bool)>,
     redirects: Vec<SourceSpan>,
 }
 
-fn tail_command(mut node: Node<'_>) -> Option<SourceSpan> {
+fn tail_command(mut node: Node<'_>) -> Option<(SourceSpan, bool)> {
     for _ in 0..128 {
         match node.kind() {
-            "command" | "test_command" => return Some(span_for(node)),
-            "list" => {
+            "command" | "test_command" => return Some((span_for(node), true)),
+            "subshell" | "compound_statement" => return Some((span_for(node), false)),
+            "list" | "pipeline" => {
                 node = named_children_of_kind(node, None)
                     .into_iter()
                     .rfind(|n| n.kind() != "comment")?
             }
-            // Explicit groups and deferred function bodies are not the last
-            // simple command of the enclosing list.
+            // Deferred functions and other unsupported statements do not
+            // acquire the authority of an enclosing execution scope.
             _ => return None,
         }
     }
     None
 }
 
-pub(super) fn restore(artifact: &mut ParsedCommandArtifact, root: Node<'_>, source: &[u8]) {
+pub(super) fn restore(
+    artifact: &mut ParsedCommandArtifact,
+    root: Node<'_>,
+    source: &[u8],
+    heredocs: &[heredoc_pipeline::Projection],
+) {
     let mut sites = Vec::new();
     walk(root, &mut |node| {
         if node.kind() == "redirected_statement"
@@ -56,7 +62,7 @@ pub(super) fn restore(artifact: &mut ParsedCommandArtifact, root: Node<'_>, sour
     }
     // No partial reparse may erase known effects. Failure retains all original
     // facts and marks the whole analysis incomplete, independent of policy.
-    if !try_restore(artifact, &sites, source) {
+    if !try_restore(artifact, &sites, source, heredocs) {
         artifact.status = ParseStatus::Partial;
         artifact.diagnostics.push(ParseDiagnostic {
             kind: DiagnosticKind::ErrorNode,
@@ -67,7 +73,12 @@ pub(super) fn restore(artifact: &mut ParsedCommandArtifact, root: Node<'_>, sour
     }
 }
 
-fn try_restore(artifact: &mut ParsedCommandArtifact, sites: &[Site], source: &[u8]) -> bool {
+fn try_restore(
+    artifact: &mut ParsedCommandArtifact,
+    sites: &[Site],
+    source: &[u8],
+    heredocs: &[heredoc_pipeline::Projection],
+) -> bool {
     if source.len() > 65_536 || sites.len() > 128 || artifact.status != ParseStatus::Complete {
         return false;
     }
@@ -77,25 +88,38 @@ fn try_restore(artifact: &mut ParsedCommandArtifact, sites: &[Site], source: &[u
         let Some(site) = sites.iter().find(|site| {
             site.redirects.iter().any(|span| {
                 span.start_byte == redirect.span.start_byte
-                    && redirect.span.end_byte <= span.end_byte
+                    && (redirect.span.end_byte <= span.end_byte
+                        || heredocs.iter().any(|h| h.fact.span == redirect.span))
             })
         }) else {
             continue;
         };
-        if redirect.kind != RedirectionKind::File {
+        if !matches!(
+            redirect.kind,
+            RedirectionKind::File | RedirectionKind::HereDoc | RedirectionKind::HereString
+        ) {
             return false;
         }
-        let Some(owner) = artifact
-            .commands
-            .iter()
-            .position(|c| Some(&c.span) == site.owner.as_ref())
-        else {
+        let Some((span, simple)) = site.owner.as_ref() else {
             return false;
         };
-        owners.push((index, owner));
-        for byte in &mut projected[redirect.span.start_byte..redirect.span.end_byte] {
-            if !matches!(*byte, b'\n' | b'\r') {
-                *byte = b' ';
+        if *simple && !artifact.commands.iter().any(|c| &c.span == span) {
+            return false;
+        }
+        owners.push((index, span.clone(), *simple));
+        // The grammar-qualified carrier includes its body and delimiter.
+        // Mask that whole span in the topology-only view, preserving line
+        // positions. The original payload/substitution facts stay intact.
+        let ranges = heredocs
+            .iter()
+            .find(|h| h.fact.span == redirect.span)
+            .map(|h| h.ranges.clone())
+            .unwrap_or_else(|| vec![redirect.span.start_byte..redirect.span.end_byte]);
+        for range in ranges {
+            for byte in &mut projected[range] {
+                if !matches!(*byte, b'\n' | b'\r') {
+                    *byte = b' ';
+                }
             }
         }
     }
@@ -171,6 +195,24 @@ fn try_restore(artifact: &mut ParsedCommandArtifact, sites: &[Site], source: &[u
     scopes!(declaration_commands, extract_declaration_commands);
     scopes!(unset_commands, extract_unset_commands);
     repaired.status_conditions = crate::status_conditions::collect(root, &projected);
+    let mut owner_facts = Vec::new();
+    for (index, span, simple) in owners {
+        let fact = if simple {
+            repaired.commands.iter().find(|c| c.span == span).cloned()
+        } else {
+            let mut fact = None;
+            walk(root, &mut |node| {
+                if matches!(node.kind(), "subshell" | "compound_statement")
+                    && span_for(node) == span
+                {
+                    fact = Some(opening_statement_for_owner(node, source));
+                }
+            });
+            fact
+        };
+        let Some(fact) = fact else { return false };
+        owner_facts.push((index, fact, simple));
+    }
     let evaluations = extract_shell_evaluations(root, &projected, artifact.shell_kind);
     for site in &mut repaired.shell_evaluations {
         if let Some(other) = evaluations
@@ -180,12 +222,11 @@ fn try_restore(artifact: &mut ParsedCommandArtifact, sites: &[Site], source: &[u
             site.top_level_span = other.top_level_span.clone();
             site.shell_scope_span = other.shell_scope_span.clone();
             site.conditional_execution = other.conditional_execution;
-        } else if let Some((_, owner)) = owners.iter().find(|(index, _)| {
+        } else if let Some((_, command, _)) = owner_facts.iter().find(|(index, _, _)| {
             let span = &artifact.redirections[*index].span;
             span.start_byte <= site.input.span.start_byte
                 && site.input.span.end_byte <= span.end_byte
         }) {
-            let command = &repaired.commands[*owner];
             site.top_level_span = command.top_level_span.clone();
             site.shell_scope_span = command.shell_scope_span.clone();
             site.conditional_execution = command.conditional_execution;
@@ -193,15 +234,14 @@ fn try_restore(artifact: &mut ParsedCommandArtifact, sites: &[Site], source: &[u
             return false;
         }
     }
-    for (index, owner) in owners {
-        let command = &repaired.commands[owner];
+    for (index, command, simple) in owner_facts {
         let redirect = &mut repaired.redirections[index];
         redirect.parent_command_name = command.command_name.clone();
-        redirect.parent_command_span = Some(command.span.clone());
+        redirect.parent_command_span = simple.then(|| command.span.clone());
         redirect.shell_scope_span = command.shell_scope_span.clone();
         redirect.conditional_execution = command.conditional_execution;
         redirect.top_level_span = command.top_level_span.clone();
-        redirect.opening_statement = None;
+        redirect.opening_statement = (!simple).then_some(command);
     }
     *artifact = repaired;
     true
@@ -249,6 +289,91 @@ mod tests {
                         .any(|c| c.command_span == cd.span && c.success == (connector == "&&"))
                 );
             }
+        }
+    }
+
+    #[test]
+    fn heredoc_and_here_string_payloads_keep_original_bytes_and_conditional_owner() {
+        for connector in ["&&", "||"] {
+            for carrier in [
+                "<<'EOF'\nrm -rf /\nEOF",
+                "<<EOF\n$(printf x)\nEOF",
+                "<<< 'literal > text'",
+            ] {
+                let source = format!("true {connector} cat {carrier}");
+                let parsed = parse_command(&source, ShellKind::Bash).unwrap();
+                assert_eq!(
+                    parsed.status,
+                    ParseStatus::Complete,
+                    "{source}: {:?}",
+                    parsed.diagnostics
+                );
+                assert_eq!(parsed.commands.len(), 2);
+                let owner = &parsed.commands[1];
+                assert_eq!(owner.command_name.as_deref(), Some("cat"));
+                assert!(owner.conditional_execution);
+                for redir in &parsed.redirections {
+                    assert_eq!(redir.parent_command_span.as_ref(), Some(&owner.span));
+                    assert_eq!(
+                        &source[redir.span.start_byte..redir.span.end_byte],
+                        redir.text
+                    );
+                    assert!(redir.conditional_execution);
+                    assert!(redir.content.is_some());
+                }
+            }
+        }
+        let malformed =
+            parse_command("true && cat <<'EOF'\nunterminated", ShellKind::Bash).unwrap();
+        assert_eq!(malformed.status, ParseStatus::Partial);
+    }
+
+    #[test]
+    fn redirected_tail_group_uses_its_opening_scope_not_the_inner_last_command() {
+        for group in ["(cd /elsewhere; printf x)", "{ cd /elsewhere; printf x; }"] {
+            let source = format!("true && {group} > result | cat");
+            let parsed = parse_command(&source, ShellKind::Bash).unwrap();
+            assert_eq!(
+                parsed.status,
+                ParseStatus::Complete,
+                "{source}: {:?}",
+                parsed.diagnostics
+            );
+            let redirect = &parsed.redirections[0];
+            assert!(redirect.parent_command_span.is_none());
+            let opening = redirect.opening_statement.as_ref().unwrap();
+            assert!(opening.command_name.is_none());
+            assert!(opening.guarded);
+            // The outer && decides whether the pipeline starts; inside the
+            // pipeline's own shell, opening this stage is unconditional.
+            assert!(!opening.conditional_execution);
+            assert!(opening.in_pipeline);
+            assert_eq!(
+                &source[opening.span.start_byte..opening.span.end_byte],
+                group
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_after_a_conditional_pipeline_belongs_only_to_its_tail() {
+        for source in [
+            "cd /tmp && printf x | sort | cat >out",
+            "true && printf x | cat <<'EOF'\nhello\nEOF",
+        ] {
+            let parsed = parse_command(source, ShellKind::Bash).unwrap();
+            assert_eq!(
+                parsed.status,
+                ParseStatus::Complete,
+                "{:?}",
+                parsed.diagnostics
+            );
+            assert!(
+                parsed
+                    .redirections
+                    .iter()
+                    .all(|r| r.parent_command_name.as_deref() == Some("cat"))
+            );
         }
     }
 

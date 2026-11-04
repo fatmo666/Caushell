@@ -1408,7 +1408,7 @@ mod tests {
                     first_argument_text(&resolved.bound, "startup_config"),
                     "./team.rc"
                 );
-                assert_eq!(modifier_ids, vec!["rcfile"]);
+                assert_eq!(modifier_ids, vec!["command_string_mode", "rcfile"]);
                 assert_eq!(resolved.bound.effects.len(), 2);
                 assert_eq!(resolved.bound.effects[0].kind, EffectKind::ExecutePayload);
                 assert_eq!(resolved.bound.effects[1].kind, EffectKind::LoadConfig);
@@ -15671,7 +15671,7 @@ mod tests {
                 partial_bound,
             } => {
                 assert_eq!(normalized_command_name, "bash");
-                assert_eq!(gap_kind, ResolveGapKind::FormSelectionAmbiguous);
+                assert_eq!(gap_kind, ResolveGapKind::OpaqueInvocation);
                 assert_eq!(command_name, "bash");
                 assert_eq!(
                     form_ids,
@@ -15680,7 +15680,7 @@ mod tests {
                         "interactive".to_string(),
                     ],
                 );
-                assert!(partial_bound.is_none());
+                assert!(partial_bound.is_some_and(|bound| bound.operation_semantics_unresolved));
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -15695,6 +15695,9 @@ mod tests {
         profile
             .forms
             .retain(|f| f.id.as_str() != "shell_input_source_unknown");
+        // This exercises generic partial modifier binding, independently of
+        // built-in interpreter selection failures being opaque execution.
+        profile.opaque_on_unresolved = false;
         let registry = ProfileRegistry::from_profiles(vec![profile]).unwrap();
         let artifact = parse_command(r#"bash --rcfile ~/team.rc"#, ShellKind::Bash)
             .expect("expected parse to succeed");

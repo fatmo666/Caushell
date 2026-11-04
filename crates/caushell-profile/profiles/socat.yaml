@@ -6,6 +6,23 @@ platform: {os_families: [posix, linux, macos], shell_families: [], requires_feat
 opaque_on_unresolved: true
 option_scope: leading_options
 forms:
+  - id: stdio_unix_control
+    selector: {kind: all, items: [{kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}, {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^(UNIX-CONNECT|unix-connect):[^,]+$'}}]}
+    parameters:
+      - {name: stdio_address, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+      - name: socket_address
+        semantic: {kind: plain_value}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        structured_projection:
+          separator: ','
+          branches:
+            - {matcher: {kind: prefix, value: 'UNIX-CONNECT:'}, target: {name: socket_endpoint, semantic: {kind: endpoint, endpoint_kind: socket_path, usage: control_plane}}}
+            - {matcher: {kind: prefix, value: 'unix-connect:'}, target: {name: socket_endpoint, semantic: {kind: endpoint, endpoint_kind: socket_path, usage: control_plane}}}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: socket_endpoint}}
+      - {kind: state_operation, state_operation: {domain: remote_resource, operation: opaque}, target: {kind: none}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: information
     selector: {kind: any, items: [{kind: has_flag, flag: -h}, {kind: has_flag, flag: -V}]}
     parameters: []
@@ -177,5 +194,6 @@ modifiers:
   - {id: unidirectional_first_to_second, matcher: {kind: any_flag, flags: [-u]}}
   - {id: unidirectional_second_to_first, matcher: {kind: any_flag, flags: [-U]}}
 extensions:
+  caushell.profile/unix_control_policy: "The literal stdio/UNIX-CONNECT form records the socket as a control-plane endpoint. Peer protocol actions remain opaque and require approval even for a temporary socket; no peer command or file effect is inferred. Address options and other orderings remain conservatively unresolved."
   caushell.profile/source_research: ["research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/socat (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)", "https://man7.org/linux/man-pages/man1/socat.1.html", "https://manpages.debian.org/testing/socat/socat.1.en.html"]
   caushell.profile/known_limitations: ["socat address strings use a native grammar: address type/parameters precede comma-separated options. File and EXEC address projections cover simple source forms; unusual quoting and commas inside paths/commands remain unresolved.", "TCP endpoint provenance retains the source's native tcp-connect: prefix with its host/port rather than normalizing those fields; transfer usage labels preserve upload versus fetch direction.", "EXEC values use socat's documented whitespace argv grammar, not a shell grammar. Shells are only derived when the source explicitly supplies an EXEC address.", "TCP listeners preserve a listener role; the source omits bind host and it stays unknown. Socket success, transport bytes, pty wiring and remote server behavior are not inferred."]

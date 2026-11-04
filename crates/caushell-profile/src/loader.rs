@@ -313,8 +313,8 @@ extensions: {}
 
         assert_eq!(profile.primary_name(), "bash");
         assert_eq!(profile.identity.aliases.len(), 1);
-        assert_eq!(profile.forms.len(), 6);
-        assert_eq!(profile.modifiers.len(), 2);
+        assert_eq!(profile.forms.len(), 7);
+        assert_eq!(profile.modifiers.len(), 4);
 
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
         assert_eq!(
@@ -326,6 +326,7 @@ extensions: {}
                 "stdin_script_implicit",
                 "interactive",
                 "shell_input_source_unknown",
+                "stdin_script_dash",
             ]
         );
 
@@ -346,23 +347,35 @@ extensions: {}
 
         assert_eq!(
             profile.forms[0].parameters[0].binding,
-            BindingSpec::FollowingFlag {
-                flag_name: crate::FlagName::new("-c"),
-                operand_mode: crate::FlagOperandMode::NextPositionalAfterDashDash,
-            }
+            BindingSpec::NextPositional
         );
         assert_eq!(
             profile.forms[1].parameters[0].binding,
             BindingSpec::NextPositional
         );
         assert_eq!(
-            profile.modifiers[0].parameters[0].binding,
+            profile
+                .modifiers
+                .iter()
+                .find(|m| m.id.as_str() == "rcfile")
+                .unwrap()
+                .parameters[0]
+                .binding,
             BindingSpec::FollowingMatchedFlag {
                 operand_mode: crate::FlagOperandMode::NextArg,
             }
         );
 
-        assert_eq!(profile.modifiers[0].effects[0].kind, EffectKind::LoadConfig);
+        assert_eq!(
+            profile
+                .modifiers
+                .iter()
+                .find(|m| m.id.as_str() == "rcfile")
+                .unwrap()
+                .effects[0]
+                .kind,
+            EffectKind::LoadConfig
+        );
     }
 
     #[test]
@@ -383,8 +396,8 @@ extensions: {}
                 .collect::<Vec<_>>(),
             vec!["ash", "dash"]
         );
-        assert_eq!(profile.forms.len(), 6);
-        assert!(profile.modifiers.is_empty());
+        assert_eq!(profile.forms.len(), 7);
+        assert_eq!(profile.modifiers.len(), 2);
 
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
         assert_eq!(
@@ -396,6 +409,7 @@ extensions: {}
                 "stdin_script_implicit",
                 "interactive",
                 "shell_input_source_unknown",
+                "stdin_script_dash",
             ]
         );
 
@@ -425,10 +439,7 @@ extensions: {}
 
         assert_eq!(
             profile.forms[0].parameters[0].binding,
-            BindingSpec::FollowingFlag {
-                flag_name: crate::FlagName::new("-c"),
-                operand_mode: crate::FlagOperandMode::NextPositionalAfterDashDash,
-            }
+            BindingSpec::NextPositional
         );
         assert_eq!(
             profile.forms[1].parameters[0].binding,

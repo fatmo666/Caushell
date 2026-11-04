@@ -13,6 +13,7 @@ use crate::{
 };
 use caushell_types::ShellKind;
 
+mod heredoc_pipeline;
 mod redirection_precedence;
 
 /// Decode a shell token only when its value is a static argv string. This is
@@ -532,6 +533,7 @@ pub fn parse_command(
         &tree.descriptors,
         &tree.here_strings,
         &tree.backticks,
+        &tree.heredocs,
     );
 
     if artifact.status == ParseStatus::Partial {
@@ -545,6 +547,7 @@ pub fn parse_command(
                 &repaired_tree.descriptors,
                 &repaired_tree.here_strings,
                 &repaired_tree.backticks,
+                &repaired_tree.heredocs,
             );
             if repaired_artifact.status == ParseStatus::Complete {
                 return Ok(repaired_artifact);
@@ -566,6 +569,7 @@ pub fn parse_command(
                 &repaired_tree.descriptors,
                 &repaired_tree.here_strings,
                 &repaired_tree.backticks,
+                &repaired_tree.heredocs,
             );
 
             if repaired_artifact.status == ParseStatus::Complete
@@ -659,6 +663,7 @@ struct DescriptorTree {
     descriptors: Vec<DescriptorProjection>,
     here_strings: Vec<SourceSpan>,
     backticks: Vec<CommandSubstitutionFact>,
+    heredocs: Vec<heredoc_pipeline::Projection>,
 }
 
 fn malformed_here_string_prefix(node: Node<'_>, bytes: &[u8]) -> Option<SourceSpan> {
@@ -691,6 +696,20 @@ fn parse_with_descriptor_ownership(
     let bytes = source.as_bytes();
     let (mut tree, projected_source) =
         crate::syntax_compat::project(parser, projected.tree, bytes, projected.source)?;
+    let mut projected_source = projected_source;
+    let mut heredocs = Vec::new();
+    if let Some((view, facts)) = heredoc_pipeline::project(tree.root_node(), bytes) {
+        let merged = projected_source.get_or_insert_with(|| bytes.to_vec());
+        for (index, byte) in view.into_iter().enumerate() {
+            if byte != bytes[index] {
+                merged[index] = byte;
+            }
+        }
+        tree = parser
+            .parse(merged.as_slice(), None)
+            .ok_or(ParseError::ParseCancelled)?;
+        heredocs = facts;
+    }
     if !bytes.iter().any(|byte| matches!(byte, b'<' | b'>')) {
         crate::command_boundary::restore_points(&mut tree, bytes, projected_source.as_deref());
         return Ok(DescriptorTree {
@@ -698,12 +717,35 @@ fn parse_with_descriptor_ownership(
             descriptors: Vec::new(),
             here_strings: Vec::new(),
             backticks: projected.facts,
+            heredocs,
         });
     }
     let mut repaired_source = projected_source;
     let mut descriptors = Vec::new();
     let mut here_strings = Vec::new();
     walk(tree.root_node(), &mut |node| {
+        // The scanner can swallow a lone stdin '-' between the tail of an
+        // &&/|| list and its heredoc, without emitting an ERROR node. Qualify
+        // only this exact AST sibling gap; a same-width word placeholder lets
+        // extraction recover the original literal argv byte and its span.
+        if node.kind() == "redirected_statement"
+            && let Some(body) = node
+                .child_by_field_name("body")
+                .filter(|b| matches!(b.kind(), "list" | "command"))
+        {
+            for redirect in all_children(node)
+                .into_iter()
+                .filter(|n| n.kind() == "heredoc_redirect")
+            {
+                if let Some(gap) = bytes.get(body.end_byte()..redirect.start_byte()) {
+                    let trimmed = gap.trim_ascii();
+                    if trimmed == b"-" && !gap.contains(&b'\n') && !gap.contains(&b'\r') {
+                        let offset = body.end_byte() + gap.iter().position(|b| *b == b'-').unwrap();
+                        repaired_source.get_or_insert_with(|| bytes.to_vec())[offset] = b'x';
+                    }
+                }
+            }
+        }
         // Bash IO numbers are unsigned decimal words. The grammar can absorb
         // a signed argv word into a redirect descriptor (e.g. -200>out).
         // Project only this AST-qualified sign as a word character; extraction
@@ -835,6 +877,7 @@ fn parse_with_descriptor_ownership(
         descriptors,
         here_strings,
         backticks: projected.facts,
+        heredocs,
     })
 }
 
@@ -873,6 +916,7 @@ fn artifact_from_tree(
     descriptors: &[DescriptorProjection],
     here_strings: &[SourceSpan],
     backticks: &[CommandSubstitutionFact],
+    heredocs: &[heredoc_pipeline::Projection],
 ) -> ParsedCommandArtifact {
     let diagnostics = collect_diagnostics(root, source);
     let status = if root.has_error() || !diagnostics.is_empty() {
@@ -918,7 +962,9 @@ fn artifact_from_tree(
         }
     }
     restore_descriptor_ownership(&mut artifact, source, descriptors);
-    redirection_precedence::restore(&mut artifact, root, source);
+    heredoc_pipeline::restore(&mut artifact, heredocs);
+    redirection_precedence::restore(&mut artifact, root, source, heredocs);
+    heredoc_pipeline::restore_evaluations(&mut artifact, heredocs);
     crate::backtick::restore(&mut artifact, backticks, root);
     for redirect in &mut artifact.redirections {
         if redirect.operator.as_deref() == Some("<<-")
@@ -3824,8 +3870,12 @@ fn redirection_opening_statement(node: Node<'_>, source: &[u8]) -> Option<Comman
         .parent()
         .filter(|p| p.kind() == "redirected_statement")
         .unwrap_or(node);
+    Some(opening_statement_for_owner(owner, source))
+}
+
+fn opening_statement_for_owner(owner: Node<'_>, source: &[u8]) -> CommandFact {
     let pipeline = find_ancestor_kind(owner, "pipeline");
-    Some(CommandFact {
+    CommandFact {
         command_name: None,
         command_name_runtime_data: false,
         text: source_text(owner, source),
@@ -3851,7 +3901,7 @@ fn redirection_opening_statement(node: Node<'_>, source: &[u8]) -> Option<Comman
         ),
         top_level_span: top_level_command_span(owner),
         span: span_for(owner),
-    })
+    }
 }
 
 fn extract_command_name(node: Node<'_>, source: &[u8]) -> Option<String> {
@@ -4786,6 +4836,69 @@ mod tests {
         assert_eq!(content.text, "g\nw\n");
         assert!(content.quoted);
         assert_eq!(content.node_kind, "ansi_c_string");
+    }
+
+    #[test]
+    fn heredoc_after_logical_list_keeps_its_real_command_boundary() {
+        let raw = "cd /tmp && cat <<'EOF'\nhello\nEOF";
+        let artifact = parse_command(raw, ShellKind::Bash).unwrap();
+        assert_eq!(
+            artifact.status,
+            ParseStatus::Complete,
+            "{:?}",
+            artifact.diagnostics
+        );
+        assert_eq!(
+            artifact
+                .commands
+                .iter()
+                .filter_map(|c| c.command_name.as_deref())
+                .collect::<Vec<_>>(),
+            ["cd", "cat"]
+        );
+    }
+
+    #[test]
+    fn lone_stdin_dash_before_conditional_heredoc_is_original_argv() {
+        let raw = "true && python - <<'EOF'\nprint(1)\nEOF";
+        let artifact = parse_command(raw, ShellKind::Bash).unwrap();
+        assert_eq!(
+            artifact.status,
+            ParseStatus::Complete,
+            "{:?}",
+            artifact.diagnostics
+        );
+        assert_eq!(artifact.commands[1].tokens[0].text, "-");
+        let token = &artifact.commands[1].tokens[0];
+        assert_eq!(&raw[token.span.start_byte..token.span.end_byte], "-");
+    }
+
+    #[test]
+    fn piped_heredoc_stdin_dash_keeps_pipeline_and_descriptor_ownership() {
+        let raw = "python - <<'EOF' 2>&1 | head -20\nprint(1)\nEOF";
+        let artifact = parse_command(raw, ShellKind::Bash).unwrap();
+        assert_eq!(
+            artifact.status,
+            ParseStatus::Complete,
+            "{:?}",
+            artifact.diagnostics
+        );
+        assert_eq!(
+            artifact
+                .commands
+                .iter()
+                .filter_map(|c| c.command_name.as_deref())
+                .collect::<Vec<_>>(),
+            ["python", "head"]
+        );
+        assert_eq!(artifact.commands[0].tokens[0].text, "-");
+        assert!(artifact.commands.iter().all(|c| c.in_pipeline));
+        assert!(
+            artifact
+                .commands
+                .iter()
+                .all(|c| c.top_level_span.end_byte == raw.len())
+        );
     }
 
     #[test]

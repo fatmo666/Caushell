@@ -43,6 +43,10 @@ def main():
         print(json.dumps(dict(trial=plan['trial'],reward=result.verifier_result.rewards if result.verifier_result else None,exception=result.exception_info.model_dump(mode='json') if result.exception_info else None)))
         return result
     result=asyncio.run(run())
+    from caushell_tb.verification import inspect_verifier
+    validation=inspect_verifier(Path(plan['outputs'])/plan['trial'],result.verifier_result.rewards if result.verifier_result else None)
+    save(root/'verifier-validation.json',validation)
+    if not validation['verified']:raise SystemExit(2)
     if result.exception_info:raise SystemExit(1)
 
 if __name__=='__main__':main()

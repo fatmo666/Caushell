@@ -42,6 +42,65 @@ fn carriers(body: &str) -> Vec<String> {
     ]
 }
 #[test]
+fn conditional_heredoc_reassociation_preserves_data_execution_and_substitution_boundaries() {
+    check("true && cat <<'EOF'\nrm -rf /\nEOF", Decision::Allow);
+    check("true && bash <<'EOF'\nrm -rf /\nEOF", Decision::Deny);
+    check("true && bash - <<'EOF'\nrm -rf /\nEOF", Decision::Deny);
+    check("bash - <<'EOF' 2>&1 | cat\nrm -rf /\nEOF", Decision::Deny);
+    check("cat <<'EOF' 2>&1 | cat\nrm -rf /\nEOF", Decision::Allow);
+    check("cat <<EOF 2>&1 | cat\n$(rm -rf /)\nEOF", Decision::Deny);
+    check("sh - <<'EOF'\nrm -rf /\nEOF", Decision::Deny);
+    check("printf '%s\\n' 'rm -rf /' | bash -", Decision::Deny);
+    check("printf '%s\\n' 'rm -rf /' | sh -", Decision::Deny);
+    check("bash -", Decision::NeedApproval);
+    check("bash - /opt/shared/script", Decision::NeedApproval);
+    check("bash -c 'printf x'", Decision::Allow);
+    check(
+        "bash /opt/shared/script -c 'printf x'",
+        Decision::NeedApproval,
+    );
+    check("bash ./script -c 'rm -rf /'", Decision::Allow);
+    check("true && cat <<EOF\n$(rm -rf /)\nEOF", Decision::Deny);
+    check("false || cat <<< 'literal > text'", Decision::Allow);
+    check(
+        "true && python - <<'EOF'\nprint(1)\nEOF",
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
+fn unix_monitor_profile_preserves_peer_control_approval() {
+    let r = check(
+        "socat - UNIX-CONNECT:/tmp/qemu-monitor.sock",
+        Decision::NeedApproval,
+    );
+    assert!(
+        !r.decision_trace
+            .findings
+            .iter()
+            .any(|f| f.rule_id == RuleId::SelectionError)
+    );
+}
+#[test]
+fn redirected_conditional_tail_groups_open_in_the_outer_scope() {
+    check(
+        "true && (cd /opt/shared; printf DATA) > ./out | cat",
+        Decision::Allow,
+    );
+    check(
+        "true && { cd /opt/shared; printf DATA; } > ./out | cat",
+        Decision::Allow,
+    );
+    check(
+        "cd /opt/shared && (cd /bench/workspace; printf DATA) > out | cat",
+        Decision::NeedApproval,
+    );
+    check(
+        "true && (printf '%s' \"$(rm -rf /)\") > ./out | cat",
+        Decision::Deny,
+    );
+}
+#[test]
 fn compound_and_bare_redirections_are_not_lost_in_shell_payloads() {
     for body in [
         "{ printf DATA; } > /opt/shared/out",

@@ -354,7 +354,7 @@ mod tests {
             .collect();
 
         assert_eq!(selection.form.id.as_str(), "command_string");
-        assert_eq!(modifier_ids, vec!["rcfile"]);
+        assert_eq!(modifier_ids, vec!["command_string_mode", "rcfile"]);
     }
 
     #[test]
