@@ -93,6 +93,11 @@ bindings retain approval.
 Derived calls retain the owning namespace only through proved local execution
 edges. Native dispatch effects opt in with `resource_namespace: same_executor`;
 remote execution and undeclared namespace transfers retain approval.
+For completely parsed Shell script-file and stdin payloads, the synthetic
+payload container links back to its exact owning invocation. This preserves
+the local ownership chain; it does not issue a resource grant or remove any
+independent script, transport, or denial rule. Unresolved payloads do not supply
+this ownership proof.
 
 The embedding host installs a `ResourceAuthority` through
 `ShellQueryCore::set_resource_authority` or `CliRuntime::set_resource_authority`.

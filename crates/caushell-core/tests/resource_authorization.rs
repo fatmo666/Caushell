@@ -385,6 +385,159 @@ fn wrappers_functions_and_history_use_declarations_not_command_spelling() {
     assert_eq!(result.decision, Decision::Allow, "{result:#?}");
 }
 
+struct ResourceScripts(std::path::PathBuf);
+impl ResourceScripts {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "caushell-resource-scripts-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+    fn write(&self, name: &str, body: &str) -> String {
+        let path = self.0.join(name);
+        std::fs::write(&path, body).unwrap();
+        path.to_str().unwrap().into()
+    }
+    fn request(&self, sequence: u64, command: &str) -> CheckRequest {
+        let mut request = request(sequence, command);
+        request.workspace_root = Some(self.0.to_str().unwrap().into());
+        request.shell_state_before.cwd = self.0.to_str().unwrap().into();
+        let binding = ExecutionFrameBinding::for_request(&request, owner().executor_instance_id);
+        request
+            .shell_state_before
+            .execution_frame
+            .as_mut()
+            .unwrap()
+            .binding = binding;
+        request
+    }
+    fn remember(&self, core: &mut TestCore) -> u64 {
+        let mut paths = std::fs::read_dir(&self.0)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        for (index, path) in paths.iter().enumerate() {
+            let body = std::fs::read_to_string(path).unwrap();
+            let result = core.check(self.request(
+                index as u64 + 1,
+                &format!(
+                    "cat > '{}' <<'SCRIPT_BODY'\n{body}\nSCRIPT_BODY",
+                    path.display()
+                ),
+            ));
+            assert_eq!(result.decision, Decision::Allow, "{result:#?}");
+        }
+        paths.len() as u64 + 1
+    }
+}
+impl Drop for ResourceScripts {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn parsed_script_payloads_preserve_the_exact_owning_resource_authority() {
+    let scripts = ResourceScripts::new();
+    let inner = scripts.write("inner.sh", &command(ENDPOINT));
+    let outer = scripts.write(
+        "outer.sh",
+        &format!("bash -s <<'INNER_BODY'\n{}\nINNER_BODY", command(ENDPOINT)),
+    );
+    let registry = Arc::new(ManagedResourceRegistry::default());
+    let registration = register(&registry, "results", ENDPOINT);
+    let _grant = registry
+        .grant(permission(&registration, "grant"), Duration::from_secs(60))
+        .unwrap();
+    let mut core = TestCore::new(&registry);
+    core.set_resource_authority(registry);
+    let sequence = scripts.remember(&mut core);
+    for (index, command) in [
+        format!("bash '{inner}'"),
+        format!("sh '{inner}'"),
+        format!("env bash '{inner}'"),
+        format!("bash '{outer}'"),
+        format!("bash -s <<'PAYLOAD'\n{}\nPAYLOAD", command(ENDPOINT)),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let result = core.check(scripts.request(sequence + index as u64, command));
+        assert_eq!(result.decision, Decision::Allow, "{command}: {result:#?}");
+        assert!(
+            result
+                .decision_trace
+                .evidence
+                .iter()
+                .any(|e| matches!(&e.kind, EvidenceKind::ResourceAuthorization(_))),
+            "{command}: payloads={:?}; units={:?}",
+            result.decision_trace.nested_payloads,
+            result.decision_trace.execution_units
+        );
+        assert!(proof(&result).authorized);
+        assert!(proof(&result).targets.iter().all(|target| {
+            target.grant_id.as_deref() == Some("grant")
+                && target.namespace_id.as_deref() == Some("namespace-a")
+        }));
+    }
+}
+
+#[test]
+fn script_namespace_proof_never_grants_permission_or_removes_other_guards() {
+    let scripts = ResourceScripts::new();
+    let inner = scripts.write("inner.sh", &command(ENDPOINT));
+    let mixed = scripts.write(
+        "mixed.sh",
+        &format!("{}; python3 -c 'pass'", command(ENDPOINT)),
+    );
+    let denied = scripts.write("denied.sh", &format!("{}; rm -rf /", command(ENDPOINT)));
+    let outside = scripts.write(
+        "other-endpoint.sh",
+        &command("http://127.0.0.1:18891/admin"),
+    );
+    let registry = Arc::new(ManagedResourceRegistry::default());
+    let registration = register(&registry, "results", ENDPOINT);
+    let mut core = TestCore::new(&registry);
+    core.set_resource_authority(registry.clone());
+    let sequence = scripts.remember(&mut core);
+    let without_grant = core.check(scripts.request(sequence, &format!("bash '{inner}'")));
+    assert_eq!(without_grant.decision, Decision::NeedApproval);
+    assert!(
+        proof(&without_grant)
+            .targets
+            .iter()
+            .all(|t| t.grant_id.is_none())
+    );
+    let grant = registry
+        .grant(permission(&registration, "grant"), Duration::from_secs(60))
+        .unwrap();
+    let opaque = core.check(scripts.request(sequence + 1, &format!("bash '{mixed}'")));
+    assert_eq!(opaque.decision, Decision::NeedApproval);
+    assert!(proof(&opaque).authorized);
+    assert!(
+        opaque
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| { p.rule_id == RuleId::NonShellScriptExecution })
+    );
+    let deny = core.check(scripts.request(sequence + 2, &format!("bash '{denied}'")));
+    assert_eq!(deny.decision, Decision::Deny);
+    assert!(proof(&deny).authorized);
+    let wrong = core.check(scripts.request(sequence + 3, &format!("bash '{outside}'")));
+    assert_eq!(wrong.decision, Decision::NeedApproval);
+    assert!(!proof(&wrong).authorized);
+    drop(grant);
+    let revoked = core.check(scripts.request(sequence + 4, &format!("bash '{inner}'")));
+    assert_eq!(revoked.decision, Decision::NeedApproval);
+    assert!(!proof(&revoked).authorized);
+}
+
 #[test]
 fn retirement_port_reuse_and_grant_handle_reuse_do_not_transfer_permissions() {
     let registry = Arc::new(ManagedResourceRegistry::default());

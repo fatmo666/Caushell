@@ -1,5 +1,8 @@
 use caushell_profile::{EffectKind, ResolveInvocationArtifactResult};
-use caushell_runner::{ExecutionUnitOriginKind, RunnerContext};
+use caushell_runner::{
+    ExecutionUnitOriginKind, ExecutionUnitResolveRecord, NestedPayloadParentRef,
+    NestedPayloadResolution, RunnerContext,
+};
 
 pub(crate) fn endpoint_is_loopback(
     ctx: &RunnerContext,
@@ -59,6 +62,7 @@ pub(crate) fn owner_namespace_is_proved(
         let Some(parent) = records
             .iter()
             .find(|parent| parent.source_node_id == record.parent_execution_node_id)
+            .or_else(|| parsed_payload_owner(ctx, record))
         else {
             return record.origin_kind == ExecutionUnitOriginKind::FunctionExpansion
                 && record.depth == 1
@@ -99,4 +103,43 @@ pub(crate) fn owner_namespace_is_proved(
         current = &parent.source_node_id;
     }
     false
+}
+
+/// Script-file/stdin payloads have a synthetic payload container as their
+/// parent, rather than an invocation record. Follow only the exact, completely
+/// parsed container back to its declared owner. Do not infer ownership from a
+/// node-name prefix, command spelling, or a matching endpoint.
+fn parsed_payload_owner<'a>(
+    ctx: &'a RunnerContext,
+    record: &ExecutionUnitResolveRecord,
+) -> Option<&'a ExecutionUnitResolveRecord> {
+    if record.origin_kind != ExecutionUnitOriginKind::NestedPayload {
+        return None;
+    }
+    let payload = ctx.nested_payload_records().iter().find(|payload| {
+        crate::support::nested_payload_node_id(
+            &ctx.request().session_id,
+            ctx.request().sequence_no,
+            payload.record_id.0,
+        ) == record.parent_execution_node_id
+            && payload.depth == record.depth
+            && payload.root_command_index == record.root_command_index
+            && matches!(&payload.resolution, NestedPayloadResolution::Parsed { parsed, .. }
+                if *parsed == record.parsed_scope)
+    })?;
+    let parent =
+        ctx.execution_unit_resolve_records()
+            .iter()
+            .find(|parent| match &payload.parent_ref {
+                NestedPayloadParentRef::RootCommand { command_index } => {
+                    parent.origin_kind == ExecutionUnitOriginKind::TopLevel
+                        && parent.command_ref.command_index == *command_index
+                }
+                NestedPayloadParentRef::DerivedInvocation { node_id } => {
+                    parent.source_node_id == *node_id
+                }
+            })?;
+    // The caller will still check remote execution, unresolved operation scope,
+    // dispatch namespace contracts, cycles and every ancestor of this owner.
+    matches!(parent.result, ResolveInvocationArtifactResult::Resolved(_)).then_some(parent)
 }

@@ -195,61 +195,77 @@ forms:
         target: {{kind: dispatch, command: child, argv: [args]}}
 {remote_effect}
 "#)).unwrap();
+        let program = load_command_profile_from_str(r#"
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: arbitrary-program}
+forms:
+  - id: execute
+    parameters:
+      - {name: body, semantic: {kind: payload, language: bash, source: inline_string, recursive: true}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: body}}
+"#).unwrap();
         let mut runner = PassRunner::new();
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(
-            ProfileRegistry::from_profiles(vec![client, wrapper]).unwrap(),
+            ProfileRegistry::from_profiles(vec![client, wrapper, program]).unwrap(),
         ));
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_transform_pass(ExtractEndpointProvenancePass);
         runner.register_session_analysis_pass(StateOperationGuardPass);
         runner.register_session_analysis_pass(ResolvePolicyPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
-        let request = CheckRequest {
-            session_id: owner.session_id.clone(),
-            sequence_no: CommandSequenceNo(1),
-            command: "arbitrary-launcher arbitrary-client http://127.0.0.1:18891/results".into(),
-            shell_state_before: ShellStateSnapshot::new("/tmp"),
-            shell_kind: ShellKind::Bash,
-            runtime: RuntimeMetadata {
-                runtime_name: owner.runtime_name.clone(),
-                tool_name: None,
-                shell_runtime_capabilities: ShellRuntimeCapabilities::request_only(),
-            },
-            home: None,
-            workspace_root: Some("/tmp".into()),
-        };
-        let binding = ExecutionFrameBinding::for_request(&request, &owner.executor_instance_id);
-        let _admission = registry
-            .admit_check(binding.clone(), owner, Duration::from_secs(60))
-            .unwrap();
-        let mut ctx = RunnerContext::new(request);
-        ctx.set_resource_authority(registry.snapshot(&binding).unwrap());
-        runner.run(
-            SessionView::new(&SessionGraph::new(), &SessionSummary::new()),
-            &mut ctx,
-        );
-        assert_eq!(
-            ctx.final_decision,
-            Some(expected),
-            "{namespace} remote={remote}: {:?}",
-            ctx.evidence
-        );
-        let proof = ctx
-            .evidence
-            .iter()
-            .find_map(|e| match &e.kind {
-                EvidenceKind::ResourceAuthorization(proof) => Some(proof),
-                _ => None,
-            })
-            .expect("child resource proof");
-        assert_eq!(proof.authorized, expected == Decision::Allow);
-        if expected == Decision::NeedApproval {
-            assert!(
-                proof.gap.as_deref().unwrap().contains("namespace"),
-                "{proof:?}"
+        for command in [
+            "arbitrary-launcher arbitrary-client http://127.0.0.1:18891/results",
+            "arbitrary-launcher arbitrary-program 'arbitrary-client http://127.0.0.1:18891/results'",
+        ] {
+            let request = CheckRequest {
+                session_id: owner.session_id.clone(),
+                sequence_no: CommandSequenceNo(1),
+                command: command.into(),
+                shell_state_before: ShellStateSnapshot::new("/tmp"),
+                shell_kind: ShellKind::Bash,
+                runtime: RuntimeMetadata {
+                    runtime_name: owner.runtime_name.clone(),
+                    tool_name: None,
+                    shell_runtime_capabilities: ShellRuntimeCapabilities::request_only(),
+                },
+                home: None,
+                workspace_root: Some("/tmp".into()),
+            };
+            let binding = ExecutionFrameBinding::for_request(&request, &owner.executor_instance_id);
+            let _admission = registry
+                .admit_check(binding.clone(), owner.clone(), Duration::from_secs(60))
+                .unwrap();
+            let mut ctx = RunnerContext::new(request);
+            ctx.set_resource_authority(registry.snapshot(&binding).unwrap());
+            runner.run(
+                SessionView::new(&SessionGraph::new(), &SessionSummary::new()),
+                &mut ctx,
             );
+            assert_eq!(
+                ctx.final_decision,
+                Some(expected),
+                "{namespace} remote={remote}: {:?}",
+                ctx.evidence
+            );
+            let proof = ctx
+                .evidence
+                .iter()
+                .find_map(|e| match &e.kind {
+                    EvidenceKind::ResourceAuthorization(proof) => Some(proof),
+                    _ => None,
+                })
+                .expect("child resource proof");
+            assert_eq!(proof.authorized, expected == Decision::Allow);
+            if expected == Decision::NeedApproval {
+                assert!(
+                    proof.gap.as_deref().unwrap().contains("namespace"),
+                    "{proof:?}"
+                );
+            }
         }
     }
 }
