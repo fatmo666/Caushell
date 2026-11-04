@@ -60,6 +60,14 @@ paths retain the existing file-source policy. Payload resolution is scoped to it
 execution unit, and descriptor copies retain their selected stream even if the
 original descriptor is subsequently redirected.
 
+For Bash arithmetic words such as `$(producer)0`, a bounded independent lexical
+parse can account for an operand-concatenation gap in the pinned grammar. The
+enclosing arithmetic delimiters must be intact, and every command/process
+substitution must retain its exact original bytes and span. This does not
+evaluate the word or authorize its effects: unknown values retain approval and
+independent denials still apply. Unproved syntax, missing delimiters, exhausted
+proof budgets and shells without the Bash arithmetic model remain incomplete.
+
 ## Non-Shell Script Execution
 
 Declared non-Shell inline programs, stdin payloads and interpreter module

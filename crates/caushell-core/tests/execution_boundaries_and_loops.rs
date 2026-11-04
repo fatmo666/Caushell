@@ -76,13 +76,26 @@ fn known_python_contracts_and_shell_payloads_remain_semantic() {
     for c in [
         "python --version",
         "python --help",
-        "python -m json.tool input.json",
-        "python -m http.server --bind 127.0.0.1",
         "bash -c 'printf hello'",
     ] {
         let r = check(c);
         assert_eq!(r.decision, Decision::Allow, "{c}: {r:#?}");
         assert!(!opaque(&r), "{c}: {r:#?}");
+    }
+    // Known CLI effects do not grant permission to execute a Python module.
+    for c in [
+        "python -m json.tool input.json",
+        "python -m http.server --bind 127.0.0.1",
+    ] {
+        let r = check(c);
+        assert_eq!(r.decision, Decision::NeedApproval, "{c}: {r:#?}");
+        assert!(!opaque(&r), "{c}: {r:#?}");
+        assert!(
+            r.decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| { p.rule_id == RuleId::NonShellScriptExecution })
+        );
     }
     let r = check("python -m http.server --bind 0.0.0.0");
     assert_eq!(r.decision, Decision::NeedApproval);
@@ -96,11 +109,13 @@ fn known_python_contracts_and_shell_payloads_remain_semantic() {
             UnresolvedExecutionPayloadSubtype::OpaqueNonShell,
             RuleAction::Observe,
         );
-    assert_eq!(
-        ShellQueryCore::with_policy(policy)
-            .check(request("node -e '1+1'"))
-            .decision,
-        Decision::Allow
+    let r = ShellQueryCore::with_policy(policy).check(request("node -e '1+1'"));
+    assert_eq!(r.decision, Decision::NeedApproval);
+    assert!(
+        r.decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| { p.rule_id == RuleId::NonShellScriptExecution })
     );
     assert_eq!(check("node -e '1+1'; rm -rf /").decision, Decision::Deny);
 }

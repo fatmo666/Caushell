@@ -918,8 +918,12 @@ fn artifact_from_tree(
     backticks: &[CommandSubstitutionFact],
     heredocs: &[heredoc_pipeline::Projection],
 ) -> ParsedCommandArtifact {
-    let diagnostics = collect_diagnostics(root, source);
-    let status = if root.has_error() || !diagnostics.is_empty() {
+    let (diagnostics, verified_arithmetic_word_gap) =
+        collect_diagnostics_with_word_coverage(root, source, shell_kind == ShellKind::Bash);
+    // A raw grammar error remains incomplete unless independently accounted
+    // for below. Every other ERROR, missing delimiter and boundary still has a
+    // diagnostic, even when a neighbouring arithmetic word was proved.
+    let status = if !diagnostics.is_empty() || (root.has_error() && !verified_arithmetic_word_gap) {
         ParseStatus::Partial
     } else {
         ParseStatus::Complete
@@ -1507,7 +1511,22 @@ fn source_position_for_offset(source: &str, offset: usize) -> (usize, usize) {
 }
 
 fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
+    // Structural projection checks still require the raw grammar diagnostics.
+    collect_diagnostics_with_word_coverage(root, source, false).0
+}
+
+fn collect_diagnostics_with_word_coverage(
+    root: Node<'_>,
+    source: &[u8],
+    allow_arithmetic_word_coverage: bool,
+) -> (Vec<ParseDiagnostic>, bool) {
     let mut diagnostics = Vec::new();
+    // Only Bash has the matching expanded-arithmetic-word semantic analysis.
+    let arithmetic_word_gaps = if allow_arithmetic_word_coverage && root.has_error() {
+        validated_arithmetic_word_gaps(root, source)
+    } else {
+        std::collections::BTreeSet::new()
+    };
 
     walk(root, &mut |node| {
         let kind = if node.is_error() {
@@ -1519,6 +1538,11 @@ fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
         };
 
         if let Some(kind) = kind {
+            if (node.is_error() || (node.is_missing() && node.kind() == ","))
+                && arithmetic_word_gaps.contains(&(node.start_byte(), node.end_byte()))
+            {
+                return;
+            }
             diagnostics.push(ParseDiagnostic {
                 kind,
                 node_kind: node.kind().to_string(),
@@ -1540,7 +1564,113 @@ fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
             span: source_span_for_offsets(original, index, index + 1),
         });
     }
-    diagnostics
+    (diagnostics, !arithmetic_word_gaps.is_empty())
+}
+
+/// The arithmetic grammar cannot concatenate expansion operands, although
+/// Bash expands such a lexical word before interpreting the arithmetic value.
+/// Discharge only gaps in a complete, independently parsed single word whose
+/// executable substitution spans are all retained by the original tree. Keep
+/// the original tree and bytes: arithmetic semantics and every guard still run.
+fn validated_arithmetic_word_gaps(
+    root: Node<'_>,
+    source: &[u8],
+) -> std::collections::BTreeSet<(usize, usize)> {
+    let mut gaps = std::collections::BTreeSet::new();
+    let mut proof_budget = 256usize;
+    walk(root, &mut |node| {
+        if proof_budget == 0 || !node.has_error() {
+            return;
+        }
+        let (open, close) = match node.kind() {
+            "arithmetic_expansion" => ("$((", "))"),
+            "compound_statement" => ("((", "))"),
+            _ => return,
+        };
+        proof_budget -= 1;
+        let text = source_text(node, source);
+        let Some(body) = text.strip_prefix(open).and_then(|s| s.strip_suffix(close)) else {
+            return;
+        };
+        if body.len() > 8192 {
+            return;
+        }
+        let trimmed = body.trim_matches(|c: char| c.is_ascii_whitespace());
+        let start = node.start_byte()
+            + open.len()
+            + (body.len()
+                - body
+                    .trim_start_matches(|c: char| c.is_ascii_whitespace())
+                    .len());
+        let Some((original_substitutions, errors)) =
+            arithmetic_word_shape(node, start, start + trimmed.len(), source)
+        else {
+            return;
+        };
+        if errors.is_empty() {
+            return;
+        }
+        let proved = with_single_argument(trimmed, |word, bytes| {
+            if word.kind() != "concatenation" {
+                return None;
+            }
+            let (substitutions, errors) =
+                arithmetic_word_shape(word, word.start_byte(), word.end_byte(), bytes)?;
+            Some(
+                !substitutions.is_empty()
+                    && errors.is_empty()
+                    && substitutions == original_substitutions,
+            )
+        });
+        if proved == Some(true) {
+            gaps.extend(errors);
+        }
+    });
+    gaps
+}
+
+type ArithmeticWordSubstitutions = Vec<(String, usize, usize, String)>;
+type ArithmeticWordErrors = std::collections::BTreeSet<(usize, usize)>;
+
+fn arithmetic_word_shape(
+    root: Node<'_>,
+    start: usize,
+    end: usize,
+    source: &[u8],
+) -> Option<(ArithmeticWordSubstitutions, ArithmeticWordErrors)> {
+    let mut pending = vec![root];
+    let mut budget = 512usize;
+    let mut substitutions = Vec::new();
+    let mut errors = std::collections::BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        budget = budget.checked_sub(1)?;
+        // Standalone ((...)) reports a missing operand-separator comma where
+        // $((...)) reports ERROR for the same lexical concatenation. A missing
+        // quote, closing delimiter or any other token cannot use this proof.
+        if node.is_missing() && node.kind() != "," {
+            return None;
+        }
+        if node.is_error() || node.is_missing() {
+            if node.start_byte() < start || node.end_byte() > end {
+                return None;
+            }
+            errors.insert((node.start_byte(), node.end_byte()));
+        }
+        if matches!(node.kind(), "command_substitution" | "process_substitution") {
+            if node.end_byte() > end {
+                return None;
+            }
+            substitutions.push((
+                node.kind().into(),
+                node.start_byte().checked_sub(start)?,
+                node.end_byte().checked_sub(start)?,
+                source_text(node, source),
+            ));
+        }
+        pending.extend((0..node.child_count()).filter_map(|i| child_at(node, i)));
+    }
+    substitutions.sort();
+    Some((substitutions, errors))
 }
 
 fn extract_for_loops(root: Node<'_>, source: &[u8]) -> Vec<crate::ForLoopFact> {
@@ -2215,21 +2345,24 @@ pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::Arithm
         // Some valid arithmetic expansion words (e.g. $(producer)0) are not
         // represented by the arithmetic grammar. Preserve a whole lexical word
         // through the ordinary Bash grammar; never interpret its bytes as a command.
-        return with_single_argument(expression, |node, source| {
-            if node.kind() != "concatenation" {
-                return None;
-            }
-            let substitutions = command_substitutions_for_expansion_node(node, source);
-            if substitutions.is_empty() {
-                return None;
-            }
-            let (text, quoted) = extract_token_text(node, source)?;
-            Some(vec![R::ExpandedWord {
-                text,
-                quoted,
-                node_kind: node.kind().into(),
-            }])
-        });
+        return with_single_argument(
+            expression.trim_matches(|c: char| c.is_ascii_whitespace()),
+            |node, source| {
+                if node.kind() != "concatenation" {
+                    return None;
+                }
+                let substitutions = command_substitutions_for_expansion_node(node, source);
+                if substitutions.is_empty() {
+                    return None;
+                }
+                let (text, quoted) = extract_token_text(node, source)?;
+                Some(vec![R::ExpandedWord {
+                    text,
+                    quoted,
+                    node_kind: node.kind().into(),
+                }])
+            },
+        );
     }
     let expression_node = root.named_child(0)?;
     if expression_node.kind() != "compound_statement" || expression_node.end_byte() != source.len()

@@ -274,3 +274,58 @@ fn lexical_arithmetic_words_and_loop_initializers_preserve_safety() {
         );
     }
 }
+
+#[test]
+fn arithmetic_word_grammar_recovery_preserves_approval_and_denial_effects() {
+    for command in [
+        "echo $((0$(printf '%d' 1)))",
+        "echo $(($(printf '%d' 1)$(printf '%d' 2)))",
+        "echo $(( $(printf '%d' 1)0 ))",
+        "(( $(printf '%d' 1)0 ))",
+    ] {
+        check(command, Decision::Allow);
+    }
+    for command in [
+        "echo $(($(cat /tmp/unknown-arithmetic-input)0))",
+        "echo $(($(touch /opt/out)0))",
+        "bash -c 'echo $(($(touch /opt/out)0))'",
+        "cd /etc; echo $(($(touch result)0))",
+        "printf() { echo 'a[$(touch /opt/out)]'; }; echo $(($(printf '%d' 1)0))",
+        "echo $(($(printf '%s' 'a[$(touch /opt/out)]')0))",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+    let touch = check("echo $(($(touch /opt/out)0))", Decision::NeedApproval);
+    assert!(
+        touch
+            .decision_trace
+            .derived_invocations
+            .iter()
+            .any(|d| { d.command_name.as_deref() == Some("touch") })
+    );
+    for command in [
+        "echo $(($(rm -rf /)0))",
+        "bash -c 'echo $(($(rm -rf /)0))'",
+        "echo $(($(printf '%d' 1)0)); rm -rf /",
+    ] {
+        check(command, Decision::Deny);
+    }
+    assert_ne!(
+        ShellQueryCore::new()
+            .check(request("echo $(( $(rm -rf /)0 + ))"))
+            .decision,
+        Decision::Allow,
+    );
+    for depth in [0, 1, 2] {
+        let mut policy = PolicyConfig::default();
+        policy.semantic_expansion.max_nested_parse_depth = depth;
+        let response = ShellQueryCore::try_with_policy(policy)
+            .unwrap()
+            .check(request("echo $(($(rm -rf /)0))"));
+        assert_ne!(
+            response.decision,
+            Decision::Allow,
+            "depth={depth}: {response:#?}"
+        );
+    }
+}
