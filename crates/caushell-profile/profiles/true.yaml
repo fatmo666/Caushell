@@ -3,7 +3,9 @@ kind: command_profile
 
 identity:
   canonical_name: "true"
-  aliases: []
+  # Both builtins perform argument expansion and have no operation effects.
+  # Substitutions, redirections and function shadowing remain independent.
+  aliases: [":"]
 
 trust:
   tier: tier_a

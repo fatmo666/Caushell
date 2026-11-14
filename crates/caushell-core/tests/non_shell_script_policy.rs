@@ -148,7 +148,20 @@ fn shell_information_and_literal_data_do_not_become_script_execution() {
         "touch ./demo.py",
     ] {
         let r = ShellQueryCore::new().check(request(command));
-        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        let expected = if command == "node --version" {
+            // This information form is not currently matched by the Node
+            // Profile. It remains non-script data, but now has an approval gap.
+            assert!(
+                r.decision_trace
+                    .decision_proposals
+                    .iter()
+                    .any(|p| p.rule_id == RuleId::SelectionError)
+            );
+            Decision::NeedApproval
+        } else {
+            Decision::Allow
+        };
+        assert_eq!(r.decision, expected, "{command}: {:?}", r.reasons);
         assert!(script_evidence(&r).is_empty(), "{command}");
         no_python_analysis(&r);
     }

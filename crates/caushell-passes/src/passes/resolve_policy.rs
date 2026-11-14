@@ -18,7 +18,13 @@ impl SessionAnalysisPass for ResolvePolicyPass {
             EvidenceKind::NestedPayloadUnresolved(u)
             if u.reason == caushell_types::NestedPayloadUnresolvedReasonEvidence::UnsupportedLanguage
                 && u.context.source == caushell_types::NestedPayloadSourceEvidence::ScriptFileRef));
-        let files = if has_unsupported_file {
+        let has_unprofiled_execution = ctx.execution_unit_resolve_records().iter().any(|record| {
+            matches!(
+                record.result,
+                ResolveInvocationArtifactResult::NoProfile { .. }
+            )
+        });
+        let files = if has_unsupported_file || has_unprofiled_execution {
             crate::support::file_execution_checks(
                 ctx,
                 caushell_query::QuerySession::from_session(&staged),
@@ -26,10 +32,11 @@ impl SessionAnalysisPass for ResolvePolicyPass {
         } else {
             Vec::new()
         };
-        let mut escalations: Vec<(RuleId, RuleAction, String)> = {
-            let policy = &ctx.policy().rule_policy;
+        let mut escalations: Vec<(RuleId, RuleAction, String)> =
+            {
+                let policy = &ctx.policy().rule_policy;
 
-            ctx.execution_unit_resolve_records()
+                ctx.execution_unit_resolve_records()
                 .iter()
                 .filter_map(|record| match &record.result {
                     ResolveInvocationArtifactResult::MissingCommandName { gap_kind } => Some((
@@ -41,14 +48,40 @@ impl SessionAnalysisPass for ResolvePolicyPass {
                         normalized_command_name,
                         gap_kind,
                         ..
-                    } => Some((
-                        RuleId::NoProfile,
-                        action_for_no_profile_gap(policy, normalized_command_name, *gap_kind),
-                        format!(
-                            "command {} has no registered profile",
-                            normalized_command_name
-                        ),
-                    )),
+                    } => {
+                        let action =
+                            action_for_no_profile_gap(policy, normalized_command_name, *gap_kind);
+                        // Existing file-execution authority belongs to this exact
+                        // execution unit and executable slot. Bare names have no
+                        // such proof. It cannot erase an explicit command override,
+                        // a Deny, or any independent risk in this or a sibling call.
+                        let authorized_file = action == RuleAction::NeedApproval
+                            && !policy
+                                .no_profile
+                                .commands
+                                .contains_key(normalized_command_name)
+                            && files.iter().any(|check| {
+                                check.source == record.source_node_id
+                                    && check.slot == crate::path::EXECUTABLE_FILE_SLOT
+                                    && check.exempt
+                                    && check.file_targets_resolved
+                            });
+                        let expanded_function = action == RuleAction::NeedApproval
+                            && !policy.no_profile.commands.contains_key(normalized_command_name)
+                            && function_call_was_expanded(ctx, record, normalized_command_name);
+                        if authorized_file || expanded_function {
+                            None
+                        } else {
+                            Some((
+                                RuleId::NoProfile,
+                                action,
+                                format!(
+                                    "command {} has no registered profile",
+                                    normalized_command_name
+                                ),
+                            ))
+                        }
+                    }
                     ResolveInvocationArtifactResult::SelectionError {
                         normalized_command_name,
                         gap_kind,
@@ -86,7 +119,7 @@ impl SessionAnalysisPass for ResolvePolicyPass {
                     ResolveInvocationArtifactResult::Resolved(_) => None,
                 })
                 .collect()
-        };
+            };
 
         // Depth truncation is an incomplete analysis, not an unsupported
         // static language literal. Keep it independent of the latter's Observe
@@ -160,6 +193,16 @@ impl SessionAnalysisPass for ResolvePolicyPass {
     }
 }
 
+fn function_call_was_expanded(
+    ctx: &RunnerContext,
+    record: &caushell_runner::ExecutionUnitResolveRecord,
+    name: &str,
+) -> bool {
+    ctx.expanded_function_calls()
+        .get(&record.source_node_id)
+        .is_some_and(|expanded_name| expanded_name == name)
+}
+
 fn propose_gap_escalation(
     ctx: &mut RunnerContext,
     pass_name: &str,
@@ -187,16 +230,23 @@ fn action_for_no_profile_gap(
     normalized_command_name: &str,
     gap_kind: caushell_types::ResolveGapKind,
 ) -> RuleAction {
+    // Specific command and gap overrides remain effective when the built-in
+    // unknown-command fallback is NeedApproval rather than Observe.
     policy
         .no_profile
         .commands
         .get(normalized_command_name)
         .copied()
         .unwrap_or_else(|| {
-            if policy.no_profile.action != RuleAction::Observe {
-                policy.no_profile.action
+            if policy.no_profile.action == RuleAction::Deny {
+                RuleAction::Deny
             } else {
-                policy.action_for_resolve_gap(gap_kind)
+                policy
+                    .resolve_gap
+                    .defaults
+                    .get(&gap_kind)
+                    .copied()
+                    .unwrap_or(policy.no_profile.action)
             }
         })
 }
@@ -547,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_policy_pass_ignores_no_profile_under_default_policy() {
+    fn resolve_policy_pass_requires_approval_for_no_profile_under_default_policy() {
         let ctx = run_pass(
             PolicyConfig::default(),
             vec![execution_unit_record(
@@ -565,7 +615,55 @@ mod tests {
         );
 
         assert_eq!(ctx.executed_passes, vec!["resolve_policy".to_string()]);
-        assert!(ctx.decision_proposals.is_empty());
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(ctx.decision_proposals[0].rule_id, RuleId::NoProfile);
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
+    }
+
+    #[test]
+    fn resolve_policy_pass_requires_approval_for_unrecognized_forms() {
+        for (gap_kind, error) in [
+            (
+                ResolveGapKind::UnknownSubcommandPath,
+                BindError::UnknownSubcommand {
+                    command_name: "fixture".into(),
+                    attempted_path: vec!["unknown".into()],
+                },
+            ),
+            (
+                ResolveGapKind::FormSelectionAmbiguous,
+                BindError::MultipleFormsMatched {
+                    command_name: "fixture".into(),
+                    form_ids: vec!["first".into(), "second".into()],
+                },
+            ),
+            (
+                ResolveGapKind::FormSelectionUnmatched,
+                BindError::NoFormMatched {
+                    command_name: "fixture".into(),
+                },
+            ),
+        ] {
+            let ctx = run_pass(
+                PolicyConfig::default(),
+                vec![execution_unit_record(
+                    "fixture-call",
+                    0,
+                    ResolveInvocationArtifactResult::SelectionError {
+                        normalized_command_name: "fixture".into(),
+                        gap_kind,
+                        error,
+                        partial_bound: None,
+                    },
+                )],
+                Vec::new(),
+                Vec::new(),
+                "fixture unknown",
+            );
+            assert_eq!(ctx.decision_proposals.len(), 1, "{gap_kind:?}");
+            assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
+            assert_eq!(ctx.decision_proposals[0].rule_id, RuleId::SelectionError);
+        }
     }
 
     #[test]
@@ -736,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_policy_pass_observes_unknown_subcommand_gap_by_default() {
+    fn resolve_policy_pass_requires_approval_for_unknown_subcommand_gap_by_default() {
         let ctx = run_pass(
             PolicyConfig::default(),
             vec![execution_unit_record(
@@ -757,7 +855,9 @@ mod tests {
             "git diff",
         );
 
-        assert!(ctx.decision_proposals.is_empty());
+        assert_eq!(ctx.decision_proposals.len(), 1);
+        assert_eq!(ctx.decision_proposals[0].decision, Decision::NeedApproval);
+        assert_eq!(ctx.decision_proposals[0].rule_id, RuleId::SelectionError);
     }
 
     #[test]

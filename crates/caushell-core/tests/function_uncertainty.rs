@@ -493,22 +493,39 @@ fn same_shell_nested_calls_keep_uncertainty_but_executables_do_not() {
         "printf LAB | xargs f",
         "find . -exec f \\;",
     ] {
-        decision(&format!("{prefix}; {call}"), Decision::Allow);
+        // These calls bypass the caller's function namespace, but the bare
+        // executable f is still unprofiled and now requires approval.
+        decision(&format!("{prefix}; {call}"), Decision::NeedApproval);
     }
 }
 
 #[test]
 fn unsupported_unset_targets_do_not_keep_stale_exact_functions() {
+    // Complete knowledge makes omitted variables absent. This fixture needs
+    // explicitly unknown target/options to exercise unresolved unset replay.
+    let unknown_decision = |command: &str, expected| {
+        let mut req = request(1, command);
+        req.shell_state_before = req
+            .shell_state_before
+            .with_opaque_dynamic_variable("target", "unobserved", false)
+            .with_opaque_dynamic_variable("options", "unobserved", false);
+        let response = ShellQueryCore::new().check(req);
+        assert_eq!(
+            response.decision, expected,
+            "{command}: {:?}",
+            response.reasons
+        );
+    };
     for unset in [
         "unset -f \"$target\"",
         "unset \"$target\"",
         "unset \"$options\" f",
     ] {
-        decision(
+        unknown_decision(
             &format!("f() {{ printf SAFE; }}; {unset}; f"),
             Decision::NeedApproval,
         );
-        decision(
+        unknown_decision(
             &format!("f() {{ printf SAFE; }}; {unset}; printf DONE"),
             if unset.starts_with("unset -f ") {
                 Decision::Allow
@@ -596,7 +613,14 @@ fn bash_function_names_need_not_be_variable_identifiers() {
             1,
             &format!("lab-f() {{ printf SAFE; }}; unset {option} lab-f; lab-f"),
         ));
-        assert_eq!(reply.decision, Decision::Allow);
+        assert_eq!(reply.decision, Decision::NeedApproval);
+        assert!(
+            reply
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::NoProfile)
+        );
         assert!(reply.decision_trace.derived_invocations.is_empty());
         assert!(
             core.session_snapshot(&SessionId::new("function-uncertainty"), 1)

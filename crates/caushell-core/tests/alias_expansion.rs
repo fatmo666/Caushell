@@ -153,13 +153,13 @@ fn ordinary_aliases_and_unrelated_unknown_commands_keep_their_policy() {
     assert_decision(
         &[("inspect", "inspect --number")],
         "inspect ./input",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
-    assert_decision(&[], "unregistered-tool ./input", Decision::Allow);
+    assert_decision(&[], "unregistered-tool ./input", Decision::NeedApproval);
     assert_decision(
         &[("emit", "touch /opt/shared/result")],
         "command emit",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
 }
 
@@ -221,10 +221,24 @@ fn quoted_names_and_executable_dispatch_do_not_expand_shell_aliases() {
         "\\emit",
         "\"emit\"",
     ] {
-        assert_decision(
+        let response = assert_decision(
             &[("emit", "touch /opt/shared/result")],
             command,
-            Decision::Allow,
+            Decision::NeedApproval,
+        );
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::NoProfile)
+        );
+        assert!(
+            !response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::OutsideWorkspaceMutation)
         );
     }
 
@@ -260,12 +274,15 @@ fn alias_namespace_follows_shell_frames_and_unalias() {
     assert_decision(
         &[("emit", "touch /opt/shared/result")],
         "bash -c 'printf \"$(emit)\"'",
-        Decision::Allow,
+        Decision::NeedApproval,
     );
     let mut core = ShellQueryCore::new();
     core.check(request(1, "alias emit='touch /opt/shared/result'"));
     core.check(request(2, "unalias emit"));
-    assert_eq!(core.check(request(3, "emit")).decision, Decision::Allow);
+    assert_eq!(
+        core.check(request(3, "emit")).decision,
+        Decision::NeedApproval
+    );
 }
 
 #[test]

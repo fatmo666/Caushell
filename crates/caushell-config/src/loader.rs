@@ -89,6 +89,25 @@ mod tests {
 
         let config = load_config_from_str("").expect("empty config should normalize");
         assert_eq!(config.failure_action, FailureAction::NeedApproval);
+        assert_eq!(
+            config.policy.rule_policy.no_profile.action,
+            RuleAction::NeedApproval
+        );
+        for gap in [
+            caushell_types::ResolveGapKind::NoProfile,
+            caushell_types::ResolveGapKind::UnknownSubcommandPath,
+            caushell_types::ResolveGapKind::FormSelectionAmbiguous,
+            caushell_types::ResolveGapKind::FormSelectionUnmatched,
+        ] {
+            assert_eq!(
+                config.policy.rule_policy.action_for_resolve_gap(gap),
+                RuleAction::NeedApproval
+            );
+        }
+        for input in ["{}", "policy: {}", "policy:\n  unknown_commands: {}"] {
+            let loaded = load_config_from_str(input).unwrap();
+            assert_eq!(loaded.policy, config.policy, "{input}");
+        }
     }
 
     #[test]
@@ -115,7 +134,7 @@ mod tests {
                     .policy
                     .rule_policy
                     .action_for_resolve_gap(ResolveGapKind::FormSelectionUnmatched),
-                RuleAction::Observe
+                RuleAction::NeedApproval
             );
             assert_eq!(
                 config

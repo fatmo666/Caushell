@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: shift, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bourne, bash, sh, dash]
+  requires_features: []
+forms:
+  - id: shift_shell_positionals
+    parameters:
+      - name: count
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - {kind: metadata_mutation, target: {kind: none}}
+    stream_contract:
+      stdin_mode: ignored
+      stdout_mode: opaque
+      stderr_mode: opaque
+modifiers: []
+subcommands: null
+extensions:
+  caushell.profile/known_limitations:
+    - Only current-shell positional parameters change; their values and unknown counts are tracked by the shell binding overlay.
+    - Argument substitutions, redirections, shadowing functions and subsequent execution are analyzed separately.

@@ -167,6 +167,7 @@ impl ResolveInvocationPass {
             derived_payloads,
             shell_redirection_scopes,
             canonical_inline_payload_ids,
+            expanded_function_calls,
         ) = collect_execution_unit_resolve_records(
             &self.registry,
             staged_view,
@@ -280,6 +281,7 @@ impl ResolveInvocationPass {
         }
         ctx.set_unresolved_dispatch_records(unresolved_records);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
+        ctx.set_expanded_function_calls(expanded_function_calls);
         ctx.set_shell_redirection_scopes(shell_redirection_scopes);
         ctx.set_parsed_command_scopes(project_parsed_command_scopes(
             ctx.request(),
@@ -3438,6 +3440,7 @@ fn collect_execution_unit_resolve_records(
     Vec<NestedPayloadRecord>,
     Vec<caushell_runner::ShellRedirectionScope>,
     std::collections::BTreeSet<usize>,
+    BTreeMap<caushell_graph::NodeId, String>,
 ) {
     let mut records = Vec::new();
     let mut syntax_scopes = Vec::new();
@@ -3445,6 +3448,7 @@ fn collect_execution_unit_resolve_records(
     let mut symbolic_xargs_arity_budget = 32usize;
     let mut derived_payloads = Vec::new();
     let mut canonical_inline_payload_ids = std::collections::BTreeSet::new();
+    let mut expanded_function_calls = BTreeMap::new();
     let first_payload_id = nested_payload_records
         .iter()
         .map(|r| r.record_id.0)
@@ -4191,6 +4195,12 @@ fn collect_execution_unit_resolve_records(
                     executable_word: None,
                 }
             };
+            if reason.is_none() {
+                // This exact call has a known function body in the canonical
+                // frontier, including bodies containing only assignments or
+                // redirections. Child/depth/parse guards remain independent.
+                expanded_function_calls.insert(entry.source_node_id.clone(), name.clone());
+            }
         }
 
         let frontier_depth = entry.depth;
@@ -4436,6 +4446,7 @@ fn collect_execution_unit_resolve_records(
         derived_payloads,
         syntax_scopes,
         canonical_inline_payload_ids,
+        expanded_function_calls,
     )
 }
 

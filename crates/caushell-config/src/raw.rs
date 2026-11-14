@@ -85,7 +85,7 @@ pub struct RawUnknownCommandPolicy {
 impl Default for RawUnknownCommandPolicy {
     fn default() -> Self {
         Self {
-            default: RawAction::Allow,
+            default: RawAction::NeedApproval,
             overrides: BTreeMap::new(),
         }
     }
@@ -162,7 +162,10 @@ mod tests {
             config.codex.need_approval_mode,
             RawCodexNeedApprovalMode::Block
         );
-        assert_eq!(config.policy.unknown_commands.default, RawAction::Allow);
+        assert_eq!(
+            config.policy.unknown_commands.default,
+            RawAction::NeedApproval
+        );
         assert!(config.policy.rules.is_empty());
         assert!(config.trusted_paths.is_empty());
     }

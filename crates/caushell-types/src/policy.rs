@@ -375,7 +375,7 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
         RuleId::OutsideWorkspaceStartupConfig => RuleAction::Observe,
         RuleId::MissingCommandName => RuleAction::NeedApproval,
         RuleId::SelectionError => RuleAction::NeedApproval,
-        RuleId::NoProfile => RuleAction::Observe,
+        RuleId::NoProfile => RuleAction::NeedApproval,
         RuleId::NestedPayloadExpansion => RuleAction::Observe,
         RuleId::NonShellScriptExecution => RuleAction::NeedApproval,
         RuleId::ExecutionExpansionLimit => RuleAction::NeedApproval,
@@ -403,10 +403,10 @@ fn default_rule_action(rule_id: RuleId) -> RuleAction {
 
 fn default_resolve_gap_action(gap_kind: ResolveGapKind) -> RuleAction {
     match gap_kind {
-        ResolveGapKind::NoProfile => RuleAction::Observe,
-        ResolveGapKind::UnknownSubcommandPath => RuleAction::Observe,
-        ResolveGapKind::FormSelectionAmbiguous => RuleAction::Observe,
-        ResolveGapKind::FormSelectionUnmatched => RuleAction::Observe,
+        ResolveGapKind::NoProfile => RuleAction::NeedApproval,
+        ResolveGapKind::UnknownSubcommandPath => RuleAction::NeedApproval,
+        ResolveGapKind::FormSelectionAmbiguous => RuleAction::NeedApproval,
+        ResolveGapKind::FormSelectionUnmatched => RuleAction::NeedApproval,
         ResolveGapKind::OpaqueInvocation => RuleAction::NeedApproval,
         ResolveGapKind::MissingCommandName => RuleAction::NeedApproval,
         ResolveGapKind::DynamicCommandTarget => RuleAction::NeedApproval,
@@ -530,7 +530,7 @@ mod tests {
         );
         assert_eq!(
             config.rule_policy.action_for(RuleId::NoProfile),
-            RuleAction::Observe
+            RuleAction::NeedApproval
         );
         assert_eq!(
             config
@@ -724,17 +724,27 @@ mod tests {
     }
 
     #[test]
-    fn resolve_gap_policy_defaults_to_relaxed_benign_gaps() {
+    fn resolve_gap_policy_defaults_to_approval_for_unmodeled_execution() {
         let policy = RulePolicy::default();
 
         assert_eq!(
+            policy.action_for_no_profile("unknown-tool"),
+            RuleAction::NeedApproval
+        );
+        assert_eq!(
             policy.action_for_resolve_gap(ResolveGapKind::NoProfile),
-            RuleAction::Observe
+            RuleAction::NeedApproval
         );
         assert_eq!(
             policy.action_for_resolve_gap(ResolveGapKind::UnknownSubcommandPath),
-            RuleAction::Observe
+            RuleAction::NeedApproval
         );
+        for gap in [
+            ResolveGapKind::FormSelectionAmbiguous,
+            ResolveGapKind::FormSelectionUnmatched,
+        ] {
+            assert_eq!(policy.action_for_resolve_gap(gap), RuleAction::NeedApproval);
+        }
         assert_eq!(
             policy.action_for_resolve_gap(ResolveGapKind::MissingCommandName),
             RuleAction::NeedApproval

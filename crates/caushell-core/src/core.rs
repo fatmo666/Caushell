@@ -2687,20 +2687,26 @@ mod tests {
     }
 
     #[test]
-    fn core_allows_unknown_command_without_profile_under_default_resolve_policy() {
+    fn core_requires_approval_for_unknown_command_under_default_resolve_policy() {
         let mut core = ShellQueryCore::new();
         let session_id = SessionId::new("sess-unknown-1");
 
         let response = core.check(sample_request("sess-unknown-1", 1, "unknown-tool --help"));
 
-        assert_eq!(response.decision, Decision::Allow);
-        assert!(response.reasons.is_empty());
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::NoProfile)
+        );
 
         let graph = core
             .session_graph(&session_id)
             .expect("expected session graph to exist");
 
-        assert_eq!(graph.node_count(), 4);
+        assert_eq!(graph.node_count(), 0);
         assert_eq!(response.decision_trace.path_targets.len(), 2);
         assert!(
             response
@@ -2716,7 +2722,7 @@ mod tests {
     }
 
     #[test]
-    fn core_allows_unknown_subcommand_gap_for_git_diff_under_default_resolve_policy() {
+    fn core_allows_modeled_git_diff_under_default_resolve_policy() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request("sess-git-diff-1", 1, "git diff"));
@@ -2726,13 +2732,19 @@ mod tests {
     }
 
     #[test]
-    fn core_allows_unknown_subcommand_gap_for_cargo_fmt_under_default_resolve_policy() {
+    fn core_requires_approval_for_unknown_cargo_subcommand_under_default_resolve_policy() {
         let mut core = ShellQueryCore::new();
 
         let response = core.check(sample_request("sess-cargo-fmt-1", 1, "cargo fmt"));
 
-        assert_eq!(response.decision, Decision::Allow);
-        assert!(response.reasons.is_empty());
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|p| p.rule_id == RuleId::SelectionError)
+        );
     }
 
     #[test]
@@ -3743,7 +3755,10 @@ policy:
                 command,
             ));
 
-            let expected = if name == "strace-attach" {
+            let expected = if matches!(
+                name,
+                "ionice-pid" | "taskset-pid" | "strace-attach" | "doas-list"
+            ) {
                 Decision::NeedApproval
             } else {
                 Decision::Allow
@@ -5560,7 +5575,9 @@ policy:
         let response = core.check(sample_request(
             "sess-timeout-pipeline",
             1,
-            "timeout 15 httpx -l /tmp/test_urls.txt -title -server -status-code -ip -content-length -tech-detect -json -silent 2>&1 | head -100",
+            // Commit a fully modeled child. Unprofiled wrapper children now
+            // require approval and must not commit an assumed-safe graph.
+            "timeout 15 cat /tmp/test_urls.txt 2>&1 | head -100",
         ));
 
         assert_eq!(response.decision, Decision::Allow);

@@ -2315,6 +2315,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/set.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "shift",
+        content: include_str!("../profiles/shift.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "shopt",
         content: include_str!("../profiles/shopt.yaml"),
     },

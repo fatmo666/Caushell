@@ -456,6 +456,7 @@ pub struct RunnerContext {
     unresolved_dispatch_records: Vec<UnresolvedDispatchRecord>,
     nested_payload_records: Vec<NestedPayloadRecord>,
     execution_unit_resolve_records: Vec<ExecutionUnitResolveRecord>,
+    expanded_function_calls: BTreeMap<NodeId, String>,
     effective_cwds: BTreeMap<NodeId, EffectiveCwd>,
     execution_cwd_overrides: BTreeMap<NodeId, EffectiveCwd>,
     request_exit_cwd: Option<EffectiveCwd>,
@@ -494,6 +495,7 @@ impl RunnerContext {
             unresolved_dispatch_records: Vec::new(),
             nested_payload_records: Vec::new(),
             execution_unit_resolve_records: Vec::new(),
+            expanded_function_calls: BTreeMap::new(),
             effective_cwds: BTreeMap::new(),
             execution_cwd_overrides: BTreeMap::new(),
             request_exit_cwd: None,
@@ -577,6 +579,7 @@ impl RunnerContext {
         self.unresolved_dispatch_records.clear();
         self.nested_payload_records.clear();
         self.execution_unit_resolve_records.clear();
+        self.expanded_function_calls.clear();
         self.effective_cwds.clear();
         self.execution_cwd_overrides.clear();
         self.request_exit_cwd = None;
@@ -701,6 +704,7 @@ impl RunnerContext {
         execution_unit_resolve_records: Vec<ExecutionUnitResolveRecord>,
     ) {
         self.execution_unit_resolve_records = execution_unit_resolve_records;
+        self.expanded_function_calls.clear();
         self.effective_cwds.clear();
         self.execution_cwd_overrides.clear();
         self.request_exit_cwd = None;
@@ -708,6 +712,16 @@ impl RunnerContext {
 
     pub fn effective_cwds(&self) -> &BTreeMap<NodeId, EffectiveCwd> {
         &self.effective_cwds
+    }
+
+    /// Resolver-owned function-body expansion markers for this exact frontier.
+    /// They authorize no children, effects or incomplete-analysis bypasses.
+    pub fn expanded_function_calls(&self) -> &BTreeMap<NodeId, String> {
+        &self.expanded_function_calls
+    }
+
+    pub fn set_expanded_function_calls(&mut self, calls: BTreeMap<NodeId, String>) {
+        self.expanded_function_calls = calls;
     }
 
     /// Enrich effects without changing execution identity, argv or cwd facts.
@@ -1171,6 +1185,19 @@ mod tests {
         ctx.set_parsed_command(artifact.clone());
 
         assert_eq!(ctx.parsed_command(), Some(&artifact));
+    }
+
+    #[test]
+    fn function_expansion_markers_are_invalidated_with_the_frontier() {
+        let mut ctx = RunnerContext::new(sample_request());
+        let calls = std::collections::BTreeMap::from([(NodeId::new("call"), "fixture".into())]);
+        ctx.set_expanded_function_calls(calls.clone());
+        assert_eq!(ctx.expanded_function_calls(), &calls);
+        ctx.set_execution_unit_resolve_records(Vec::new());
+        assert!(ctx.expanded_function_calls().is_empty());
+        ctx.set_expanded_function_calls(calls);
+        ctx.set_parsed_command(parse_command("printf safe", ShellKind::Bash).unwrap());
+        assert!(ctx.expanded_function_calls().is_empty());
     }
 
     #[test]

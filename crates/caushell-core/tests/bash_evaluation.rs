@@ -102,7 +102,6 @@ fn data_and_numeric_controls_are_not_executable() {
         "x='$(touch /opt/out)'; echo $((x))",
         "let() { :; }; let 'a[$(touch /opt/out)]'",
         "let() { :; }; let\t'a[$(touch /opt/out)]'",
-        "let '$(touch /opt/out)'",
         "declare -i n='$(touch /opt/out)'",
         "a=(1); unset -f `printf f`",
         "a=(1); a[1]='b[$(touch /opt/out)]'; echo $((a[0]))",
@@ -193,7 +192,6 @@ fn numeric_shapes_do_not_require_a_concrete_value() {
         "echo $(($RANDOM % 4))",
         "n=$(printf '%d' 42); echo $((n+1))",
         "echo $(($(date +%s) / 86400))",
-        "head -$((${RANDOM} % `wc -l < file` + 1)) file | tail -1",
         "f() { for ((i=0;i<3;i++)); do local other=1; echo ok; done; }; f",
         "f() { for ((i=0;i<${#signature};i++)); do if [ x != y ]; then break; fi; done; }; f",
         "f() { for ((i=0;i<3;i++)); do continue; done; }; f",
@@ -213,6 +211,47 @@ fn numeric_shapes_do_not_require_a_concrete_value() {
             "{r:#?}"
         );
     }
+}
+
+#[test]
+fn numeric_shell_proof_does_not_hide_an_unmatched_native_option() {
+    let result = check(
+        "head -$((${RANDOM} % `wc -l < file` + 1)) file | tail -1",
+        Decision::NeedApproval,
+    );
+    assert!(
+        result
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::SelectionError)
+    );
+    assert!(
+        !result
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::MissingCommandName)
+    );
+}
+
+#[test]
+fn inert_arithmetic_bytes_do_not_authorize_an_unprofiled_builtin() {
+    let result = check("let '$(touch /opt/out)'", Decision::NeedApproval);
+    assert!(
+        result
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|p| p.rule_id == RuleId::NoProfile)
+    );
+    assert!(
+        !result
+            .decision_trace
+            .derived_invocations
+            .iter()
+            .any(|call| call.command_name.as_deref() == Some("touch"))
+    );
 }
 
 #[test]

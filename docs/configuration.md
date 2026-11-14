@@ -50,6 +50,24 @@ If the configuration file does not exist, `validate` still succeeds because Caus
 
 ## Current configuration fields
 
+### Unmodeled execution
+
+`policy.unknown_commands.default` defaults to `need_approval`. Missing Profiles,
+unknown subcommands, ambiguous forms and unmatched forms all require approval
+under the built-in policy, including calls expanded from wrappers and payloads.
+Fully modeled operations keep their normal decisions. Existing file-execution
+authority still applies to explicit, completely resolved executable paths.
+
+The existing `allow` / `need_approval` / `deny` overrides remain configurable.
+For missing Profiles, a normalized command entry under
+`policy.unknown_commands.overrides` takes precedence, followed by an explicit
+`policy.resolve_gaps.no_profile`, then `policy.unknown_commands.default`.
+Without a per-command override, an unknown-command default of `deny` remains
+`deny` even if the resolve-gap action is less restrictive.
+Explicit executable paths outside standard system-command locations retain
+their path spelling as the override key. Per-command decisions and `deny`
+are not removed by a local-file execution grant. Other guards remain independent.
+
 ### Mutation path exemptions
 
 `mutation_path_exemptions` exempts selected operations from the existing

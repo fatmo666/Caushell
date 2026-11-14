@@ -68,6 +68,28 @@ evaluate the word or authorize its effects: unknown values retain approval and
 independent denials still apply. Unproved syntax, missing delimiters, exhausted
 proof budgets and shells without the Bash arithmetic model remain incomplete.
 
+## Unmodeled Execution
+
+Missing Profiles, unknown subcommands, ambiguous forms and unmatched forms require
+approval by default. A successfully expanded wrapper or Shell payload does not
+authorize an unmodeled child call. Final assembly still allows fully analyzed
+actions without approval or denial proposals.
+
+Derived Shell function calls retain a resolver placeholder. The resolver marks
+an exact call only after resolving its known body into the execution frontier,
+including bodies with assignments but no simple commands. Markers are cleared
+when that frontier or its parsed source changes. Children, parse failures and
+expansion limits remain independent approval boundaries. No-op and positional-state
+builtins have explicit contracts; being a Shell builtin alone is not an exemption.
+An unprofiled arithmetic builtin retains approval even when its argument bytes
+do not introduce an executable arithmetic expansion.
+
+An unprofiled executable with an explicit pathname can use the existing
+file-execution authority below. The proof must match its exact execution unit and
+executable slot and resolve every target. A bare command name does not inherit
+execution authority from the current directory. This exemption does not remove
+an explicit per-command decision, a `Deny`, or independent findings.
+
 ## Non-Shell Script Execution
 
 Declared non-Shell inline programs, stdin payloads and interpreter module
