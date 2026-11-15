@@ -328,6 +328,17 @@ empty scalar can match an explicitly declared no-effect regex branch. Missing
 operands, dynamic values and undeclared empty values remain unknown; this does
 not make empty path or executable targets valid.
 
+The `check_cups`, `check_memory` and `check_raid` Extra-Opts forms treat explicit
+nonempty `@file` and `section@file` operands as tool configuration inputs. Each
+repeated file retains its own path and read dependency. The shared plugin
+library prepends INI-derived options before parsing the final command options;
+recognizing a configuration filename does not establish those options or their
+effects. These forms therefore declare `load_config` and retain explicit
+unresolved operation semantics, including when help/version is also requested.
+Default configuration search, section-only inputs and dynamic filenames remain
+conservative; no file content, selected utility or successful execution is
+invented. Configuration bytes are never reinterpreted as Shell source.
+
 Presence of a pipeline producer cannot certify unparsed executable stdin.
 Known explicit file stdin keeps its original data edge and an additional
 `script_source` consumption when the Profile declares stdin code. The existing
