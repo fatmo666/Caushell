@@ -53,6 +53,40 @@ pub(crate) struct CommandSinkReasonBuckets {
     pub(crate) partition_table_state_mutation_reasons: Vec<String>,
 }
 
+impl CommandSinkReasonBuckets {
+    pub(crate) fn extend(&mut self, other: Self) {
+        extend_unique(&mut self.floor_reasons, other.floor_reasons);
+        extend_unique(
+            &mut self.path_metadata_mutation_reasons,
+            other.path_metadata_mutation_reasons,
+        );
+        extend_unique(
+            &mut self.path_content_overwrite_reasons,
+            other.path_content_overwrite_reasons,
+        );
+        extend_unique(
+            &mut self.path_relocation_reasons,
+            other.path_relocation_reasons,
+        );
+        extend_unique(
+            &mut self.partition_layout_mutation_reasons,
+            other.partition_layout_mutation_reasons,
+        );
+        extend_unique(
+            &mut self.partition_table_session_reasons,
+            other.partition_table_session_reasons,
+        );
+        extend_unique(
+            &mut self.partition_table_mutation_reasons,
+            other.partition_table_mutation_reasons,
+        );
+        extend_unique(
+            &mut self.partition_table_state_mutation_reasons,
+            other.partition_table_state_mutation_reasons,
+        );
+    }
+}
+
 pub(crate) fn collect_command_sink_reason_buckets_with_optional_cwd(
     resolved: &ResolvedInvocationArtifact,
     cwd: Option<&str>,
@@ -159,7 +193,7 @@ fn destructive_path_semantic_class(
     }
 }
 
-fn collect_sink_reasons(
+pub(super) fn collect_sink_reasons(
     sink: ResolvedHostRiskSink<'_>,
     cwd: Option<&str>,
     home: Option<&str>,

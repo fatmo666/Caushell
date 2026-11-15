@@ -40,6 +40,7 @@ fn any_declared_regular_file_producer_can_supply_a_request_local_scope_proof() {
             runner.register_session_transform_pass(ResolveInvocationPass::new(
                 ProfileRegistry::from_profiles(profiles).unwrap(),
             ));
+            runner.register_session_transform_pass(ComputeEffectiveCwdPass);
             runner.register_session_transform_pass(ExtractPathFactsPass);
             runner.register_session_transform_pass(ResolvePathTargetsPass);
             let req = CheckRequest {
@@ -148,6 +149,7 @@ fn family_proofs_close_over_unobserved_children_and_opaque_siblings() {
         runner.register_session_transform_pass(ResolveInvocationPass::new(
             ProfileRegistry::from_profiles(profiles).unwrap(),
         ));
+        runner.register_session_transform_pass(ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ResolvePathTargetsPass);
         let request = CheckRequest {
@@ -211,6 +213,7 @@ fn directory_creation_proofs_follow_generic_contracts_without_fabricating_entrie
         runner.register_session_transform_pass(ResolveInvocationPass::new(
             ProfileRegistry::from_profiles(profiles).unwrap(),
         ));
+        runner.register_session_transform_pass(ComputeEffectiveCwdPass);
         runner.register_session_transform_pass(ExtractPathFactsPass);
         runner.register_session_transform_pass(ResolvePathTargetsPass);
         let req = CheckRequest {
@@ -261,6 +264,66 @@ fn directory_creation_proofs_follow_generic_contracts_without_fabricating_entrie
                 .namespace_proofs
                 .iter()
                 .all(|p| p.effect == PathNamespaceEffect::DirectoryCreate)
+        );
+    }
+}
+
+#[test]
+fn removal_invariant_comes_from_effect_semantics_instead_of_tool_names() {
+    for kind in ["move_path", "delete_path", "write_path"] {
+        let yaml = format!(
+            "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {{canonical_name: retiring_fixture}}\nforms:\n - id: run\n   parameters: [{{name: source, semantic: {{kind: path, role: target}}, binding: {{kind: next_positional}}, cardinality: required_one}}]\n   effects: [{{kind: {kind}, target: {{kind: slot, name: source}}}}]\n"
+        );
+        let mut profiles = ProfileRegistry::built_in().unwrap().profiles().to_vec();
+        profiles.push(load_command_profile_from_str(&yaml).unwrap());
+        let mut runner = PassRunner::new();
+        runner.register_request_transform_pass(ParseCommandPass);
+        runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
+        runner.register_session_transform_pass(ResolveInvocationPass::new(
+            ProfileRegistry::from_profiles(profiles).unwrap(),
+        ));
+        runner.register_session_transform_pass(ComputeEffectiveCwdPass);
+        runner.register_session_transform_pass(ExtractPathFactsPass);
+        runner.register_session_transform_pass(ResolvePathTargetsPass);
+        let request = CheckRequest {
+            session_id: SessionId::new("generic-removal"),
+            sequence_no: CommandSequenceNo(1),
+            command: "retiring_fixture ./product; printf x > ./product".into(),
+            shell_state_before: ShellStateSnapshot::new("/workspace"),
+            shell_kind: ShellKind::Bash,
+            home: None,
+            workspace_root: Some("/workspace".into()),
+            runtime: RuntimeMetadata {
+                runtime_name: "static".into(),
+                tool_name: None,
+                shell_runtime_capabilities: ShellRuntimeCapabilities::request_only(),
+            },
+        };
+        let mut ctx = RunnerContext::new(request);
+        ctx.set_filesystem_view(Arc::new(Namespace));
+        runner.run(
+            SessionView::new(&SessionGraph::new(), &SessionSummary::default()),
+            &mut ctx,
+        );
+        let target = ctx
+            .pending_mutations()
+            .iter()
+            .find_map(|m| match m {
+                PendingMutation::AddPathTargetFact { fact, .. }
+                    if fact.effect_key.starts_with("redirect:") =>
+                {
+                    Some(fact)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            target
+                .namespace_proofs
+                .iter()
+                .any(|p| p.effect == PathNamespaceEffect::EntryRemoval),
+            kind != "write_path",
+            "{kind}: {target:#?}"
         );
     }
 }

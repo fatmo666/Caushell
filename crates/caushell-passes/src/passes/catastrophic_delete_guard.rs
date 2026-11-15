@@ -10,7 +10,8 @@ use crate::support::{
     CommandSinkReasonBuckets, HostTargetOperand, catastrophic_delete_target_for_arg,
     collect_block_device_destructive_reasons, collect_block_device_session_reasons,
     collect_command_sink_reason_buckets_with_optional_cwd,
-    collect_execution_unit_scoped_reason_buckets, decision_for_rule_action,
+    collect_execution_unit_scoped_reason_buckets, collect_resolved_device_target_reason_buckets,
+    decision_for_rule_action,
 };
 
 pub struct CatastrophicDeleteGuardPass;
@@ -85,6 +86,22 @@ impl SessionAnalysisPass for CatastrophicDeleteGuardPass {
         } = collect_execution_unit_scoped_reason_buckets(ctx.execution_unit_resolve_records());
         floor_reasons.extend(execution_unit_scope_floor_reasons);
         path_relocation_reasons.extend(execution_unit_scope_path_relocation_reasons);
+
+        // Resolved and lexical-device targets use the same risk buckets and
+        // configured policy as ordinary operands; host risks never become floors.
+        let resolved = collect_resolved_device_target_reason_buckets(
+            ctx,
+            QuerySession::from_session(&staged_session),
+        );
+        floor_reasons.extend(resolved.floor_reasons);
+        path_metadata_mutation_reasons.extend(resolved.path_metadata_mutation_reasons);
+        path_content_overwrite_reasons.extend(resolved.path_content_overwrite_reasons);
+        path_relocation_reasons.extend(resolved.path_relocation_reasons);
+        partition_layout_mutation_reasons.extend(resolved.partition_layout_mutation_reasons);
+        partition_table_session_reasons.extend(resolved.partition_table_session_reasons);
+        partition_table_mutation_reasons.extend(resolved.partition_table_mutation_reasons);
+        partition_table_state_mutation_reasons
+            .extend(resolved.partition_table_state_mutation_reasons);
 
         floor_reasons.extend(collect_block_device_destructive_reasons(
             ctx,
@@ -3216,11 +3233,14 @@ mod tests {
     }
 
     #[test]
-    fn catastrophic_delete_guard_ignores_sfdisk_backup_flag() {
-        let ctx = run_pass("sfdisk --backup /dev/sda");
-
-        assert_eq!(ctx.final_decision, Some(Decision::Allow));
-        assert!(ctx.findings.is_empty());
+    fn catastrophic_delete_guard_preserves_sfdisk_session_risk_with_backup() {
+        // --backup modifies the device session; only --backup-pt-sectors is
+        // the standalone read-only device command (util-linux sfdisk).
+        assert_de_floored_surface_requires_approval(
+            "sfdisk --backup /dev/sda",
+            RuleId::CatastrophicPartitionTableSession,
+            &["partition table session target /dev/sda", "via sfdisk"],
+        );
     }
 
     #[test]

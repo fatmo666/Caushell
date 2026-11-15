@@ -339,6 +339,55 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         &forms,
         &exact_option_words,
     )?;
+    if raw.native_argv_read_envelope && !raw.read_only_control_surface {
+        return Err(NormalizeError::InvalidOptionScope(
+            "native_argv_read_envelope requires a reviewed read_only_control_surface".into(),
+        ));
+    }
+    if raw.native_argv_read_envelope {
+        let data_effect = |e: &Effect| {
+            matches!(
+                e.kind,
+                EffectKind::ReadPath | EffectKind::ConsumeStdin | EffectKind::TransformData
+            ) && e.namespace_effect.is_none()
+                && e.state_operation.is_none()
+                && e.repository_operation.is_none()
+                && e.database_operation.is_none()
+                && e.terminal_session_operation.is_none()
+                && e.shell_job_operation.is_none()
+                && e.interactive_escape_surface.is_none()
+        };
+        let data_parameter = |p: &Parameter| {
+            matches!(
+                p.semantic,
+                SemanticType::PlainValue
+                    | SemanticType::Path(PathSemantic {
+                        role: PathRole::Read,
+                        ..
+                    })
+            )
+        };
+        if !raw.implicit_config_files.is_empty()
+            || raw.configuration_files.is_some()
+            || raw.native_configuration.is_some()
+            || !raw.dispatch_overrides.is_empty()
+            || forms.iter().any(|f| {
+                f.effects.iter().any(|e| !data_effect(e))
+                    || f.parameters.iter().any(|p| !data_parameter(p))
+                    || f.implicit_inputs.iter().any(|i| {
+                        i.source != ImplicitInputSource::StdinData
+                            || i.semantic != SemanticType::PlainValue
+                    })
+            })
+            || modifiers.iter().any(|m| {
+                m.effects.iter().any(|e| !data_effect(e))
+                    || m.parameters.iter().any(|p| !data_parameter(p))
+            })
+        {
+            return Err(NormalizeError::InvalidOptionScope(
+                "native_argv_read_envelope requires direct read/data inputs without configuration, dispatch or controlled side effects".into()));
+        }
+    }
     if raw.read_only_control_surface {
         let query_effect = |effect: &Effect| {
             matches!(
@@ -608,6 +657,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         selection_failure_effects,
         opaque_on_unresolved: raw.opaque_on_unresolved,
         read_only_control_surface: raw.read_only_control_surface,
+        native_argv_read_envelope: raw.native_argv_read_envelope,
         forms,
         modifiers,
         option_scope,
@@ -3108,23 +3158,37 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         ));
     }
     if let Some(effect) = raw.namespace_effect {
-        let valid = kind == EffectKind::WritePath
-            && raw.path_scope.is_none()
+        let valid = raw.path_scope.is_none()
             && match effect {
-                caushell_types::PathNamespaceEffect::DirectoryCreate => matches!(
-                    target,
-                    EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
-                ),
-                caushell_types::PathNamespaceEffect::RegularFileWrite => matches!(
-                    target,
-                    EffectTarget::Slot(_)
-                        | EffectTarget::ToolConventionPath(_)
-                        | EffectTarget::ConfiguredPath(_)
-                ),
+                caushell_types::PathNamespaceEffect::EntryRemoval => {
+                    matches!(kind, EffectKind::MovePath | EffectKind::DeletePath)
+                        && matches!(target, EffectTarget::Slot(_))
+                }
+                caushell_types::PathNamespaceEffect::DirectoryCreate => {
+                    kind == EffectKind::WritePath
+                        && matches!(
+                            target,
+                            EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_)
+                        )
+                }
+                caushell_types::PathNamespaceEffect::RegularFileWrite => {
+                    kind == EffectKind::WritePath
+                        && match &target {
+                            EffectTarget::Slot(_) | EffectTarget::ToolConventionPath(_) => true,
+                            // A configured target can fall back to directory roots,
+                            // not exact file names. The contract must cover that
+                            // branch even when a scalar primary source is declared.
+                            EffectTarget::ConfiguredPath(path) => {
+                                path.fallback_parent_slots.is_empty()
+                            }
+                            _ => false,
+                        }
+                }
                 caushell_types::PathNamespaceEffect::DirectoryTreeWrite => {
-                    matches!(target, EffectTarget::ConfiguredPath(_))
-                        || matches!(&target, EffectTarget::DerivedPath(path)
-                            if path.rule == caushell_types::DerivedPathRule::SiblingFiles)
+                    kind == EffectKind::WritePath
+                        && (matches!(target, EffectTarget::ConfiguredPath(_))
+                            || matches!(&target, EffectTarget::DerivedPath(path)
+                            if path.rule == caushell_types::DerivedPathRule::SiblingFiles))
                 }
             };
         if !valid {
@@ -4380,6 +4444,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4592,6 +4657,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4718,6 +4784,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4844,6 +4911,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4917,6 +4985,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -5013,6 +5082,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -5040,6 +5110,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -5084,6 +5155,7 @@ mod tests {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),

@@ -33,19 +33,10 @@ pub(crate) fn each_resolved_host_risk_sink<'a, F>(
 {
     let mut emitted: Vec<(ResolvedHostRiskSemanticClass, &'a str)> = Vec::new();
 
-    for effect in &resolved.bound.effects {
+    for (_, effect, semantic_class) in admitted_host_risk_effects(resolved) {
         let Some(slot_name) = slot_name_from_effect_target(&effect.target) else {
             continue;
         };
-        let Some(semantic_class) = effect_semantic_class(effect) else {
-            continue;
-        };
-        if !required_modifiers_satisfied(resolved, effect) {
-            continue;
-        }
-        if !whole_tree_risk_applies(resolved, effect) {
-            continue;
-        }
         let target_operands = bound_argument_operands_for_slot(&resolved.bound, slot_name);
         let runtime_targets = bound_runtime_targets_for_slot(&resolved.bound, slot_name);
         if target_operands.is_empty() && runtime_targets.is_empty() {
@@ -80,19 +71,10 @@ pub(crate) fn each_configured_host_risk_sink(
     else {
         return;
     };
-    for effect in &resolved.bound.effects {
+    for (_, effect, semantic_class) in admitted_host_risk_effects(resolved) {
         let EffectTarget::ConfiguredPath(target) = &effect.target else {
             continue;
         };
-        let Some(semantic_class) = effect_semantic_class(effect) else {
-            continue;
-        };
-        if !required_modifiers_satisfied(resolved, effect) {
-            continue;
-        }
-        if !whole_tree_risk_applies(resolved, effect) {
-            continue;
-        }
         let Some(path) = crate::path::resolve_configured_path(
             &resolved.bound,
             target,
@@ -115,6 +97,30 @@ pub(crate) fn each_configured_host_risk_sink(
             normalized_command_name: resolved.normalized_command_name.as_str(),
         });
     }
+}
+
+/// Shared admission contract for syntax operands and resolved target facts.
+/// A target fact alone never upgrades an ordinary write into destruction.
+pub(super) fn admitted_host_risk_effects(
+    resolved: &ResolvedInvocationArtifact,
+) -> impl Iterator<
+    Item = (
+        usize,
+        &caushell_profile::Effect,
+        ResolvedHostRiskSemanticClass,
+    ),
+> {
+    resolved
+        .bound
+        .effects
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, effect)| {
+            let class = effect_semantic_class(effect)?;
+            (required_modifiers_satisfied(resolved, effect)
+                && whole_tree_risk_applies(resolved, effect))
+            .then_some((index, effect, class))
+        })
 }
 
 fn bound_runtime_targets_for_slot(

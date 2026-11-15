@@ -21,6 +21,7 @@ fn is_shell_scope(kind: ExecutionUnitOriginKind) -> bool {
             | ExecutionUnitOriginKind::RecursivePayload
             | ExecutionUnitOriginKind::FunctionExpansion
             | ExecutionUnitOriginKind::NestedPayload
+            | ExecutionUnitOriginKind::StaticXargs
     )
 }
 
@@ -186,6 +187,11 @@ pub(crate) fn projected_shell_scope_parents(ctx: &RunnerContext) -> BTreeSet<Nod
         .into_iter()
         .filter_map(|(parent, children)| {
             let first = children.first()?;
+            // Native jobs inherit output FDs, but xargs retains its own
+            // input parser and diagnostic stream; it is not a shell body.
+            if first.origin_kind == ExecutionUnitOriginKind::StaticXargs {
+                return None;
+            }
             let indexes: BTreeSet<_> = children
                 .iter()
                 .map(|r| r.command_ref.command_index)
@@ -463,9 +469,10 @@ pub(crate) fn collect_shell_io_scope_mutations(
             }
             // An internal pipeline supplies its own input. Local redirects,
             // closed FDs and ignored stdin must not import the parent's input.
-            if (streams.inherits_stdin(node) && !streams.ignores_stdin(node))
-                || explicit_stdin.contains(node)
-                || unknown_descriptor_reads.contains(node)
+            if child.origin_kind != ExecutionUnitOriginKind::StaticXargs
+                && ((streams.inherits_stdin(node) && !streams.ignores_stdin(node))
+                    || explicit_stdin.contains(node)
+                    || unknown_descriptor_reads.contains(node))
             {
                 for (id, artifact) in &parent_inputs {
                     mutations.push(PendingMutation::AddProvenanceArtifact {

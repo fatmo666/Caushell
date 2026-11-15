@@ -741,6 +741,14 @@ mod tests {
     }
 
     #[test]
+    fn native_jobs_project_onto_the_actual_parent_output_descriptor() {
+        let ctx = run_pass("cat .env | xargs cat -- 2>&1 >/dev/null | cat");
+        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddProvenanceArtifact {source_node_id, artifact:ProvenanceArtifact::PipelineStream {stream_index:1,..}, relation:EdgeKind::Produces, semantics:ProvenanceEdgeSemantics::Produce {domain_label:Some(caushell_types::ProvenanceDomainLabel::StreamOutput {dependency:caushell_types::StreamDataDependency::Inputs,..}),..},..}
+            if source_node_id.0.starts_with("expanded-xargs:")
+        )));
+    }
+    #[test]
     fn declared_child_stdout_has_produce_and_parent_consume_edges() {
         let ctx = run_stdout_router(true, "arbitrary-stdout-router cat .env | cat");
         let edges = stdout_edges(&ctx);

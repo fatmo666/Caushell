@@ -24,6 +24,7 @@ pub struct RawCommandProfile {
     pub selection_failure_effects: Vec<RawEffect>,
     pub opaque_on_unresolved: bool,
     pub read_only_control_surface: bool,
+    pub native_argv_read_envelope: bool,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,

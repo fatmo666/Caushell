@@ -79,6 +79,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: device_paths
@@ -120,6 +121,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: device_paths
@@ -161,6 +163,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: device_paths
@@ -181,6 +184,12 @@ modifiers:
       flags:
         - "-b"
         - "--backup"
+
+    # Signatures are written to generated backup names, including with -n.
+    # The main device's workspace proof does not bound those output files.
+    effects_when: {unless_forms: [show_help, show_version, inspect_device]}
+    effects:
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
 
   - id: force
     matcher:
@@ -300,4 +309,4 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/known_limitations:
-    - The current profile recognizes `wipefs --backup`, but it does not yet model the HOME-relative backup file write side effect that occurs in destructive `--all` or `--offset` flows, including `--no-act` preview mode.
+    - Backup outputs are modeled as independent unknown writes, including in `--no-act` preview mode. Their generated filenames and environment-selected directory are not yet resolved to exact paths.

@@ -1,3 +1,4 @@
+use super::floppy_devices::{floppy_device_pattern_witness, is_floppy_device_path};
 use crate::path::{
     PathExpression, classify_path_operand_expression_with_tilde,
     match_path_expression_against_target_or_direct_children, normalize_shell_path,
@@ -127,7 +128,7 @@ pub(crate) fn catastrophic_delete_target_for_arg(
     catastrophic_delete_target_for_operand(operand, Some(cwd), home)
 }
 
-fn block_device_path_for_operand(
+pub(super) fn block_device_path_for_operand(
     operand: HostTargetOperand<'_>,
     cwd: Option<&str>,
     home: Option<&str>,
@@ -156,18 +157,22 @@ fn block_device_path_for_expression(expression: &PathExpression) -> Option<Strin
 }
 
 fn is_block_device_path(path: &str) -> bool {
+    // Preserve existing namespace floors. Raw character views of storage share
+    // the same destructive-write boundary; descriptor channels are not disks.
     BLOCK_DEVICE_PREFIXES
         .iter()
         .any(|prefix| path.starts_with(prefix))
+        || is_floppy_device_path(path)
 }
 
 fn block_device_pattern_target(pattern: &str) -> Option<String> {
     let normalized = normalize_shell_path(pattern);
 
-    BLOCK_DEVICE_PATTERN_SENTINELS
+    let matches = BLOCK_DEVICE_PATTERN_SENTINELS
         .iter()
         .any(|sentinel| shell_pattern_matches_path(&normalized, sentinel))
-        .then_some(normalized)
+        || floppy_device_pattern_witness(&normalized).is_some();
+    matches.then_some(normalized)
 }
 
 fn catastrophic_delete_target_for_operand(
@@ -186,4 +191,67 @@ fn catastrophic_delete_target_for_operand(
 
     match_path_expression_against_target_or_direct_children(&expression, CATASTROPHIC_DELETE_ROOTS)
         .map(|target_match| target_match.target)
+}
+
+#[cfg(test)]
+mod floppy_namespace_contract {
+    use super::*;
+
+    #[test]
+    fn whole_floppy_names_include_native_raw_views_and_geometry_variants() {
+        for path in [
+            "/dev/fd0",
+            "/dev/fd6",
+            "/dev/fd0u1440",
+            "/dev/fd3h1200",
+            "/dev/fd1CompaQ",
+            "/dev/rfd0",
+            "/dev/rfd0a",
+            "/dev/fd2Cp",
+        ] {
+            assert!(is_block_device_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn descriptors_and_similarly_spelled_files_are_not_storage_targets() {
+        for path in [
+            "/dev/fd/0",
+            "/dev/fd/123",
+            "/dev/stdout",
+            "/dev/stdin",
+            "/dev/stderr",
+            "/tmp/fd0",
+            "/workspace/dev/rfd0",
+            "/dev/fd0.img",
+            "/dev/rfd0.backup",
+            "/dev/fd0/child",
+            "/dev/fd00",
+            "/dev/fd0u9999",
+        ] {
+            assert!(!is_block_device_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn patterns_cover_the_family_instead_of_only_a_sample_device() {
+        for pattern in [
+            "/dev/fd[4-7]",
+            "/dev/rfd[1-3]a",
+            "/d?v/[r]fd2*",
+            "/dev/fd[2-6]u14[0-9]0",
+            "/dev/fd?Cp",
+        ] {
+            assert!(block_device_pattern_target(pattern).is_some(), "{pattern}");
+        }
+        for pattern in [
+            "/dev/fd/*",
+            "/dev/fd0.img*",
+            "/tmp/fd?",
+            "/dev/rfd0.backup*",
+            "/dev/fd0u999?",
+        ] {
+            assert!(block_device_pattern_target(pattern).is_none(), "{pattern}");
+        }
+    }
 }

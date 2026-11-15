@@ -1,5 +1,5 @@
 //! The Bash grammar can attach a trailing simple-command redirect to an
-//! entire &&/|| list, and then put that list on the left of a pipeline.
+//! entire &&/|| list or pipeline, instead of its final stage.
 //! Recover execution topology using an AST-qualified, redirect-elided parse.
 //! Original argv, redirects, substitutions and source bytes remain authoritative.
 use super::*;
@@ -39,7 +39,7 @@ pub(super) fn restore(
         if node.kind() == "redirected_statement"
             && node
                 .child_by_field_name("body")
-                .is_some_and(|body| body.kind() == "list")
+                .is_some_and(|body| matches!(body.kind(), "list" | "pipeline"))
         {
             sites.push(Site {
                 span: span_for(node),
@@ -251,6 +251,45 @@ fn try_restore(
 mod tests {
     use super::*;
 
+    #[test]
+    fn trailing_pipeline_redirects_belong_to_the_last_stage_without_reordering() {
+        for source in [
+            "printf x | cat 2>&1 >/dev/null | cat",
+            "printf x | cat >/dev/null 2>&1 | cat",
+            "printf x | cat >out",
+            "printf x | (cat; printf y) 2>err | cat",
+        ] {
+            let parsed = parse_command(source, ShellKind::Bash).unwrap();
+            assert_eq!(
+                parsed.status,
+                ParseStatus::Complete,
+                "{source}: {:?}",
+                parsed.diagnostics
+            );
+            for redir in &parsed.redirections {
+                if source.contains("(cat;") {
+                    let opening = redir.opening_statement.as_ref().unwrap();
+                    assert_eq!(
+                        &source[opening.span.start_byte..opening.span.end_byte],
+                        "(cat; printf y)"
+                    );
+                } else {
+                    assert_eq!(redir.parent_command_name.as_deref(), Some("cat"));
+                    assert_eq!(
+                        redir.parent_command_span.as_ref(),
+                        Some(&parsed.commands[1].span)
+                    );
+                    assert!(redir.opening_statement.is_none());
+                }
+            }
+            assert!(
+                parsed
+                    .redirections
+                    .windows(2)
+                    .all(|w| w[0].span.start_byte < w[1].span.start_byte)
+            );
+        }
+    }
     #[test]
     fn redirect_list_precedence_preserves_words_owners_and_success_conditions() {
         for redirect in ["2>&1", "> result", "2>err", ">out 2>&1"] {

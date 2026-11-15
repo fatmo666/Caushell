@@ -46,6 +46,9 @@ forms:
       stdin_mode: data_required
       stdout_mode: opaque
       stderr_mode: opaque
+      # Native xargs writes diagnostics/verbose commands to stderr. Child
+      # output is projected separately through its inherited descriptor.
+      stdout_dependency: independent
     effects:
       - kind: consume_stdin
         target:

@@ -5087,7 +5087,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_command_uses_nested_pipeline_spans_for_left_associated_pipeline() {
+    fn parse_command_uses_one_execution_pipeline_with_a_redirected_middle_stage() {
         let artifact = parse_command(
             r#"find . -name "*.md" -o -name "*.txt" | xargs grep -l "site:\|inurl:\|intitle:\|filetype:" 2>/dev/null | head -10"#,
             ShellKind::Bash,
@@ -5106,10 +5106,27 @@ mod tests {
             artifact.commands[0].pipeline_span.as_ref(),
             artifact.commands[1].pipeline_span.as_ref()
         );
-        assert_ne!(
+        assert_eq!(
             artifact.commands[1].pipeline_span.as_ref(),
             artifact.commands[2].pipeline_span.as_ref()
         );
+        assert_eq!(
+            artifact.commands[0].pipeline_position,
+            Some(PipelinePosition::First)
+        );
+        assert_eq!(
+            artifact.commands[1].pipeline_position,
+            Some(PipelinePosition::Middle)
+        );
+        assert_eq!(
+            artifact.commands[2].pipeline_position,
+            Some(PipelinePosition::Last)
+        );
+        assert_eq!(
+            artifact.redirections[0].parent_command_span.as_ref(),
+            Some(&artifact.commands[1].span)
+        );
+        assert!(artifact.redirections[0].opening_statement.is_none());
         assert_eq!(
             artifact.commands[0].top_level_span,
             artifact.commands[2].top_level_span

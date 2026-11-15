@@ -93,16 +93,48 @@ pub(super) fn stable_producers(
     candidates
 }
 
-/// A declared regular-file write can leave the old leaf, fail, or create a
-/// new regular leaf. With observed stable directory ancestors and no links,
-/// every outcome has the same path resolution. This holds for branches,
-/// loops, and interleavings; it does not claim that a build succeeded.
+/// Close a typed namespace transformer over observed entry states. A removed
+/// ordinary leaf, a regular-file write, or a directory creation may fail; no
+/// proof asserts that it ran. Stable ancestors and the dependency fixed point
+/// preserve pathname meaning across branches, loops, and interleavings.
 pub(super) fn scope_preservation(
     writer: &Input,
     writer_state: &Baseline,
     consumer_state: &Baseline,
 ) -> Option<PathNamespaceProof> {
-    if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryCreate) {
+    if writer.namespace_effect == Some(PathNamespaceEffect::EntryRemoval) {
+        let SemanticResolution::Resolved {
+            value: PathResolution::Concrete { path },
+        } = &writer_state.0
+        else {
+            return None;
+        };
+        // Preserve only the namespace meaning of this ordinary leaf. Moving
+        // directories/links needs a separate relational transformer; observed
+        // absence is not a promise that an opaque sibling cannot create one.
+        if !ordinary_leaf(path, &writer_state.1)
+            || !matches!(&consumer_state.0,
+            SemanticResolution::Resolved {value:PathResolution::Concrete {path:consumer}} if consumer==path)
+            || !ordinary_leaf(path, &consumer_state.1)
+        {
+            return None;
+        }
+        return Some(PathNamespaceProof {
+            producer_node_id: writer.fact.source_node_id.clone(),
+            producer_effect_key: writer.fact.effect_key.clone(),
+            path: path.clone(),
+            effect: PathNamespaceEffect::EntryRemoval,
+            additional_paths: Vec::new(),
+        });
+    }
+    if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryCreate)
+        && matches!(
+            writer_state.0,
+            SemanticResolution::Resolved {
+                value: PathResolution::Concrete { .. }
+            }
+        )
+    {
         let SemanticResolution::Resolved {
             value: PathResolution::Concrete { path },
         } = &writer_state.0
@@ -138,6 +170,16 @@ pub(super) fn scope_preservation(
     // Preserve that invariant across alternative cwd projections, retaining
     // the actual RegularFileWrite effect in the proof.
     if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryTreeWrite)
+        || (writer.namespace_effect == Some(PathNamespaceEffect::DirectoryCreate)
+            && matches!(
+                writer_state.0,
+                SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet {
+                        may_escape: false,
+                        ..
+                    }
+                }
+            ))
         || (writer.namespace_effect == Some(PathNamespaceEffect::RegularFileWrite)
             && matches!(
                 writer_state.0,
@@ -174,6 +216,7 @@ pub(super) fn scope_preservation(
         };
         if roots.is_empty()
             || consumer_roots.is_empty()
+            || writer_state.1.is_empty()
             || writer_state.1.iter().any(|o| {
                 !matches!(
                     o.entry,

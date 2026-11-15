@@ -68,16 +68,25 @@ impl SessionTransformPass for ResolveInvocationPass {
     fn run(&self, session: SessionView<'_>, ctx: &mut RunnerContext) {
         let base = ctx.clone();
         self.run_once(session, ctx, &mut Default::default());
-        let mut observed = super::observed_native_inputs::prepare(session, ctx);
+        let mut observed = super::observed_native_inputs::prepare(session, ctx, &self.registry);
         if observed.inputs.is_empty() {
+            for proof in observed.effect_proofs {
+                super::observed_native_inputs::emit_proof(ctx, proof);
+            }
             return;
         }
         let mut candidate = base;
         self.run_once(session, &mut candidate, &mut observed);
         if super::observed_native_inputs::accept(session, &mut candidate, &observed) {
+            for proof in observed.effect_proofs {
+                super::observed_native_inputs::emit_proof(&mut candidate, proof);
+            }
             *ctx = candidate;
         } else {
-            super::observed_native_inputs::reject(ctx, &observed);
+            for proof in &observed.effect_proofs {
+                super::observed_native_inputs::emit_proof(ctx, proof.clone());
+            }
+            super::observed_native_inputs::reject(ctx, &observed, &self.registry);
         }
     }
 }
@@ -281,6 +290,18 @@ impl ResolveInvocationPass {
         }
         ctx.set_unresolved_dispatch_records(unresolved_records);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
+        let read_envelopes=ctx.execution_unit_resolve_records().iter().filter_map(|record| {
+            matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r) if r.bound.native_read_envelope)
+                .then(|| caushell_types::NativeInputEffectEvidence {
+                    control_envelope:true,node_id:record.parent_execution_node_id.0.clone(),
+                    producer_node_id:record.parent_execution_node_id.0.clone(),
+                    child_node_ids:vec![record.source_node_id.0.clone()],
+                    observation_gap:"native argv remains symbolic; all admitted modes retain read/data effects and input dependencies".into(),
+                })
+        }).collect::<Vec<_>>();
+        for proof in read_envelopes {
+            super::observed_native_inputs::emit_proof(ctx, proof);
+        }
         ctx.set_expanded_function_calls(expanded_function_calls);
         ctx.set_shell_redirection_scopes(shell_redirection_scopes);
         ctx.set_parsed_command_scopes(project_parsed_command_scopes(
@@ -3972,6 +3993,7 @@ fn collect_execution_unit_resolve_records(
                 .any(|input| input.consumer_node_id == entry.source_node_id))
             && inherits_stdin
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
+            && !resolved.bound.native_read_envelope
             && (resolved.bound.stream_contract.is_some_and(|contract| {
                 matches!(
                     contract.stdin_mode,
@@ -7548,6 +7570,7 @@ fn expanded_static_xargs_children(
         }
         groups = bounded_xargs_unknown_groups(&config, groups, arity_budget);
     }
+    let symbolic_input = !input_complete && !matches!(&native, Some((_, Ok(_))));
     let alternative_order = native.is_some()
         && observed
             .inputs
@@ -7751,13 +7774,22 @@ fn expanded_static_xargs_children(
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
-        let resolved_child = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
+        let mut resolved_child = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
             registry,
             &command,
             InvocationRuntimeContext::new().with_shell_kind(entry.shell_kind),
             &child_bindings,
             &forwarded_substitution_shapes(resolved, &command),
         );
+        if symbolic_input && !has_applied_modifier(&resolved.bound, "arg_file") {
+            super::native_read_envelope::refine(
+                registry,
+                &command,
+                &child_bindings,
+                entry.shell_kind,
+                &mut resolved_child,
+            );
+        }
         let source_node_id =
             expanded_virtual_node_id("xargs", &entry.source_node_id, command_index);
         let mut inherited_scope = entry.inherited_scope.clone();

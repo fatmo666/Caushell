@@ -2061,6 +2061,8 @@ impl BoundImplicitInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundInvocation {
+    /// Resolver-owned overapproximation of native argv modes, never a decoded list.
+    pub native_read_envelope: bool,
     pub archive_extraction: Option<ArchiveExtraction>,
     pub command_name: CommandName,
     pub subcommand_path: Vec<String>,
@@ -2125,6 +2127,7 @@ impl BoundInvocation {
     }
     pub fn new(command_name: CommandName, form_id: FormId) -> Self {
         Self {
+            native_read_envelope: false,
             archive_extraction: None,
             command_name,
             subcommand_path: Vec::new(),
@@ -2217,6 +2220,9 @@ pub struct CommandProfile {
     /// Complete native control vocabulary only queries/reads/formats data.
     /// Unknown argv ownership remains a residual, not unknown operation risk.
     pub read_only_control_surface: bool,
+    /// Reviewed total native argv contract: no mode introduces indirect argument
+    /// files, configuration or execution. Symbolic tails retain unknown reads.
+    pub native_argv_read_envelope: bool,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
@@ -2291,6 +2297,7 @@ impl CommandProfile {
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
+            native_argv_read_envelope: false,
             forms: Vec::new(),
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),

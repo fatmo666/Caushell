@@ -52,7 +52,7 @@ forms:
   - id: convert_in_place
     selector: {kind: all, items: [*not_information, *not_inspect, {kind: has_positional_at, index: 0}, {kind: not, item: {kind: has_modifier, modifier: newfile}}, {kind: not, item: {kind: has_modifier, modifier: to_stdout}}]}
     parameters: *files
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: literal_files}}, {kind: write_path, target: {kind: slot, name: input_files}}, {kind: write_path, target: {kind: slot, name: literal_files}}]
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: read_path, path_access: content_open, target: {kind: slot, name: literal_files}}, {kind: write_path, namespace_effect: regular_file_write, target: {kind: slot, name: input_files}}, {kind: write_path, namespace_effect: regular_file_write, target: {kind: slot, name: literal_files}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: convert_standard_input
     selector: {kind: all, items: [*not_information, *not_inspect, {kind: no_positional_args}, {kind: not, item: {kind: has_modifier, modifier: newfile}}]}

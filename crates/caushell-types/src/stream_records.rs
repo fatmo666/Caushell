@@ -55,6 +55,18 @@ pub struct NativeInputDecodeEvidence {
     pub gap: Option<String>,
 }
 
+/// The launched native children retain a closed read/data-only contract for
+/// symbolic argv. This is not an observation of input bytes or an empty list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeInputEffectEvidence {
+    #[serde(default)]
+    pub control_envelope: bool,
+    pub node_id: String,
+    pub producer_node_id: String,
+    pub child_node_ids: Vec<String>,
+    pub observation_gap: String,
+}
+
 impl StdoutRecordsEvidence {
     /// Exact bytes require both a complete record set and a proved order.
     pub fn complete_bytes(&self) -> Option<Vec<u8>> {
@@ -142,5 +154,16 @@ mod tests {
         assert!(p.complete_bytes().is_none());
         p.records.clear();
         assert_eq!(p.complete_bytes(), Some(vec![]));
+    }
+}
+
+#[cfg(test)]
+mod effect_evidence_compatibility {
+    #[test]
+    fn old_effect_evidence_does_not_claim_a_native_control_envelope() {
+        let evidence:super::NativeInputEffectEvidence=serde_json::from_value(serde_json::json!({
+            "node_id":"consumer","producer_node_id":"producer","child_node_ids":["child"],"observation_gap":"unknown records"
+        })).unwrap();
+        assert!(!evidence.control_envelope);
     }
 }

@@ -86,7 +86,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 continue;
             }
             let spelling = inputs[index].fact.spelling.as_deref();
-            let (resolution, observations) = if inputs[index].cwd_dependent
+            let (resolution, mut observations) = if inputs[index].cwd_dependent
                 && unproved_execution_directory(&records, &inputs[index].fact.source_node_id)
             {
                 (
@@ -125,6 +125,22 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     Vec::new(),
                 )
             };
+            if inputs[index].namespace_effect
+                == Some(caushell_types::PathNamespaceEffect::EntryRemoval)
+                && let SemanticResolution::Resolved {
+                    value: PathResolution::Concrete { path },
+                } = &resolution
+            {
+                // Entry lookup intentionally skips the leaf. An invariant
+                // about removing an ordinary leaf needs its own current type
+                // observation, from the same resolver/cache as its ancestors.
+                let (_, leaf_observations) = resolver.resolve(path, PathTargetAccess::Follow);
+                for observation in leaf_observations {
+                    if !observations.contains(&observation) {
+                        observations.push(observation);
+                    }
+                }
+            }
             baselines.push((resolution, observations));
         }
         for proof in tree_evidence {
@@ -492,6 +508,8 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                                 match effect.kind {
                                     EffectKind::ReadPath
                                     | EffectKind::WritePath
+                                    | EffectKind::MovePath
+                                    | EffectKind::DeletePath
                                     | EffectKind::TransformData
                                     | EffectKind::ImportPackage => true,
                                     // A native configuration loader can participate only after
@@ -506,7 +524,14 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                                 }
                             })
                         {
-                            input.namespace_effect = effect.namespace_effect;
+                            input.namespace_effect = if matches!(
+                                operation,
+                                PathTargetOperation::MoveSource | PathTargetOperation::Delete
+                            ) {
+                                Some(caushell_types::PathNamespaceEffect::EntryRemoval)
+                            } else {
+                                effect.namespace_effect
+                            };
                         }
                         if archive_members {
                             // The complete archive proof excludes link/special

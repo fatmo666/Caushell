@@ -470,6 +470,7 @@ pub enum EvidenceKind {
     NonShellScriptExecution(NonShellScriptExecutionEvidence),
     StdoutRecords(crate::StdoutRecordsEvidence),
     NativeInputDecode(crate::NativeInputDecodeEvidence),
+    NativeInputEffect(crate::NativeInputEffectEvidence),
     PathnameFields(crate::PathnameFieldsEvidence),
     ToolOptionEnvironment(crate::ToolOptionEnvironmentEvidence),
     PythonPayload(crate::PythonPayloadEvidence),

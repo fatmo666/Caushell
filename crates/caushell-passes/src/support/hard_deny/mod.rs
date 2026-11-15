@@ -1,8 +1,11 @@
+mod floppy_devices;
 mod host_target_catalog;
 mod metadata_mutation_classifier;
+mod resolved_device_targets;
 mod resolved_sink;
 mod semantic_rules;
 
+pub(crate) use resolved_device_targets::collect_resolved_device_target_reason_buckets;
 pub(crate) use resolved_sink::bound_argument_operands_for_slot;
 
 pub(crate) use host_target_catalog::{

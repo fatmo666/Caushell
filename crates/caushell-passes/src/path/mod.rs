@@ -18,6 +18,7 @@ pub(crate) use expression::classify_path_operand_expression;
 
 pub(crate) use expression::{
     PathExpression, classify_path_operand_expression_with_tilde, shell_pattern_matches_path,
+    shell_pattern_witness,
 };
 pub(crate) use extract::{
     EXECUTABLE_FILE_SLOT, ExecutableFileReference, RedirectionPathFactCandidate,

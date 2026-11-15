@@ -105,6 +105,7 @@ forms:
         cardinality: optional_many
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: device_paths
@@ -161,6 +162,7 @@ forms:
         cardinality: optional_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -206,6 +208,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -255,6 +258,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -300,6 +304,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -347,6 +352,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -400,6 +406,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -451,6 +458,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -508,6 +516,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -555,6 +564,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -608,6 +618,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -655,6 +666,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -708,6 +720,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -751,6 +764,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -798,6 +812,7 @@ forms:
         cardinality: required_many
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -847,6 +862,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -859,10 +875,6 @@ forms:
       items:
         - kind: any
           items:
-            - kind: has_flag
-              flag: "-b"
-            - kind: has_flag
-              flag: "--backup"
             - kind: has_flag
               flag: "-B"
             - kind: has_flag
@@ -882,47 +894,22 @@ forms:
               - kind: has_flag
                 flag: "--version"
     parameters:
-      - name: backup_output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: following_flag
-          flag: "-O"
-          operand_mode: next_arg
-        cardinality: optional_one
-      - name: backup_output_path_long
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: following_flag
-          flag: "--backup-file"
-          operand_mode: next_arg
-        cardinality: optional_one
       - name: target
         semantic:
           kind: path
           role: read
           purpose: generic_operand
         binding:
-          kind: last_positional
+          kind: next_positional
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
-      - kind: write_path
-        target:
-          kind: slot
-          name: backup_output_path
-      - kind: write_path
-        target:
-          kind: slot
-          name: backup_output_path_long
+      # -O is a prefix, not the actual runtime-generated sector filename.
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
 
   - id: scripted_device_session
     selector:
@@ -963,10 +950,6 @@ forms:
                 flag: "-J"
               - kind: has_flag
                 flag: "--json"
-              - kind: has_flag
-                flag: "-b"
-              - kind: has_flag
-                flag: "--backup"
               - kind: has_flag
                 flag: "-B"
               - kind: has_flag
@@ -1056,6 +1039,7 @@ forms:
       stderr_mode: opaque
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -1108,10 +1092,6 @@ forms:
               - kind: has_flag
                 flag: "--json"
               - kind: has_flag
-                flag: "-b"
-              - kind: has_flag
-                flag: "--backup"
-              - kind: has_flag
                 flag: "-B"
               - kind: has_flag
                 flag: "--backup-pt-sectors"
@@ -1196,6 +1176,7 @@ forms:
       stderr_mode: opaque
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -1244,10 +1225,6 @@ forms:
                 flag: "-J"
               - kind: has_flag
                 flag: "--json"
-              - kind: has_flag
-                flag: "-b"
-              - kind: has_flag
-                flag: "--backup"
               - kind: has_flag
                 flag: "-B"
               - kind: has_flag
@@ -1326,6 +1303,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -1368,10 +1346,6 @@ forms:
                 flag: "-J"
               - kind: has_flag
                 flag: "--json"
-              - kind: has_flag
-                flag: "-b"
-              - kind: has_flag
-                flag: "--backup"
               - kind: has_flag
                 flag: "-B"
               - kind: has_flag
@@ -1454,6 +1428,7 @@ forms:
         cardinality: required_one
     effects:
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
@@ -1474,6 +1449,11 @@ modifiers:
       flags:
         - "-b"
         - "--backup"
+
+    # Mutating commands may also write generated sector backup files.
+    effects_when: {unless_forms: [show_help, show_version, list_partition_tables, list_partition_types, inspect_active_partitions, inspect_partition_label, inspect_partition_type, inspect_partition_uuid, inspect_partition_attributes, inspect_disk_id, backup_partition_table]}
+    effects:
+      - &unproved_backup_output {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
 
   - id: bytes
     matcher:
@@ -1693,6 +1673,16 @@ modifiers:
       flags:
         - "-v"
         - "--version"
+
+  - id: backup_file
+    matcher: {kind: any_flag, flags: ['-O', '--backup-file']}
+    parameters:
+      - name: backup_prefix
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+    effects_when: {unless_forms: [show_help, show_version, list_partition_tables, list_partition_types, inspect_active_partitions, inspect_partition_label, inspect_partition_type, inspect_partition_uuid, inspect_partition_attributes, inspect_disk_id, backup_partition_table]}
+    effects: [*unproved_backup_output]
 
 subcommands: null
 extensions: {}

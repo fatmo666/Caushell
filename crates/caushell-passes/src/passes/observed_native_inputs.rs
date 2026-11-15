@@ -20,9 +20,14 @@ pub(super) struct ObservedInput {
 pub(super) struct ObservedInputs {
     pub inputs: BTreeMap<NodeId, ObservedInput>,
     pub decoded: BTreeMap<NodeId, NativeInputDecodeEvidence>,
+    pub effect_proofs: Vec<caushell_types::NativeInputEffectEvidence>,
 }
 
-pub(super) fn prepare(session: SessionView<'_>, ctx: &RunnerContext) -> ObservedInputs {
+pub(super) fn prepare(
+    session: SessionView<'_>,
+    ctx: &RunnerContext,
+    registry: &caushell_profile::ProfileRegistry,
+) -> ObservedInputs {
     let mut result = ObservedInputs::default();
     if !ctx.execution_unit_resolve_records().iter().any(|r| matches!(&r.result,
         ResolveInvocationArtifactResult::Resolved(r) if r.bound.stdout_records.as_ref().is_some_and(|c| c.native.is_some()))) {
@@ -88,6 +93,21 @@ pub(super) fn prepare(session: SessionView<'_>, ctx: &RunnerContext) -> Observed
         ) else {
             continue;
         };
+        if !output.complete
+            && let Some(proof) = super::symbolic_native_inputs::prove(
+                ctx,
+                registry,
+                &consumer.source_node_id().0,
+                &output.producer_node_id,
+                output
+                    .gap
+                    .as_deref()
+                    .unwrap_or("concrete input is unavailable"),
+            )
+        {
+            result.effect_proofs.push(proof);
+            continue;
+        }
         result.inputs.insert(
             consumer.source_node_id().clone(),
             ObservedInput {
@@ -187,7 +207,7 @@ fn candidate_refinement_keeps_the_consumer_frame() {
         let summary = SessionSummary::default();
         let session = SessionView::new(&graph, &summary);
         runner.run(session, &mut ctx);
-        let inputs = prepare(session, &ctx);
+        let inputs = prepare(session, &ctx, &registry);
         assert!(!inputs.inputs.is_empty(), "no candidate: {ctx:#?}");
         assert!(
             ctx.evidence
@@ -221,8 +241,22 @@ pub(super) fn accept(
     })
 }
 
-pub(super) fn reject(ctx: &mut RunnerContext, input: &ObservedInputs) {
+pub(super) fn reject(
+    ctx: &mut RunnerContext,
+    input: &ObservedInputs,
+    registry: &caushell_profile::ProfileRegistry,
+) {
     for (node, proof) in &input.inputs {
+        if let Some(proof) = super::symbolic_native_inputs::prove(
+            ctx,
+            registry,
+            &node.0,
+            &proof.records.producer_node_id,
+            "producer effects or observations changed during input refinement",
+        ) {
+            emit_proof(ctx, proof);
+            continue;
+        }
         let mut decoded =
             input
                 .decoded
@@ -251,4 +285,15 @@ pub(super) fn reject(ctx: &mut RunnerContext, input: &ObservedInputs) {
             kind: EvidenceKind::NativeInputDecode(decoded),
         });
     }
+}
+
+pub(super) fn emit_proof(
+    ctx: &mut RunnerContext,
+    proof: caushell_types::NativeInputEffectEvidence,
+) {
+    ctx.add_evidence(Evidence {
+        rule_id: RuleId::SelectionError,
+        summary: "symbolic native input has closed read/data-only child effects; concrete records remain unproved".into(),
+        kind: EvidenceKind::NativeInputEffect(proof),
+    });
 }

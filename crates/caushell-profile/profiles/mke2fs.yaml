@@ -96,9 +96,15 @@ forms:
         cardinality: optional_many
     effects:
       - kind: read_path
+        path_access: content_open
         target:
           kind: slot
           name: target
+      # mke2fs can replace an automatic undo file even before the -n exit.
+      # Its directory comes from environment/configuration, not the main target.
+      - &automatic_undo_output
+        kind: write_path
+        target: {kind: configured_path, sources: [], missing: unknown}
 
   - id: create_filesystem
     selector:
@@ -118,7 +124,9 @@ forms:
                 modifier: extended_options
               - kind: has_modifier
                 modifier: usage_type
-    parameters:
+              - kind: has_modifier
+                modifier: check
+    parameters: &create_parameters
       - name: target
         semantic:
           kind: path
@@ -133,13 +141,35 @@ forms:
         binding:
           kind: remaining_positionals
         cardinality: optional_many
-    effects:
+    effects: &create_effects
       - kind: write_path
+        path_access: content_open
         target:
           kind: slot
           name: target
         catastrophic:
           semantic_class: format_target
+      - *automatic_undo_output
+
+  # -c invokes a tool-constructed shell command through popen(); it is not a
+  # closed content-only operation. Keep its existing target but require review.
+  - id: create_filesystem_with_external_check
+    operation_semantics_unresolved: true
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: has_modifier, modifier: check}
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: no_create}
+              - {kind: has_modifier, modifier: version}
+              - {kind: has_modifier, modifier: extended_options}
+              - {kind: has_modifier, modifier: usage_type}
+    parameters: *create_parameters
+    effects: *create_effects
 
 modifiers:
   - id: no_create
@@ -184,6 +214,10 @@ modifiers:
           operand_mode: next_arg
         cardinality: required_one
 
+    effects_when: {unless_forms: [show_help, show_version, inspect_layout]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: bad_blocks_file}}
+
   - id: block_size
     matcher:
       kind: any_flag
@@ -213,6 +247,10 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+
+    effects_when: {unless_forms: [show_help, show_version, inspect_layout]}
+    effects:
+      - {kind: read_path, target: {kind: slot, name: root_directory_path}}
 
   - id: direct_io
     matcher:
@@ -316,6 +354,11 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+
+    # An unparsed -J value may name an external journal device.
+    effects_when: {unless_forms: [show_help, show_version, inspect_layout]}
+    effects:
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
 
   - id: inode_count
     matcher:
@@ -486,6 +529,10 @@ modifiers:
           kind: following_matched_flag
           operand_mode: next_arg
         cardinality: required_one
+
+    effects_when: {unless_forms: [show_help, show_version]}
+    effects:
+      - {kind: write_path, target: {kind: slot, name: undo_file_path}}
 
   - id: uuid
     matcher:

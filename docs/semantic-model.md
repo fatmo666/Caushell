@@ -1353,6 +1353,14 @@ temporary filename is guessed. File/directory inputs share a conservative
 parent bound without filesystem or suffix classification, so a compileall
 input naming the workspace root itself can require approval.
 
+A configured target with an input-parent fallback is an output directory family,
+even if a primary slot, environment value or default can select a concrete path.
+It cannot declare `regular_file_write`: that contract describes exact file
+targets. A link-free directory-family transformer may explicitly declare
+`directory_tree_write` under its existing proof requirements, or leave namespace
+preservation unspecified. Loading an incompatible contract fails; it is not
+silently promoted to a directory-tree contract.
+
 The compiler adapters read sources and produce bytecode, not execute source
 bodies. Known cache prefixes route the write target to that directory; complete
 absence or a known empty prefix enables input-parent fallback. Explicit
@@ -3188,3 +3196,31 @@ its environment, and no transfer proof is supplied yet. The owning cwd is also
 unproven for these generated entries. The ordinary Shell/eval/source transfer
 rules are unchanged. Literal absolute hazards remain visible; unresolved child
 state never becomes a concrete resource fact.
+
+
+`native_argv_read_envelope: true` strengthens the reviewed control-surface
+contract for native symbolic argv: every possible mode must have only direct
+read/data effects and plain/read parameters, with no configuration, argument
+file, dispatch or opaque operation. It requires `read_only_control_surface` and
+defaults to false. The resolver audits the exact fixed prefix, preserves
+runtime argument origins and represents unknown reads without certifying argv
+bytes. The resulting mode union may consume data stdin and both output streams
+retain input dependencies; it supplies no scalar, record, growth or independent
+output proof. A parser-owned option terminator provides a separate way to prove
+an unknown native append tail is data. See the native reader section in
+`security-model.md` for the cat/wc and descriptor-routing boundaries.
+
+
+`PathNamespaceEffect::EntryRemoval` records a source-side removal/failure
+transformer. It is inferred from a fully resolved DeletePath/MovePath source
+with a closed effect surface, and is valid in a profile only on those operations
+with a single slot target and no implicit subtree scope. It cannot describe a
+WritePath destination. The resolver separately observes the leaf because
+PathTargetAccess::Entry does not follow or inspect it. A stable ordinary-leaf
+proof preserves pathname meaning only for the same resolved target; all write,
+execution, taint, catastrophic-target and workspace policies still apply.
+
+DirectoryCreate can preserve a BoundedPathSet through the same complete
+link-free closure used by regular-file families. NamespaceProof retains its
+actual effect tag, original Missing/File/Directory observations and producer
+identity; it does not materialize hypothetical outputs or persist permissions.

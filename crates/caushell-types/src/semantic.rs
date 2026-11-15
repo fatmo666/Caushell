@@ -87,6 +87,10 @@ pub struct FilesystemObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathNamespaceEffect {
+    /// May remove the named entry or fail. This describes only the source of
+    /// a delete/move, never a move destination or a newly materialized entry.
+    /// Its leaf-type and stable-parent preconditions still need observations.
+    EntryRemoval,
     /// May create missing directory components or fail, but cannot replace an
     /// existing entry, create links, or change the target of an existing link.
     /// Does not assert that any directory will exist after the operation.

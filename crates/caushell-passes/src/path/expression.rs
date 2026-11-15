@@ -83,6 +83,104 @@ pub(crate) fn shell_pattern_matches_path(pattern: &str, path: &str) -> bool {
     glob_match(normalized_pattern.as_bytes(), normalized_path.as_bytes())
 }
 
+/// Find a concrete ASCII path accepted by both a Shell glob and a deterministic
+/// path language. None establishes no witness, not that the target is safe.
+/// A shared product-state budget bounds the proof without enumerating paths.
+pub(crate) fn shell_pattern_witness(
+    pattern: &str,
+    start: usize,
+    transition: impl Fn(usize, u8) -> Option<usize>,
+    accepting: impl Fn(usize) -> bool,
+    budget: &mut usize,
+) -> Option<String> {
+    type State = (usize, usize);
+    type Parent = Option<(State, Option<u8>)>;
+    fn enqueue(
+        state: State,
+        parent: Parent,
+        parents: &mut std::collections::BTreeMap<State, Parent>,
+        queue: &mut std::collections::VecDeque<State>,
+        budget: &mut usize,
+    ) -> Option<()> {
+        if !parents.contains_key(&state) {
+            if *budget == 0 {
+                return None;
+            }
+            *budget -= 1;
+            parents.insert(state, parent);
+            queue.push_back(state);
+        }
+        Some(())
+    }
+    let normalized = normalize_shell_path(pattern);
+    if !normalized.is_ascii() || normalized.len() > 4096 {
+        return None;
+    }
+    let pattern = normalized.as_bytes();
+    let mut parents = std::collections::BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    enqueue((0, start), None, &mut parents, &mut queue, budget)?;
+    while let Some(state @ (index, language)) = queue.pop_front() {
+        if index == pattern.len() {
+            if accepting(language) {
+                let mut bytes = Vec::new();
+                let mut cursor = state;
+                while let Some((parent, byte)) = parents.get(&cursor).copied().flatten() {
+                    if let Some(byte) = byte {
+                        bytes.push(byte);
+                    }
+                    cursor = parent;
+                }
+                bytes.reverse();
+                return String::from_utf8(bytes).ok();
+            }
+            continue;
+        }
+        let token = pattern[index];
+        let bracket = (token == b'[')
+            .then(|| parse_bracket_class(pattern, index))
+            .flatten();
+        let next_index = if token == b'\\' && index + 1 < pattern.len() {
+            index + 2
+        } else if let Some((_, next)) = &bracket {
+            *next
+        } else {
+            index + 1
+        };
+        if token == b'*' {
+            enqueue(
+                (index + 1, language),
+                Some((state, None)),
+                &mut parents,
+                &mut queue,
+                budget,
+            )?;
+        }
+        for byte in 1..=127u8 {
+            let matches = match token {
+                b'*' | b'?' => byte != b'/',
+                b'\\' => byte == pattern.get(index + 1).copied().unwrap_or(b'\\'),
+                b'[' => bracket.as_ref().map_or(byte == b'[', |(class, _)| {
+                    byte != b'/' && class.matches(byte)
+                }),
+                literal => byte == literal,
+            };
+            if matches {
+                if let Some(next) = transition(language, byte) {
+                    enqueue(
+                        (if token == b'*' { index } else { next_index }, next),
+                        Some((state, Some(byte))),
+                        &mut parents,
+                        &mut queue,
+                        budget,
+                    )?;
+                }
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn shell_pattern_is_bare_star_segment(segment: &str) -> bool {
     let mut chars = segment.chars();
     matches!(chars.next(), Some('*')) && chars.next().is_none()

@@ -66,6 +66,23 @@ impl ResolvedInvocationArtifact {
     /// Negative stream guarantees require a fully resolved invocation shape.
     /// A dynamic operand could become '-' or a mode-changing option at runtime.
     pub fn proven_stream_contract(&self) -> Option<crate::StreamContract> {
+        // A resolver-owned union of native reader modes is deliberately
+        // conservative: stdin MAY contribute and BOTH outputs depend on all
+        // inputs. It certifies neither exact argv nor an independent/silent
+        // stream, and must not lose input provenance merely because argv is
+        // symbolic. Shape-specific scalar/record/growth proofs stay absent.
+        if self.bound.native_read_envelope {
+            let contract = self.bound.stream_contract?;
+            return (!self.bound.operation_semantics_unresolved
+                && self.bound.residuals.is_empty()
+                && contract.stdin_mode == crate::StreamInputMode::DataOptional
+                && contract.stdout_mode == crate::StreamOutputMode::Data
+                && contract.stderr_mode == crate::StreamOutputMode::Data
+                && contract.stdout_dependency == caushell_types::StreamDataDependency::Inputs
+                && contract.stderr_dependency == caushell_types::StreamDataDependency::Inputs
+                && !contract.stdout_from_payload)
+                .then_some(contract);
+        }
         if self.bound.operation_semantics_unresolved
             || !self.bound.residuals.is_empty()
             || self
@@ -2125,7 +2142,10 @@ mod tests {
                         first_argument_text(&resolved.bound, "target"),
                         "/dev/nvme0n1p1"
                     );
-                    assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::WritePath]);
+                    assert_eq!(
+                        effect_kinds(&resolved.bound),
+                        vec![EffectKind::WritePath, EffectKind::WritePath]
+                    );
                 }
                 other => panic!("unexpected resolve result for {command_line:?}: {other:?}"),
             }
@@ -3257,14 +3277,17 @@ mod tests {
                 assert_eq!(resolved.profile.primary_name(), "mke2fs");
                 assert_eq!(resolved.selection.form.id.as_str(), "create_filesystem");
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda1");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::WritePath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::WritePath, EffectKind::WritePath]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
     }
 
     #[test]
-    fn resolve_invocation_resolves_mke2fs_no_create_as_read_only_inspection() {
+    fn resolve_invocation_mke2fs_no_create_keeps_target_read_and_undo_output_unproved() {
         let registry = built_in_registry();
         let artifact =
             parse_command("mke2fs -n /dev/sda1", ShellKind::Bash).expect("expected parse");
@@ -3285,7 +3308,10 @@ mod tests {
                 assert_eq!(resolved.selection.form.id.as_str(), "inspect_layout");
                 assert_eq!(modifier_ids, vec!["no_create"]);
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda1");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::ReadPath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -3471,7 +3497,10 @@ mod tests {
                 assert_eq!(resolved.selection.form.id.as_str(), "create_filesystem");
                 assert_eq!(modifier_ids, vec!["verbose"]);
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda1");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::WritePath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::WritePath, EffectKind::WritePath]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -3537,7 +3566,14 @@ mod tests {
                 );
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda1");
                 assert_eq!(argument_texts(&resolved.bound, "size"), vec!["1024"]);
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::WritePath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::WritePath,
+                        EffectKind::WritePath
+                    ]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -6239,9 +6275,9 @@ mod tests {
                     resolved.selection.form.id.as_str(),
                     "backup_partition_table"
                 );
-                assert!(modifier_ids.is_empty());
+                assert_eq!(modifier_ids, vec!["backup_file"]);
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "backup_output_path"),
+                    first_argument_text(&resolved.bound, "backup_prefix"),
                     "table.bin"
                 );
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda");
@@ -6274,7 +6310,7 @@ mod tests {
                     "backup_partition_table"
                 );
                 assert_eq!(
-                    first_argument_text(&resolved.bound, "backup_output_path_long"),
+                    first_argument_text(&resolved.bound, "backup_prefix"),
                     "table.bin"
                 );
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda");
@@ -6304,14 +6340,17 @@ mod tests {
                     "backup_partition_table"
                 );
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::ReadPath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::ReadPath, EffectKind::WritePath]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
     }
 
     #[test]
-    fn resolve_invocation_resolves_sfdisk_backup_flag_as_read_only_backup_form() {
+    fn resolve_invocation_sfdisk_backup_flag_keeps_mutating_session_and_backup_output() {
         let registry = built_in_registry();
         let artifact =
             parse_command("sfdisk --backup /dev/sda", ShellKind::Bash).expect("expected parse");
@@ -6331,18 +6370,21 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "sfdisk");
                 assert_eq!(
                     resolved.selection.form.id.as_str(),
-                    "backup_partition_table"
+                    "interactive_device_session"
                 );
                 assert_eq!(modifier_ids, vec!["backup"]);
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::ReadPath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::WritePath, EffectKind::WritePath]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
     }
 
     #[test]
-    fn resolve_invocation_resolves_sfdisk_short_backup_flag_as_read_only_backup_form() {
+    fn resolve_invocation_sfdisk_short_backup_flag_keeps_mutating_session_and_backup_output() {
         let registry = built_in_registry();
         let artifact =
             parse_command("sfdisk -b /dev/sda", ShellKind::Bash).expect("expected parse");
@@ -6362,11 +6404,14 @@ mod tests {
                 assert_eq!(resolved.normalized_command_name, "sfdisk");
                 assert_eq!(
                     resolved.selection.form.id.as_str(),
-                    "backup_partition_table"
+                    "interactive_device_session"
                 );
                 assert_eq!(modifier_ids, vec!["backup"]);
                 assert_eq!(first_argument_text(&resolved.bound, "target"), "/dev/sda");
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::ReadPath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::WritePath, EffectKind::WritePath]
+                );
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }

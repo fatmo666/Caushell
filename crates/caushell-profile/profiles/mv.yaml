@@ -28,22 +28,39 @@ forms:
     parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: &streams {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: target_directory
-    selector: {kind: all, items: [&running {kind: not, item: *information}, {kind: has_modifier, modifier: target_directory}, {kind: not, item: {kind: has_modifier, modifier: no_target_directory}}, {kind: has_positional_at, index: 0}]}
+    selector: {kind: all, items: [&running {kind: not, item: *information}, &no_backups {kind: not, item: &backups {kind: any, items: [{kind: has_modifier, modifier: backup}, {kind: has_modifier, modifier: suffix}, {kind: has_flag, flag: -b}]}}, {kind: has_modifier, modifier: target_directory}, {kind: not, item: {kind: has_modifier, modifier: no_target_directory}}, {kind: has_positional_at, index: 0}]}
     remaining_selector: {kind: no_positional_args}
-    parameters:
+    parameters: &directory_sources
       - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
-    effects:
+    effects: &directory_effects
       - &source_move {kind: move_path, target: {kind: slot, name: source_paths}, host_risk: {semantic_class: move_source_path}}
     stream_contract: *streams
   - id: default_move
-    selector: {kind: all, items: [*running, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
+    selector: {kind: all, items: [*running, *no_backups, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
     remaining_selector: {kind: no_positional_args}
-    parameters:
+    parameters: &move_parameters
       - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
       - {name: destination_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}
-    effects:
+    effects: &move_effects
       - *source_move
       - {kind: write_path, target: {kind: slot, name: destination_path}}
+    stream_contract: *streams
+
+  # Automatic backup names can introduce additional namespace changes. Keep
+  # the known source/destination effects, but do not certify a closed action.
+  - id: backup_move
+    operation_semantics_unresolved: true
+    selector: {kind: all, items: [*running, *backups, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *move_parameters
+    effects: *move_effects
+    stream_contract: *streams
+  - id: backup_target_directory
+    operation_semantics_unresolved: true
+    selector: {kind: all, items: [*running, *backups, {kind: has_modifier, modifier: target_directory}, {kind: not, item: {kind: has_modifier, modifier: no_target_directory}}, {kind: has_positional_at, index: 0}]}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *directory_sources
+    effects: *directory_effects
     stream_contract: *streams
 
 modifiers:
