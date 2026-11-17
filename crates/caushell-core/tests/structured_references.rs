@@ -98,6 +98,34 @@ fn compound_and_sparse_arrays_preserve_native_argv() {
 }
 
 #[test]
+fn indexed_array_append_preserves_existing_members_and_bash_subscripts() {
+    for (command, expected) in [
+        (
+            r#"a=(); a+=("one"); a+=("two words" ""); printf '%s' "${a[@]}""#,
+            vec!["%s", "one", "two words", ""],
+        ),
+        (
+            r#"a=([2]=two [7]=seven); a+=("eight words" "" [4]=four five); printf '%s' "${a[2]}" "${a[4]}" "${a[5]}" "${a[7]}" "${a[8]}" "${a[9]}""#,
+            vec!["%s", "two", "four", "five", "seven", "eight words", ""],
+        ),
+        (
+            r#"a=([2]=two [7]=seven); unset 'a[7]'; a+=(three); printf '%s' "${a[3]}""#,
+            vec!["%s", "three"],
+        ),
+        (
+            r#"a=(one "two words"); a+=("${a[@]}"); a+=(); printf '%s' "${a[@]}""#,
+            vec!["%s", "one", "two words", "one", "two words"],
+        ),
+        (
+            r#"a=(one); declare -n ref=a; ref+=(two); printf '%s' "${a[@]}""#,
+            vec!["%s", "one", "two"],
+        ),
+    ] {
+        assert_eq!(printf_args(command), vec![expected], "{command}");
+    }
+}
+
+#[test]
 fn associative_selection_indirection_and_nameref_follow_current_values() {
     for (source, expected) in [
         (
@@ -204,6 +232,9 @@ fn risky_and_incomplete_values_do_not_gain_approval_from_expansion() {
         "declare -n a=b; declare -n b=a; touch \"$a\"",
         "target=/workspace/safe; declare -n ref=$unknown; ref=/outside/file; touch \"$target\"",
         "a=(/workspace/safe); a+=(/outside/file); touch \"${a[@]}\"",
+        "a=(/workspace/safe); a+=(\"$unknown\"); touch \"${a[@]}\"",
+        "a=(/workspace/safe); a+=([$unknown]=/workspace/other); touch \"${a[0]}\"",
+        "a=(/workspace/safe); if test -f flag; then a+=(/outside/file); fi; touch \"${a[@]}\"",
         "target=/workspace/safe; if test -f flag; then declare -n ref=target; fi; ref=/outside/file; touch \"$target\"",
         "target=/workspace/safe; declare -n ref=target; export ref=/outside/file; touch \"$target\"",
         "declare -a a=(/outside/file); declare -A a=([0]=/workspace/safe); touch \"${a[0]}\"",

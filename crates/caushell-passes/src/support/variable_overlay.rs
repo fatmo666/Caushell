@@ -592,11 +592,18 @@ pub(super) fn apply_variable_overlay(
                         let value = if assignment.operator
                             != caushell_parse::AssignmentOperator::Assign
                         {
-                            SessionValue::structured(
-                                caushell_types::StructuredShellValue::Unknown {
-                                    reason: "structured append is unresolved".into(),
-                                },
+                            super::structured_variables::indexed_array_append_value(
+                                &assignment.name,
+                                &assignment.value,
+                                &bindings,
                             )
+                            .unwrap_or_else(|| {
+                                SessionValue::structured(
+                                    caushell_types::StructuredShellValue::Unknown {
+                                        reason: "structured append is unresolved".into(),
+                                    },
+                                )
+                            })
                         } else if assignment.value.node_kind == "array" {
                             let associative = matches!(
                                 bindings.get(&assignment.name).map(|b| b.value),

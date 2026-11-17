@@ -48,15 +48,55 @@ pub(super) fn array_value(
     associative: bool,
     bindings: &SessionBindings,
 ) -> Result<SessionValue, &'static str> {
+    array_value_with_existing(value, associative, bindings, BTreeMap::new())
+}
+
+pub(super) fn indexed_array_append_value(
+    name: &str,
+    value: &AssignmentValueFact,
+    bindings: &SessionBindings,
+) -> Option<SessionValue> {
+    if value.node_kind != "array" {
+        return None;
+    }
+    let T::Variable { name } = shell_write_target(
+        bindings,
+        T::Variable { name: name.into() },
+    ).ok()? else {
+        return None;
+    };
+    let SessionValue::Structured(V::IndexedArray { elements, complete: true }) =
+        bindings.get(&name)?.value
+    else {
+        return None;
+    };
+    let result = array_value_with_existing(value, false, bindings, elements.clone()).ok()?;
+    match &result {
+        SessionValue::Structured(array) if !array.has_unknown_parts() => Some(result),
+        // An unproved field or subscript may change the resulting indices.
+        // Leave that write to the caller's ordinary unresolved-state handling.
+        _ => None,
+    }
+}
+
+fn array_value_with_existing(
+    value: &AssignmentValueFact,
+    associative: bool,
+    bindings: &SessionBindings,
+    mut indexed: BTreeMap<u64, S>,
+) -> Result<SessionValue, &'static str> {
     if bindings.shell_kind() != caushell_types::ShellKind::Bash {
         return Err("array assignments require Bash semantics");
     }
     let Some(entries) = caushell_parse::array_assignment_entries(&value.text) else {
         return Err("array assignment is outside the bounded syntax");
     };
-    let mut indexed = BTreeMap::new();
     let mut keyed = BTreeMap::new();
-    let mut next = 0u64;
+    // Implicit append starts after the highest occupied index, even when
+    // the existing array has holes. An explicit subscript resets this cursor.
+    let mut next = indexed
+        .last_key_value()
+        .map_or(0, |(index, _)| index.saturating_add(1));
     let mut complete = true;
     for (key, value) in entries {
         let values = caushell_profile::materialize_shell_array_element(&value, bindings);
