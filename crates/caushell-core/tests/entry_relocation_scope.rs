@@ -146,6 +146,75 @@ fn paired_link_free_families_get_only_a_containment_proof() {
 }
 
 #[test]
+fn a_fixed_destination_gets_a_write_scope_inside_the_observed_source_tree() {
+    for (command, view) in [
+        (r"find . -type f -exec mv '{}' ./landing \;", Namespace::ordinary()),
+        (
+            r"find . -type f -exec mv '{}' ./landing \;",
+            Namespace::ordinary().set("/workspace/landing", FilesystemEntry::File),
+        ),
+        (
+            r"find . -type f -exec mv -t ./landing/ '{}' +",
+            Namespace::ordinary()
+                .set("/workspace/landing", FilesystemEntry::Directory)
+                .set("/workspace/landing/input", FilesystemEntry::File),
+        ),
+    ] {
+        let r = check(command, view);
+        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        let destination = r
+            .decision_trace
+            .path_targets
+            .iter()
+            .find(|fact| fact.operation == PathTargetOperation::Write)
+            .unwrap();
+        assert_eq!(destination.lexical.concrete_path(), Some("/workspace/landing"));
+        assert!(matches!(&destination.resolution, SemanticResolution::Resolved {
+            value: PathResolution::BoundedPathSet { roots, may_escape: false }
+        } if roots == &["/workspace/landing"]));
+        assert!(destination.namespace_proofs.iter().any(|p| {
+            p.effect == PathNamespaceEffect::EntryRelocation && p.path == "/workspace"
+        }));
+    }
+}
+
+#[test]
+fn fixed_writes_do_not_certify_outside_links_or_the_anchor_entry() {
+    for (command, view) in [
+        (
+            r"find . -type f -exec mv '{}' ./landing \;",
+            Namespace::ordinary().set(
+                "/workspace/landing",
+                FilesystemEntry::Symlink { target: "/outside".into() },
+            ),
+        ),
+        (r"find . -type f -exec mv '{}' /outside/landing \;", Namespace::ordinary()),
+        (r"find . -type f -exec mv '{}' . \;", Namespace::ordinary()),
+    ] {
+        let r = check(command, view);
+        assert_ne!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        assert!(!has_relocation_proof(&r));
+    }
+}
+
+#[test]
+fn a_fixed_relocation_scope_does_not_prove_a_later_exact_path() {
+    let r = check(
+        r"find . -type f -exec mv '{}' ./landing/ \;; printf x > ./landing/child",
+        Namespace::ordinary().set("/workspace/landing", FilesystemEntry::Directory),
+    );
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.reasons);
+    let child = r
+        .decision_trace
+        .path_targets
+        .iter()
+        .find(|fact| fact.lexical.concrete_path() == Some("/workspace/landing/child"))
+        .unwrap();
+    assert!(matches!(child.resolution, SemanticResolution::Unresolved { .. }));
+    assert!(child.namespace_proofs.is_empty());
+}
+
+#[test]
 fn links_unavailable_entries_and_opaque_siblings_break_the_closure() {
     let command = r"find . -type f -exec mv '{}' '{}'.bak \;";
     for view in [

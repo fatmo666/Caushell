@@ -35,6 +35,7 @@ pub(super) fn close_families(
             continue;
         }
         let mut anchors = Vec::new();
+        let mut fixed_writes = Vec::new();
         let complete = indices.iter().all(|&i| {
             if !inputs[i].pending_resolution { return false; }
             match &baselines[i].0 {
@@ -44,18 +45,43 @@ pub(super) fn close_families(
                     anchors.extend(roots.iter().cloned());
                     true
                 }
+                SemanticResolution::Resolved {
+                    value: PathResolution::Concrete { path },
+                } if inputs[i].fact.operation == PathTargetOperation::Write
+                    && inputs[i].fact.lexical.concrete_path() == Some(path.as_str())
+                    && ordinary_fixed_write(path, &baselines[i].1) =>
+                {
+                    fixed_writes.push((i, path.clone()));
+                    true
+                }
                 _ => false,
             }
         });
         if !complete || anchors.len() > 256 { continue; }
         let Some(root) = common_root(&anchors) else { continue };
+        // Fixed destinations must fit within the existing family. They do
+        // not extend its root or replace the entry anchoring the proof.
+        if fixed_writes.iter().any(|(_, path)| {
+            path == &root || !caushell_query::path_is_within_root(path, &root)
+        }) {
+            continue;
+        }
         let mut family = inputs[indices[0]].clone();
         family.fact.lexical = PathResolution::BoundedPathSet { roots: vec![root.clone()], may_escape: false };
         let ((state, observations), proof) = directory_tree::resolve(&family, resolver, view.clone(), budget);
         let closed = proof.complete && matches!(state,
-            SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { may_escape: false, .. } });
+            SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { may_escape: false, .. } })
+            && (fixed_writes.is_empty() || proof.directories.iter().any(|dir| dir.path == root));
         evidence.push(proof);
         if !closed { continue; }
+        // The landing path can denote a directory when the move runs. Use a
+        // subtree bound for this write effect so later dependencies see all
+        // potentially replaced children. Its original spelling stays exact.
+        for (i, path) in fixed_writes {
+            baselines[i].0 = SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots: vec![path], may_escape: false },
+            };
+        }
         for &i in &indices {
             inputs[i].relocation_scope = Some(root.clone());
             for observation in &observations {
@@ -66,6 +92,17 @@ pub(super) fn close_families(
         }
     }
     evidence
+}
+
+fn ordinary_fixed_write(path: &str, observations: &[FilesystemObservation]) -> bool {
+    observations.iter().any(|o| o.path == path)
+        && observations.iter().all(|o| {
+            o.source != FilesystemObservationSource::Unavailable
+                && matches!(
+                    o.entry,
+                    FilesystemEntry::File | FilesystemEntry::Directory | FilesystemEntry::Missing
+                )
+        })
 }
 
 fn common_root(anchors: &[String]) -> Option<String> {
